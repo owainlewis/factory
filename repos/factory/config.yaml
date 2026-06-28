@@ -1,41 +1,23 @@
-repo:
-  owner: owainlewis
-  name: factory
-  url: https://github.com/owainlewis/factory
-  local_path: ~/Code/github/owainlewis/factory
-  visibility: private
+repo: owainlewis/factory
+kind: control-plane
+priority: high
+goal: Keep Code Factory simple, useful, and safe.
 
-factory:
-  active: true
-  priority: high
-  role: control-plane
-  project_board:
-    required: true
-    name: Code Factory
-  issues:
-    required: true
-    sync_labels: true
-    require_project_link: true
-  ci:
-    required: false
-  standards_profile: factory
+standards:
+  profile: default
 
-goal:
-  file: goal.md
+checks:
+  config: ruby -e "require 'yaml'; Dir['repos/*/config.yaml'].each { |f| YAML.load_file(f) }"
+  references: manual
+
+release:
+  type: none
 
 automations:
-  - id: daily-control-plane-audit
-    file: automations/daily-control-plane-audit.md
-    schedule: daily
-    runner: codex
-    mode: audit
+  - daily-control-plane-audit
 
-safety:
-  max_open_prs: 1
-  allow_direct_push: false
-  allow_auto_merge: false
-  human_review_required:
-    - changing_standards
-    - changing_repo_registry
-    - changing_automation_safety
+human_review:
+  - changing_standards
+  - changing_repo_registry
+  - changing_automation_safety
 

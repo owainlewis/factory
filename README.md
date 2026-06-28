@@ -16,8 +16,14 @@ The power comes from clear repo goals and repeatable agent work.
 
 ```text
 standards/
+  defaults.yaml
   project-checklist.md
   labels.yaml
+  profiles/
+    rust-cli.yaml
+    go-cli.yaml
+    web-app.yaml
+    saas-app.yaml
 
 repos/
   <repo-name>/
@@ -39,6 +45,9 @@ templates/
 A repo is only in Code Factory if it matters.
 
 If a repo matters, it should have a clear goal, consistent issues, a project board, CI, docs, and a recurring improvement loop.
+
+Each repo config should stay small.
+Put shared requirements in `standards/profiles/`.
 
 ## Factory Loop
 
@@ -63,7 +72,7 @@ Add more repos only when the loop works.
 - Create and maintain standard GitHub labels.
 - Ensure each active repo has a GitHub Project board.
 - Ensure repo issues are linked to the right project board.
-- Audit each repo against the shared project checklist.
+- Audit each repo against global defaults and its standards profile.
 - Open issues for missing standards.
 - Run scheduled agent goals.
 - Open small PRs for safe improvements.

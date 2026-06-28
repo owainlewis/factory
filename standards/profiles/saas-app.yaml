@@ -1,0 +1,17 @@
+# SaaS app.
+
+extends: web-app
+
+requires:
+  product:
+    - README names the user and core workflow.
+    - onboarding or seed data path is documented.
+  operations:
+    - health check is documented.
+    - logging or observability expectation is clear.
+    - backup or data safety notes exist when user data is stored.
+  release:
+    - staging and production deploy paths are clear.
+    - rollback path is documented.
+    - database migration process is documented when applicable.
+

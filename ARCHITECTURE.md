@@ -8,7 +8,7 @@ one important repo = one control folder
 
 Each control folder contains:
 
-- `config.yaml`: what the repo is, what standards apply, and what work is allowed
+- `config.yaml`: the small repo contract
 - `goal.md`: what the repo is trying to become
 - `automations/*.md`: prompts that agents can run on a schedule
 
@@ -20,12 +20,12 @@ The config is the machine-readable contract.
 
 It answers:
 
-- where the repo lives
-- whether it is active
-- what role it plays
-- whether issues are required
-- whether a project board is required
-- whether CI is required
+- which repo this is
+- what kind of project it is
+- how important it is
+- what standard profile applies
+- what checks matter
+- how releases work
 - which automations run
 - what requires human review
 
@@ -49,8 +49,23 @@ Standards are shared across repos.
 
 The first standards are:
 
+- global defaults
 - project checklist
 - standard labels
+- project type profiles
+
+Project type profiles live in `standards/profiles/`.
+
+Examples:
+
+- `rust-cli`
+- `go-cli`
+- `python-library`
+- `clojure-library`
+- `web-app`
+- `saas-app`
+- `curated-list`
+- `content-repo`
 
 ## Loop
 
@@ -59,7 +74,7 @@ read config
 read goal
 read automation prompt
 inspect repo
-compare to standards
+compare to defaults and profile
 open issues for gaps
 open small PRs for safe fixes
 report human decisions
@@ -71,7 +86,6 @@ This keeps Code Factory simple.
 
 There is no giant workflow brain.
 
-There are only repo goals, repo configs, standards, and scheduled prompts.
+There are only repo goals, small repo configs, standards profiles, and scheduled prompts.
 
 That makes it easy to add power later without hiding the logic.
-

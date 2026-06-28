@@ -1,0 +1,16 @@
+# Go CLI or library.
+
+extends: default
+
+requires:
+  checks:
+    - "`go test ./...`"
+    - "`go vet ./...`"
+    - "`gofmt` is clean."
+  docs:
+    - README has install or run command.
+    - README has a minimal example.
+  release:
+    - Release process is documented.
+    - Homebrew tap or install path is documented when applicable.
+    - GitHub release notes exist when versions are shipped.

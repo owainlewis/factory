@@ -1,43 +1,27 @@
-repo:
-  owner: owainlewis
-  name: cortex
-  url: https://github.com/owainlewis/cortex
-  local_path: ~/Code/github/owainlewis/cortex
-  visibility: public
+repo: owainlewis/cortex
+kind: rust-cli
+priority: medium
+goal: Build a fast, minimalist terminal code editor in Rust.
 
-factory:
-  active: true
-  priority: medium
-  role: technical-proof
-  project_board:
-    required: true
-    name: Cortex
-  issues:
-    required: true
-    sync_labels: true
-    require_project_link: true
-  ci:
-    required: true
-  standards_profile: product-experiment
+standards:
+  profile: rust-cli
 
-goal:
-  file: goal.md
+checks:
+  test: cargo test
+  lint: cargo clippy
+  format: cargo fmt --check
+
+release:
+  type: github
+  package: none
 
 automations:
-  - id: weekly-editor-quality-audit
-    file: automations/weekly-editor-quality-audit.md
-    schedule: weekly
-    runner: codex
-    mode: audit-and-safe-pr
+  - weekly-editor-quality-audit
 
-safety:
-  max_open_prs: 2
-  allow_direct_push: false
-  allow_auto_merge: false
-  human_review_required:
-    - editor_behavior_changes
-    - keybinding_changes
-    - release_changes
-    - public_claims
-    - deleting_features
+human_review:
+  - behavior_changes
+  - keybindings
+  - releases
+  - public_claims
+  - deleting_features
 

@@ -1,0 +1,17 @@
+# Web app.
+
+extends: default
+
+requires:
+  checks:
+    - test command is documented.
+    - build command is documented.
+    - lint command is documented when applicable.
+  docs:
+    - README has local setup.
+    - README has environment variable notes.
+    - "`.env.example` exists when env vars are required."
+  release:
+    - deploy target is documented.
+    - deploy command or CI deploy path is documented.
+    - rollback notes exist when the app is business critical.

@@ -1,45 +1,28 @@
 # Copy this file to repos/<repo-name>/config.yaml.
 
-repo:
-  owner: owainlewis
-  name: example
-  url: https://github.com/owainlewis/example
-  local_path: ~/Code/github/owainlewis/example
-  visibility: public
+repo: owainlewis/example
+kind: rust-cli
+priority: medium
+goal: State the repo goal in one plain sentence.
 
-factory:
-  active: true
-  priority: medium
-  role: product-experiment
-  project_board:
-    required: true
-    name: example
-  issues:
-    required: true
-    sync_labels: true
-    require_project_link: true
-  ci:
-    required: true
-  standards_profile: default
+standards:
+  profile: rust-cli
 
-goal:
-  file: goal.md
+checks:
+  test: cargo test
+  lint: cargo clippy
+  format: cargo fmt --check
+
+release:
+  type: github
+  package: none
 
 automations:
-  - id: daily-audit
-    file: automations/daily-audit.md
-    schedule: daily
-    # Allowed runner values today: codex, claude_code, manual.
-    runner: codex
-    mode: audit
+  - daily-audit
 
-safety:
-  max_open_prs: 2
-  allow_direct_push: false
-  allow_auto_merge: false
-  human_review_required:
-    - releases
-    - public_claims
-    - product_strategy
-    - deleting_features
-    - license_changes
+human_review:
+  - releases
+  - public_claims
+  - product_strategy
+  - deleting_features
+  - license_changes

@@ -4,6 +4,9 @@ This is the standard for every active repo in Code Factory.
 
 Use it to create issues and measure repo health.
 
+Project type details live in `standards/profiles/`.
+Use this checklist as the shared baseline.
+
 ## Identity
 
 - README exists.
@@ -59,3 +62,10 @@ Use it to create issues and measure repo health.
 - Automation is scoped to safe work.
 - Human review boundaries are explicit.
 
+## Release Pipeline
+
+- Release type is explicit.
+- Package registry is explicit when applicable.
+- Versioning rule is clear when the repo ships versions.
+- Release notes exist when the repo ships versions.
+- Publishing is automated or documented.
