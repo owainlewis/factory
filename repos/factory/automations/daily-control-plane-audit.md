@@ -19,9 +19,10 @@ Keep Code Factory internally consistent and simple.
 3. Check every active repo has at least one automation prompt.
 4. Check every automation ID maps to `automations/<id>.md`.
 5. Check every standards profile named in config exists.
-6. Check shared labels parse.
-7. Check README matches the current architecture.
-8. Open issues for missing pieces.
+6. Check every rule named in a standards profile exists.
+7. Check shared labels parse.
+8. Check README matches the current architecture.
+9. Open issues for missing pieces.
 
 ## Allowed Fixes
 

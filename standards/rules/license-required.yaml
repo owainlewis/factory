@@ -1,0 +1,16 @@
+id: license-required
+name: License required
+severity: warning
+applies_to:
+  active: true
+check:
+  source: repo
+  file: LICENSE
+  condition: exists
+fix:
+  mode: issue
+  safe_auto_fix: false
+  guidance: Open an issue unless the license is explicitly defined in repo config or existing docs.
+human_review:
+  - license_changes
+

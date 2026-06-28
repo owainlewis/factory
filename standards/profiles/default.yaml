@@ -1,5 +1,15 @@
 # Baseline for any active repo.
 
+rules:
+  - repo-description-required
+  - readme-required
+  - license-required
+  - agents-required
+  - issues-enabled
+  - project-board-required
+  - ci-required
+  - test-command-documented
+
 requires:
   identity:
     - README explains purpose, audience, status, and run or use path.
@@ -21,4 +31,3 @@ requires:
   maintenance:
     - Known limitations are documented.
     - Next useful work is tracked as issues.
-

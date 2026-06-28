@@ -1,0 +1,16 @@
+id: issues-enabled
+name: GitHub Issues enabled
+severity: error
+applies_to:
+  active: true
+check:
+  source: github
+  field: repository.hasIssuesEnabled
+  condition: true
+fix:
+  mode: issue
+  safe_auto_fix: false
+  guidance: Enable issues for active repos unless the repo is intentionally read-only.
+human_review:
+  - repo_settings
+

@@ -24,6 +24,9 @@ standards/
     go-cli.yaml
     web-app.yaml
     saas-app.yaml
+  rules/
+    repo-description-required.yaml
+    readme-required.yaml
 
 repos/
   <repo-name>/
@@ -73,6 +76,7 @@ Add more repos only when the loop works.
 - Ensure each active repo has a GitHub Project board.
 - Ensure repo issues are linked to the right project board.
 - Audit each repo against global defaults and its standards profile.
+- Evaluate rules and report violations.
 - Open issues for missing standards.
 - Run scheduled agent goals.
 - Open small PRs for safe improvements.

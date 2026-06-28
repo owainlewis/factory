@@ -53,8 +53,10 @@ The first standards are:
 - project checklist
 - standard labels
 - project type profiles
+- rules
 
 Project type profiles live in `standards/profiles/`.
+Rules live in `standards/rules/`.
 
 Examples:
 
@@ -89,3 +91,19 @@ There is no giant workflow brain.
 There are only repo goals, small repo configs, standards profiles, and scheduled prompts.
 
 That makes it easy to add power later without hiding the logic.
+
+## Rules
+
+A rule is one small check.
+
+Examples:
+
+- repo description exists
+- README exists
+- LICENSE exists
+- CI exists
+- test command is documented
+
+Profiles list rules by ID.
+
+Automation can evaluate the profile rules and create issues or PRs for violations.

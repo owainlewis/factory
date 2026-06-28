@@ -1,0 +1,16 @@
+id: readme-required
+name: README required
+severity: error
+applies_to:
+  active: true
+check:
+  source: repo
+  file: README.md
+  condition: exists
+fix:
+  mode: pull_request
+  safe_auto_fix: true
+  guidance: Add a minimal README from the repo goal and observable repo facts.
+human_review:
+  - public_claims
+
