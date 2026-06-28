@@ -1,0 +1,30 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Local run output
+runs/*
+!runs/.gitkeep
+reports/*
+!reports/.gitkeep
+
+# Language and tool caches
+node_modules/
+dist/
+build/
+target/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
