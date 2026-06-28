@@ -3,26 +3,21 @@
 .env.*
 !.env.example
 
-# Local run output
-runs/*
-!runs/.gitkeep
-reports/*
-!reports/.gitkeep
+runs/
+reports/
 
-# Language and tool caches
 node_modules/
+target/
 dist/
 build/
-target/
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
 .venv/
 venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
-# Editor files
 .idea/
 .vscode/
 *.swp

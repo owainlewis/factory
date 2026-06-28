@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repo coordinates automated work across Owain's GitHub repos.
+This repo defines how Code Factory operates.
 
 Be concise and clear.
 Use simple words.
@@ -8,58 +8,53 @@ Do not use em dashes.
 
 ## Purpose
 
-Code Factory exists to make important repos healthier every day.
+Code Factory manages standards, goals, and recurring agent work for important GitHub repos.
 
-It should find real problems, create useful issues, open small PRs, improve docs, strengthen tests, and keep repo state aligned with reality.
+Each active repo lives under `repos/<repo-name>/`.
 
-It is not a dumping ground for vague plans.
+## Rules
 
-## Hard Rules
+- Do not add a repo unless it has a clear goal.
+- Do not create broad policy documents when a repo config will do.
+- Do not make noisy PRs.
+- Do not push directly to another repo's default branch.
+- Do not auto-merge important changes.
+- Do not invent claims, metrics, roadmap promises, or product details.
+- Do not edit secrets, generated files, vendored files, dependency folders, or environment files.
+- Keep every automation prompt specific enough that a fresh agent can run it.
 
-- Never push directly to another repo's `main` or `master` branch.
-- Never auto-merge a PR unless a repo policy explicitly allows it.
-- Never invent product details, metrics, URLs, roadmap promises, or results.
-- Never rewrite a repo just to make activity.
-- Never create more than one concern per PR.
-- Never edit secrets, credentials, private keys, environment files, generated files, vendored code, or dependency directories.
-- Never browse archives or git history unless the current task requires it.
-- Prefer issues and reports when the correct fix is unclear.
-- Prefer small PRs when the fix is clear and low risk.
+## Required Repo Files
 
-## Operating Principle
+Every active repo folder must have:
 
-Improve quality through a calm loop:
+- `config.yaml`
+- `goal.md`
+- at least one file in `automations/`
 
-```text
-observe -> diagnose -> prioritize -> change -> verify -> report
-```
+## Work Loop
 
-Doing less is better than doing noisy work.
+Before improving a repo:
 
-## Repo Work Rules
-
-Before changing any monitored repo:
-
-1. Read its README.
-2. Read its AGENTS.md if present.
-3. Read its package or project files.
-4. Check git status.
-5. Identify the repo policy in `repos.yaml`.
-6. Make one scoped change.
-7. Run the smallest meaningful verification.
-8. Report what changed and what remains.
+1. Read `standards/project-checklist.md`.
+2. Read `standards/labels.yaml`.
+3. Read the repo's `config.yaml`.
+4. Read the repo's `goal.md`.
+5. Read the relevant automation prompt.
+6. Work only inside the allowed scope.
+7. Prefer issues when the fix is unclear.
+8. Prefer small PRs when the fix is clear.
 
 ## Human Review Required
 
 Human review is required for:
 
 - releases
+- public claims
 - pricing
 - product strategy
-- public claims
 - curated resource additions
-- deleting files or removing features
+- deleting features
 - changing repo purpose
 - changing licenses
-- broad refactors
+- changing automation safety rules
 

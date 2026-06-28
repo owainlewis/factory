@@ -1,0 +1,41 @@
+repo:
+  owner: owainlewis
+  name: factory
+  url: https://github.com/owainlewis/factory
+  local_path: ~/Code/github/owainlewis/factory
+  visibility: private
+
+factory:
+  active: true
+  priority: high
+  role: control-plane
+  project_board:
+    required: true
+    name: Code Factory
+  issues:
+    required: true
+    sync_labels: true
+    require_project_link: true
+  ci:
+    required: false
+  standards_profile: factory
+
+goal:
+  file: goal.md
+
+automations:
+  - id: daily-control-plane-audit
+    file: automations/daily-control-plane-audit.md
+    schedule: daily
+    runner: codex
+    mode: audit
+
+safety:
+  max_open_prs: 1
+  allow_direct_push: false
+  allow_auto_merge: false
+  human_review_required:
+    - changing_standards
+    - changing_repo_registry
+    - changing_automation_safety
+

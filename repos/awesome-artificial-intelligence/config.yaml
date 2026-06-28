@@ -1,0 +1,43 @@
+repo:
+  owner: owainlewis
+  name: awesome-artificial-intelligence
+  url: https://github.com/owainlewis/awesome-artificial-intelligence
+  local_path: ~/Code/github/owainlewis/awesome-artificial-intelligence
+  visibility: public
+
+factory:
+  active: true
+  priority: high
+  role: audience-growth
+  project_board:
+    required: true
+    name: Awesome Artificial Intelligence
+  issues:
+    required: true
+    sync_labels: true
+    require_project_link: true
+  ci:
+    required: true
+  standards_profile: curated-list
+
+goal:
+  file: goal.md
+
+automations:
+  - id: daily-curation-audit
+    file: automations/daily-curation-audit.md
+    schedule: daily
+    runner: codex
+    mode: audit
+
+safety:
+  max_open_prs: 2
+  allow_direct_push: false
+  allow_auto_merge: false
+  human_review_required:
+    - adding_resources
+    - removing_resources
+    - changing_categories
+    - ranking_resources
+    - public_claims
+
