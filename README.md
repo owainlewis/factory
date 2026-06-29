@@ -18,6 +18,7 @@ config -> clone or fetch repo -> build prompt -> run Claude Code -> save log -> 
 It supports:
 
 - `factory repos`
+- `factory goals <repo>`
 - `factory run <repo> hello`
 - `factory runs`
 - Claude Code as the first agent adapter
@@ -56,6 +57,12 @@ Run the no-edit smoke goal:
 go run ./cmd/factory run cortex hello
 ```
 
+List goals for a repo:
+
+```sh
+go run ./cmd/factory goals cortex
+```
+
 List run records:
 
 ```sh
@@ -92,6 +99,7 @@ Factory labels are standard across repos:
 
 - [PRD](docs/prd.md)
 - [Runner spec](docs/factory-runner/spec.md)
+- [STANDARDS.md examples](docs/standards-examples.md)
 
 ## Safety Rules
 

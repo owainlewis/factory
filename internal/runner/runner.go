@@ -14,6 +14,7 @@ import (
 	"github.com/owainlewis/factory/internal/agent"
 	"github.com/owainlewis/factory/internal/config"
 	"github.com/owainlewis/factory/internal/gitrepo"
+	"github.com/owainlewis/factory/internal/goals"
 	"github.com/owainlewis/factory/internal/prompt"
 )
 
@@ -59,6 +60,27 @@ func (a *App) ListRepos(w io.Writer) error {
 	return nil
 }
 
+func (a *App) ListGoals(ctx context.Context, w io.Writer, repoName string) error {
+	repoPath, err := a.ensureRepoPath(ctx, repoName)
+	if err != nil {
+		return err
+	}
+
+	discovered, err := goals.Discover(repoPath)
+	if err != nil {
+		return err
+	}
+
+	for _, goal := range discovered {
+		state := "missing"
+		if goal.Runnable {
+			state = "runnable"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\n", goal.Name, goal.Path, state)
+	}
+	return nil
+}
+
 func (a *App) ListRuns(w io.Writer) error {
 	dir := filepath.Join(a.cfg.Factory.DataDir, "runs")
 	entries, err := os.ReadDir(dir)
@@ -82,8 +104,8 @@ func (a *App) Run(ctx context.Context, repoName string, goal string) (RunRecord,
 	if !ok {
 		return RunRecord{}, fmt.Errorf("unknown repo %q", repoName)
 	}
-
 	repoPath := config.RepoPath(a.cfg.Factory.DataDir, repoName, repo)
+
 	started := time.Now().UTC()
 	runID := fmt.Sprintf("%s-%s-%s", started.Format("20060102T150405Z"), repoName, goal)
 	logPath := filepath.Join(a.cfg.Factory.DataDir, "logs", runID+".log")
@@ -155,6 +177,19 @@ func (a *App) Run(ctx context.Context, repoName string, goal string) (RunRecord,
 		return record, err
 	}
 	return record, nil
+}
+
+func (a *App) ensureRepoPath(ctx context.Context, repoName string) (string, error) {
+	repo, ok := a.cfg.Repos[repoName]
+	if !ok {
+		return "", fmt.Errorf("unknown repo %q", repoName)
+	}
+
+	repoPath := config.RepoPath(a.cfg.Factory.DataDir, repoName, repo)
+	if err := gitrepo.Ensure(ctx, repoPath, repo.URL, repo.Branch); err != nil {
+		return "", err
+	}
+	return repoPath, nil
 }
 
 func adapterFor(name string) (agent.Adapter, error) {
