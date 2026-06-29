@@ -1,41 +1,22 @@
 # Factory
 
-Factory is a local runtime for autonomous software engineering.
+Factory is a local CLI for running coding agents against repo-owned engineering process.
 
-Factory exists to raise the quality bar of every software project.
-It helps produce code, docs, tests, CI, releases, and maintenance work at a level that was not practical when humans had to remember and execute every step by hand.
+It keeps the runner outside the target repo, but lets each target repo define its own standards, workflows, objectives, and journal under `.factory/`.
 
-Every serious repo needs the same basic engineering memory:
-what good looks like, how work should run, what needs doing now, what happened last time, and what a human must review.
+Factory is not a hosted service.
+Factory is not a task tracker.
+Factory is not the engineer.
+It prepares context, runs an agent, and records what happened.
 
-Factory puts that memory in the repo under `.factory/`, then runs coding agents against it.
+## Current Status
 
-The goal is not to automate typing code.
-The goal is to keep projects moving:
-docs stay true, CI keeps working, releases become repeatable, issues get triaged, standards are enforced, and humans stay in control.
+Factory is an early local runner.
 
-Factory is not a task dump.
-Factory is not a policy wiki.
-Factory is not a hosted service yet.
-Factory does not merge PRs.
-
-## Factory Standard
-
-Factory gives every repo a senior engineer memory.
-
-The project defines a default standard for professional software projects:
-identity, usability, build, testing, CI, code quality, docs, release, security, operations, governance, and agent readiness.
-
-The buckets are generic.
-The answers are language-specific.
-The final rules live in each target repo.
-
-## Current V1
-
-The first working version proves this spine:
+The current loop is:
 
 ```text
-config -> clone or fetch repo -> build prompt -> run Claude Code -> save log -> save run record
+config -> clone or fetch repo -> build prompt -> run agent -> save log -> save run record
 ```
 
 It supports:
@@ -43,19 +24,48 @@ It supports:
 - `factory audit <repo>`
 - `factory repos`
 - `factory workflows <repo>`
-- `factory run <repo> hello`
-- `factory run <repo> <workflow> --mode plan`
-- `factory run <repo> <workflow> --mode execute`
+- `factory run <repo> [workflow] [--mode plan|execute]`
 - `factory runs`
 - Claude Code as the first agent adapter
-- local repo checkouts under `.factory-state/repos`
+- Factory-owned repo checkouts under `.factory-state/repos`
+- execute-mode worktrees under `.factory-state/worktrees`
 - JSON run records under `.factory-state/runs`
 - text logs under `.factory-state/logs`
+- per-repo locks under `.factory-state/locks`
+
+`.factory-state/repos` is internal Factory state.
+Do not use those checkouts as human working copies.
+Factory may fetch, checkout, and update them while running commands.
+Execute-mode runs use per-run worktrees so agent edits do not dirty the repo cache.
+
+## Repo Contract
+
+Each target repo should own its Factory files:
+
+```text
+.factory/
+  AGENTS.md
+  STANDARDS.md
+  WORKFLOWS/
+  OBJECTIVES/
+  JOURNAL.md
+```
+
+These files have separate jobs:
+
+- `.factory/AGENTS.md` gives repo-specific agent instructions.
+- `.factory/STANDARDS.md` says what good looks like.
+- `.factory/WORKFLOWS/` contains repeatable playbooks.
+- `.factory/OBJECTIVES/` contains current desired outcomes.
+- `.factory/JOURNAL.md` records handoff notes between runs.
+
+Factory owns orchestration.
+The target repo owns intent.
 
 ## Config
 
-`config.yaml` lists repos that Factory can manage.
-It is a local runner registry, not the source of repo standards, workflows, or journals.
+`config.yaml` is a local registry of repos Factory can manage.
+It should contain only the data needed to find and run a repo.
 
 ```yaml
 factory:
@@ -78,19 +88,25 @@ Audit a repo and print a Markdown health report:
 go run ./cmd/factory audit factory
 ```
 
-List repos:
+List managed repos:
 
 ```sh
 go run ./cmd/factory repos
 ```
 
-Run the no-edit smoke workflow:
+List workflows for a repo:
+
+```sh
+go run ./cmd/factory workflows cortex
+```
+
+Run the built-in no-edit smoke workflow:
 
 ```sh
 go run ./cmd/factory run cortex hello
 ```
 
-Plan a repo-owned workflow:
+Plan a repo-owned workflow without editing files:
 
 ```sh
 go run ./cmd/factory run cortex standards-check --mode plan
@@ -102,78 +118,32 @@ Execute a repo-owned workflow:
 go run ./cmd/factory run cortex standards-check --mode execute
 ```
 
-List workflows for a repo:
-
-```sh
-go run ./cmd/factory workflows cortex
-```
-
 List run records:
 
 ```sh
 go run ./cmd/factory runs
 ```
 
-## Target Repo Model
+## Modes
 
-Each target repo should own its standards, workflows, objectives, and journal:
+`plan` mode asks the agent to inspect and report.
+It must not edit files.
 
-```text
-.factory/
-  AGENTS.md
-  STANDARDS.md
-  WORKFLOWS/
-    bug-fix.md
-    issue-triage.md
-    docs-update.md
-    dependency-update.md
-    release.md
-    review-pr.md
-  OBJECTIVES/
-    2026-06-29-release-readiness.md
-  JOURNAL.md
-```
+`execute` mode may create a branch, edit files, commit, push, and open a draft PR when the selected workflow asks for that.
+It must not merge PRs or push to a default branch.
 
-Factory owns orchestration.
-The target repo owns intent.
+## Audit
 
-`.factory/STANDARDS.md` says what good looks like.
-`.factory/WORKFLOWS/` says how repeatable work should run.
-`.factory/OBJECTIVES/` says what outcome is wanted now.
-`.factory/JOURNAL.md` says what happened before.
+`factory audit <repo>` is read-only.
+It checks common repo health signals and prints a Markdown report.
 
-Factory compiles repo-owned objectives into agent goals at runtime.
-
-Factory should not store target repo standards, objectives, journals, or runnable project workflows here.
-Those belong in each target repo.
-
-## Standard Factory Labels
-
-Factory labels are standard across repos:
-
-- `factory-ready`: an agent may work this issue now.
-- `factory-triage`: the issue needs clarification, acceptance criteria, or scope shaping.
-- `factory-needs-human`: the issue needs a human decision before implementation.
-- `factory-blocked`: the issue cannot move until a named blocker is resolved.
-
-## GitHub Standards
-
-Every managed GitHub repo should have:
-
-- a clear repository description
-- relevant repository topics
-- issues enabled
-- a GitHub Project or equivalent issue board for ongoing work
-- standard issue labels for type, status, priority, and agent readiness
-- GitHub Actions for normal build and test checks
-- optional automated code review when a trusted tool is configured
-
-Automated code review is useful, but it does not replace human review before merge.
+The audit report can suggest gaps, objectives, and workflows.
+It should help decide what to run next before any agent edits files.
 
 ## Docs
 
 - [PRD](docs/prd.md)
-- [The Factory Standard](docs/factory-standard.md)
+- [Factory Standard](docs/factory-standard.md)
 - [What makes a great software project](docs/what-makes-a-great-software-project.md)
 - [Runner spec](docs/factory-runner/spec.md)
 - [STANDARDS.md examples](docs/standards-examples.md)
