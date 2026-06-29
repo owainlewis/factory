@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-func Build(repoPath string, workflow string) (string, string, error) {
+func Build(repoPath string, workflow string, mode string) (string, string, error) {
 	if workflow == "" || workflow == "hello" {
-		return "built-in:hello", helloPrompt(), nil
+		return "built-in:hello", helloPrompt(mode), nil
 	}
 
 	workflowPath := filepath.Join(repoPath, "WORKFLOWS", workflow+".md")
@@ -23,12 +23,13 @@ func Build(repoPath string, workflow string) (string, string, error) {
 		return "", "", err
 	}
 
-	return workflowPath, wrapWorkflow(workflow, context, string(data)), nil
+	return workflowPath, wrapWorkflow(workflow, mode, context, string(data)), nil
 }
 
-func helloPrompt() string {
-	return `You are running under Factory.
+func helloPrompt(mode string) string {
+	return fmt.Sprintf(`You are running under Factory.
 
+Runtime mode: %s
 This is a no-edit smoke test.
 Read README.md if it exists.
 Print exactly three short lines:
@@ -40,17 +41,20 @@ Do not edit files.
 Do not create branches.
 Do not run tests.
 Do not open issues or pull requests.
-Do not make network calls.`
+Do not make network calls.`, mode)
 }
 
-func wrapWorkflow(name string, context string, body string) string {
+func wrapWorkflow(name string, mode string, context string, body string) string {
 	return fmt.Sprintf(`You are running under Factory.
 
 Workflow: %s
+Runtime mode: %s
 
 Factory has compiled repository context for this run.
 Do not merge pull requests.
 Do not push to the default branch.
+In plan mode, inspect the repo and report the exact next steps without editing files.
+In execute mode, make only the smallest workflow-scoped change, create a non-default branch, commit it, push it, and open a draft pull request when the workflow asks for code changes.
 
 Repository context:
 
@@ -59,7 +63,7 @@ Repository context:
 Workflow:
 
 %s
-`, name, context, body)
+`, name, mode, context, body)
 }
 
 func compileContext(repoPath string) (string, error) {

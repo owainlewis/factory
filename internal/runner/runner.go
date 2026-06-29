@@ -22,12 +22,31 @@ type App struct {
 	cfg config.Config
 }
 
+type Mode string
+
+const (
+	ModePlan    Mode = "plan"
+	ModeExecute Mode = "execute"
+)
+
+func ParseMode(value string) (Mode, error) {
+	switch value {
+	case "", string(ModePlan):
+		return ModePlan, nil
+	case string(ModeExecute):
+		return ModeExecute, nil
+	default:
+		return "", fmt.Errorf("unsupported mode %q", value)
+	}
+}
+
 type RunRecord struct {
 	ID         string    `json:"id"`
 	Repo       string    `json:"repo"`
 	RepoPath   string    `json:"repo_path"`
 	Workflow   string    `json:"workflow"`
 	Source     string    `json:"source"`
+	Mode       Mode      `json:"mode"`
 	Agent      string    `json:"agent"`
 	Status     string    `json:"status"`
 	StartedAt  time.Time `json:"started_at"`
@@ -99,11 +118,16 @@ func (a *App) ListRuns(w io.Writer) error {
 	return nil
 }
 
-func (a *App) Run(ctx context.Context, repoName string, workflow string) (RunRecord, error) {
+func (a *App) Run(ctx context.Context, repoName string, workflow string, mode Mode) (RunRecord, error) {
 	repo, ok := a.cfg.Repos[repoName]
 	if !ok {
 		return RunRecord{}, fmt.Errorf("unknown repo %q", repoName)
 	}
+	parsedMode, err := ParseMode(string(mode))
+	if err != nil {
+		return RunRecord{}, err
+	}
+	mode = parsedMode
 	repoPath := config.RepoPath(a.cfg.Factory.DataDir, repoName, repo)
 
 	started := time.Now().UTC()
@@ -116,6 +140,7 @@ func (a *App) Run(ctx context.Context, repoName string, workflow string) (RunRec
 		Repo:       repoName,
 		RepoPath:   repoPath,
 		Workflow:   workflow,
+		Mode:       mode,
 		Agent:      repo.Agent,
 		Status:     "running",
 		StartedAt:  started,
@@ -137,7 +162,7 @@ func (a *App) Run(ctx context.Context, repoName string, workflow string) (RunRec
 		return record, err
 	}
 
-	source, promptText, err := prompt.Build(repoPath, workflow)
+	source, promptText, err := prompt.Build(repoPath, workflow, string(mode))
 	if err != nil {
 		record.Status = "blocked"
 		record.Error = err.Error()
@@ -160,6 +185,7 @@ func (a *App) Run(ctx context.Context, repoName string, workflow string) (RunRec
 		RepoPath: repoPath,
 		Prompt:   promptText,
 		LogPath:  logPath,
+		Mode:     string(mode),
 	})
 	record.Status = result.Status
 	record.Blocker = result.Blocker

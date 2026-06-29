@@ -55,6 +55,45 @@ Factory is not the engineer.
 
 Factory runs engineers.
 
+## Factory Standard
+
+Factory includes a default standard for professional software projects.
+
+The standard captures the questions a senior engineer asks of any repo:
+
+- what is this project
+- can a new person use it
+- can it build
+- can it test
+- does CI run
+- is the code reviewable
+- are docs accurate
+- can it release
+- is it secure enough for its purpose
+- is ownership clear
+- can agents work safely
+
+These buckets are generic.
+The answers are language-specific.
+
+Example:
+
+```text
+Testing bucket
+
+Go:
+go test ./...
+
+OCaml:
+dune runtest
+
+Node:
+npm test
+```
+
+Factory should use this standard to bootstrap repo-owned `STANDARDS.md` and `WORKFLOWS/` files.
+After bootstrap, the target repo owns the final standard.
+
 ## Philosophy
 
 Factory separates deterministic work from reasoning.

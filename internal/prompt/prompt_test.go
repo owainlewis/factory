@@ -8,7 +8,7 @@ import (
 )
 
 func TestBuildHelloPrompt(t *testing.T) {
-	source, body, err := Build(t.TempDir(), "hello")
+	source, body, err := Build(t.TempDir(), "hello", "plan")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,6 +17,9 @@ func TestBuildHelloPrompt(t *testing.T) {
 	}
 	if !strings.Contains(body, "no-edit smoke test") {
 		t.Fatal("hello prompt missing smoke test text")
+	}
+	if !strings.Contains(body, "Runtime mode: plan") {
+		t.Fatal("hello prompt missing runtime mode")
 	}
 }
 
@@ -33,7 +36,7 @@ func TestBuildRepoWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	source, body, err := Build(dir, "triage")
+	source, body, err := Build(dir, "triage", "execute")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,5 +48,11 @@ func TestBuildRepoWorkflow(t *testing.T) {
 	}
 	if !strings.Contains(body, "Tests must pass.") {
 		t.Fatal("compiled standards missing")
+	}
+	if !strings.Contains(body, "Runtime mode: execute") {
+		t.Fatal("workflow prompt missing runtime mode")
+	}
+	if !strings.Contains(body, "open a draft pull request") {
+		t.Fatal("execute instructions missing")
 	}
 }

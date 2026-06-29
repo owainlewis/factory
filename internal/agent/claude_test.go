@@ -13,3 +13,15 @@ func TestClaudeBlockedIgnoresNormalOutput(t *testing.T) {
 		t.Fatal("did not expect blocked status")
 	}
 }
+
+func TestClaudePermissionMode(t *testing.T) {
+	if got := claudePermissionMode("plan"); got != "plan" {
+		t.Fatalf("plan permission = %q", got)
+	}
+	if got := claudePermissionMode(""); got != "plan" {
+		t.Fatalf("default permission = %q", got)
+	}
+	if got := claudePermissionMode("execute"); got != "auto" {
+		t.Fatalf("execute permission = %q", got)
+	}
+}

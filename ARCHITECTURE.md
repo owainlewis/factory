@@ -87,10 +87,16 @@ JOURNAL.md
 ## Agent Adapter
 
 The first adapter is Claude Code.
-It runs:
+In plan mode, it runs:
 
 ```text
 claude -p --permission-mode plan <prompt>
+```
+
+In execute mode, it runs:
+
+```text
+claude -p --permission-mode auto <prompt>
 ```
 
 The adapter captures stdout and stderr into the run log.
@@ -100,7 +106,7 @@ Later adapters can support Codex, Aider, or other local coding agents.
 
 - Add repo locks.
 - Add worktrees per write run.
-- Add planning, execution, and verification modes.
+- Add verification mode.
 - Add journal appends.
 - Add label sync.
 - Add daemon schedules.

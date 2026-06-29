@@ -69,7 +69,7 @@ Current commands:
 ```sh
 factory repos
 factory workflows <repo>
-factory run <repo> [workflow]
+factory run <repo> [workflow] [--mode plan|execute]
 factory runs
 ```
 
@@ -81,6 +81,12 @@ factory execute <repo>
 factory triage <repo>
 factory daemon
 ```
+
+`plan` is the default mode.
+It asks the agent to inspect and report without editing files.
+
+`execute` is write-capable.
+It allows the agent to make a workflow-scoped change, create a non-default branch, commit it, push it, and open a draft pull request when the workflow asks for code changes.
 
 ## Prompt Compilation
 
@@ -120,6 +126,7 @@ Run record fields:
 - repo path
 - workflow name
 - workflow source
+- runtime mode
 - agent
 - status
 - started at
@@ -149,7 +156,7 @@ Statuses:
 
 - Add repo locks.
 - Add worktrees per write run.
-- Add planning, execution, and verification modes.
+- Add verification mode.
 - Add journal appends.
 - Add GitHub issue and PR context loading.
 - Add daemon schedules.

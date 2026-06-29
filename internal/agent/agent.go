@@ -6,6 +6,7 @@ type RunSpec struct {
 	RepoPath string
 	Prompt   string
 	LogPath  string
+	Mode     string
 }
 
 type RunResult struct {
