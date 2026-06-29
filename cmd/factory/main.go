@@ -32,6 +32,13 @@ func run(args []string) error {
 	}
 
 	switch rest[0] {
+	case "audit":
+		if len(rest) != 2 {
+			return fmt.Errorf("usage: factory audit <repo>")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		return app.Audit(ctx, os.Stdout, rest[1])
 	case "repos":
 		return app.ListRepos(os.Stdout)
 	case "workflows":
@@ -102,5 +109,5 @@ func parseArgs(args []string) (options, []string, error) {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: factory [--config config.yaml] <repos|run|runs|workflows>")
+	return fmt.Errorf("usage: factory [--config config.yaml] <audit|repos|run|runs|workflows>")
 }

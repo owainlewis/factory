@@ -54,21 +54,44 @@ Agents must use this file when reviewing the repo, opening issues, or preparing 
 - Dependencies with known high or critical vulnerabilities must be fixed or tracked.
 - Auth, permissions, crypto, payments, and data deletion changes require human review.
 
-### GitHub Issues
+### GitHub
 
-Every open issue must have one type label:
+- GitHub repository description must be set.
+- GitHub repository topics must be set.
+- Issues must be enabled.
+- A GitHub Project or equivalent issue board should track ongoing work.
+- GitHub Actions must run normal build and test checks on pull requests.
+- Automated code review is optional unless a trusted review tool is configured.
+- Automated code review must not replace human review.
 
-- `bug`
-- `documentation`
-- `enhancement`
-- `quality`
+Every open issue should have one type label:
+
+- `type:bug`
+- `type:docs`
+- `type:feature`
+- `type:maintenance`
+- `type:release`
+- `type:security`
+
+Every open issue should have one status label:
+
+- `status:triage`
+- `status:ready`
+- `status:blocked`
+- `status:in-progress`
+
+Important issues should have one priority label:
+
+- `priority:low`
+- `priority:medium`
+- `priority:high`
 
 Factory labels are standard:
 
 - `factory-ready`: an agent may work this issue now.
-- `factory-triage`: the issue needs clarification.
-- `factory-needs-human`: the issue needs a human decision.
-- `factory-blocked`: the issue has a named blocker.
+- `factory-triage`: the issue needs clarification, acceptance criteria, or scope shaping.
+- `factory-needs-human`: the issue needs a human decision before implementation.
+- `factory-blocked`: the issue cannot move until a named blocker is resolved.
 
 An issue may use `factory-ready` only when:
 

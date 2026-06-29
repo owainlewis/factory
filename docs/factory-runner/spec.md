@@ -70,6 +70,7 @@ The registry is operator state, not project intent.
 Current commands:
 
 ```sh
+factory audit <repo>
 factory repos
 factory workflows <repo>
 factory run <repo> [workflow] [--mode plan|execute]
@@ -91,6 +92,35 @@ It asks the agent to inspect and report without editing files.
 
 `execute` is write-capable.
 It allows the agent to make a workflow-scoped change, create a non-default branch, commit it, push it, and open a draft pull request when the workflow asks for code changes.
+
+## Audit
+
+`factory audit <repo>` is read-only.
+It inspects a repo and prints a Markdown health report.
+
+The first audit version is deterministic.
+It checks repo shape and common project signals:
+
+- README
+- license
+- build metadata
+- test signal
+- GitHub Actions workflows
+- changelog
+- release docs
+- `.factory/` contract files
+
+The audit output includes:
+
+- summary counts
+- findings grouped by bucket
+- evidence for each finding
+- suggested objective
+- suggested workflow
+- candidate objectives ranked by priority
+
+Audit is the planning eval surface.
+It lets Factory test whether planning chooses the right next objective before any agent edits files.
 
 ## Prompt Compilation
 

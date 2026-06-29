@@ -1,9 +1,13 @@
 factory:
-  name: Code Factory
+  name: Factory
   purpose: Run disciplined agent loops across important GitHub repos.
   data_dir: .factory-state
 
 repos:
+  factory:
+    url: git@github.com:owainlewis/factory.git
+    branch: main
+    agent: claude
   cortex:
     url: git@github.com:owainlewis/cortex.git
     branch: main

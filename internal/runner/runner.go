@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/factory/internal/agent"
+	"github.com/owainlewis/factory/internal/audit"
 	"github.com/owainlewis/factory/internal/config"
 	"github.com/owainlewis/factory/internal/gitrepo"
 	"github.com/owainlewis/factory/internal/prompt"
@@ -98,6 +99,18 @@ func (a *App) ListWorkflows(ctx context.Context, w io.Writer, repoName string) e
 		fmt.Fprintf(w, "%s\t%s\t%s\n", workflow.Name, workflow.Path, state)
 	}
 	return nil
+}
+
+func (a *App) Audit(ctx context.Context, w io.Writer, repoName string) error {
+	repoPath, err := a.ensureRepoPath(ctx, repoName)
+	if err != nil {
+		return err
+	}
+	report, err := audit.Run(repoPath)
+	if err != nil {
+		return err
+	}
+	return audit.WriteMarkdown(w, repoName, report)
 }
 
 func (a *App) ListRuns(w io.Writer) error {
