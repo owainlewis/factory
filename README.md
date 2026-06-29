@@ -100,27 +100,28 @@ go run ./cmd/factory runs
 Each target repo should own its standards, workflows, objectives, and journal:
 
 ```text
-AGENTS.md
-STANDARDS.md
-WORKFLOWS/
-  bug-fix.md
-  issue-triage.md
-  docs-update.md
-  dependency-update.md
-  release.md
-  review-pr.md
-OBJECTIVES/
-  2026-06-29-release-readiness.md
-JOURNAL.md
+.factory/
+  AGENTS.md
+  STANDARDS.md
+  WORKFLOWS/
+    bug-fix.md
+    issue-triage.md
+    docs-update.md
+    dependency-update.md
+    release.md
+    review-pr.md
+  OBJECTIVES/
+    2026-06-29-release-readiness.md
+  JOURNAL.md
 ```
 
 Factory owns orchestration.
 The target repo owns intent.
 
-`STANDARDS.md` says what good looks like.
-`WORKFLOWS/` says how repeatable work should run.
-`OBJECTIVES/` says what outcome is wanted now.
-`JOURNAL.md` says what happened before.
+`.factory/STANDARDS.md` says what good looks like.
+`.factory/WORKFLOWS/` says how repeatable work should run.
+`.factory/OBJECTIVES/` says what outcome is wanted now.
+`.factory/JOURNAL.md` says what happened before.
 
 Factory compiles repo-owned objectives into agent goals at runtime.
 

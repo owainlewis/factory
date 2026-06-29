@@ -13,18 +13,19 @@ Factory runs engineers.
 Every managed repository owns its engineering process:
 
 ```text
-AGENTS.md
-STANDARDS.md
-WORKFLOWS/
-OBJECTIVES/
-JOURNAL.md
+.factory/
+  AGENTS.md
+  STANDARDS.md
+  WORKFLOWS/
+  OBJECTIVES/
+  JOURNAL.md
 ```
 
-`AGENTS.md` describes coding-agent instructions.
-`STANDARDS.md` defines what good looks like.
-`WORKFLOWS/*.md` defines engineering playbooks such as bug fixes, triage, docs updates, dependency updates, releases, and PR review.
-`OBJECTIVES/*.md` defines current desired outcomes for one run or a short sequence of runs.
-`JOURNAL.md` is append-only handover between runs.
+`.factory/AGENTS.md` describes coding-agent instructions.
+`.factory/STANDARDS.md` defines what good looks like.
+`.factory/WORKFLOWS/*.md` defines engineering playbooks such as bug fixes, triage, docs updates, dependency updates, releases, and PR review.
+`.factory/OBJECTIVES/*.md` defines current desired outcomes for one run or a short sequence of runs.
+`.factory/JOURNAL.md` is append-only handover between runs.
 
 Factory must not duplicate target repo standards, workflows, objectives, journals, checks, issue labels, or product purpose in this repo.
 
@@ -96,11 +97,11 @@ It allows the agent to make a workflow-scoped change, create a non-default branc
 For a non-built-in workflow, Factory builds a prompt from:
 
 - repository checkout
-- `AGENTS.md`, when present
-- `STANDARDS.md`, when present
-- `JOURNAL.md`, when present
-- selected `OBJECTIVES/<objective>.md`, when an objective is provided
-- selected `WORKFLOWS/<workflow>.md`
+- `.factory/AGENTS.md`, when present
+- `.factory/STANDARDS.md`, when present
+- `.factory/JOURNAL.md`, when present
+- selected `.factory/OBJECTIVES/<objective>.md`, when an objective is provided
+- selected `.factory/WORKFLOWS/<workflow>.md`
 - runtime mode
 
 The agent receives complete engineering context and should not need to guess the process.
@@ -137,7 +138,7 @@ Make pull requests run build and tests in CI.
 
 ## Workflow
 
-Use `WORKFLOWS/ci-readiness.md`.
+Use `.factory/WORKFLOWS/ci-readiness.md`.
 
 ## Done
 

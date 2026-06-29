@@ -189,15 +189,16 @@ So the repo should not only have code.
 It should have files like:
 
 ```text
-AGENTS.md
-STANDARDS.md
-WORKFLOWS/
-  standards-check.md
-  ci-readiness.md
-  release-readiness.md
-OBJECTIVES/
-  2026-06-29-release-readiness.md
-JOURNAL.md
+.factory/
+  AGENTS.md
+  STANDARDS.md
+  WORKFLOWS/
+    standards-check.md
+    ci-readiness.md
+    release-readiness.md
+  OBJECTIVES/
+    2026-06-29-release-readiness.md
+  JOURNAL.md
 ```
 
 The standards say what good looks like.
@@ -345,18 +346,18 @@ Can this repo be understood, changed, verified, and shipped at the level it clai
 
 Start with one repo.
 
-Create a `STANDARDS.md` file with the common buckets.
+Create a `.factory/STANDARDS.md` file with the common buckets.
 Fill in the language-specific commands.
 Then add one workflow:
 
 ```text
-WORKFLOWS/standards-check.md
+.factory/WORKFLOWS/standards-check.md
 ```
 
 The workflow should do one thing:
 
 ```text
-Compare the repo against STANDARDS.md.
+Compare the repo against `.factory/STANDARDS.md`.
 In plan mode, report gaps.
 In execute mode, fix one small gap and open a draft pull request.
 ```
@@ -364,7 +365,7 @@ In execute mode, fix one small gap and open a draft pull request.
 When you want a directed piece of work, add one objective:
 
 ```text
-OBJECTIVES/2026-06-29-release-readiness.md
+.factory/OBJECTIVES/2026-06-29-release-readiness.md
 ```
 
 That objective should say the goal, scope, done conditions, workflow, and stop rules.

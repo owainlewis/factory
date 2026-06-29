@@ -1,12 +1,12 @@
-# STANDARDS.md Examples
+# .factory/STANDARDS.md Examples
 
 Use these examples as starting points for target repos.
-Each target repo should own and edit its own `STANDARDS.md`.
+Each target repo should own and edit its own `.factory/STANDARDS.md`.
 
 ## General Repo
 
 ```md
-# STANDARDS.md
+# .factory/STANDARDS.md
 
 These standards define what healthy means for this repo.
 Agents must use this file when reviewing the repo, opening issues, or preparing PRs.
@@ -117,7 +117,7 @@ Agents must not push to the default branch.
 ## Go CLI
 
 ```md
-# STANDARDS.md
+# .factory/STANDARDS.md
 
 These standards define repo health for this Go CLI.
 
@@ -155,7 +155,7 @@ These standards define repo health for this Go CLI.
 ## Rust CLI
 
 ```md
-# STANDARDS.md
+# .factory/STANDARDS.md
 
 These standards define repo health for this Rust CLI.
 
@@ -192,7 +192,7 @@ These standards define repo health for this Rust CLI.
 ## Documentation Repo
 
 ```md
-# STANDARDS.md
+# .factory/STANDARDS.md
 
 These standards define repo health for this documentation repo.
 

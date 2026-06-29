@@ -70,22 +70,23 @@ This directory is ignored by git.
 Recommended target repo files:
 
 ```text
-AGENTS.md
-STANDARDS.md
-WORKFLOWS/
-  bug-fix.md
-  issue-triage.md
-  docs-update.md
-OBJECTIVES/
-  2026-06-29-release-readiness.md
-JOURNAL.md
+.factory/
+  AGENTS.md
+  STANDARDS.md
+  WORKFLOWS/
+    bug-fix.md
+    issue-triage.md
+    docs-update.md
+  OBJECTIVES/
+    2026-06-29-release-readiness.md
+  JOURNAL.md
 ```
 
-`AGENTS.md` says how agents should behave.
-`STANDARDS.md` says what healthy means.
-`WORKFLOWS/*.md` says how a class of engineering work should run.
-`OBJECTIVES/*.md` says what outcome is wanted now.
-`JOURNAL.md` carries append-only handover notes between runs.
+`.factory/AGENTS.md` says how agents should behave.
+`.factory/STANDARDS.md` says what healthy means.
+`.factory/WORKFLOWS/*.md` says how a class of engineering work should run.
+`.factory/OBJECTIVES/*.md` says what outcome is wanted now.
+`.factory/JOURNAL.md` carries append-only handover notes between runs.
 
 Factory compiles objectives into agent goals.
 

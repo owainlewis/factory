@@ -19,7 +19,7 @@ It is not a big rules engine.
 ## Rules
 
 - Keep config small.
-- Put repo work instructions in the target repo under `WORKFLOWS/`.
+- Put repo work instructions in the target repo under `.factory/WORKFLOWS/`.
 - Work on one repo at a time.
 - Work through one workflow per task run.
 - Do not merge PRs.

@@ -2,7 +2,7 @@
 
 Objectives are repo-owned work orders.
 
-They live in the target repo under `OBJECTIVES/`.
+They live in the target repo under `.factory/OBJECTIVES/`.
 Factory compiles them into agent goals at runtime.
 
 ```text
@@ -11,7 +11,7 @@ objective = current desired outcome
 goal = runtime prompt sent to the coding agent
 ```
 
-## `OBJECTIVES/2026-06-29-release-readiness.md`
+## `.factory/OBJECTIVES/2026-06-29-release-readiness.md`
 
 ```md
 # Objective: Release readiness
@@ -41,7 +41,7 @@ A user should be able to install it, build it, test it, run it, and understand r
 
 ## Workflow
 
-Use `WORKFLOWS/release-readiness.md`.
+Use `.factory/WORKFLOWS/release-readiness.md`.
 
 ## Mode
 
@@ -56,7 +56,7 @@ Execute one small safe change after planning.
 - Stop for human review on versioning decisions.
 ```
 
-## `OBJECTIVES/2026-06-29-docs-audit.md`
+## `.factory/OBJECTIVES/2026-06-29-docs-audit.md`
 
 ```md
 # Objective: Documentation audit
@@ -80,7 +80,7 @@ Find and fix one documentation gap that blocks a new contributor.
 
 ## Workflow
 
-Use `WORKFLOWS/docs-readiness.md`.
+Use `.factory/WORKFLOWS/docs-readiness.md`.
 
 ## Stop Rules
 
@@ -89,7 +89,7 @@ Use `WORKFLOWS/docs-readiness.md`.
 - Stop if code behavior is unclear.
 ```
 
-## `OBJECTIVES/2026-06-29-ci-readiness.md`
+## `.factory/OBJECTIVES/2026-06-29-ci-readiness.md`
 
 ```md
 # Objective: CI readiness
@@ -112,7 +112,7 @@ Make pull requests run the project build and tests.
 
 ## Workflow
 
-Use `WORKFLOWS/ci-readiness.md`.
+Use `.factory/WORKFLOWS/ci-readiness.md`.
 
 ## Stop Rules
 
