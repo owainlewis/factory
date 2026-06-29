@@ -1,7 +1,9 @@
 # Workflow Examples
 
-These examples belong in target repositories, not in Factory.
-Copy one into a managed repo under `.factory/WORKFLOWS/`.
+This example belongs in target repositories, not in Factory.
+Copy it into a managed repo under `.factory/WORKFLOWS/`.
+Prefer one workflow and many objectives.
+Add another workflow only when the process is truly different.
 
 ## `.factory/WORKFLOWS/standards.md`
 

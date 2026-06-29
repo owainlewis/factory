@@ -17,15 +17,19 @@ Every managed repository owns its engineering process:
   AGENTS.md
   STANDARDS.md
   WORKFLOWS/
+    standards-check.md
   OBJECTIVES/
   JOURNAL.md
 ```
 
 `.factory/AGENTS.md` describes coding-agent instructions.
 `.factory/STANDARDS.md` defines what good looks like.
-`.factory/WORKFLOWS/*.md` defines engineering playbooks such as bug fixes, triage, docs updates, dependency updates, releases, and PR review.
+`.factory/WORKFLOWS/standards-check.md` defines the default engineering playbook.
 `.factory/OBJECTIVES/*.md` defines current desired outcomes for one run or a short sequence of runs.
 `.factory/JOURNAL.md` is append-only handover between runs.
+
+Prefer one workflow and many objectives.
+Add another workflow only when the process is truly different.
 
 Factory must not duplicate target repo standards, workflows, objectives, journals, checks, issue labels, or product purpose in this repo.
 
@@ -160,7 +164,7 @@ goal = runtime prompt sent to the coding agent
 Objective example:
 
 ```md
-# Objective: CI
+# Objective: CI readiness
 
 ## Goal
 
@@ -168,7 +172,7 @@ Make pull requests run build and tests in CI.
 
 ## Workflow
 
-Use `.factory/WORKFLOWS/ci.md`.
+Use `.factory/WORKFLOWS/standards-check.md`.
 
 ## Done
 

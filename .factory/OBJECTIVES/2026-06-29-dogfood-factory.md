@@ -13,7 +13,7 @@ This gives the project a real standards file, real workflows, and a current obje
 
 - `.factory/AGENTS.md`
 - `.factory/STANDARDS.md`
-- `.factory/WORKFLOWS/`
+- `.factory/WORKFLOWS/standards-check.md`
 - `.factory/OBJECTIVES/`
 - `.factory/JOURNAL.md`
 - README and docs alignment

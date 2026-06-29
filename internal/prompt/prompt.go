@@ -68,21 +68,51 @@ Workflow:
 
 func compileContext(repoPath string) (string, error) {
 	sections := []string{}
-	for _, file := range []string{"AGENTS.md", "STANDARDS.md", "JOURNAL.md"} {
-		path := preferredRepoFile(repoPath, filepath.Join(".factory", file), file)
+	for _, file := range []struct {
+		title     string
+		preferred string
+		fallback  string
+	}{
+		{title: "AGENTS.md", preferred: filepath.Join(".factory", "AGENTS.md"), fallback: "AGENTS.md"},
+		{title: "STANDARDS.md", preferred: filepath.Join(".factory", "STANDARDS.md"), fallback: "STANDARDS.md"},
+		{title: "JOURNAL.md", preferred: filepath.Join(".factory", "JOURNAL.md"), fallback: "JOURNAL.md"},
+	} {
+		path := preferredRepoFile(repoPath, file.preferred, file.fallback)
 		data, err := os.ReadFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return "", fmt.Errorf("read %s: %w", file, err)
+			return "", fmt.Errorf("read %s: %w", file.title, err)
 		}
-		sections = append(sections, fmt.Sprintf("## %s\n\n%s", file, strings.TrimSpace(string(data))))
+		sections = append(sections, fmt.Sprintf("## %s\n\n%s", file.title, strings.TrimSpace(string(data))))
+	}
+	if path, ok := currentObjectivePath(repoPath); ok {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read current objective: %w", err)
+		}
+		sections = append(sections, fmt.Sprintf("## Current Objective\n\n%s", strings.TrimSpace(string(data))))
 	}
 	if len(sections) == 0 {
-		return "No AGENTS.md, STANDARDS.md, or JOURNAL.md found.", nil
+		return "No AGENTS.md, STANDARDS.md, JOURNAL.md, or current objective found.", nil
 	}
 	return strings.Join(sections, "\n\n"), nil
+}
+
+func currentObjectivePath(repoPath string) (string, bool) {
+	for _, path := range []string{
+		filepath.Join(".factory", "OBJECTIVES", "current-objective.md"),
+		filepath.Join(".factory", "OBJECTIVES", "current.md"),
+		filepath.Join("OBJECTIVES", "current-objective.md"),
+		filepath.Join("OBJECTIVES", "current.md"),
+	} {
+		fullPath := filepath.Join(repoPath, path)
+		if _, err := os.Stat(fullPath); err == nil {
+			return fullPath, true
+		}
+	}
+	return "", false
 }
 
 func preferredRepoFile(repoPath string, preferred string, fallback string) string {
