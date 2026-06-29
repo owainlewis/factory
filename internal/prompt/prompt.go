@@ -12,7 +12,7 @@ func Build(repoPath string, workflow string, mode string) (string, string, error
 		return "built-in:hello", helloPrompt(mode), nil
 	}
 
-	workflowPath := filepath.Join(repoPath, "WORKFLOWS", workflow+".md")
+	workflowPath := preferredRepoFile(repoPath, filepath.Join(".factory", "WORKFLOWS", workflow+".md"), filepath.Join("WORKFLOWS", workflow+".md"))
 	data, err := os.ReadFile(workflowPath)
 	if err != nil {
 		return "", "", fmt.Errorf("workflow %q not found at %s", workflow, workflowPath)
@@ -69,7 +69,7 @@ Workflow:
 func compileContext(repoPath string) (string, error) {
 	sections := []string{}
 	for _, file := range []string{"AGENTS.md", "STANDARDS.md", "JOURNAL.md"} {
-		path := filepath.Join(repoPath, file)
+		path := preferredRepoFile(repoPath, filepath.Join(".factory", file), file)
 		data, err := os.ReadFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -83,4 +83,12 @@ func compileContext(repoPath string) (string, error) {
 		return "No AGENTS.md, STANDARDS.md, or JOURNAL.md found.", nil
 	}
 	return strings.Join(sections, "\n\n"), nil
+}
+
+func preferredRepoFile(repoPath string, preferred string, fallback string) string {
+	preferredPath := filepath.Join(repoPath, preferred)
+	if _, err := os.Stat(preferredPath); err == nil {
+		return preferredPath
+	}
+	return filepath.Join(repoPath, fallback)
 }

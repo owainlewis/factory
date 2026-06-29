@@ -3,7 +3,7 @@
 The Factory Standard is a checklist for professional software projects.
 
 It describes what a senior engineer would expect to find in any serious repository.
-Factory uses this standard to create repo-owned `STANDARDS.md` files and workflow files.
+Factory uses this standard to create repo-owned `.factory/STANDARDS.md` files and workflow files.
 
 The standard is generic.
 The implementation is language-specific.
@@ -292,11 +292,11 @@ The repo should be safe for coding agents to work on.
 
 Standards:
 
-- `AGENTS.md` exists or the repo documents agent instructions.
-- `STANDARDS.md` defines repo health.
-- `WORKFLOWS/` contains agent playbooks.
-- `OBJECTIVES/` contains current work orders when agents are doing directed work.
-- `JOURNAL.md` records handover notes when agents run regularly.
+- `.factory/AGENTS.md` exists or the repo documents agent instructions.
+- `.factory/STANDARDS.md` defines repo health.
+- `.factory/WORKFLOWS/` contains agent playbooks.
+- `.factory/OBJECTIVES/` contains current work orders when agents are doing directed work.
+- `.factory/JOURNAL.md` records handover notes when agents run regularly.
 - Stop rules are explicit.
 - Agents open draft pull requests.
 - Agents do not merge pull requests.
@@ -317,7 +317,7 @@ base standard
 + language pack
 + project type pack
 + selected capability packs
-= repo-owned STANDARDS.md, WORKFLOWS/, and OBJECTIVES/
+= repo-owned .factory/STANDARDS.md, .factory/WORKFLOWS/, and .factory/OBJECTIVES/
 ```
 
 Example:
@@ -338,16 +338,17 @@ Capabilities:
 This produces:
 
 ```text
-STANDARDS.md
-WORKFLOWS/
-  standards-check.md
-  ci-readiness.md
-  docs-readiness.md
-  release-readiness.md
-  issue-triage.md
-OBJECTIVES/
-  2026-06-29-ci-readiness.md
-JOURNAL.md
+.factory/
+  STANDARDS.md
+  WORKFLOWS/
+    standards-check.md
+    ci-readiness.md
+    docs-readiness.md
+    release-readiness.md
+    issue-triage.md
+  OBJECTIVES/
+    2026-06-29-ci-readiness.md
+  JOURNAL.md
 ```
 
 ## Language-specific answers

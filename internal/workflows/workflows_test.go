@@ -8,7 +8,7 @@ import (
 
 func TestDiscoverListsBuiltInAndRepoWorkflows(t *testing.T) {
 	repo := t.TempDir()
-	workflowDir := filepath.Join(repo, "WORKFLOWS")
+	workflowDir := filepath.Join(repo, ".factory", "WORKFLOWS")
 	if err := os.MkdirAll(workflowDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -39,6 +39,33 @@ func TestDiscoverListsBuiltInAndRepoWorkflows(t *testing.T) {
 	for _, workflow := range got {
 		if !workflow.Runnable {
 			t.Fatalf("workflow should be runnable: %#v", workflow)
+		}
+	}
+}
+
+func TestDiscoverFallsBackToRootWorkflowsDirectory(t *testing.T) {
+	repo := t.TempDir()
+	workflowDir := filepath.Join(repo, "WORKFLOWS")
+	if err := os.MkdirAll(workflowDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowDir, "docs-update.md"), []byte("# Workflow\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Discover(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	names := workflowNames(got)
+	want := []string{"hello", "docs-update"}
+	if len(names) != len(want) {
+		t.Fatalf("names = %#v", names)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("names = %#v", names)
 		}
 	}
 }

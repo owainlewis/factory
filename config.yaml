@@ -10,5 +10,5 @@ repos:
     agent: claude
   ocaml-datastructures-algorithms:
     url: git@github.com:owainlewis/ocaml-datastructures-algorithms.git
-    branch: factory/add-factory-contract
+    branch: master
     agent: claude

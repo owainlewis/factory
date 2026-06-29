@@ -21,7 +21,7 @@ func Discover(repoPath string) ([]Workflow, error) {
 		Runnable: true,
 	}}
 
-	workflowsDir := filepath.Join(repoPath, "WORKFLOWS")
+	workflowsDir := preferredWorkflowsDir(repoPath)
 	entries, err := os.ReadDir(workflowsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -53,4 +53,12 @@ func Discover(repoPath string) ([]Workflow, error) {
 	})
 	result = append(result, repoWorkflows...)
 	return result, nil
+}
+
+func preferredWorkflowsDir(repoPath string) string {
+	factoryDir := filepath.Join(repoPath, ".factory", "WORKFLOWS")
+	if info, err := os.Stat(factoryDir); err == nil && info.IsDir() {
+		return factoryDir
+	}
+	return filepath.Join(repoPath, "WORKFLOWS")
 }

@@ -91,7 +91,7 @@ Node:
 npm test
 ```
 
-Factory should use this standard to bootstrap repo-owned `STANDARDS.md` and `WORKFLOWS/` files.
+Factory should use this standard to bootstrap repo-owned `.factory/STANDARDS.md` and `.factory/WORKFLOWS/` files.
 After bootstrap, the target repo owns the final standard.
 
 ## Philosophy
@@ -121,14 +121,15 @@ Factory asks agents to decide inside well-defined engineering workflows.
 Every managed repository defines how engineering should happen.
 
 ```text
-AGENTS.md
-STANDARDS.md
-WORKFLOWS/
-OBJECTIVES/
-JOURNAL.md
+.factory/
+  AGENTS.md
+  STANDARDS.md
+  WORKFLOWS/
+  OBJECTIVES/
+  JOURNAL.md
 ```
 
-### AGENTS.md
+### .factory/AGENTS.md
 
 General instructions for coding agents.
 
@@ -139,7 +140,7 @@ Examples:
 - project structure
 - important constraints
 
-### STANDARDS.md
+### .factory/STANDARDS.md
 
 Defines what good looks like.
 
@@ -153,7 +154,7 @@ Examples:
 
 Standards change rarely.
 
-### WORKFLOWS
+### .factory/WORKFLOWS
 
 Engineering playbooks.
 
@@ -174,7 +175,7 @@ Factory does not invent process.
 
 It follows repository-owned SOPs.
 
-### OBJECTIVES
+### .factory/OBJECTIVES
 
 Repo-owned work orders.
 
@@ -208,7 +209,7 @@ Objectives should name:
 Workflows are reusable process.
 Objectives are current intent.
 
-### JOURNAL.md
+### .factory/JOURNAL.md
 
 Append-only engineering handover.
 
@@ -329,23 +330,23 @@ bug-fix
 Factory loads:
 
 ```text
-WORKFLOWS/bug-fix.md
+.factory/WORKFLOWS/bug-fix.md
 ```
 
 Factory builds the prompt:
 
 ```text
-Read STANDARDS.md.
+Read .factory/STANDARDS.md.
 
-Read AGENTS.md.
+Read .factory/AGENTS.md.
 
 Read the journal.
 
 Read issue #42.
 
-Read OBJECTIVES/current-objective.md.
+Read .factory/OBJECTIVES/current-objective.md.
 
-Follow WORKFLOWS/bug-fix.md.
+Follow .factory/WORKFLOWS/bug-fix.md.
 ```
 
 The coding agent performs the work.
@@ -386,7 +387,7 @@ Make this project releasable by a new user.
 
 ## Workflow
 
-Use `WORKFLOWS/release-readiness.md`.
+Use `.factory/WORKFLOWS/release-readiness.md`.
 
 ## Stop Rules
 
@@ -470,11 +471,11 @@ Factory's primary responsibility is compiling context.
 Every run builds a prompt from:
 
 - repository checkout
-- AGENTS.md
-- STANDARDS.md
-- workflow
-- objective
-- journal
+- .factory/AGENTS.md
+- .factory/STANDARDS.md
+- selected .factory/WORKFLOWS workflow
+- selected .factory/OBJECTIVES objective
+- .factory/JOURNAL.md
 - GitHub issue
 - runtime mode
 

@@ -1,23 +1,23 @@
 # Workflow Examples
 
 These examples belong in target repositories, not in Factory.
-Copy one into a managed repo under `WORKFLOWS/`.
+Copy one into a managed repo under `.factory/WORKFLOWS/`.
 
-## `WORKFLOWS/standards-check.md`
+## `.factory/WORKFLOWS/standards-check.md`
 
 ```md
 # Standards Check
 
 ## Goal
 
-Review this repository against `STANDARDS.md`.
+Review this repository against `.factory/STANDARDS.md`.
 Make the smallest safe change that improves compliance.
 
 ## Inputs
 
-- `AGENTS.md`
-- `STANDARDS.md`
-- `JOURNAL.md`, when present
+- `.factory/AGENTS.md`
+- `.factory/STANDARDS.md`
+- `.factory/JOURNAL.md`, when present
 - current git status
 - current test and CI files
 - current README and docs
@@ -26,7 +26,7 @@ Make the smallest safe change that improves compliance.
 
 In plan mode:
 
-1. Read `STANDARDS.md`.
+1. Read `.factory/STANDARDS.md`.
 2. Compare the repo against each standard.
 3. Report which standards pass, fail, or need human review.
 4. Name one smallest safe change for execute mode.
@@ -38,7 +38,7 @@ In plan mode:
 
 In execute mode:
 
-1. Read `STANDARDS.md`.
+1. Read `.factory/STANDARDS.md`.
 2. Pick one small fix that does not need human review.
 3. Create a non-default branch named `factory/standards-check-<short-description>`.
 4. Make the change.
