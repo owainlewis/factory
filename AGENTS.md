@@ -8,26 +8,18 @@ Do not use em dashes.
 
 ## Purpose
 
-Code Factory stores reusable agent loops for important GitHub repos.
+Code Factory is a local-first runner for coding agents.
+Target repos own their own standards and goals.
+Factory owns local execution, logs, state, and agent adapters.
 
 It is not a task dump.
 It is not a policy wiki.
 It is not a big rules engine.
 
-## Current Scope
-
-The first target project is `owainlewis/cortex`.
-
-The first loop is:
-
-```text
-Task: issue to PR
-```
-
 ## Rules
 
 - Keep config small.
-- Put work instructions in markdown loops.
+- Put repo work instructions in the target repo under `.factory/goals/`.
 - Work on one repo at a time.
 - Work on one issue per task run.
 - Do not merge PRs.
@@ -36,12 +28,12 @@ Task: issue to PR
 - Do not invent claims, metrics, roadmap promises, or product details.
 - Stop if the issue is unclear.
 
-## Before Editing A Loop
+## Before Editing Runner Behavior
 
 1. Read `config.yaml`.
-2. Read the relevant file in `projects/`.
-3. Read the loop prompt.
-4. Keep the loop executable by a fresh Codex thread.
+2. Read `docs/prd.md`.
+3. Read `docs/factory-runner/spec.md`.
+4. Keep target repo standards and goals out of this repo unless they are examples or templates.
 
 ## Human Review Required
 
