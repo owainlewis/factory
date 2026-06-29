@@ -8,8 +8,8 @@ Factory discovers those repos, runs selected goals on a schedule or on demand, s
 
 ## Context
 
-Factory currently stores a small project registry and one task loop for `owainlewis/cortex`.
-That proves the first operating loop:
+Factory currently stores a local runner registry and a Claude Code adapter.
+The first operating loop is:
 
 ```text
 GitHub issue -> agent work -> tests -> self-review -> PR -> human decision
@@ -145,6 +145,7 @@ repos:
 
 Assumption: a small YAML file is acceptable for local runner state.
 The target repo should still own standards and goals in markdown.
+The registry must not contain target repo checks, issue labels, product purpose, or runnable project goals.
 
 ## Scheduling
 
