@@ -134,11 +134,14 @@ For a non-built-in workflow, Factory builds a prompt from:
 - `.factory/AGENTS.md`, when present
 - `.factory/STANDARDS.md`, when present
 - `.factory/JOURNAL.md`, when present
-- selected `.factory/OBJECTIVES/<objective>.md`, when an objective is provided
+- `.factory/OBJECTIVES/current-objective.md` or `.factory/OBJECTIVES/current.md`, when present
 - selected `.factory/WORKFLOWS/<workflow>.md`
 - runtime mode
 
 The agent receives complete engineering context and should not need to guess the process.
+
+Current limitation: `factory run` does not accept a named objective argument yet.
+Direct objective selection belongs to the planned `factory objective` command.
 
 ## Objectives
 
@@ -154,6 +157,9 @@ They answer:
 - when to stop for human review
 
 Factory compiles objectives into agent goals.
+
+Current V1 compiles a current objective file when one is present.
+Named objective selection belongs to a later command.
 
 ```text
 workflow = repeatable process

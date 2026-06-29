@@ -352,7 +352,9 @@ The coding agent performs the work.
 
 Factory treats objectives as repo-owned input.
 
-Under the hood, Factory compiles an objective into an agent goal.
+Under the intended model, Factory compiles an objective into an agent goal.
+Current V1 runs workflows directly and includes a current objective file when present.
+It does not yet accept a named objective argument.
 
 ```text
 workflow = repeatable process
@@ -471,12 +473,14 @@ Every run builds a prompt from:
 - .factory/AGENTS.md
 - .factory/STANDARDS.md
 - selected .factory/WORKFLOWS workflow
-- selected .factory/OBJECTIVES objective
+- .factory/OBJECTIVES/current-objective.md, when present
 - .factory/JOURNAL.md
 - GitHub issue
 - runtime mode
 
 The coding agent receives complete engineering context.
+
+In current V1, named objective selection and GitHub issue context are planned inputs.
 
 The agent does not need to guess the process.
 

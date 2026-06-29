@@ -5,7 +5,7 @@ Copy it into a managed repo under `.factory/WORKFLOWS/`.
 Prefer one workflow and many objectives.
 Add another workflow only when the process is truly different.
 
-## `.factory/WORKFLOWS/standards.md`
+## `.factory/WORKFLOWS/standards-check.md`
 
 ```md
 # Standards Check
@@ -42,7 +42,7 @@ In execute mode:
 
 1. Read `.factory/STANDARDS.md`.
 2. Pick one small fix that does not need human review.
-3. Create a non-default branch named `factory/standards-<short-description>`.
+3. Create a non-default branch named `factory/standards-check-<short-description>`.
 4. Make the change.
 5. Run the most relevant tests or checks.
 6. Commit the change.

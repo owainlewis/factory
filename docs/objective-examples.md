@@ -3,7 +3,9 @@
 Objectives are repo-owned work orders.
 
 They live in the target repo under `.factory/OBJECTIVES/`.
-Factory compiles them into agent goals at runtime.
+In the intended model, Factory compiles them into agent goals at runtime.
+In the current V1, Factory compiles `.factory/OBJECTIVES/current-objective.md` or `.factory/OBJECTIVES/current.md` when present.
+Named objective selection is planned, not implemented yet.
 
 ```text
 workflow = repeatable process
