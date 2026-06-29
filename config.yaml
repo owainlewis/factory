@@ -16,3 +16,7 @@ repos:
     url: git@github.com:owainlewis/ocaml-datastructures-algorithms.git
     branch: master
     agent: claude
+  push:
+    url: git@github.com:owainlewis/push.git
+    branch: main
+    agent: claude
