@@ -5,6 +5,7 @@
 
 runs/
 reports/
+.factory-state/
 
 node_modules/
 target/
@@ -22,4 +23,3 @@ __pycache__/
 .vscode/
 *.swp
 *.swo
-
