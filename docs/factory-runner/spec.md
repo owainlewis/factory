@@ -196,10 +196,17 @@ Factory stores local state under `.factory-state` by default.
 ```text
 .factory-state/
   repos/
+  worktrees/
   logs/
   runs/
   locks/
 ```
+
+`repos/` contains Factory-owned clones.
+These are internal runner state, not human working copies.
+Factory may fetch, checkout, and update these clones while commands run.
+Commands that touch one managed clone must hold that repo lock.
+Execute-mode runs use per-run worktrees under `worktrees/`.
 
 Run record fields:
 
@@ -236,8 +243,6 @@ Statuses:
 
 ## Next Steps
 
-- Add repo locks.
-- Add worktrees per write run.
 - Add verification mode.
 - Add journal appends.
 - Add GitHub issue and PR context loading.

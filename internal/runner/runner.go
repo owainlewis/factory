@@ -81,10 +81,11 @@ func (a *App) ListRepos(w io.Writer) error {
 }
 
 func (a *App) ListWorkflows(ctx context.Context, w io.Writer, repoName string) error {
-	repoPath, err := a.ensureRepoPath(ctx, repoName)
+	repoPath, unlock, err := a.ensureRepoPath(ctx, repoName)
 	if err != nil {
 		return err
 	}
+	defer unlock()
 
 	discovered, err := workflows.Discover(repoPath)
 	if err != nil {
@@ -102,10 +103,12 @@ func (a *App) ListWorkflows(ctx context.Context, w io.Writer, repoName string) e
 }
 
 func (a *App) Audit(ctx context.Context, w io.Writer, repoName string) error {
-	repoPath, err := a.ensureRepoPath(ctx, repoName)
+	repoPath, unlock, err := a.ensureRepoPath(ctx, repoName)
 	if err != nil {
 		return err
 	}
+	defer unlock()
+
 	report, err := audit.Run(repoPath)
 	if err != nil {
 		return err
@@ -167,6 +170,17 @@ func (a *App) Run(ctx context.Context, repoName string, workflow string, mode Mo
 	if err := os.MkdirAll(filepath.Dir(recordPath), 0o755); err != nil {
 		return record, err
 	}
+
+	lock, err := a.acquireRepoLock(ctx, repoName)
+	if err != nil {
+		record.Status = "failed"
+		record.Error = err.Error()
+		record.FinishedAt = time.Now().UTC()
+		_ = writeRecord(record)
+		return record, err
+	}
+	defer lock.Release()
+
 	if err := gitrepo.Ensure(ctx, repoPath, repo.URL, repo.Branch); err != nil {
 		record.Status = "failed"
 		record.Error = err.Error()
@@ -175,7 +189,20 @@ func (a *App) Run(ctx context.Context, repoName string, workflow string, mode Mo
 		return record, err
 	}
 
-	source, promptText, err := prompt.Build(repoPath, workflow, string(mode))
+	runRepoPath := repoPath
+	if mode == ModeExecute {
+		runRepoPath = filepath.Join(a.cfg.Factory.DataDir, "worktrees", repoName, runID)
+		if err := gitrepo.AddWorktree(ctx, repoPath, runRepoPath, repo.Branch); err != nil {
+			record.Status = "failed"
+			record.Error = err.Error()
+			record.FinishedAt = time.Now().UTC()
+			_ = writeRecord(record)
+			return record, err
+		}
+		record.RepoPath = runRepoPath
+	}
+
+	source, promptText, err := prompt.Build(runRepoPath, workflow, string(mode))
 	if err != nil {
 		record.Status = "blocked"
 		record.Error = err.Error()
@@ -195,7 +222,7 @@ func (a *App) Run(ctx context.Context, repoName string, workflow string, mode Mo
 	}
 
 	result, err := adapter.Run(ctx, agent.RunSpec{
-		RepoPath: repoPath,
+		RepoPath: runRepoPath,
 		Prompt:   promptText,
 		LogPath:  logPath,
 		Mode:     string(mode),
@@ -218,17 +245,25 @@ func (a *App) Run(ctx context.Context, repoName string, workflow string, mode Mo
 	return record, nil
 }
 
-func (a *App) ensureRepoPath(ctx context.Context, repoName string) (string, error) {
+func (a *App) ensureRepoPath(ctx context.Context, repoName string) (string, func(), error) {
 	repo, ok := a.cfg.Repos[repoName]
 	if !ok {
-		return "", fmt.Errorf("unknown repo %q", repoName)
+		return "", nil, fmt.Errorf("unknown repo %q", repoName)
 	}
 
 	repoPath := config.RepoPath(a.cfg.Factory.DataDir, repoName, repo)
-	if err := gitrepo.Ensure(ctx, repoPath, repo.URL, repo.Branch); err != nil {
-		return "", err
+	lock, err := a.acquireRepoLock(ctx, repoName)
+	if err != nil {
+		return "", nil, err
 	}
-	return repoPath, nil
+	unlock := func() {
+		_ = lock.Release()
+	}
+	if err := gitrepo.Ensure(ctx, repoPath, repo.URL, repo.Branch); err != nil {
+		unlock()
+		return "", nil, err
+	}
+	return repoPath, unlock, nil
 }
 
 func adapterFor(name string) (agent.Adapter, error) {

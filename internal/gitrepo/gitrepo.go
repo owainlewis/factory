@@ -28,6 +28,13 @@ func Ensure(ctx context.Context, path string, url string, branch string) error {
 	return run(ctx, "", "git", "clone", "--branch", branch, url, path)
 }
 
+func AddWorktree(ctx context.Context, repoPath string, worktreePath string, branch string) error {
+	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
+		return err
+	}
+	return run(ctx, repoPath, "git", "worktree", "add", "--detach", worktreePath, "origin/"+branch)
+}
+
 func isGitRepo(path string) bool {
 	info, err := os.Stat(filepath.Join(path, ".git"))
 	return err == nil && info != nil

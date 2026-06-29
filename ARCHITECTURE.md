@@ -59,11 +59,17 @@ Factory stores local state under `.factory-state` by default.
 ```text
 .factory-state/
   repos/
+  worktrees/
   logs/
   runs/
+  locks/
 ```
 
 This directory is ignored by git.
+The `repos/` directory is Factory-owned internal state, not a human workspace.
+Factory may fetch, checkout, and update these clones.
+Runner commands take a per-repo lock before touching a managed clone.
+Execute-mode runs use per-run worktrees.
 
 ## Target Repo Shape
 
@@ -116,8 +122,6 @@ Later adapters can support Codex, Aider, or other local coding agents.
 
 ## Next Architecture Steps
 
-- Add repo locks.
-- Add worktrees per write run.
 - Add verification mode.
 - Add journal appends.
 - Add label sync.
