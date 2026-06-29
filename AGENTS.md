@@ -8,8 +8,8 @@ Do not use em dashes.
 
 ## Purpose
 
-Code Factory is a local-first runner for coding agents.
-Target repos own their own standards and goals.
+Code Factory is a local runtime for autonomous engineering.
+Target repos own their own standards, workflows, and journals.
 Factory owns local execution, logs, state, and agent adapters.
 
 It is not a task dump.
@@ -19,9 +19,9 @@ It is not a big rules engine.
 ## Rules
 
 - Keep config small.
-- Put repo work instructions in the target repo under `.factory/goals/`.
+- Put repo work instructions in the target repo under `WORKFLOWS/`.
 - Work on one repo at a time.
-- Work on one issue per task run.
+- Work through one workflow per task run.
 - Do not merge PRs.
 - Do not push to default branches.
 - Do not do broad cleanup.
@@ -33,7 +33,7 @@ It is not a big rules engine.
 1. Read `config.yaml`.
 2. Read `docs/prd.md`.
 3. Read `docs/factory-runner/spec.md`.
-4. Keep target repo standards and goals out of this repo unless they are examples or templates.
+4. Keep target repo standards, workflows, and journals out of this repo unless they are examples or templates.
 
 ## Human Review Required
 

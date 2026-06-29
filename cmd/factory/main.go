@@ -34,24 +34,28 @@ func run(args []string) error {
 	switch rest[0] {
 	case "repos":
 		return app.ListRepos(os.Stdout)
-	case "goals":
+	case "workflows":
 		if len(rest) != 2 {
-			return fmt.Errorf("usage: factory goals <repo>")
+			return fmt.Errorf("usage: factory workflows <repo>")
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		return app.ListGoals(ctx, os.Stdout, rest[1])
+		return app.ListWorkflows(ctx, os.Stdout, rest[1])
 	case "run":
 		if len(rest) < 2 {
-			return fmt.Errorf("usage: factory run <repo> [goal]")
+			return fmt.Errorf("usage: factory run <repo> [workflow] [--mode plan|execute]")
 		}
-		goal := "hello"
+		workflow := "hello"
 		if len(rest) >= 3 {
-			goal = rest[2]
+			workflow = rest[2]
+		}
+		mode, err := runner.ParseMode(opts.Mode)
+		if err != nil {
+			return err
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
-		record, err := app.Run(ctx, rest[1], goal)
+		record, err := app.Run(ctx, rest[1], workflow, mode)
 		if err != nil {
 			return err
 		}
@@ -68,10 +72,11 @@ func run(args []string) error {
 
 type options struct {
 	ConfigPath string
+	Mode       string
 }
 
 func parseArgs(args []string) (options, []string, error) {
-	opts := options{ConfigPath: "config.yaml"}
+	opts := options{ConfigPath: "config.yaml", Mode: string(runner.ModePlan)}
 	rest := make([]string, 0, len(args))
 
 	for i := 0; i < len(args); i++ {
@@ -82,6 +87,12 @@ func parseArgs(args []string) (options, []string, error) {
 			}
 			opts.ConfigPath = args[i+1]
 			i++
+		case "--mode":
+			if i+1 >= len(args) {
+				return opts, nil, fmt.Errorf("--mode requires plan or execute")
+			}
+			opts.Mode = args[i+1]
+			i++
 		default:
 			rest = append(rest, args[i])
 		}
@@ -91,5 +102,5 @@ func parseArgs(args []string) (options, []string, error) {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: factory [--config config.yaml] <goals|repos|runs|run>")
+	return fmt.Errorf("usage: factory [--config config.yaml] <repos|run|runs|workflows>")
 }

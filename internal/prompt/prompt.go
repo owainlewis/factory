@@ -4,25 +4,32 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-func Build(repoPath string, goal string) (string, string, error) {
-	if goal == "" || goal == "hello" {
-		return "built-in:hello", helloPrompt(), nil
+func Build(repoPath string, workflow string, mode string) (string, string, error) {
+	if workflow == "" || workflow == "hello" {
+		return "built-in:hello", helloPrompt(mode), nil
 	}
 
-	goalPath := filepath.Join(repoPath, ".factory", "goals", goal+".md")
-	data, err := os.ReadFile(goalPath)
+	workflowPath := filepath.Join(repoPath, "WORKFLOWS", workflow+".md")
+	data, err := os.ReadFile(workflowPath)
 	if err != nil {
-		return "", "", fmt.Errorf("goal %q not found at %s", goal, goalPath)
+		return "", "", fmt.Errorf("workflow %q not found at %s", workflow, workflowPath)
 	}
 
-	return goalPath, wrapGoal(goal, string(data)), nil
+	context, err := compileContext(repoPath)
+	if err != nil {
+		return "", "", err
+	}
+
+	return workflowPath, wrapWorkflow(workflow, mode, context, string(data)), nil
 }
 
-func helloPrompt() string {
-	return `You are running under Factory.
+func helloPrompt(mode string) string {
+	return fmt.Sprintf(`You are running under Factory.
 
+Runtime mode: %s
 This is a no-edit smoke test.
 Read README.md if it exists.
 Print exactly three short lines:
@@ -34,21 +41,46 @@ Do not edit files.
 Do not create branches.
 Do not run tests.
 Do not open issues or pull requests.
-Do not make network calls.`
+Do not make network calls.`, mode)
 }
 
-func wrapGoal(name string, body string) string {
+func wrapWorkflow(name string, mode string, context string, body string) string {
 	return fmt.Sprintf(`You are running under Factory.
 
-Goal: %s
+Workflow: %s
+Runtime mode: %s
 
-Before doing work, read AGENTS.md if it exists.
-Follow repo instructions.
+Factory has compiled repository context for this run.
 Do not merge pull requests.
 Do not push to the default branch.
+In plan mode, inspect the repo and report the exact next steps without editing files.
+In execute mode, make only the smallest workflow-scoped change, create a non-default branch, commit it, push it, and open a draft pull request when the workflow asks for code changes.
 
-Goal file:
+Repository context:
 
 %s
-`, name, body)
+
+Workflow:
+
+%s
+`, name, mode, context, body)
+}
+
+func compileContext(repoPath string) (string, error) {
+	sections := []string{}
+	for _, file := range []string{"AGENTS.md", "STANDARDS.md", "JOURNAL.md"} {
+		path := filepath.Join(repoPath, file)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", fmt.Errorf("read %s: %w", file, err)
+		}
+		sections = append(sections, fmt.Sprintf("## %s\n\n%s", file, strings.TrimSpace(string(data))))
+	}
+	if len(sections) == 0 {
+		return "No AGENTS.md, STANDARDS.md, or JOURNAL.md found.", nil
+	}
+	return strings.Join(sections, "\n\n"), nil
 }

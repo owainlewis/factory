@@ -19,7 +19,8 @@ func (Claude) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 	defer logFile.Close()
 
 	var output bytes.Buffer
-	cmd := exec.CommandContext(ctx, "claude", "-p", "--permission-mode", "plan", spec.Prompt)
+	permissionMode := claudePermissionMode(spec.Mode)
+	cmd := exec.CommandContext(ctx, "claude", "-p", "--permission-mode", permissionMode, spec.Prompt)
 	cmd.Dir = spec.RepoPath
 	cmd.Stdout = io.MultiWriter(logFile, &output)
 	cmd.Stderr = io.MultiWriter(logFile, &output)
@@ -35,6 +36,15 @@ func (Claude) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 		return RunResult{Status: "failed", Output: output.String()}, fmt.Errorf("claude failed: %w", err)
 	}
 	return RunResult{Status: "success", Output: output.String()}, nil
+}
+
+func claudePermissionMode(mode string) string {
+	switch mode {
+	case "execute":
+		return "auto"
+	default:
+		return "plan"
+	}
 }
 
 func claudeBlocked(output string) bool {
