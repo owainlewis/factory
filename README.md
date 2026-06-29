@@ -97,7 +97,7 @@ go run ./cmd/factory runs
 
 ## Target Repo Model
 
-Each target repo should own its standards, workflows, and journal:
+Each target repo should own its standards, workflows, objectives, and journal:
 
 ```text
 AGENTS.md
@@ -109,13 +109,22 @@ WORKFLOWS/
   dependency-update.md
   release.md
   review-pr.md
+OBJECTIVES/
+  2026-06-29-release-readiness.md
 JOURNAL.md
 ```
 
 Factory owns orchestration.
 The target repo owns intent.
 
-Factory should not store target repo standards, journals, or runnable project workflows here.
+`STANDARDS.md` says what good looks like.
+`WORKFLOWS/` says how repeatable work should run.
+`OBJECTIVES/` says what outcome is wanted now.
+`JOURNAL.md` says what happened before.
+
+Factory compiles repo-owned objectives into agent goals at runtime.
+
+Factory should not store target repo standards, objectives, journals, or runnable project workflows here.
 Those belong in each target repo.
 
 ## Standard Factory Labels
@@ -135,6 +144,7 @@ Factory labels are standard across repos:
 - [Runner spec](docs/factory-runner/spec.md)
 - [STANDARDS.md examples](docs/standards-examples.md)
 - [Workflow examples](docs/workflow-examples.md)
+- [Objective examples](docs/objective-examples.md)
 
 ## Safety Rules
 

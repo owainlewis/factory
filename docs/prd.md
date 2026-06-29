@@ -124,6 +124,7 @@ Every managed repository defines how engineering should happen.
 AGENTS.md
 STANDARDS.md
 WORKFLOWS/
+OBJECTIVES/
 JOURNAL.md
 ```
 
@@ -172,6 +173,40 @@ Each workflow describes how that class of work should be performed.
 Factory does not invent process.
 
 It follows repository-owned SOPs.
+
+### OBJECTIVES
+
+Repo-owned work orders.
+
+Examples:
+
+```text
+2026-06-29-release-readiness.md
+2026-06-29-docs-audit.md
+2026-06-29-ci-hardening.md
+```
+
+An objective describes the desired outcome for a specific run or short sequence of runs.
+
+Objectives can be broad:
+
+- create this project from scratch
+- make the project release-ready
+- find and fix documentation gaps
+- improve CI and testing
+
+Objectives should name:
+
+- goal
+- context
+- scope
+- done conditions
+- selected workflow
+- runtime mode
+- stop rules
+
+Workflows are reusable process.
+Objectives are current intent.
 
 ### JOURNAL.md
 
@@ -254,6 +289,7 @@ Planning reads:
 - repository
 - standards
 - workflows
+- objectives
 - journal
 - GitHub issues
 - pull requests
@@ -307,10 +343,65 @@ Read the journal.
 
 Read issue #42.
 
+Read OBJECTIVES/current-objective.md.
+
 Follow WORKFLOWS/bug-fix.md.
 ```
 
 The coding agent performs the work.
+
+## Objectives And Goals
+
+Factory treats objectives as repo-owned input.
+
+Under the hood, Factory compiles an objective into an agent goal.
+
+```text
+workflow = repeatable process
+objective = current desired outcome
+goal = runtime instruction sent to the coding agent
+```
+
+Example objective:
+
+```md
+# Objective: Release readiness
+
+## Goal
+
+Make this project releasable by a new user.
+
+## Scope
+
+- README install, build, test, and run sections
+- GitHub Actions CI
+- CHANGELOG.md
+- docs/releasing.md
+
+## Done
+
+- one focused draft PR is opened
+- relevant checks have run
+- remaining gaps are listed
+
+## Workflow
+
+Use `WORKFLOWS/release-readiness.md`.
+
+## Stop Rules
+
+- Do not publish a release.
+- Do not change the license.
+- Do not push to the default branch.
+```
+
+Planned command:
+
+```bash
+factory objective <repo> <objective> --mode plan
+
+factory objective <repo> <objective> --mode execute
+```
 
 ## Example Workflow
 
@@ -382,6 +473,7 @@ Every run builds a prompt from:
 - AGENTS.md
 - STANDARDS.md
 - workflow
+- objective
 - journal
 - GitHub issue
 - runtime mode

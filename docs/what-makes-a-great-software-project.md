@@ -195,11 +195,14 @@ WORKFLOWS/
   standards-check.md
   ci-readiness.md
   release-readiness.md
+OBJECTIVES/
+  2026-06-29-release-readiness.md
 JOURNAL.md
 ```
 
 The standards say what good looks like.
 The workflows say how an agent should improve one part.
+The objectives say what outcome is wanted now.
 The journal gives future runs context.
 
 Now the agent is not being asked to guess what a professional project needs.
@@ -357,6 +360,14 @@ Compare the repo against STANDARDS.md.
 In plan mode, report gaps.
 In execute mode, fix one small gap and open a draft pull request.
 ```
+
+When you want a directed piece of work, add one objective:
+
+```text
+OBJECTIVES/2026-06-29-release-readiness.md
+```
+
+That objective should say the goal, scope, done conditions, workflow, and stop rules.
 
 That is enough to make the repo better.
 

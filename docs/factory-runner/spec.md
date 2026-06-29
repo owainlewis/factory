@@ -16,15 +16,17 @@ Every managed repository owns its engineering process:
 AGENTS.md
 STANDARDS.md
 WORKFLOWS/
+OBJECTIVES/
 JOURNAL.md
 ```
 
 `AGENTS.md` describes coding-agent instructions.
 `STANDARDS.md` defines what good looks like.
 `WORKFLOWS/*.md` defines engineering playbooks such as bug fixes, triage, docs updates, dependency updates, releases, and PR review.
+`OBJECTIVES/*.md` defines current desired outcomes for one run or a short sequence of runs.
 `JOURNAL.md` is append-only handover between runs.
 
-Factory must not duplicate target repo standards, workflows, journals, checks, issue labels, or product purpose in this repo.
+Factory must not duplicate target repo standards, workflows, objectives, journals, checks, issue labels, or product purpose in this repo.
 
 ## Factory Responsibilities
 
@@ -76,6 +78,7 @@ factory runs
 Planned commands:
 
 ```sh
+factory objective <repo> <objective> --mode plan|execute
 factory plan <repo>
 factory execute <repo>
 factory triage <repo>
@@ -96,10 +99,58 @@ For a non-built-in workflow, Factory builds a prompt from:
 - `AGENTS.md`, when present
 - `STANDARDS.md`, when present
 - `JOURNAL.md`, when present
+- selected `OBJECTIVES/<objective>.md`, when an objective is provided
 - selected `WORKFLOWS/<workflow>.md`
 - runtime mode
 
 The agent receives complete engineering context and should not need to guess the process.
+
+## Objectives
+
+Objectives are repo-owned work orders.
+
+They answer:
+
+- what outcome is wanted now
+- why this matters
+- what is in scope
+- what is done
+- which workflow to use
+- when to stop for human review
+
+Factory compiles objectives into agent goals.
+
+```text
+workflow = repeatable process
+objective = current desired outcome
+goal = runtime prompt sent to the coding agent
+```
+
+Objective example:
+
+```md
+# Objective: CI readiness
+
+## Goal
+
+Make pull requests run build and tests in CI.
+
+## Workflow
+
+Use `WORKFLOWS/ci-readiness.md`.
+
+## Done
+
+- one draft PR is opened
+- CI config is added or improved
+- local checks are run where possible
+
+## Stop Rules
+
+- Do not add secrets.
+- Do not merge the pull request.
+- Stop if the build command is unclear.
+```
 
 ## Built-In Hello Workflow
 

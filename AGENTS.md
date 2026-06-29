@@ -9,7 +9,7 @@ Do not use em dashes.
 ## Purpose
 
 Code Factory is a local runtime for autonomous engineering.
-Target repos own their own standards, workflows, and journals.
+Target repos own their own standards, workflows, objectives, and journals.
 Factory owns local execution, logs, state, and agent adapters.
 
 It is not a task dump.
@@ -33,7 +33,7 @@ It is not a big rules engine.
 1. Read `config.yaml`.
 2. Read `docs/prd.md`.
 3. Read `docs/factory-runner/spec.md`.
-4. Keep target repo standards, workflows, and journals out of this repo unless they are examples or templates.
+4. Keep target repo standards, workflows, objectives, and journals out of this repo unless they are examples or templates.
 
 ## Human Review Required
 

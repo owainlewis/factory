@@ -295,6 +295,7 @@ Standards:
 - `AGENTS.md` exists or the repo documents agent instructions.
 - `STANDARDS.md` defines repo health.
 - `WORKFLOWS/` contains agent playbooks.
+- `OBJECTIVES/` contains current work orders when agents are doing directed work.
 - `JOURNAL.md` records handover notes when agents run regularly.
 - Stop rules are explicit.
 - Agents open draft pull requests.
@@ -316,7 +317,7 @@ base standard
 + language pack
 + project type pack
 + selected capability packs
-= repo-owned STANDARDS.md and WORKFLOWS/
+= repo-owned STANDARDS.md, WORKFLOWS/, and OBJECTIVES/
 ```
 
 Example:
@@ -344,6 +345,8 @@ WORKFLOWS/
   docs-readiness.md
   release-readiness.md
   issue-triage.md
+OBJECTIVES/
+  2026-06-29-ci-readiness.md
 JOURNAL.md
 ```
 
