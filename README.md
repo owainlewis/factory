@@ -40,6 +40,7 @@ config -> clone or fetch repo -> build prompt -> run Claude Code -> save log -> 
 
 It supports:
 
+- `factory audit <repo>`
 - `factory repos`
 - `factory workflows <repo>`
 - `factory run <repo> hello`
@@ -70,6 +71,12 @@ repos:
 ```
 
 ## Commands
+
+Audit a repo and print a Markdown health report:
+
+```sh
+go run ./cmd/factory audit factory
+```
 
 List repos:
 
