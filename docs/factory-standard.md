@@ -53,9 +53,8 @@ Standards:
 
 Agent workflows:
 
-- description-readiness
-- readme-purpose-check
-- repo-metadata-check
+- github
+- docs
 
 ### Usability
 
@@ -70,9 +69,7 @@ Standards:
 
 Agent workflows:
 
-- usability-check
-- readme-usage-check
-- example-smoke-test
+- docs
 
 ### Build
 
@@ -95,8 +92,7 @@ Language examples:
 
 Agent workflows:
 
-- build-readiness
-- fix-build
+- build
 
 ### Testing
 
@@ -120,7 +116,7 @@ Language examples:
 
 Agent workflows:
 
-- testing-readiness
+- tests
 - add-missing-test
 - improve-test-coverage
 
@@ -148,9 +144,7 @@ Common checks:
 
 Agent workflows:
 
-- ci-readiness
-- add-ci
-- fix-failing-ci
+- ci
 
 ### GitHub project hygiene
 
@@ -207,10 +201,7 @@ AI review standards:
 
 Agent workflows:
 
-- github-readiness
-- label-sync
-- issue-board-readiness
-- ai-review-readiness
+- github
 
 ### Code quality
 
@@ -255,9 +246,7 @@ Standards:
 
 Agent workflows:
 
-- docs-readiness
-- docs-code-alignment
-- update-examples
+- docs
 
 ### Release
 
@@ -281,9 +270,7 @@ Project type examples:
 
 Agent workflows:
 
-- release-readiness
-- add-changelog
-- add-release-workflow
+- release
 
 ### Security
 
@@ -299,9 +286,8 @@ Standards:
 
 Agent workflows:
 
-- security-readiness
-- dependency-update
-- secret-scan-check
+- security
+- dependencies
 
 ### Operations
 
@@ -317,9 +303,7 @@ Standards:
 
 Agent workflows:
 
-- operations-readiness
-- env-docs-check
-- deploy-docs-check
+- operations
 
 ### Governance
 
@@ -342,9 +326,7 @@ Factory labels:
 
 Agent workflows:
 
-- governance-readiness
-- label-sync
-- issue-triage
+- github
 
 ### Agent readiness
 
@@ -364,9 +346,7 @@ Standards:
 
 Agent workflows:
 
-- standards-check
-- workflow-readiness
-- journal-update
+- standards
 
 ## Template model
 
@@ -401,13 +381,13 @@ This produces:
 .factory/
   STANDARDS.md
   WORKFLOWS/
-    standards-check.md
-    ci-readiness.md
-    docs-readiness.md
-    release-readiness.md
-    issue-triage.md
+    standards.md
+    github.md
+    ci.md
+    docs.md
+    release.md
   OBJECTIVES/
-    2026-06-29-ci-readiness.md
+    2026-06-29-ci.md
   JOURNAL.md
 ```
 

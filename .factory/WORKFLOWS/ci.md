@@ -1,4 +1,4 @@
-# CI Readiness
+# CI
 
 ## Goal
 
