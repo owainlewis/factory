@@ -1,92 +1,102 @@
 # Code Factory
 
-Code Factory is a control plane for improving Owain's important GitHub repos.
+Code Factory is a local-first runner for coding agents.
+It keeps important GitHub repos healthy by cloning them locally, running repo-owned goals, saving logs, and leaving humans in control.
 
-Each repo gets:
+Factory is not a task dump.
+Factory is not a hosted service yet.
+Factory does not merge PRs.
 
-- a config
-- a goal
-- one or more automations
-- the same project standards
+## Current V1
 
-The system should stay simple.
-The power comes from clear repo goals and repeatable agent work.
-
-## Shape
+The first working version proves this spine:
 
 ```text
-standards/
-  defaults.yaml
-  project-checklist.md
-  labels.yaml
-  profiles/
-    rust-cli.yaml
-    go-cli.yaml
-    web-app.yaml
-    saas-app.yaml
-  rules/
-    repo-description-required.yaml
-    readme-required.yaml
-
-repos/
-  <repo-name>/
-    config.yaml
-    goal.md
-    automations/
-      <automation>.md
-
-templates/
-  repo/
-    config.yaml
-    goal.md
-  automation/
-    scheduled-goal.md
+config -> clone or fetch repo -> build prompt -> run Claude Code -> save log -> save run record
 ```
 
-## First Principle
+It supports:
 
-A repo is only in Code Factory if it matters.
+- `factory repos`
+- `factory run <repo> hello`
+- `factory runs`
+- Claude Code as the first agent adapter
+- local repo checkouts under `.factory-state/repos`
+- JSON run records under `.factory-state/runs`
+- text logs under `.factory-state/logs`
 
-If a repo matters, it should have a clear goal, consistent issues, a project board, CI, docs, and a recurring improvement loop.
+## Config
 
-Each repo config should stay small.
-Put shared requirements in `standards/profiles/`.
+`config.yaml` lists repos that Factory can manage.
 
-## Factory Loop
+```yaml
+factory:
+  name: Code Factory
+  purpose: Run disciplined agent loops across important GitHub repos.
+  data_dir: .factory-state
+
+repos:
+  cortex:
+    url: git@github.com:owainlewis/cortex.git
+    branch: main
+    agent: claude
+```
+
+## Commands
+
+List repos:
+
+```sh
+go run ./cmd/factory repos
+```
+
+Run the no-edit smoke goal:
+
+```sh
+go run ./cmd/factory run cortex hello
+```
+
+List run records:
+
+```sh
+go run ./cmd/factory runs
+```
+
+## Target Repo Model
+
+Each target repo should own its standards and goals:
 
 ```text
-repo config -> repo goal -> standard check -> issue creation -> agent run -> PR -> review -> report
+AGENTS.md
+STANDARDS.md
+.factory/
+  goals/
+    standards-review.md
+    triage.md
+    execute.md
 ```
 
-Read [ARCHITECTURE.md](ARCHITECTURE.md) for the first-principles model.
+Factory owns orchestration.
+The target repo owns intent.
 
-## Active Repos
+## Standard Factory Labels
 
-Start small:
+Factory labels are standard across repos:
 
-- `factory`
-- `awesome-artificial-intelligence`
-- `cortex`
+- `factory-ready`: an agent may work this issue now.
+- `factory-triage`: the issue needs clarification, acceptance criteria, or scope shaping.
+- `factory-needs-human`: the issue needs a human decision before implementation.
+- `factory-blocked`: the issue cannot move until a named blocker is resolved.
 
-Add more repos only when the loop works.
+## Docs
 
-## What Code Factory Should Do
+- [PRD](docs/prd.md)
+- [Runner spec](docs/factory-runner/spec.md)
 
-- Create and maintain standard GitHub labels.
-- Ensure each active repo has a GitHub Project board.
-- Ensure repo issues are linked to the right project board.
-- Audit each repo against global defaults and its standards profile.
-- Evaluate rules and report violations.
-- Open issues for missing standards.
-- Run scheduled agent goals.
-- Open small PRs for safe improvements.
-- Report what changed and what needs human review.
+## Safety Rules
 
-## What It Should Not Do
-
-- Do random cleanup.
-- Touch every repo at once.
-- Invent product strategy.
-- Auto-merge important work.
-- Create public claims without proof.
-- Turn old repos into active projects unless Owain chooses them.
+- Do not merge PRs.
+- Do not push directly to a default branch.
+- Do not run broad cleanup.
+- Do not make public claims without evidence.
+- Stop if the goal or issue is unclear.

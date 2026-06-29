@@ -1,109 +1,90 @@
 # Architecture
 
-Code Factory has one main idea:
+Code Factory has two sides:
+
+- target repos own standards and goals
+- Factory owns local execution
+
+The system should stay boring on disk and powerful in execution.
+
+## V1 Flow
 
 ```text
-one important repo = one control folder
+factory run cortex hello
+load config.yaml
+resolve cortex repo
+clone or fetch the repo under .factory-state/repos
+build a prompt
+start Claude Code in the repo
+write a log
+write a run record
 ```
 
-Each control folder contains:
-
-- `config.yaml`: the small repo contract
-- `goal.md`: what the repo is trying to become
-- `automations/*.md`: prompts that agents can run on a schedule
-
-## Primitives
-
-### Repo Config
-
-The config is the machine-readable contract.
-
-It answers:
-
-- which repo this is
-- what kind of project it is
-- how important it is
-- what standard profile applies
-- what checks matter
-- how releases work
-- which automations run
-- what requires human review
-
-### Repo Goal
-
-The goal is the human-readable north star.
-
-It tells an agent what better means for that repo.
-
-### Automation Prompt
-
-An automation is just a markdown prompt with a schedule and runner.
-
-The runner can be Codex, Claude Code, or another agent later.
-
-The prompt should be complete enough that a fresh agent can run it without extra context.
-
-### Standards
-
-Standards are shared across repos.
-
-The first standards are:
-
-- global defaults
-- project checklist
-- standard labels
-- project type profiles
-- rules
-
-Project type profiles live in `standards/profiles/`.
-Rules live in `standards/rules/`.
-
-Examples:
-
-- `rust-cli`
-- `go-cli`
-- `python-library`
-- `clojure-library`
-- `web-app`
-- `saas-app`
-- `curated-list`
-- `content-repo`
-
-## Loop
+## Main Packages
 
 ```text
-read config
-read goal
-read automation prompt
-inspect repo
-compare to defaults and profile
-open issues for gaps
-open small PRs for safe fixes
-report human decisions
+cmd/factory
+internal/config
+internal/gitrepo
+internal/prompt
+internal/agent
+internal/runner
 ```
 
-## Why This Shape
+`internal/config` loads the local registry.
+`internal/gitrepo` clones or updates repos.
+`internal/prompt` builds built-in and repo-owned goal prompts.
+`internal/agent` shells out to coding agents.
+`internal/runner` connects the pieces and writes run state.
 
-This keeps Code Factory simple.
+## State
 
-There is no giant workflow brain.
+Factory stores local state under `.factory-state` by default.
 
-There are only repo goals, small repo configs, standards profiles, and scheduled prompts.
+```text
+.factory-state/
+  repos/
+  logs/
+  runs/
+```
 
-That makes it easy to add power later without hiding the logic.
+This directory is ignored by git.
 
-## Rules
+## Target Repo Shape
 
-A rule is one small check.
+Recommended target repo files:
 
-Examples:
+```text
+AGENTS.md
+STANDARDS.md
+.factory/
+  goals/
+    standards-review.md
+    triage.md
+    execute.md
+```
 
-- repo description exists
-- README exists
-- LICENSE exists
-- CI exists
-- test command is documented
+`AGENTS.md` says how agents should behave.
+`STANDARDS.md` says what healthy means.
+`.factory/goals/*.md` says what Factory may run.
 
-Profiles list rules by ID.
+## Agent Adapter
 
-Automation can evaluate the profile rules and create issues or PRs for violations.
+The first adapter is Claude Code.
+It runs:
+
+```text
+claude -p --permission-mode plan <prompt>
+```
+
+The adapter captures stdout and stderr into the run log.
+Later adapters can support Codex, Aider, or other local coding agents.
+
+## Next Architecture Steps
+
+- Add repo locks.
+- Add worktrees per write run.
+- Add `factory goals <repo>`.
+- Add `standards-review`.
+- Add label sync.
+- Add daemon schedules.

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repo defines how Code Factory operates.
+This repo defines Code Factory.
 
 Be concise and clear.
 Use simple words.
@@ -8,53 +8,51 @@ Do not use em dashes.
 
 ## Purpose
 
-Code Factory manages standards, goals, and recurring agent work for important GitHub repos.
+Code Factory stores reusable agent loops for important GitHub repos.
 
-Each active repo lives under `repos/<repo-name>/`.
+It is not a task dump.
+It is not a policy wiki.
+It is not a big rules engine.
+
+## Current Scope
+
+The first target project is `owainlewis/cortex`.
+
+The first loop is:
+
+```text
+Task: issue to PR
+```
 
 ## Rules
 
-- Do not add a repo unless it has a clear goal.
-- Do not create broad policy documents when a repo config will do.
-- Do not make noisy PRs.
-- Do not push directly to another repo's default branch.
-- Do not auto-merge important changes.
+- Keep config small.
+- Put work instructions in markdown loops.
+- Work on one repo at a time.
+- Work on one issue per task run.
+- Do not merge PRs.
+- Do not push to default branches.
+- Do not do broad cleanup.
 - Do not invent claims, metrics, roadmap promises, or product details.
-- Do not edit secrets, generated files, vendored files, dependency folders, or environment files.
-- Keep every automation prompt specific enough that a fresh agent can run it.
+- Stop if the issue is unclear.
 
-## Required Repo Files
+## Before Editing A Loop
 
-Every active repo folder must have:
-
-- `config.yaml`
-- `goal.md`
-- at least one file in `automations/`
-
-## Work Loop
-
-Before improving a repo:
-
-1. Read `standards/project-checklist.md`.
-2. Read `standards/labels.yaml`.
-3. Read the repo's `config.yaml`.
-4. Read the repo's `goal.md`.
-5. Read the relevant automation prompt.
-6. Work only inside the allowed scope.
-7. Prefer issues when the fix is unclear.
-8. Prefer small PRs when the fix is clear.
+1. Read `config.yaml`.
+2. Read the relevant file in `projects/`.
+3. Read the loop prompt.
+4. Keep the loop executable by a fresh Codex thread.
 
 ## Human Review Required
 
 Human review is required for:
 
+- merging
 - releases
 - public claims
 - pricing
 - product strategy
-- curated resource additions
 - deleting features
 - changing repo purpose
 - changing licenses
-- changing automation safety rules
-
+- changing safety rules
