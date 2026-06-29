@@ -29,6 +29,7 @@ It supports:
 ## Config
 
 `config.yaml` lists repos that Factory can manage.
+It is a local runner registry, not the source of repo standards or goals.
 
 ```yaml
 factory:
@@ -85,6 +86,9 @@ STANDARDS.md
 
 Factory owns orchestration.
 The target repo owns intent.
+
+Factory should not store target repo standards or runnable project goals here.
+Those belong in each target repo.
 
 ## Standard Factory Labels
 

@@ -37,6 +37,21 @@ internal/runner
 `internal/agent` shells out to coding agents.
 `internal/runner` connects the pieces and writes run state.
 
+## Registry
+
+`config.yaml` is only a local runner registry.
+It should contain the minimum data needed to clone and run a repo:
+
+```yaml
+repos:
+  cortex:
+    url: git@github.com:owainlewis/cortex.git
+    branch: main
+    agent: claude
+```
+
+It should not duplicate target repo standards, checks, issue labels, or goals.
+
 ## State
 
 Factory stores local state under `.factory-state` by default.
