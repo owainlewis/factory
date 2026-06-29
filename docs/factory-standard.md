@@ -152,6 +152,66 @@ Agent workflows:
 - add-ci
 - fix-failing-ci
 
+### GitHub project hygiene
+
+The GitHub repo should be usable as the public project workspace.
+
+Standards:
+
+- Repository description is set.
+- Repository topics are set.
+- Issues are enabled for public or collaborative projects.
+- A GitHub Project or equivalent issue board exists when the repo has ongoing work.
+- The issue board tracks bugs, tasks, docs work, release work, and human-review items.
+- Standard Factory labels exist.
+- Issue labels distinguish type, priority, status, and agent readiness.
+- GitHub Actions run the repo's normal build and test checks.
+- Automated code review is configured when the repo has access to a trusted review tool.
+
+Standard Factory labels:
+
+- `factory-ready`: an agent may work this issue now.
+- `factory-triage`: the issue needs clarification, acceptance criteria, or scope shaping.
+- `factory-needs-human`: the issue needs a human decision before implementation.
+- `factory-blocked`: the issue cannot move until a named blocker is resolved.
+
+Recommended issue type labels:
+
+- `type:bug`
+- `type:docs`
+- `type:feature`
+- `type:maintenance`
+- `type:release`
+- `type:security`
+
+Recommended status labels:
+
+- `status:triage`
+- `status:ready`
+- `status:blocked`
+- `status:in-progress`
+
+Recommended priority labels:
+
+- `priority:low`
+- `priority:medium`
+- `priority:high`
+
+AI review standards:
+
+- AI review is optional unless the repo has a configured tool.
+- AI review should not block emergency fixes.
+- AI review should not replace human review.
+- AI review findings must include evidence and file references.
+- Security-sensitive changes still need human review.
+
+Agent workflows:
+
+- github-readiness
+- label-sync
+- issue-board-readiness
+- ai-review-readiness
+
 ### Code quality
 
 Code should be readable, idiomatic, and maintainable.

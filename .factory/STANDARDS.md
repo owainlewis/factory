@@ -45,6 +45,39 @@ raise the quality bar of software projects by running coding agents against repo
 - Pull requests should run `go vet ./...`.
 - CI should not require secrets for normal pull request checks.
 
+## GitHub Standards
+
+- GitHub repository description must be set.
+- GitHub repository topics must be set.
+- Issues must be enabled.
+- A GitHub Project or equivalent issue board should track ongoing work.
+- The issue board should track bugs, docs work, CI work, release work, and human-review items.
+- Standard Factory labels must exist:
+  - `factory-ready`
+  - `factory-triage`
+  - `factory-needs-human`
+  - `factory-blocked`
+- Issue labels should distinguish type, priority, status, and agent readiness.
+- Recommended type labels:
+  - `type:bug`
+  - `type:docs`
+  - `type:feature`
+  - `type:maintenance`
+  - `type:release`
+  - `type:security`
+- Recommended status labels:
+  - `status:triage`
+  - `status:ready`
+  - `status:blocked`
+  - `status:in-progress`
+- Recommended priority labels:
+  - `priority:low`
+  - `priority:medium`
+  - `priority:high`
+- GitHub Actions should run the normal build and test checks.
+- Automated code review is optional unless a trusted review tool is configured.
+- Automated code review must not replace human review for merge decisions.
+
 ## Release
 
 - Release process should be documented before any public release.

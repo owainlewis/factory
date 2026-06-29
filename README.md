@@ -156,6 +156,20 @@ Factory labels are standard across repos:
 - `factory-needs-human`: the issue needs a human decision before implementation.
 - `factory-blocked`: the issue cannot move until a named blocker is resolved.
 
+## GitHub Standards
+
+Every managed GitHub repo should have:
+
+- a clear repository description
+- relevant repository topics
+- issues enabled
+- a GitHub Project or equivalent issue board for ongoing work
+- standard issue labels for type, status, priority, and agent readiness
+- GitHub Actions for normal build and test checks
+- optional automated code review when a trusted tool is configured
+
+Automated code review is useful, but it does not replace human review before merge.
+
 ## Docs
 
 - [PRD](docs/prd.md)
