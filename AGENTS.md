@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repo defines Code Factory.
+This repo defines Factory.
 
 Be concise and clear.
 Use simple words.
@@ -8,7 +8,7 @@ Do not use em dashes.
 
 ## Purpose
 
-Code Factory is a local runtime for autonomous engineering.
+Factory is a local runtime for autonomous engineering.
 Target repos own their own standards, workflows, objectives, and journals.
 Factory owns local execution, logs, state, and agent adapters.
 

@@ -1,5 +1,5 @@
 factory:
-  name: Code Factory
+  name: Factory
   purpose: Run disciplined agent loops across important GitHub repos.
   data_dir: .factory-state
 

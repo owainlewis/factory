@@ -1,6 +1,6 @@
 # Architecture
 
-Code Factory has two sides:
+Factory has two sides:
 
 - target repos own standards, workflows, objectives, and journals
 - Factory owns local execution
