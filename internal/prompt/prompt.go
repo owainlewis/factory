@@ -4,20 +4,26 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-func Build(repoPath string, goal string) (string, string, error) {
-	if goal == "" || goal == "hello" {
+func Build(repoPath string, workflow string) (string, string, error) {
+	if workflow == "" || workflow == "hello" {
 		return "built-in:hello", helloPrompt(), nil
 	}
 
-	goalPath := filepath.Join(repoPath, ".factory", "goals", goal+".md")
-	data, err := os.ReadFile(goalPath)
+	workflowPath := filepath.Join(repoPath, "WORKFLOWS", workflow+".md")
+	data, err := os.ReadFile(workflowPath)
 	if err != nil {
-		return "", "", fmt.Errorf("goal %q not found at %s", goal, goalPath)
+		return "", "", fmt.Errorf("workflow %q not found at %s", workflow, workflowPath)
 	}
 
-	return goalPath, wrapGoal(goal, string(data)), nil
+	context, err := compileContext(repoPath)
+	if err != nil {
+		return "", "", err
+	}
+
+	return workflowPath, wrapWorkflow(workflow, context, string(data)), nil
 }
 
 func helloPrompt() string {
@@ -37,18 +43,40 @@ Do not open issues or pull requests.
 Do not make network calls.`
 }
 
-func wrapGoal(name string, body string) string {
+func wrapWorkflow(name string, context string, body string) string {
 	return fmt.Sprintf(`You are running under Factory.
 
-Goal: %s
+Workflow: %s
 
-Before doing work, read AGENTS.md if it exists.
-Follow repo instructions.
+Factory has compiled repository context for this run.
 Do not merge pull requests.
 Do not push to the default branch.
 
-Goal file:
+Repository context:
 
 %s
-`, name, body)
+
+Workflow:
+
+%s
+`, name, context, body)
+}
+
+func compileContext(repoPath string) (string, error) {
+	sections := []string{}
+	for _, file := range []string{"AGENTS.md", "STANDARDS.md", "JOURNAL.md"} {
+		path := filepath.Join(repoPath, file)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", fmt.Errorf("read %s: %w", file, err)
+		}
+		sections = append(sections, fmt.Sprintf("## %s\n\n%s", file, strings.TrimSpace(string(data))))
+	}
+	if len(sections) == 0 {
+		return "No AGENTS.md, STANDARDS.md, or JOURNAL.md found.", nil
+	}
+	return strings.Join(sections, "\n\n"), nil
 }

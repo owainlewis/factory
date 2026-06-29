@@ -1,92 +1,409 @@
-# Code Factory PRD
+# Factory PRD
 
 ## Vision
 
-Code Factory is a local-first system for keeping many GitHub repositories healthy with coding agents.
-It should feel like a careful developer is always available to inspect repos, open useful issues, make small fixes, run checks, and prepare PRs for human review.
+Every software project should have a permanent autonomous engineering team.
 
-Factory does not replace judgment.
-It turns clear repo standards and goals into steady, reviewable work.
+Humans define direction.
 
-## Mission
+Factory ensures that work continuously happens.
 
-Factory helps one person maintain many projects without turning every project into manual upkeep.
-It should make old docs, missing licenses, weak CI, stale issues, and small bugs visible and fixable.
-It should do that through issues and PRs, not hidden background mutation.
+The objective is not to automate coding.
 
-## Model
+The objective is to automate software engineering.
 
-Each target repo owns its intent:
+## Problem
+
+Coding agents are extremely capable.
+
+What they lack is process.
+
+Today a developer repeatedly tells an agent:
+
+- what repository to work on
+- what standards to follow
+- what workflow to use
+- what issue to fix
+- what to verify
+- when to stop
+
+The agent starts from scratch every session.
+
+The project only moves forward when a human starts another conversation.
+
+The bottleneck is no longer writing code.
+
+The bottleneck is continuously deciding what should happen next.
+
+## Solution
+
+Factory is a local runtime for autonomous engineering.
+
+It manages many repositories.
+
+For each repository it:
+
+- checks out the latest code
+- gathers project context
+- selects the appropriate engineering workflow
+- generates a complete prompt
+- dispatches a coding agent
+- records the outcome
+- repeats
+
+Factory is not the engineer.
+
+Factory runs engineers.
+
+## Philosophy
+
+Factory separates deterministic work from reasoning.
+
+Factory performs deterministic orchestration.
+
+Agents perform reasoning.
+
+```text
+Factory
+    |
+Planning agent
+    |
+Execution agent
+    |
+Verification agent
+```
+
+Factory never decides what code to write.
+
+Factory asks agents to decide inside well-defined engineering workflows.
+
+## Repository Model
+
+Every managed repository defines how engineering should happen.
 
 ```text
 AGENTS.md
 STANDARDS.md
-.factory/
-  goals/
-    standards-review.md
-    triage.md
-    execute.md
+WORKFLOWS/
+JOURNAL.md
 ```
 
-Factory owns execution:
+### AGENTS.md
+
+General instructions for coding agents.
+
+Examples:
+
+- repository overview
+- coding conventions
+- project structure
+- important constraints
+
+### STANDARDS.md
+
+Defines what good looks like.
+
+Examples:
+
+- coding standards
+- testing requirements
+- documentation standards
+- verification commands
+- merge policy
+
+Standards change rarely.
+
+### WORKFLOWS
+
+Engineering playbooks.
+
+Examples:
 
 ```text
-config.yaml
-cmd/factory
-internal runner code
-run logs
-run records
-agent adapters
+bug-fix.md
+issue-triage.md
+docs-update.md
+dependency-update.md
+release.md
+review-pr.md
 ```
 
-The runner clones or updates repos locally, reads repo-owned goals, starts a coding agent in the checkout, captures logs, and records the result.
+Each workflow describes how that class of work should be performed.
 
-## MVP V1
+Factory does not invent process.
 
-V1 proves the runner spine:
+It follows repository-owned SOPs.
+
+### JOURNAL.md
+
+Append-only engineering handover.
+
+Each run records:
+
+- what happened
+- what decisions were made
+- what the next run should know
+
+The journal is continuity, not memory.
+
+## Managed Repositories
+
+Factory manages many repositories.
 
 ```text
-config -> clone or fetch repo -> build prompt -> shell out to Claude Code -> save log -> save run record
+factory repos
+
+awesome-ai
+scheme-rs
+factory
+passage
+slate
 ```
 
-V1 supports:
+Factory keeps local checkouts up to date.
 
-- one config file
-- many registered repos
-- local checkout under `.factory-state/repos`
-- `factory repos`
-- `factory run <repo> hello`
-- `factory runs`
-- Claude Code as the first adapter
-- no-edit hello smoke prompt
-- JSON run records
-- text logs
+Each repository is processed independently.
 
-V1 does not yet support:
+## Core Loop
 
-- daemon scheduling
-- repo locks
-- worktrees
-- issue selection
-- PR creation
-- standard label sync
-- GitHub Project automation
-- multiple agent adapters
+```text
+Load managed repositories
 
-## Safety
+|
 
-Factory must not merge PRs.
-Factory must not push to default branches.
-Factory must prefer small, reviewable work.
-Factory must stop when standards or goals require human judgment.
-Factory must log every run.
+For each repository
 
-## Next Milestones
+|
 
-1. Run a no-edit Claude Code smoke test in a cloned repo.
-2. Run a repo-owned `.factory/goals/standards-review.md` goal.
-3. Add repo locks and run state.
-4. Add standard Factory label sync.
-5. Add `triage` to open useful issues.
-6. Add `execute` to work `factory-ready` issues.
-7. Add daemon schedules.
+Fetch latest code
+
+|
+
+Run planning workflow
+
+|
+
+Execute returned work
+
+|
+
+Verify
+
+|
+
+Update GitHub
+
+|
+
+Append journal
+
+|
+
+Next repository
+```
+
+## Planning
+
+Planning is an agent workflow.
+
+Factory starts the planning workflow.
+
+The planning agent decides what work should happen.
+
+Planning reads:
+
+- repository
+- standards
+- workflows
+- journal
+- GitHub issues
+- pull requests
+- current objective
+
+The planning agent returns work items.
+
+Examples:
+
+- triage issue #15
+- execute issue #42
+- update documentation
+- perform standards review
+- nothing to do
+
+Factory simply executes the plan.
+
+## Execution
+
+Each work item selects a workflow.
+
+Example:
+
+Issue:
+
+```text
+Parser crashes on nested lists.
+```
+
+Planning decides:
+
+```text
+Workflow:
+bug-fix
+```
+
+Factory loads:
+
+```text
+WORKFLOWS/bug-fix.md
+```
+
+Factory builds the prompt:
+
+```text
+Read STANDARDS.md.
+
+Read AGENTS.md.
+
+Read the journal.
+
+Read issue #42.
+
+Follow WORKFLOWS/bug-fix.md.
+```
+
+The coding agent performs the work.
+
+## Example Workflow
+
+Bug Fix
+
+```text
+Read issue.
+
+Determine whether reproduction is possible.
+
+Write a failing test.
+
+Verify failure.
+
+Implement the smallest fix.
+
+Run verification.
+
+Open PR or merge according to policy.
+
+Update issue.
+
+Append journal.
+```
+
+Issue Triage
+
+```text
+Read issue.
+
+Determine if duplicate.
+
+Determine if clarification is required.
+
+Apply labels.
+
+Close invalid issues.
+
+Mark ready issues.
+
+Append journal.
+```
+
+Documentation
+
+```text
+Inspect documentation.
+
+Update docs.
+
+Run markdown checks.
+
+Merge if policy allows.
+
+Append journal.
+```
+
+The workflows belong to the repository.
+
+Factory simply executes them.
+
+## Prompt Compilation
+
+Factory's primary responsibility is compiling context.
+
+Every run builds a prompt from:
+
+- repository checkout
+- AGENTS.md
+- STANDARDS.md
+- workflow
+- journal
+- GitHub issue
+- runtime mode
+
+The coding agent receives complete engineering context.
+
+The agent does not need to guess the process.
+
+## Runtime Modes
+
+Examples:
+
+```bash
+factory plan scheme
+
+factory execute scheme
+
+factory triage scheme
+
+factory daemon
+```
+
+Factory supports both manual and scheduled execution.
+
+Scheduling is an implementation detail.
+
+## Agent Independence
+
+Factory is agent-neutral.
+
+It should work with any coding agent.
+
+Examples:
+
+- Claude Code
+- Codex
+- Pi
+- Aider
+- future coding agents
+
+Factory owns:
+
+- repository management
+- workflow selection
+- prompt compilation
+- orchestration
+
+The coding agent owns reasoning.
+
+## Long-Term Vision
+
+Factory is not another coding agent.
+
+Factory is the runtime that gives every repository an autonomous engineering team.
+
+Projects define:
+
+- standards
+- engineering workflows
+- objectives
+
+Factory continuously supplies engineering effort.
+
+Instead of repeatedly prompting an agent, software projects continuously improve themselves through repeatable engineering workflows executed by autonomous coding agents.

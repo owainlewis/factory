@@ -34,24 +34,24 @@ func run(args []string) error {
 	switch rest[0] {
 	case "repos":
 		return app.ListRepos(os.Stdout)
-	case "goals":
+	case "workflows":
 		if len(rest) != 2 {
-			return fmt.Errorf("usage: factory goals <repo>")
+			return fmt.Errorf("usage: factory workflows <repo>")
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		return app.ListGoals(ctx, os.Stdout, rest[1])
+		return app.ListWorkflows(ctx, os.Stdout, rest[1])
 	case "run":
 		if len(rest) < 2 {
-			return fmt.Errorf("usage: factory run <repo> [goal]")
+			return fmt.Errorf("usage: factory run <repo> [workflow]")
 		}
-		goal := "hello"
+		workflow := "hello"
 		if len(rest) >= 3 {
-			goal = rest[2]
+			workflow = rest[2]
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
-		record, err := app.Run(ctx, rest[1], goal)
+		record, err := app.Run(ctx, rest[1], workflow)
 		if err != nil {
 			return err
 		}
@@ -91,5 +91,5 @@ func parseArgs(args []string) (options, []string, error) {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: factory [--config config.yaml] <goals|repos|runs|run>")
+	return fmt.Errorf("usage: factory [--config config.yaml] <repos|run|runs|workflows>")
 }

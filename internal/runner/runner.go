@@ -14,8 +14,8 @@ import (
 	"github.com/owainlewis/factory/internal/agent"
 	"github.com/owainlewis/factory/internal/config"
 	"github.com/owainlewis/factory/internal/gitrepo"
-	"github.com/owainlewis/factory/internal/goals"
 	"github.com/owainlewis/factory/internal/prompt"
+	"github.com/owainlewis/factory/internal/workflows"
 )
 
 type App struct {
@@ -26,8 +26,8 @@ type RunRecord struct {
 	ID         string    `json:"id"`
 	Repo       string    `json:"repo"`
 	RepoPath   string    `json:"repo_path"`
-	Goal       string    `json:"goal"`
-	GoalSource string    `json:"goal_source"`
+	Workflow   string    `json:"workflow"`
+	Source     string    `json:"source"`
 	Agent      string    `json:"agent"`
 	Status     string    `json:"status"`
 	StartedAt  time.Time `json:"started_at"`
@@ -60,23 +60,23 @@ func (a *App) ListRepos(w io.Writer) error {
 	return nil
 }
 
-func (a *App) ListGoals(ctx context.Context, w io.Writer, repoName string) error {
+func (a *App) ListWorkflows(ctx context.Context, w io.Writer, repoName string) error {
 	repoPath, err := a.ensureRepoPath(ctx, repoName)
 	if err != nil {
 		return err
 	}
 
-	discovered, err := goals.Discover(repoPath)
+	discovered, err := workflows.Discover(repoPath)
 	if err != nil {
 		return err
 	}
 
-	for _, goal := range discovered {
+	for _, workflow := range discovered {
 		state := "missing"
-		if goal.Runnable {
+		if workflow.Runnable {
 			state = "runnable"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n", goal.Name, goal.Path, state)
+		fmt.Fprintf(w, "%s\t%s\t%s\n", workflow.Name, workflow.Path, state)
 	}
 	return nil
 }
@@ -99,7 +99,7 @@ func (a *App) ListRuns(w io.Writer) error {
 	return nil
 }
 
-func (a *App) Run(ctx context.Context, repoName string, goal string) (RunRecord, error) {
+func (a *App) Run(ctx context.Context, repoName string, workflow string) (RunRecord, error) {
 	repo, ok := a.cfg.Repos[repoName]
 	if !ok {
 		return RunRecord{}, fmt.Errorf("unknown repo %q", repoName)
@@ -107,7 +107,7 @@ func (a *App) Run(ctx context.Context, repoName string, goal string) (RunRecord,
 	repoPath := config.RepoPath(a.cfg.Factory.DataDir, repoName, repo)
 
 	started := time.Now().UTC()
-	runID := fmt.Sprintf("%s-%s-%s", started.Format("20060102T150405Z"), repoName, goal)
+	runID := fmt.Sprintf("%s-%s-%s", started.Format("20060102T150405Z"), repoName, workflow)
 	logPath := filepath.Join(a.cfg.Factory.DataDir, "logs", runID+".log")
 	recordPath := filepath.Join(a.cfg.Factory.DataDir, "runs", runID+".json")
 
@@ -115,7 +115,7 @@ func (a *App) Run(ctx context.Context, repoName string, goal string) (RunRecord,
 		ID:         runID,
 		Repo:       repoName,
 		RepoPath:   repoPath,
-		Goal:       goal,
+		Workflow:   workflow,
 		Agent:      repo.Agent,
 		Status:     "running",
 		StartedAt:  started,
@@ -137,7 +137,7 @@ func (a *App) Run(ctx context.Context, repoName string, goal string) (RunRecord,
 		return record, err
 	}
 
-	goalSource, promptText, err := prompt.Build(repoPath, goal)
+	source, promptText, err := prompt.Build(repoPath, workflow)
 	if err != nil {
 		record.Status = "blocked"
 		record.Error = err.Error()
@@ -145,7 +145,7 @@ func (a *App) Run(ctx context.Context, repoName string, goal string) (RunRecord,
 		_ = writeRecord(record)
 		return record, err
 	}
-	record.GoalSource = goalSource
+	record.Source = source
 
 	adapter, err := adapterFor(repo.Agent)
 	if err != nil {

@@ -2,7 +2,7 @@
 
 Code Factory has two sides:
 
-- target repos own standards and goals
+- target repos own standards, workflows, and journals
 - Factory owns local execution
 
 The system should stay boring on disk and powerful in execution.
@@ -33,7 +33,7 @@ internal/runner
 
 `internal/config` loads the local registry.
 `internal/gitrepo` clones or updates repos.
-`internal/prompt` builds built-in and repo-owned goal prompts.
+`internal/prompt` compiles repo context and workflow prompts.
 `internal/agent` shells out to coding agents.
 `internal/runner` connects the pieces and writes run state.
 
@@ -50,7 +50,7 @@ repos:
     agent: claude
 ```
 
-It should not duplicate target repo standards, checks, issue labels, or goals.
+It should not duplicate target repo standards, checks, issue labels, journals, or workflows.
 
 ## State
 
@@ -72,16 +72,17 @@ Recommended target repo files:
 ```text
 AGENTS.md
 STANDARDS.md
-.factory/
-  goals/
-    standards-review.md
-    triage.md
-    execute.md
+WORKFLOWS/
+  bug-fix.md
+  issue-triage.md
+  docs-update.md
+JOURNAL.md
 ```
 
 `AGENTS.md` says how agents should behave.
 `STANDARDS.md` says what healthy means.
-`.factory/goals/*.md` says what Factory may run.
+`WORKFLOWS/*.md` says how a class of engineering work should run.
+`JOURNAL.md` carries append-only handover notes between runs.
 
 ## Agent Adapter
 
@@ -99,7 +100,7 @@ Later adapters can support Codex, Aider, or other local coding agents.
 
 - Add repo locks.
 - Add worktrees per write run.
-- Add `factory goals <repo>`.
-- Add `standards-review`.
+- Add planning, execution, and verification modes.
+- Add journal appends.
 - Add label sync.
 - Add daemon schedules.

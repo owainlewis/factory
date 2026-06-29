@@ -1,7 +1,7 @@
 # Code Factory
 
 Code Factory is a local-first runner for coding agents.
-It keeps important GitHub repos healthy by cloning them locally, running repo-owned goals, saving logs, and leaving humans in control.
+It keeps important GitHub repos moving by cloning them locally, compiling repo-owned engineering context, dispatching agents, saving logs, and leaving humans in control.
 
 Factory is not a task dump.
 Factory is not a hosted service yet.
@@ -18,7 +18,7 @@ config -> clone or fetch repo -> build prompt -> run Claude Code -> save log -> 
 It supports:
 
 - `factory repos`
-- `factory goals <repo>`
+- `factory workflows <repo>`
 - `factory run <repo> hello`
 - `factory runs`
 - Claude Code as the first agent adapter
@@ -29,7 +29,7 @@ It supports:
 ## Config
 
 `config.yaml` lists repos that Factory can manage.
-It is a local runner registry, not the source of repo standards or goals.
+It is a local runner registry, not the source of repo standards, workflows, or journals.
 
 ```yaml
 factory:
@@ -52,16 +52,16 @@ List repos:
 go run ./cmd/factory repos
 ```
 
-Run the no-edit smoke goal:
+Run the no-edit smoke workflow:
 
 ```sh
 go run ./cmd/factory run cortex hello
 ```
 
-List goals for a repo:
+List workflows for a repo:
 
 ```sh
-go run ./cmd/factory goals cortex
+go run ./cmd/factory workflows cortex
 ```
 
 List run records:
@@ -72,22 +72,25 @@ go run ./cmd/factory runs
 
 ## Target Repo Model
 
-Each target repo should own its standards and goals:
+Each target repo should own its standards, workflows, and journal:
 
 ```text
 AGENTS.md
 STANDARDS.md
-.factory/
-  goals/
-    standards-review.md
-    triage.md
-    execute.md
+WORKFLOWS/
+  bug-fix.md
+  issue-triage.md
+  docs-update.md
+  dependency-update.md
+  release.md
+  review-pr.md
+JOURNAL.md
 ```
 
 Factory owns orchestration.
 The target repo owns intent.
 
-Factory should not store target repo standards or runnable project goals here.
+Factory should not store target repo standards, journals, or runnable project workflows here.
 Those belong in each target repo.
 
 ## Standard Factory Labels
@@ -111,4 +114,4 @@ Factory labels are standard across repos:
 - Do not push directly to a default branch.
 - Do not run broad cleanup.
 - Do not make public claims without evidence.
-- Stop if the goal or issue is unclear.
+- Stop if the workflow or issue is unclear.
