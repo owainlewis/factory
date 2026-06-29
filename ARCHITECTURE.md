@@ -80,11 +80,13 @@ Recommended target repo files:
   AGENTS.md
   STANDARDS.md
   WORKFLOWS/
-    bug-fix.md
-    issue-triage.md
-    docs-update.md
+    standards.md
+    github.md
+    docs.md
+    ci.md
+    release.md
   OBJECTIVES/
-    2026-06-29-release-readiness.md
+    2026-06-29-release.md
   JOURNAL.md
 ```
 

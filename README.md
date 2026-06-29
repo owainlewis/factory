@@ -62,6 +62,26 @@ These files have separate jobs:
 Factory owns orchestration.
 The target repo owns intent.
 
+A typical target repo starts with short workflow area names:
+
+```text
+.factory/
+  AGENTS.md
+  STANDARDS.md
+  WORKFLOWS/
+    standards.md
+    github.md
+    docs.md
+    ci.md
+    release.md
+    security.md
+    dependencies.md
+    tests.md
+  OBJECTIVES/
+    2026-06-29-release.md
+  JOURNAL.md
+```
+
 ## Config
 
 `config.yaml` is a local registry of repos Factory can manage.
@@ -109,13 +129,13 @@ go run ./cmd/factory run cortex hello
 Plan a repo-owned workflow without editing files:
 
 ```sh
-go run ./cmd/factory run cortex standards-check --mode plan
+go run ./cmd/factory run cortex standards --mode plan
 ```
 
 Execute a repo-owned workflow:
 
 ```sh
-go run ./cmd/factory run cortex standards-check --mode execute
+go run ./cmd/factory run cortex standards --mode execute
 ```
 
 List run records:

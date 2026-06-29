@@ -1,4 +1,4 @@
-# Release Readiness
+# Release
 
 ## Goal
 
@@ -18,7 +18,7 @@ In plan mode:
 
 In execute mode:
 
-1. Improve one release-readiness gap.
+1. Improve one release gap.
 2. Prefer docs, CI, or changelog scaffolding before release automation.
 3. Run relevant checks.
 4. Open a draft pull request.

@@ -16,7 +16,7 @@ func TestParseArgsDefaultMode(t *testing.T) {
 }
 
 func TestParseArgsModeFlagAfterWorkflow(t *testing.T) {
-	opts, rest, err := parseArgs([]string{"run", "cortex", "standards-check", "--mode", "execute"})
+	opts, rest, err := parseArgs([]string{"run", "cortex", "standards", "--mode", "execute"})
 	if err != nil {
 		t.Fatal(err)
 	}

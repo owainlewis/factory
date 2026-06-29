@@ -86,13 +86,13 @@ func identityFindings(repoPath string) []Finding {
 	if exists(repoPath, "README.md") {
 		return []Finding{pass("identity", "README.md exists", "README.md")}
 	}
-	return []Finding{fail("identity", SeverityHigh, "README.md is missing", "README.md not found", "docs-readiness", "docs-readiness")}
+	return []Finding{fail("identity", SeverityHigh, "README.md is missing", "README.md not found", "docs", "docs")}
 }
 
 func usabilityFindings(repoPath string) []Finding {
 	readme, ok := readLower(repoPath, "README.md")
 	if !ok {
-		return []Finding{warn("usability", "Cannot check usage docs without README.md", "README.md not found", "docs-readiness", "docs-readiness")}
+		return []Finding{warn("usability", "Cannot check usage docs without README.md", "README.md not found", "docs", "docs")}
 	}
 
 	checks := []struct {
@@ -112,7 +112,7 @@ func usabilityFindings(repoPath string) []Finding {
 			findings = append(findings, pass("usability", check.name, "README.md"))
 			continue
 		}
-		findings = append(findings, fail("usability", check.severity, check.name, "README.md does not contain any of: "+strings.Join(check.terms, ", "), "docs-readiness", "docs-readiness"))
+		findings = append(findings, fail("usability", check.severity, check.name, "README.md does not contain any of: "+strings.Join(check.terms, ", "), "docs", "docs"))
 	}
 	return findings
 }
@@ -128,7 +128,7 @@ func buildFindings(repoPath string) []Finding {
 	case exists(repoPath, "Cargo.toml"):
 		return []Finding{pass("build", "Rust package detected", "Cargo.toml")}
 	default:
-		return []Finding{warn("build", "No common build metadata found", "go.mod, dune-project, package.json, and Cargo.toml not found", "docs-readiness", "docs-readiness")}
+		return []Finding{warn("build", "No common build metadata found", "go.mod, dune-project, package.json, and Cargo.toml not found", "docs", "docs")}
 	}
 }
 
@@ -143,13 +143,13 @@ func testingFindings(repoPath string) []Finding {
 		if fileContains(repoPath, "package.json", `"test"`) {
 			findings = append(findings, pass("testing", "npm test script exists", "package.json contains test script"))
 		} else {
-			findings = append(findings, fail("testing", SeverityHigh, "npm test script is missing", "package.json does not contain a test script", "testing-readiness", "standards-check"))
+			findings = append(findings, fail("testing", SeverityHigh, "npm test script is missing", "package.json does not contain a test script", "tests", "standards"))
 		}
 	default:
 		if hasPathPrefix(repoPath, "test") || hasPathPrefix(repoPath, "tests") {
 			findings = append(findings, pass("testing", "Test directory exists", "test or tests directory found"))
 		} else {
-			findings = append(findings, warn("testing", "No test signal found", "No known test metadata or test directory found", "testing-readiness", "standards-check"))
+			findings = append(findings, warn("testing", "No test signal found", "No known test metadata or test directory found", "tests", "standards"))
 		}
 	}
 	return findings
@@ -159,7 +159,7 @@ func ciFindings(repoPath string) []Finding {
 	if hasWorkflow(repoPath) {
 		return []Finding{pass("ci", "GitHub Actions workflows exist", ".github/workflows contains workflow files")}
 	}
-	return []Finding{fail("ci", SeverityHigh, "Pull requests do not appear to run CI", ".github/workflows has no .yml or .yaml files", "ci-readiness", "ci-readiness")}
+	return []Finding{fail("ci", SeverityHigh, "Pull requests do not appear to run CI", ".github/workflows has no .yml or .yaml files", "ci", "ci")}
 }
 
 func releaseFindings(repoPath string) []Finding {
@@ -167,12 +167,12 @@ func releaseFindings(repoPath string) []Finding {
 	if exists(repoPath, "CHANGELOG.md") {
 		findings = append(findings, pass("release", "CHANGELOG.md exists", "CHANGELOG.md"))
 	} else {
-		findings = append(findings, fail("release", SeverityMedium, "CHANGELOG.md is missing", "CHANGELOG.md not found", "release-readiness", "release-readiness"))
+		findings = append(findings, fail("release", SeverityMedium, "CHANGELOG.md is missing", "CHANGELOG.md not found", "release", "release"))
 	}
 	if exists(repoPath, filepath.Join("docs", "releasing.md")) {
 		findings = append(findings, pass("release", "Release process is documented", "docs/releasing.md"))
 	} else {
-		findings = append(findings, fail("release", SeverityMedium, "Release process is not documented", "docs/releasing.md not found", "release-readiness", "release-readiness"))
+		findings = append(findings, fail("release", SeverityMedium, "Release process is not documented", "docs/releasing.md not found", "release", "release"))
 	}
 	return findings
 }
@@ -181,7 +181,7 @@ func governanceFindings(repoPath string) []Finding {
 	if exists(repoPath, "LICENSE") || exists(repoPath, "LICENSE.md") {
 		return []Finding{pass("governance", "License file exists", "LICENSE or LICENSE.md")}
 	}
-	return []Finding{fail("governance", SeverityHigh, "License file is missing", "LICENSE and LICENSE.md not found", "governance-readiness", "standards-check")}
+	return []Finding{fail("governance", SeverityHigh, "License file is missing", "LICENSE and LICENSE.md not found", "github", "standards")}
 }
 
 func agentReadinessFindings(repoPath string) []Finding {
@@ -193,10 +193,10 @@ func agentReadinessFindings(repoPath string) []Finding {
 		objective string
 		workflow  string
 	}{
-		{path: filepath.Join(".factory", "STANDARDS.md"), passTitle: ".factory/STANDARDS.md exists", failTitle: ".factory/STANDARDS.md is missing", severity: SeverityHigh, objective: "agent-readiness", workflow: "standards-check"},
-		{path: filepath.Join(".factory", "AGENTS.md"), passTitle: ".factory/AGENTS.md exists", failTitle: ".factory/AGENTS.md is missing", severity: SeverityMedium, objective: "agent-readiness", workflow: "standards-check"},
-		{path: filepath.Join(".factory", "JOURNAL.md"), passTitle: ".factory/JOURNAL.md exists", failTitle: ".factory/JOURNAL.md is missing", severity: SeverityLow, objective: "agent-readiness", workflow: "standards-check"},
-		{path: filepath.Join(".factory", "WORKFLOWS", "standards-check.md"), passTitle: ".factory/WORKFLOWS/standards-check.md exists", failTitle: ".factory/WORKFLOWS/standards-check.md is missing", severity: SeverityHigh, objective: "agent-readiness", workflow: "standards-check"},
+		{path: filepath.Join(".factory", "STANDARDS.md"), passTitle: ".factory/STANDARDS.md exists", failTitle: ".factory/STANDARDS.md is missing", severity: SeverityHigh, objective: "standards", workflow: "standards"},
+		{path: filepath.Join(".factory", "AGENTS.md"), passTitle: ".factory/AGENTS.md exists", failTitle: ".factory/AGENTS.md is missing", severity: SeverityMedium, objective: "standards", workflow: "standards"},
+		{path: filepath.Join(".factory", "JOURNAL.md"), passTitle: ".factory/JOURNAL.md exists", failTitle: ".factory/JOURNAL.md is missing", severity: SeverityLow, objective: "standards", workflow: "standards"},
+		{path: filepath.Join(".factory", "WORKFLOWS", "standards.md"), passTitle: ".factory/WORKFLOWS/standards.md exists", failTitle: ".factory/WORKFLOWS/standards.md is missing", severity: SeverityHigh, objective: "standards", workflow: "standards"},
 	}
 	findings := []Finding{}
 	for _, check := range checks {

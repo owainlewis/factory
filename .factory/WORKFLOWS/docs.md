@@ -1,4 +1,4 @@
-# Docs Readiness
+# Docs
 
 ## Goal
 

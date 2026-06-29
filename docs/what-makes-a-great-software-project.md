@@ -193,11 +193,11 @@ It should have files like:
   AGENTS.md
   STANDARDS.md
   WORKFLOWS/
-    standards-check.md
-    ci-readiness.md
-    release-readiness.md
+    standards.md
+    ci.md
+    release.md
   OBJECTIVES/
-    2026-06-29-release-readiness.md
+    2026-06-29-release.md
   JOURNAL.md
 ```
 
@@ -351,7 +351,7 @@ Fill in the language-specific commands.
 Then add one workflow:
 
 ```text
-.factory/WORKFLOWS/standards-check.md
+.factory/WORKFLOWS/standards.md
 ```
 
 The workflow should do one thing:
@@ -365,7 +365,7 @@ In execute mode, fix one small gap and open a draft pull request.
 When you want a directed piece of work, add one objective:
 
 ```text
-.factory/OBJECTIVES/2026-06-29-release-readiness.md
+.factory/OBJECTIVES/2026-06-29-release.md
 ```
 
 That objective should say the goal, scope, done conditions, workflow, and stop rules.

@@ -160,7 +160,7 @@ goal = runtime prompt sent to the coding agent
 Objective example:
 
 ```md
-# Objective: CI readiness
+# Objective: CI
 
 ## Goal
 
@@ -168,7 +168,7 @@ Make pull requests run build and tests in CI.
 
 ## Workflow
 
-Use `.factory/WORKFLOWS/ci-readiness.md`.
+Use `.factory/WORKFLOWS/ci.md`.
 
 ## Done
 

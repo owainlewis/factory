@@ -182,7 +182,7 @@ Repo-owned work orders.
 Examples:
 
 ```text
-2026-06-29-release-readiness.md
+2026-06-29-release.md
 2026-06-29-docs-audit.md
 2026-06-29-ci-hardening.md
 ```
@@ -366,7 +366,7 @@ goal = runtime instruction sent to the coding agent
 Example objective:
 
 ```md
-# Objective: Release readiness
+# Objective: Release
 
 ## Goal
 
@@ -387,7 +387,7 @@ Make this project releasable by a new user.
 
 ## Workflow
 
-Use `.factory/WORKFLOWS/release-readiness.md`.
+Use `.factory/WORKFLOWS/release.md`.
 
 ## Stop Rules
 
