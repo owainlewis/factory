@@ -1,9 +1,21 @@
-# Code Factory
+# Factory
 
-Code Factory is a local-first runner for coding agents.
-It keeps important GitHub repos moving by cloning them locally, compiling repo-owned engineering context, dispatching agents, saving logs, and leaving humans in control.
+Factory is a local runtime for autonomous software engineering.
+
+Factory exists to raise the quality bar of every software project.
+It helps produce code, docs, tests, CI, releases, and maintenance work at a level that was not practical when humans had to remember and execute every step by hand.
+
+Every serious repo needs the same basic engineering memory:
+what good looks like, how work should run, what needs doing now, what happened last time, and what a human must review.
+
+Factory puts that memory in the repo under `.factory/`, then runs coding agents against it.
+
+The goal is not to automate typing code.
+The goal is to keep projects moving:
+docs stay true, CI keeps working, releases become repeatable, issues get triaged, standards are enforced, and humans stay in control.
 
 Factory is not a task dump.
+Factory is not a policy wiki.
 Factory is not a hosted service yet.
 Factory does not merge PRs.
 
@@ -46,7 +58,7 @@ It is a local runner registry, not the source of repo standards, workflows, or j
 
 ```yaml
 factory:
-  name: Code Factory
+  name: Factory
   purpose: Run disciplined agent loops across important GitHub repos.
   data_dir: .factory-state
 
