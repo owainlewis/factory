@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -171,13 +172,21 @@ func (a *App) Run(ctx context.Context, repoName string, workflow string, mode Mo
 		return record, err
 	}
 
-	lock, err := a.acquireRepoLock(ctx, repoName)
+	lock, busy, err := a.tryAcquireRepoLock(repoName)
 	if err != nil {
 		record.Status = "failed"
 		record.Error = err.Error()
 		record.FinishedAt = time.Now().UTC()
 		_ = writeRecord(record)
 		return record, err
+	}
+	if busy {
+		// Another run holds this repo. Skip cleanly instead of blocking.
+		record.Status = "skipped"
+		record.Blocker = "repo is locked by another run"
+		record.FinishedAt = time.Now().UTC()
+		_ = writeRecord(record)
+		return record, nil
 	}
 	defer lock.Release()
 
@@ -232,6 +241,11 @@ func (a *App) Run(ctx context.Context, repoName string, workflow string, mode Mo
 	record.FinishedAt = time.Now().UTC()
 	if err != nil {
 		record.Error = err.Error()
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			record.Status = "cancelled"
+		} else if record.Status == "" {
+			record.Status = "failed"
+		}
 		_ = writeRecord(record)
 		return record, err
 	}

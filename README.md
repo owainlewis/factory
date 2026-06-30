@@ -155,6 +155,30 @@ It must not merge PRs or push to a default branch.
 Current limitation: Factory does not yet accept a named objective argument.
 Use `.factory/OBJECTIVES/current-objective.md` for the current directed goal.
 
+## Locks and run lifecycle
+
+Factory must not run two write-capable jobs against one repo at the same time.
+Before a run touches a repo it takes a per-repo lock under
+`.factory-state/locks/<repo>.lock`.
+
+- While a run holds the lock, a second `factory run` for the same repo **skips
+  cleanly**: it writes a run record with status `skipped` and exits without
+  error. It does not block or wait.
+- The lock records the owning process id. If a run crashes and leaves a lock
+  behind, the next run detects that the owner process is gone and **reclaims
+  the stale lock** automatically.
+- A lock whose owner cannot be determined is left in place to avoid stealing a
+  live lock. Remove `.factory-state/locks/<repo>.lock` by hand if you are sure
+  no run is active.
+
+Every run writes a JSON record under `.factory-state/runs` with a final status:
+
+- `success` - the run completed.
+- `skipped` - the repo was locked by another run.
+- `blocked` - the run stopped and needs human input.
+- `failed` - the run hit an error.
+- `cancelled` - the run was cancelled or timed out.
+
 ## Audit
 
 `factory audit <repo>` is read-only.
