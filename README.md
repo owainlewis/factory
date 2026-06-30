@@ -169,6 +169,7 @@ It should help decide what to run next before any agent edits files.
 - [Factory Standard](docs/factory-standard.md)
 - [What makes a great software project](docs/what-makes-a-great-software-project.md)
 - [Runner spec](docs/factory-runner/spec.md)
+- [Target repo file model](docs/target-repo.md)
 - [STANDARDS.md examples](docs/standards-examples.md)
 - [Workflow examples](docs/workflow-examples.md)
 - [Objective examples](docs/objective-examples.md)
