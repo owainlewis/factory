@@ -107,8 +107,46 @@ func TestInitForceOverwrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) == "old\n" {
-		t.Error("STANDARDS.md was not overwritten under force")
+
+	// The overwritten file must match the scaffold default exactly, not just
+	// differ from the old content (which a truncated write would also satisfy).
+	expectedDir := t.TempDir()
+	if _, err := Init(expectedDir, false); err != nil {
+		t.Fatalf("Init expected fixture: %v", err)
+	}
+	expected, err := os.ReadFile(filepath.Join(expectedDir, ".factory", "STANDARDS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, expected) {
+		t.Errorf("STANDARDS.md not restored to default: got %q want %q", data, expected)
+	}
+}
+
+func TestInitRefusesSymlinkDestination(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, ".factory", "STANDARDS.md")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(outside, []byte("secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, target); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	if _, err := Init(dir, true); err == nil {
+		t.Fatal("expected Init to refuse writing through a symlink")
+	}
+
+	data, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "secret\n" {
+		t.Errorf("symlink target was modified: %q", data)
 	}
 }
 

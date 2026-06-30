@@ -29,8 +29,11 @@ func run(args []string) error {
 
 	// init bootstraps a target repo and must work before any config exists.
 	if rest[0] == "init" {
+		if len(rest) > 2 {
+			return fmt.Errorf("usage: factory init [dir] [--force]")
+		}
 		dir := "."
-		if len(rest) >= 2 {
+		if len(rest) == 2 {
 			dir = rest[1]
 		}
 		results, err := scaffold.Init(dir, opts.Force)
@@ -127,5 +130,5 @@ func parseArgs(args []string) (options, []string, error) {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: factory [--config config.yaml] <init|audit|repos|run|runs|workflows>")
+	return fmt.Errorf("usage: factory [--config config.yaml] <init [dir] [--force]|audit|repos|run|runs|workflows>")
 }

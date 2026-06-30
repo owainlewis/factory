@@ -47,13 +47,21 @@ func Init(dir string, force bool) ([]Result, error) {
 		dest := filepath.Join(dir, ".factory", filepath.FromSlash(rel))
 		relDest := filepath.Join(".factory", filepath.FromSlash(rel))
 
-		if !force {
-			if _, statErr := os.Stat(dest); statErr == nil {
+		// Lstat (not Stat) so an existing symlink is detected rather than
+		// followed. We never write through a symlink: without force we leave
+		// it in place; with force we refuse instead of clobbering its target.
+		info, statErr := os.Lstat(dest)
+		switch {
+		case statErr == nil:
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("%s is a symlink; refusing to write through it", relDest)
+			}
+			if !force {
 				results = append(results, Result{Path: relDest, Created: false})
 				return nil
-			} else if !os.IsNotExist(statErr) {
-				return statErr
 			}
+		case !os.IsNotExist(statErr):
+			return statErr
 		}
 
 		data, err := templates.ReadFile(path)
