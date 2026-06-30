@@ -179,6 +179,25 @@ Every run writes a JSON record under `.factory-state/runs` with a final status:
 - `failed` - the run hit an error.
 - `cancelled` - the run was cancelled or timed out.
 
+## Worktrees
+
+Execute-mode runs never edit the base checkout under `.factory-state/repos`.
+Each run creates an isolated git worktree at
+`.factory-state/worktrees/<repo>/<run-id>`, checked out from the repo's base
+branch, and the agent runs inside it. The run record carries the worktree path
+and base branch, so you can find the exact tree a run used.
+
+Worktrees are preserved after a run so its result can be inspected. They do not
+clean themselves up. To reclaim space:
+
+- Remove one worktree from the base checkout:
+  `git -C .factory-state/repos/<repo> worktree remove .factory-state/worktrees/<repo>/<run-id>`.
+- Or delete the directories and prune the stale entries:
+  `rm -rf .factory-state/worktrees/<repo>/<run-id>` then
+  `git -C .factory-state/repos/<repo> worktree prune`.
+- Deleting `.factory-state` entirely is safe when no run is active; Factory
+  recreates what it needs on the next run.
+
 ## Audit
 
 `factory audit <repo>` is read-only.

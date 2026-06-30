@@ -25,6 +25,9 @@ type App struct {
 	cfg config.Config
 	// reclaimMu serializes stale-lock reclamation within this process.
 	reclaimMu sync.Mutex
+	// newAdapter resolves an agent adapter by name. Tests override it; when
+	// nil the default adapterFor is used.
+	newAdapter func(string) (agent.Adapter, error)
 }
 
 type Mode string
@@ -58,8 +61,13 @@ type RunRecord struct {
 	FinishedAt time.Time `json:"finished_at"`
 	LogPath    string    `json:"log_path"`
 	RecordPath string    `json:"record_path"`
-	Blocker    string    `json:"blocker,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	// Worktree is the isolated git worktree an execute run uses. It is empty
+	// for plan runs, which read the base checkout directly.
+	Worktree string `json:"worktree,omitempty"`
+	// Branch is the base branch the worktree was created from.
+	Branch  string `json:"branch,omitempty"`
+	Blocker string `json:"blocker,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 func New(configPath string) (*App, error) {
@@ -214,6 +222,8 @@ func (a *App) Run(ctx context.Context, repoName string, workflow string, mode Mo
 			return record, err
 		}
 		record.RepoPath = runRepoPath
+		record.Worktree = runRepoPath
+		record.Branch = repo.Branch
 	}
 
 	source, promptText, err := prompt.Build(runRepoPath, workflow, string(mode))
@@ -226,7 +236,7 @@ func (a *App) Run(ctx context.Context, repoName string, workflow string, mode Mo
 	}
 	record.Source = source
 
-	adapter, err := adapterFor(repo.Agent)
+	adapter, err := a.adapterFor(repo.Agent)
 	if err != nil {
 		record.Status = "blocked"
 		record.Error = err.Error()
@@ -285,7 +295,14 @@ func (a *App) ensureRepoPath(ctx context.Context, repoName string) (string, func
 	return repoPath, unlock, nil
 }
 
-func adapterFor(name string) (agent.Adapter, error) {
+func (a *App) adapterFor(name string) (agent.Adapter, error) {
+	if a.newAdapter != nil {
+		return a.newAdapter(name)
+	}
+	return defaultAdapterFor(name)
+}
+
+func defaultAdapterFor(name string) (agent.Adapter, error) {
 	switch name {
 	case "", "claude":
 		return agent.Claude{}, nil
