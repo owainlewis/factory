@@ -38,6 +38,76 @@ Do not use those checkouts as human working copies.
 Factory may fetch, checkout, and update them while running commands.
 Execute-mode runs use per-run worktrees so agent edits do not dirty the repo cache.
 
+## Requirements
+
+- Go 1.23 or newer to build and run the CLI.
+- `git` on your `PATH`. Factory clones and fetches target repos.
+- The Claude Code CLI (`claude`) on your `PATH` to run agent workflows. See the
+  [Claude Code adapter](#claude-code-adapter) section.
+- The GitHub CLI (`gh`), authenticated, only for `factory labels`.
+
+Build the CLI:
+
+```sh
+go build -o factory ./cmd/factory
+```
+
+Or run it without building, as the examples below do, with `go run ./cmd/factory`.
+
+## Your first run
+
+1. Clone this repo and build, or use `go run ./cmd/factory`.
+2. Create a `config.yaml` next to where you run Factory. Register at least one
+   repo (see [Config](#config)).
+3. Audit the repo to see its health. This is read-only:
+
+   ```sh
+   go run ./cmd/factory audit <repo>
+   ```
+
+4. Plan a workflow. Plan mode inspects and reports; it does not edit files:
+
+   ```sh
+   go run ./cmd/factory run <repo> standards-check --mode plan
+   ```
+
+5. Read the run record and log printed at the end of the run. They live under
+   `.factory-state/runs` and `.factory-state/logs`.
+
+A successful plan run prints a run id with status `success` and the paths to its
+log and record. From there, `--mode execute` lets the agent open a draft pull
+request.
+
+## Claude Code adapter
+
+Factory's first agent adapter shells out to the Claude Code CLI. To use it:
+
+- Install the `claude` CLI and make sure it is on your `PATH`.
+- Authenticate it and keep enough credit balance. When Claude Code reports the
+  credit balance is too low, Factory records the run as `blocked` rather than
+  failing.
+
+Factory invokes `claude -p --permission-mode <mode>` in the repo checkout, where
+plan mode maps to Claude's `plan` permission mode and execute mode maps to
+`auto`.
+
+## Local state
+
+Factory keeps all of its state under the `data_dir` from `config.yaml`, which
+defaults to `.factory-state`:
+
+```text
+.factory-state/
+  repos/       Factory-owned checkouts of managed repos
+  worktrees/   per-run worktrees for execute-mode runs
+  runs/        JSON run records, one per run
+  logs/        text logs, one per run
+  locks/       per-repo locks
+```
+
+This directory is internal Factory state. It is safe to delete when no run is
+active; Factory recreates what it needs on the next run.
+
 ## Repo Contract
 
 Each target repo should own its Factory files:
@@ -162,6 +232,19 @@ It checks common repo health signals and prints a Markdown report.
 
 The audit report can suggest gaps, objectives, and workflows.
 It should help decide what to run next before any agent edits files.
+
+## Known limits
+
+Factory is an early MVP. Today:
+
+- Claude Code is the only agent adapter.
+- `factory run` does not yet accept a named objective argument. It includes
+  `.factory/OBJECTIVES/current-objective.md` or `current.md` when present.
+- There is no daemon or scheduler. Runs are one-shot CLI invocations.
+- `factory labels` requires the `gh` CLI and only manages the standard Factory
+  labels.
+- State is local to one machine under `.factory-state`. There is no shared or
+  hosted backend.
 
 ## Docs
 
