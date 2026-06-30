@@ -11,10 +11,10 @@ objective = current desired outcome
 goal = runtime prompt sent to the coding agent
 ```
 
-## `.factory/OBJECTIVES/2026-06-29-release.md`
+## `.factory/OBJECTIVES/2026-06-29-release-readiness.md`
 
 ```md
-# Objective: Release
+# Objective: Release readiness
 
 ## Goal
 
@@ -41,7 +41,7 @@ A user should be able to install it, build it, test it, run it, and understand r
 
 ## Workflow
 
-Use `.factory/WORKFLOWS/release.md`.
+Use `.factory/WORKFLOWS/standards-check.md`.
 
 ## Mode
 
@@ -80,7 +80,7 @@ Find and fix one documentation gap that blocks a new contributor.
 
 ## Workflow
 
-Use `.factory/WORKFLOWS/docs.md`.
+Use `.factory/WORKFLOWS/standards-check.md`.
 
 ## Stop Rules
 
@@ -89,10 +89,10 @@ Use `.factory/WORKFLOWS/docs.md`.
 - Stop if code behavior is unclear.
 ```
 
-## `.factory/OBJECTIVES/2026-06-29-ci.md`
+## `.factory/OBJECTIVES/2026-06-29-ci-readiness.md`
 
 ```md
-# Objective: CI
+# Objective: CI readiness
 
 ## Goal
 
@@ -112,7 +112,7 @@ Make pull requests run the project build and tests.
 
 ## Workflow
 
-Use `.factory/WORKFLOWS/ci.md`.
+Use `.factory/WORKFLOWS/standards-check.md`.
 
 ## Stop Rules
 

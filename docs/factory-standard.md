@@ -3,7 +3,7 @@
 The Factory Standard is a checklist for professional software projects.
 
 It describes what a senior engineer would expect to find in any serious repository.
-Factory uses this standard to create repo-owned `.factory/STANDARDS.md` files and workflow files.
+Factory uses this standard to create repo-owned `.factory/STANDARDS.md`, one default workflow, and objective files.
 
 The standard is generic.
 The implementation is language-specific.
@@ -51,10 +51,11 @@ Standards:
 - Project status is clear.
 - Public claims match the current code.
 
-Agent workflows:
+Objective examples:
 
-- github
-- docs
+- description-readiness
+- readme-purpose-check
+- repo-metadata-check
 
 ### Usability
 
@@ -67,9 +68,11 @@ Standards:
 - Required tools and versions are named.
 - Errors from missing setup are documented when common.
 
-Agent workflows:
+Objective examples:
 
-- docs
+- usability-check
+- readme-usage-check
+- example-smoke-test
 
 ### Build
 
@@ -90,9 +93,10 @@ Language examples:
 - Python: package build or documented no-build path
 - Rust: `cargo build`
 
-Agent workflows:
+Objective examples:
 
-- build
+- build-readiness
+- fix-build
 
 ### Testing
 
@@ -114,9 +118,9 @@ Language examples:
 - Python: `pytest`
 - Rust: `cargo test`
 
-Agent workflows:
+Objective examples:
 
-- tests
+- testing-readiness
 - add-missing-test
 - improve-test-coverage
 
@@ -142,9 +146,13 @@ Common checks:
 - dependency audit
 - generated file check
 
-Agent workflows:
+Objective examples:
 
-- ci
+- ci-readiness
+- add-ci
+- fix-failing-ci
+
+Use the default `standards-check` workflow unless the process is truly different.
 
 ### GitHub project hygiene
 
@@ -199,9 +207,12 @@ AI review standards:
 - AI review findings must include evidence and file references.
 - Security-sensitive changes still need human review.
 
-Agent workflows:
+Objective examples:
 
-- github
+- github-readiness
+- label-sync
+- issue-board-readiness
+- ai-review-readiness
 
 ### Code quality
 
@@ -225,7 +236,7 @@ AI review standards:
 - Security-sensitive changes require human review.
 - Review output should include severity, evidence, and file references.
 
-Agent workflows:
+Objective examples:
 
 - ai-review
 - review-pr
@@ -244,9 +255,13 @@ Standards:
 - Examples are current.
 - Generated docs are updated by the documented command.
 
-Agent workflows:
+Objective examples:
 
-- docs
+- docs-readiness
+- docs-code-alignment
+- update-examples
+
+Use the default `standards-check` workflow unless the process is truly different.
 
 ### Release
 
@@ -268,9 +283,13 @@ Project type examples:
 - Service: deploy, rollback, and environment notes
 - App: build, deploy, and version notes
 
-Agent workflows:
+Objective examples:
 
-- release
+- release-readiness
+- add-changelog
+- add-release-workflow
+
+Use the default `standards-check` workflow unless the process is truly different.
 
 ### Security
 
@@ -284,10 +303,11 @@ Standards:
 - Security-sensitive issues are labeled for human review.
 - Vulnerability reporting path exists for public projects when relevant.
 
-Agent workflows:
+Objective examples:
 
-- security
-- dependencies
+- security-readiness
+- dependency-update
+- secret-scan-check
 
 ### Operations
 
@@ -301,9 +321,11 @@ Standards:
 - Deployment and rollback are documented when relevant.
 - Local development and production setup are clearly separated.
 
-Agent workflows:
+Objective examples:
 
-- operations
+- operations-readiness
+- env-docs-check
+- deploy-docs-check
 
 ### Governance
 
@@ -324,9 +346,13 @@ Factory labels:
 - `factory-needs-human`
 - `factory-blocked`
 
-Agent workflows:
+Objective examples:
 
-- github
+- governance-readiness
+- label-sync
+- issue-triage
+
+Use the default `standards-check` workflow unless the process is truly different.
 
 ### Agent readiness
 
@@ -336,7 +362,7 @@ Standards:
 
 - `.factory/AGENTS.md` exists or the repo documents agent instructions.
 - `.factory/STANDARDS.md` defines repo health.
-- `.factory/WORKFLOWS/` contains agent playbooks.
+- `.factory/WORKFLOWS/standards-check.md` contains the default agent playbook.
 - `.factory/OBJECTIVES/` contains current work orders when agents are doing directed work.
 - `.factory/JOURNAL.md` records handover notes when agents run regularly.
 - Stop rules are explicit.
@@ -344,9 +370,11 @@ Standards:
 - Agents do not merge pull requests.
 - Agents do not push to default branches.
 
-Agent workflows:
+Objective examples:
 
-- standards
+- agent-readiness
+- workflow-readiness
+- journal-update
 
 ## Template model
 
@@ -357,7 +385,7 @@ base standard
 + language pack
 + project type pack
 + selected capability packs
-= repo-owned .factory/STANDARDS.md, .factory/WORKFLOWS/, and .factory/OBJECTIVES/
+= repo-owned .factory/STANDARDS.md, one default workflow, and .factory/OBJECTIVES/
 ```
 
 Example:
@@ -381,13 +409,9 @@ This produces:
 .factory/
   STANDARDS.md
   WORKFLOWS/
-    standards.md
-    github.md
-    ci.md
-    docs.md
-    release.md
+    standards-check.md
   OBJECTIVES/
-    2026-06-29-ci.md
+    2026-06-29-ci-readiness.md
   JOURNAL.md
 ```
 

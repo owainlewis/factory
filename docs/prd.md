@@ -91,7 +91,7 @@ Node:
 npm test
 ```
 
-Factory should use this standard to bootstrap repo-owned `.factory/STANDARDS.md` and `.factory/WORKFLOWS/` files.
+Factory should use this standard to bootstrap repo-owned `.factory/STANDARDS.md` and one default `.factory/WORKFLOWS/standards-check.md` file.
 After bootstrap, the target repo owns the final standard.
 
 ## Philosophy
@@ -125,6 +125,7 @@ Every managed repository defines how engineering should happen.
   AGENTS.md
   STANDARDS.md
   WORKFLOWS/
+    standards-check.md
   OBJECTIVES/
   JOURNAL.md
 ```
@@ -158,22 +159,18 @@ Standards change rarely.
 
 Engineering playbooks.
 
-Examples:
+Start with one workflow:
 
 ```text
-bug-fix.md
-issue-triage.md
-docs-update.md
-dependency-update.md
-release.md
-review-pr.md
+standards-check.md
 ```
 
-Each workflow describes how that class of work should be performed.
+That workflow describes the common loop: compare the repo to its standards, plan one small improvement, and execute one safe change when allowed.
 
 Factory does not invent process.
 
 It follows repository-owned SOPs.
+Add another workflow only when the process is truly different, not just because the objective is different.
 
 ### .factory/OBJECTIVES
 
@@ -182,7 +179,7 @@ Repo-owned work orders.
 Examples:
 
 ```text
-2026-06-29-release.md
+2026-06-29-release-readiness.md
 2026-06-29-docs-audit.md
 2026-06-29-ci-hardening.md
 ```
@@ -324,13 +321,13 @@ Planning decides:
 
 ```text
 Workflow:
-bug-fix
+standards-check
 ```
 
 Factory loads:
 
 ```text
-.factory/WORKFLOWS/bug-fix.md
+.factory/WORKFLOWS/standards-check.md
 ```
 
 Factory builds the prompt:
@@ -346,7 +343,7 @@ Read issue #42.
 
 Read .factory/OBJECTIVES/current-objective.md.
 
-Follow .factory/WORKFLOWS/bug-fix.md.
+Follow .factory/WORKFLOWS/standards-check.md.
 ```
 
 The coding agent performs the work.
@@ -366,7 +363,7 @@ goal = runtime instruction sent to the coding agent
 Example objective:
 
 ```md
-# Objective: Release
+# Objective: Release readiness
 
 ## Goal
 
@@ -387,7 +384,7 @@ Make this project releasable by a new user.
 
 ## Workflow
 
-Use `.factory/WORKFLOWS/release.md`.
+Use `.factory/WORKFLOWS/standards-check.md`.
 
 ## Stop Rules
 

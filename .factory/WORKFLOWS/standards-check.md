@@ -5,6 +5,9 @@
 Review Factory against `.factory/STANDARDS.md`.
 Make the smallest safe change that improves compliance.
 
+Use this one workflow for routine Factory work.
+The objective should name the area, such as docs, CI, testing, release, or agent readiness.
+
 ## Plan Mode
 
 In plan mode:
@@ -12,11 +15,12 @@ In plan mode:
 1. Read `.factory/AGENTS.md`.
 2. Read `.factory/STANDARDS.md`.
 3. Inspect README, docs, Go packages, tests, and CI.
-4. Report which standards pass, fail, or need human review.
-5. Name one smallest safe execute-mode change.
-6. Do not edit files.
-7. Do not create branches.
-8. Do not open pull requests.
+4. Focus on the current objective when one is provided.
+5. Report which standards pass, fail, or need human review.
+6. Name one smallest safe execute-mode change.
+7. Do not edit files.
+8. Do not create branches.
+9. Do not open pull requests.
 
 ## Execute Mode
 

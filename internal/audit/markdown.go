@@ -57,6 +57,14 @@ func WriteMarkdown(w io.Writer, repoName string, report Report) error {
 		if _, err := fmt.Fprintf(w, "   - Reason: %s\n", objective.Reason); err != nil {
 			return err
 		}
+		if objective.Goal != "" {
+			if _, err := fmt.Fprintf(w, "   - Goal: %s\n", objective.Goal); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(w, "   - Run note: write this goal to `.factory/OBJECTIVES/current-objective.md` before running the workflow."); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

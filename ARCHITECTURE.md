@@ -80,19 +80,15 @@ Recommended target repo files:
   AGENTS.md
   STANDARDS.md
   WORKFLOWS/
-    standards.md
-    github.md
-    docs.md
-    ci.md
-    release.md
+    standards-check.md
   OBJECTIVES/
-    2026-06-29-release.md
+    2026-06-29-release-readiness.md
   JOURNAL.md
 ```
 
 `.factory/AGENTS.md` says how agents should behave.
 `.factory/STANDARDS.md` says what healthy means.
-`.factory/WORKFLOWS/*.md` says how a class of engineering work should run.
+`.factory/WORKFLOWS/standards-check.md` says how routine engineering work should run.
 `.factory/OBJECTIVES/*.md` says what outcome is wanted now.
 `.factory/JOURNAL.md` carries append-only handover notes between runs.
 
@@ -103,6 +99,9 @@ workflow = repeatable process
 objective = current desired outcome
 goal = runtime prompt sent to the coding agent
 ```
+
+Prefer one workflow and many objectives.
+Add another workflow only when the process is truly different.
 
 ## Agent Adapter
 

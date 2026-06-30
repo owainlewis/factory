@@ -16,7 +16,7 @@ func TestRunFindsMissingCIAndSuggestsObjective(t *testing.T) {
 	writeFile(t, repo, filepath.Join(".factory", "STANDARDS.md"), "# Standards\n")
 	writeFile(t, repo, filepath.Join(".factory", "AGENTS.md"), "# Agents\n")
 	writeFile(t, repo, filepath.Join(".factory", "JOURNAL.md"), "# Journal\n")
-	writeFile(t, repo, filepath.Join(".factory", "WORKFLOWS", "standards.md"), "# Standards Check\n")
+	writeFile(t, repo, filepath.Join(".factory", "WORKFLOWS", "standards-check.md"), "# Standards Check\n")
 
 	report, err := Run(repo)
 	if err != nil {
@@ -27,11 +27,20 @@ func TestRunFindsMissingCIAndSuggestsObjective(t *testing.T) {
 	if finding == nil {
 		t.Fatalf("expected missing CI finding: %#v", report.Findings)
 	}
-	if finding.SuggestedObjective != "ci" {
+	if finding.SuggestedObjective != "ci-readiness" {
 		t.Fatalf("objective = %q", finding.SuggestedObjective)
 	}
-	if len(report.CandidateObjectives) == 0 || report.CandidateObjectives[0].ID != "ci" {
+	if finding.Workflow != "standards-check" {
+		t.Fatalf("workflow = %q", finding.Workflow)
+	}
+	if len(report.CandidateObjectives) == 0 || report.CandidateObjectives[0].ID != "ci-readiness" {
 		t.Fatalf("objectives = %#v", report.CandidateObjectives)
+	}
+	if report.CandidateObjectives[0].Workflow != "standards-check" {
+		t.Fatalf("objective workflow = %q", report.CandidateObjectives[0].Workflow)
+	}
+	if report.CandidateObjectives[0].Goal == "" {
+		t.Fatal("objective goal is empty")
 	}
 }
 
@@ -46,7 +55,7 @@ func TestRunPassesFactoryReadinessFiles(t *testing.T) {
 	writeFile(t, repo, filepath.Join(".factory", "STANDARDS.md"), "# Standards\n")
 	writeFile(t, repo, filepath.Join(".factory", "AGENTS.md"), "# Agents\n")
 	writeFile(t, repo, filepath.Join(".factory", "JOURNAL.md"), "# Journal\n")
-	writeFile(t, repo, filepath.Join(".factory", "WORKFLOWS", "standards.md"), "# Standards Check\n")
+	writeFile(t, repo, filepath.Join(".factory", "WORKFLOWS", "standards-check.md"), "# Standards Check\n")
 
 	report, err := Run(repo)
 	if err != nil {
@@ -70,14 +79,15 @@ func TestWriteMarkdown(t *testing.T) {
 			Severity:           SeverityHigh,
 			Title:              "Pull requests do not appear to run CI",
 			Evidence:           []string{".github/workflows has no workflow files"},
-			SuggestedObjective: "ci",
-			Workflow:           "ci",
+			SuggestedObjective: "ci-readiness",
+			Workflow:           "standards-check",
 		}},
 		CandidateObjectives: []CandidateObjective{{
-			ID:       "ci",
+			ID:       "ci-readiness",
 			Priority: 1,
-			Workflow: "ci",
+			Workflow: "standards-check",
 			Reason:   "Pull requests do not appear to run CI",
+			Goal:     "Make pull requests run the project build and tests in CI.",
 		}},
 	}
 
@@ -91,7 +101,9 @@ func TestWriteMarkdown(t *testing.T) {
 		"## Summary",
 		"### CI",
 		"**fail** `high` Pull requests do not appear to run CI",
-		"`ci`",
+		"`ci-readiness`",
+		"Make pull requests run the project build and tests in CI.",
+		".factory/OBJECTIVES/current-objective.md",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("markdown missing %q:\n%s", want, body)

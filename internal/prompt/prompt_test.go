@@ -35,6 +35,13 @@ func TestBuildRepoWorkflow(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".factory", "STANDARDS.md"), []byte("Tests must pass."), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	objectiveDir := filepath.Join(dir, ".factory", "OBJECTIVES")
+	if err := os.MkdirAll(objectiveDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(objectiveDir, "current-objective.md"), []byte("Improve CI."), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	source, body, err := Build(dir, "triage", "execute")
 	if err != nil {
@@ -48,6 +55,9 @@ func TestBuildRepoWorkflow(t *testing.T) {
 	}
 	if !strings.Contains(body, "Tests must pass.") {
 		t.Fatal("compiled standards missing")
+	}
+	if !strings.Contains(body, "Improve CI.") {
+		t.Fatal("compiled current objective missing")
 	}
 	if !strings.Contains(body, "Runtime mode: execute") {
 		t.Fatal("workflow prompt missing runtime mode")

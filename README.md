@@ -47,6 +47,7 @@ Each target repo should own its Factory files:
   AGENTS.md
   STANDARDS.md
   WORKFLOWS/
+    standards-check.md
   OBJECTIVES/
   JOURNAL.md
 ```
@@ -55,12 +56,14 @@ These files have separate jobs:
 
 - `.factory/AGENTS.md` gives repo-specific agent instructions.
 - `.factory/STANDARDS.md` says what good looks like.
-- `.factory/WORKFLOWS/` contains repeatable playbooks.
+- `.factory/WORKFLOWS/standards-check.md` is the default repeatable playbook.
 - `.factory/OBJECTIVES/` contains current desired outcomes.
 - `.factory/JOURNAL.md` records handoff notes between runs.
 
 Factory owns orchestration.
 The target repo owns intent.
+Prefer one workflow and many objectives.
+Add another workflow only when the process is truly different.
 
 A typical target repo starts with short workflow area names:
 
