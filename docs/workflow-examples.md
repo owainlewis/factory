@@ -50,6 +50,26 @@ In execute mode:
 8. Open a draft pull request.
 9. Include what changed, what was checked, and any remaining gaps.
 
+## Decision: pull request, issue, or stop
+
+Choose one outcome per run:
+
+- Open a pull request when one small, safe change improves compliance and you
+  can verify it locally.
+- Open an issue when you find a real gap that is too large or needs scoping.
+  Label it `factory-ready` when an agent can pick it up as-is, or
+  `factory-triage` when it still needs clarification or acceptance criteria.
+- Stop and report `blocked` when the work needs a human decision. Use
+  `factory-needs-human` for product, license, or strategy calls, and
+  `factory-blocked` when a named dependency must be resolved first.
+
+Standard Factory labels:
+
+- `factory-ready`: an agent may work this issue now.
+- `factory-triage`: the issue needs clarification, acceptance criteria, or scope shaping.
+- `factory-needs-human`: the issue needs a human decision before implementation.
+- `factory-blocked`: the issue cannot move until a named blocker is resolved.
+
 ## Stop Rules
 
 Stop and report `blocked` if:
