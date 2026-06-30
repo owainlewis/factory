@@ -123,8 +123,33 @@ func TestRepoSlug(t *testing.T) {
 		}
 	}
 
-	if _, err := RepoSlug("https://gitlab.com/owner/repo.git"); err == nil {
-		t.Error("expected error for non-github url")
+	bad := []string{
+		"https://gitlab.com/owner/repo.git",
+		"https://github.com/owner",
+		"https://github.com/owner/repo/extra",
+		"https://example.com/github.com/owner/repo",
+		"",
+	}
+	for _, url := range bad {
+		if _, err := RepoSlug(url); err == nil {
+			t.Errorf("expected error for %q", url)
+		}
+	}
+}
+
+func TestPlanCaseInsensitiveNames(t *testing.T) {
+	existing := []Label{
+		{Name: "Factory-Ready", Description: "An agent may work this issue now", Color: "0e8a16"},
+		{Name: "FACTORY-TRIAGE", Description: "Needs clarification, acceptance criteria, or scope shaping", Color: "fbca04"},
+		{Name: "factory-needs-human", Description: "Needs a human decision before implementation", Color: "b60205"},
+		{Name: "factory-blocked", Description: "Blocked until a named dependency is resolved", Color: "d93f0b"},
+	}
+	create, update := Plan(existing)
+	if len(create) != 0 {
+		t.Fatalf("case-different labels must not be recreated, got %#v", create)
+	}
+	if len(update) != 0 {
+		t.Fatalf("matching labels must not be updated, got %#v", update)
 	}
 }
 

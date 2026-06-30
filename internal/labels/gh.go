@@ -95,11 +95,11 @@ func (c GHClient) Update(ctx context.Context, l Label) error {
 	return err
 }
 
-var slugPattern = regexp.MustCompile(`(?:github\.com[/:])([^/]+)/(.+?)(?:\.git)?/?$`)
+var slugPattern = regexp.MustCompile(`^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+)/([^/]+?)(?:\.git)?/?$`)
 
 // RepoSlug extracts an "owner/name" slug from a GitHub remote URL. It supports
 // SSH (git@github.com:owner/name.git) and HTTPS (https://github.com/owner/name)
-// forms.
+// forms, and rejects other hosts or extra path segments.
 func RepoSlug(url string) (string, error) {
 	url = strings.TrimSpace(url)
 	m := slugPattern.FindStringSubmatch(url)

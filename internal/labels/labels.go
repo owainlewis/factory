@@ -44,13 +44,16 @@ type Client interface {
 // non-empty description or color a human chose. Non-Factory labels are never
 // returned and so are left untouched.
 func Plan(existing []Label) (create, update []Label) {
+	// GitHub label names are case-insensitive, so match on a lowercased key
+	// to avoid creating a duplicate of a label that already exists in a
+	// different case.
 	byName := make(map[string]Label, len(existing))
 	for _, l := range existing {
-		byName[l.Name] = l
+		byName[strings.ToLower(l.Name)] = l
 	}
 
 	for _, want := range Standard() {
-		have, ok := byName[want.Name]
+		have, ok := byName[strings.ToLower(want.Name)]
 		if !ok {
 			create = append(create, want)
 			continue
