@@ -56,8 +56,14 @@ func (a *App) tryAcquireRepoLock(repoName string) (repoLock, bool, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		err := os.Mkdir(lock.path, 0o755)
 		if err == nil {
+			// Record the owner so a later run can detect a stale lock. If we
+			// cannot write it, drop the lock rather than hold one that can
+			// never be reclaimed.
 			owner := fmt.Sprintf("pid: %d\nrepo: %s\n", os.Getpid(), repoName)
-			_ = os.WriteFile(filepath.Join(lock.path, "owner"), []byte(owner), 0o644)
+			if werr := os.WriteFile(filepath.Join(lock.path, "owner"), []byte(owner), 0o644); werr != nil {
+				_ = os.RemoveAll(lock.path)
+				return repoLock{}, false, werr
+			}
 			return lock, false, nil
 		}
 		if !os.IsExist(err) {
@@ -75,7 +81,16 @@ func (a *App) tryAcquireRepoLock(repoName string) (repoLock, bool, error) {
 
 // reclaimStaleLock removes the lock directory if its recorded owner process is
 // no longer alive. It returns true when the lock was reclaimed.
+//
+// Reclaim is serialized by a per-App mutex and re-reads the owner while held,
+// so two goroutines in this process cannot both decide to remove the same
+// directory and delete a lock that was already re-created live. Reclaim only
+// triggers for a dead owner pid, which keeps the cross-process window safe in
+// practice.
 func (a *App) reclaimStaleLock(lockPath string) bool {
+	a.reclaimMu.Lock()
+	defer a.reclaimMu.Unlock()
+
 	pid, ok := lockOwnerPID(lockPath)
 	if !ok {
 		// Unknown owner: do not steal the lock automatically.

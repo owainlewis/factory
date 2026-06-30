@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/owainlewis/factory/internal/agent"
@@ -22,6 +23,8 @@ import (
 
 type App struct {
 	cfg config.Config
+	// reclaimMu serializes stale-lock reclamation within this process.
+	reclaimMu sync.Mutex
 }
 
 type Mode string
@@ -185,13 +188,15 @@ func (a *App) Run(ctx context.Context, repoName string, workflow string, mode Mo
 		record.Status = "skipped"
 		record.Blocker = "repo is locked by another run"
 		record.FinishedAt = time.Now().UTC()
-		_ = writeRecord(record)
+		if err := writeRecord(record); err != nil {
+			return record, err
+		}
 		return record, nil
 	}
 	defer lock.Release()
 
 	if err := gitrepo.Ensure(ctx, repoPath, repo.URL, repo.Branch); err != nil {
-		record.Status = "failed"
+		record.Status = failedOrCancelled(err)
 		record.Error = err.Error()
 		record.FinishedAt = time.Now().UTC()
 		_ = writeRecord(record)
@@ -202,7 +207,7 @@ func (a *App) Run(ctx context.Context, repoName string, workflow string, mode Mo
 	if mode == ModeExecute {
 		runRepoPath = filepath.Join(a.cfg.Factory.DataDir, "worktrees", repoName, runID)
 		if err := gitrepo.AddWorktree(ctx, repoPath, runRepoPath, repo.Branch); err != nil {
-			record.Status = "failed"
+			record.Status = failedOrCancelled(err)
 			record.Error = err.Error()
 			record.FinishedAt = time.Now().UTC()
 			_ = writeRecord(record)
@@ -241,7 +246,7 @@ func (a *App) Run(ctx context.Context, repoName string, workflow string, mode Mo
 	record.FinishedAt = time.Now().UTC()
 	if err != nil {
 		record.Error = err.Error()
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if isCancellation(err) {
 			record.Status = "cancelled"
 		} else if record.Status == "" {
 			record.Status = "failed"
@@ -287,6 +292,21 @@ func adapterFor(name string) (agent.Adapter, error) {
 	default:
 		return nil, fmt.Errorf("unsupported agent %q", name)
 	}
+}
+
+// isCancellation reports whether err was caused by a cancelled or timed-out
+// context.
+func isCancellation(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// failedOrCancelled classifies an error as a "cancelled" run when it came from
+// context cancellation, otherwise "failed".
+func failedOrCancelled(err error) string {
+	if isCancellation(err) {
+		return "cancelled"
+	}
+	return "failed"
 }
 
 func writeRecord(record RunRecord) error {
