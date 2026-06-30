@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/factory/internal/runner"
+	"github.com/owainlewis/factory/internal/scaffold"
 )
 
 func main() {
@@ -22,13 +23,30 @@ func run(args []string) error {
 		return err
 	}
 
+	if len(rest) == 0 {
+		return usage()
+	}
+
+	// init bootstraps a target repo and must work before any config exists.
+	if rest[0] == "init" {
+		if len(rest) > 2 {
+			return fmt.Errorf("usage: factory init [dir] [--force]")
+		}
+		dir := "."
+		if len(rest) == 2 {
+			dir = rest[1]
+		}
+		results, err := scaffold.Init(dir, opts.Force)
+		if err != nil {
+			return err
+		}
+		scaffold.Report(os.Stdout, dir, results)
+		return nil
+	}
+
 	app, err := runner.New(opts.ConfigPath)
 	if err != nil {
 		return err
-	}
-
-	if len(rest) == 0 {
-		return usage()
 	}
 
 	switch rest[0] {
@@ -80,6 +98,7 @@ func run(args []string) error {
 type options struct {
 	ConfigPath string
 	Mode       string
+	Force      bool
 }
 
 func parseArgs(args []string) (options, []string, error) {
@@ -100,6 +119,8 @@ func parseArgs(args []string) (options, []string, error) {
 			}
 			opts.Mode = args[i+1]
 			i++
+		case "--force":
+			opts.Force = true
 		default:
 			rest = append(rest, args[i])
 		}
@@ -109,5 +130,5 @@ func parseArgs(args []string) (options, []string, error) {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: factory [--config config.yaml] <audit|repos|run|runs|workflows>")
+	return fmt.Errorf("usage: factory [--config config.yaml] <init [dir] [--force]|audit|repos|run|runs|workflows>")
 }

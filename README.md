@@ -21,6 +21,7 @@ config -> clone or fetch repo -> build prompt -> run agent -> save log -> save r
 
 It supports:
 
+- `factory init [path]`
 - `factory audit <repo>`
 - `factory repos`
 - `factory workflows <repo>`
@@ -101,6 +102,17 @@ repos:
 ```
 
 ## Commands
+
+Bootstrap a new repo with default Factory contract files:
+
+```sh
+go run ./cmd/factory init
+```
+
+`init` writes the `.factory/` files shown above into the target directory
+(default the current directory, or `factory init <path>`). Generated files are
+repo-owned defaults; `init` never overwrites an existing file unless you pass
+`--force`.
 
 Audit a repo and print a Markdown health report:
 
