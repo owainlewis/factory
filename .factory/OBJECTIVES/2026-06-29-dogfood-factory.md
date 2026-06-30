@@ -30,7 +30,7 @@ This gives the project a real standards file, real workflows, and a current obje
 
 ## Workflow
 
-Use `.factory/WORKFLOWS/standards.md`.
+Use `.factory/WORKFLOWS/standards-check.md`.
 
 ## Stop Rules
 

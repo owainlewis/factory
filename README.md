@@ -65,23 +65,20 @@ The target repo owns intent.
 Prefer one workflow and many objectives.
 Add another workflow only when the process is truly different.
 
-A typical target repo starts with short workflow area names:
+In the current V1, `factory run` selects a workflow.
+It automatically includes `.factory/OBJECTIVES/current-objective.md` or `.factory/OBJECTIVES/current.md` when present.
+Named objective selection is planned, not implemented yet.
+
+A typical target repo starts with one default workflow:
 
 ```text
 .factory/
   AGENTS.md
   STANDARDS.md
   WORKFLOWS/
-    standards.md
-    github.md
-    docs.md
-    ci.md
-    release.md
-    security.md
-    dependencies.md
-    tests.md
+    standards-check.md
   OBJECTIVES/
-    2026-06-29-release.md
+    current-objective.md
   JOURNAL.md
 ```
 
@@ -132,13 +129,13 @@ go run ./cmd/factory run cortex hello
 Plan a repo-owned workflow without editing files:
 
 ```sh
-go run ./cmd/factory run cortex standards --mode plan
+go run ./cmd/factory run cortex standards-check --mode plan
 ```
 
 Execute a repo-owned workflow:
 
 ```sh
-go run ./cmd/factory run cortex standards --mode execute
+go run ./cmd/factory run cortex standards-check --mode execute
 ```
 
 List run records:
@@ -154,6 +151,9 @@ It must not edit files.
 
 `execute` mode may create a branch, edit files, commit, push, and open a draft PR when the selected workflow asks for that.
 It must not merge PRs or push to a default branch.
+
+Current limitation: Factory does not yet accept a named objective argument.
+Use `.factory/OBJECTIVES/current-objective.md` for the current directed goal.
 
 ## Audit
 
