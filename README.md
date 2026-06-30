@@ -22,6 +22,7 @@ config -> clone or fetch repo -> build prompt -> run agent -> save log -> save r
 It supports:
 
 - `factory audit <repo>`
+- `factory labels <repo>`
 - `factory repos`
 - `factory workflows <repo>`
 - `factory run <repo> [workflow] [--mode plan|execute]`
@@ -113,6 +114,18 @@ List managed repos:
 ```sh
 go run ./cmd/factory repos
 ```
+
+Sync the standard Factory labels on a repo (`factory-ready`, `factory-triage`,
+`factory-needs-human`, `factory-blocked`):
+
+```sh
+go run ./cmd/factory labels factory
+```
+
+This creates any missing standard labels and fills empty descriptions or
+colors. It never renames, deletes, or overwrites a label a human configured.
+It uses the `gh` CLI, so `gh auth login` must have run first. Missing auth or
+permissions are reported as `blocked`.
 
 List workflows for a repo:
 
