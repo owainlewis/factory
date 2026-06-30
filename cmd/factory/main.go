@@ -41,6 +41,13 @@ func run(args []string) error {
 		return app.Audit(ctx, os.Stdout, rest[1])
 	case "repos":
 		return app.ListRepos(os.Stdout)
+	case "labels":
+		if len(rest) != 2 {
+			return fmt.Errorf("usage: factory labels <repo>")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		return app.SyncLabels(ctx, os.Stdout, rest[1])
 	case "workflows":
 		if len(rest) != 2 {
 			return fmt.Errorf("usage: factory workflows <repo>")
@@ -109,5 +116,5 @@ func parseArgs(args []string) (options, []string, error) {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: factory [--config config.yaml] <audit|repos|run|runs|workflows>")
+	return fmt.Errorf("usage: factory [--config config.yaml] <audit|labels|repos|run|runs|workflows>")
 }

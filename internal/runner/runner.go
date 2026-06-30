@@ -15,6 +15,7 @@ import (
 	"github.com/owainlewis/factory/internal/audit"
 	"github.com/owainlewis/factory/internal/config"
 	"github.com/owainlewis/factory/internal/gitrepo"
+	"github.com/owainlewis/factory/internal/labels"
 	"github.com/owainlewis/factory/internal/prompt"
 	"github.com/owainlewis/factory/internal/workflows"
 )
@@ -98,6 +99,41 @@ func (a *App) ListWorkflows(ctx context.Context, w io.Writer, repoName string) e
 			state = "runnable"
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\n", workflow.Name, workflow.Path, state)
+	}
+	return nil
+}
+
+// SyncLabels ensures the standard Factory labels exist on the GitHub repo
+// behind repoName. Auth or permission failures are reported as blocked.
+func (a *App) SyncLabels(ctx context.Context, w io.Writer, repoName string) error {
+	repo, ok := a.cfg.Repos[repoName]
+	if !ok {
+		return fmt.Errorf("unknown repo %q", repoName)
+	}
+	if repo.URL == "" {
+		return fmt.Errorf("repo %q has no GitHub url to sync labels against", repoName)
+	}
+	slug, err := labels.RepoSlug(repo.URL)
+	if err != nil {
+		return err
+	}
+
+	report, err := labels.Sync(ctx, labels.GHClient{Repo: slug})
+	if err != nil {
+		if labels.IsBlocked(err) {
+			fmt.Fprintf(w, "blocked\t%s\t%v\n", slug, err)
+		}
+		return err
+	}
+
+	for _, name := range report.Created {
+		fmt.Fprintf(w, "created\t%s\n", name)
+	}
+	for _, name := range report.Updated {
+		fmt.Fprintf(w, "updated\t%s\n", name)
+	}
+	for _, name := range report.Unchanged {
+		fmt.Fprintf(w, "ok\t%s\n", name)
 	}
 	return nil
 }
