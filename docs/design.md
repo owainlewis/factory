@@ -30,6 +30,8 @@ Factory is a local-first daemon that turns scheduled prompts and ready tickets i
 ## Constraints
 
 - V1 runs one daemon on a trusted local machine and polls GitHub through the authenticated `gh` CLI.
+- V1 supports Unix-like operating systems only. Its process-tree guarantees rely
+  on Unix process groups and wait-without-reaping semantics.
 - Agent runtimes keep ownership of their authentication, tools, skills, MCP servers, and permissions.
 - Workflows may run for hours and adapt while watching CI. Timeouts must supervise stalled or runaway work without decomposing it into deterministic steps.
 - Agents may mutate tickets and repositories. V1 therefore manages only trusted repositories and relies on explicit runtime permissions.
@@ -255,6 +257,7 @@ The daemon runs as `factory run`, initially in a terminal and later under `launc
 ```text
 factory validate
 factory workflows
+factory workflow run <workflow-id> --repository <path>
 factory tasks
 factory runs [workflow]
 factory inspect <run-id>
@@ -262,6 +265,11 @@ factory cancel <run-id>
 ```
 
 SQLite lives under the Factory data directory. Workflows run against trusted repositories. An implementation agent may create its own worktree under the configured workspace root; Factory records the path reported by the agent or discovered from Git after the run.
+
+The manual workflow command validates the selected repository and workflow,
+checks the configured runtime and authentication, streams runtime activity, and
+reports bounded execution metadata. Ctrl-C and the resolved workflow timeout
+cancel the runtime process group.
 
 ### V1 implementation language
 
@@ -324,4 +332,3 @@ Backout means stopping the daemon. Tickets, comments, branches, worktrees, and p
 - Should workflow files live in each target repository, one central Factory repository, or support both with explicit precedence?
 
 ## Decision
-
