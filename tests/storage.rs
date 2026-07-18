@@ -299,6 +299,18 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
         )
         .unwrap();
     assert_eq!(preserved.next_due_at, 60_000);
+    let queued_under_old_definition =
+        TaskIdentity::scheduled("owainlewis/factory", "find-bugs", "1970-01-01T00:01:00Z").unwrap();
+    first
+        .enqueue_scheduled_occurrence(
+            &queued_under_old_definition,
+            r#"{"scheduled_at":"1970-01-01T00:01:00Z"}"#,
+            "old|UTC",
+            60_000,
+            120_000,
+        )
+        .unwrap()
+        .unwrap();
 
     let conflict = second.initialize_schedule_cursor(
         "owainlewis/factory",
@@ -311,7 +323,13 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
     assert!(
         format!("{:#}", conflict.unwrap_err()).contains("live owner using different fingerprint")
     );
-    first.remove_daemon_owner("schedule-owner-a").unwrap();
+    Connection::open(temp.path().join("ledger.db"))
+        .unwrap()
+        .execute(
+            "UPDATE daemon_owners SET heartbeat_at = 0 WHERE owner_id = ?1",
+            ["schedule-owner-a"],
+        )
+        .unwrap();
     let changed = second
         .initialize_schedule_cursor(
             "owainlewis/factory",
@@ -323,6 +341,39 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
         )
         .unwrap();
     assert_eq!(changed.next_due_at, 90_000);
+    let resumed_at = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    Connection::open(temp.path().join("ledger.db"))
+        .unwrap()
+        .execute(
+            "UPDATE daemon_owners SET heartbeat_at = ?1 WHERE owner_id = ?2",
+            rusqlite::params![resumed_at, "schedule-owner-a"],
+        )
+        .unwrap();
+    let scheduled_runtimes = HashMap::from([(
+        (
+            "owainlewis/factory".to_owned(),
+            "find-bugs".to_owned(),
+            "scheduled".to_owned(),
+        ),
+        "codex".to_owned(),
+    )]);
+    assert!(
+        first
+            .claim_and_start_run(
+                &["owainlewis/factory".to_owned()],
+                &scheduled_runtimes,
+                "schedule-owner-a",
+                std::process::id(),
+            )
+            .unwrap()
+            .is_none()
+    );
     let mut stale_daemon = Ledger::open(&temp.path().join("ledger.db")).unwrap();
     stale_daemon
         .register_daemon_owner("schedule-owner-c", std::process::id())
@@ -340,12 +391,12 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
             .is_err()
     );
     let stale =
-        TaskIdentity::scheduled("owainlewis/factory", "find-bugs", "1970-01-01T00:01:00Z").unwrap();
+        TaskIdentity::scheduled("owainlewis/factory", "find-bugs", "1970-01-01T00:00:30Z").unwrap();
     assert!(
         first
             .enqueue_scheduled_occurrence(
                 &stale,
-                r#"{"scheduled_at":"1970-01-01T00:01:00Z"}"#,
+                r#"{"scheduled_at":"1970-01-01T00:00:30Z"}"#,
                 "old|UTC",
                 60_000,
                 120_000,
@@ -367,6 +418,34 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
             .unwrap()
             .is_some()
     );
+    let claimed = second
+        .claim_and_start_run(
+            &["owainlewis/factory".to_owned()],
+            &scheduled_runtimes,
+            "schedule-owner-b",
+            std::process::id(),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(
+        claimed
+            .task
+            .payload
+            .as_deref()
+            .unwrap()
+            .contains("1970-01-01T00:01:30Z")
+    );
+    let stale_task = second
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .find(|task| {
+            task.payload
+                .as_deref()
+                .is_some_and(|payload| payload.contains("1970-01-01T00:01:00Z"))
+        })
+        .unwrap();
+    assert_eq!(stale_task.state, TaskState::Queued);
 }
 
 #[cfg(unix)]
@@ -481,17 +560,21 @@ fn claim_requires_task_kind_to_match_the_current_workflow_trigger() {
         ),
         "codex".to_owned(),
     )]);
-    let claimed = ledger
-        .claim_and_start_run(
-            &["owainlewis/factory".to_owned()],
-            &scheduled_runtimes,
-            "kind-owner",
-            std::process::id(),
-        )
-        .unwrap()
-        .unwrap();
-    assert_eq!(claimed.task.id, task.id);
-    assert_eq!(claimed.task.kind, "scheduled");
+    assert!(
+        ledger
+            .claim_and_start_run(
+                &["owainlewis/factory".to_owned()],
+                &scheduled_runtimes,
+                "kind-owner",
+                std::process::id(),
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Queued
+    );
 }
 
 #[test]

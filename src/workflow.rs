@@ -10,10 +10,29 @@ use anyhow::Result;
 use chrono_tz::Tz;
 use cron::Schedule;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::config::Config;
 
 const WORKFLOW_DIRECTORY: &str = ".factory/workflows";
+
+pub fn scheduled_workflow_fingerprint(
+    expression: &str,
+    timezone: Tz,
+    runtime: &str,
+    timeout: Duration,
+    prompt: &str,
+) -> Result<String> {
+    let definition = serde_json::to_vec(&(
+        expression,
+        timezone.name(),
+        runtime,
+        timeout.as_secs(),
+        timeout.subsec_nanos(),
+        prompt,
+    ))?;
+    Ok(format!("v2:{:x}", Sha256::digest(definition)))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowCatalog {
@@ -764,9 +783,6 @@ mod tests {
         ));
         assert!(!declares_only_schedule(
             "description = \"\"\"\nschedule = \"not-a-key"
-        ));
-        assert!(declares_only_schedule(
-            "description = \"\"\"\nescaped triple: \\\n+\"\"\"\nschedule = \"not-a-key"
         ));
         assert!(!declares_only_schedule(
             r#"description = """

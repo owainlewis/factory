@@ -659,6 +659,17 @@ impl Ledger {
         if next_due_at <= expected_due_at {
             bail!("next scheduled occurrence must follow the due occurrence");
         }
+        let mut payload = serde_json::from_str::<serde_json::Value>(payload)
+            .context("scheduled occurrence payload is not valid JSON")?;
+        let payload = payload
+            .as_object_mut()
+            .context("scheduled occurrence payload must be a JSON object")?;
+        payload.insert(
+            "schedule_fingerprint".to_owned(),
+            serde_json::Value::String(expected_fingerprint.to_owned()),
+        );
+        let payload = serde_json::to_string(payload)
+            .context("failed to encode scheduled occurrence payload")?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -773,6 +784,26 @@ impl Ledger {
         if !owner_is_live {
             bail!("daemon owner {owner_id:?} has no live lease for task claims");
         }
+        let schedule_ownership = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT owners.repository, owners.workflow, owners.fingerprint
+                     FROM schedule_owners owners
+                     JOIN schedule_cursors cursors
+                       ON cursors.repository = owners.repository
+                      AND cursors.workflow = owners.workflow
+                      AND cursors.fingerprint = owners.fingerprint
+                     WHERE owners.owner_id = ?1",
+                )
+                .context("failed to prepare schedule ownership query")?;
+            statement
+                .query_map([owner_id], |row| {
+                    Ok(((row.get(0)?, row.get(1)?), row.get(2)?))
+                })
+                .context("failed to query schedule ownership")?
+                .collect::<rusqlite::Result<HashMap<_, _>>>()
+                .context("failed to read schedule ownership")?
+        };
         let candidates = {
             let mut statement = transaction
                 .prepare(
@@ -788,12 +819,38 @@ impl Ledger {
                 .context("failed to read queued tasks")?
         };
         let Some(task) = candidates.into_iter().find(|task| {
-            available.contains(&task.repository)
-                && workflow_runtimes.contains_key(&(
+            if !available.contains(&task.repository)
+                || !workflow_runtimes.contains_key(&(
                     task.repository.clone(),
                     task.workflow.clone(),
                     task.kind.clone(),
                 ))
+            {
+                return false;
+            }
+            if task.kind != "scheduled" {
+                return true;
+            }
+            let task_fingerprint = task
+                .payload
+                .as_deref()
+                .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+                .and_then(|payload| {
+                    payload
+                        .get("schedule_fingerprint")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                });
+            matches!(
+                (
+                    task_fingerprint.as_deref(),
+                    schedule_ownership
+                        .get(&(task.repository.clone(), task.workflow.clone()))
+                        .map(String::as_str),
+                ),
+                (Some(task_fingerprint), Some(owner_fingerprint))
+                    if task_fingerprint == owner_fingerprint
+            )
         }) else {
             transaction
                 .commit()

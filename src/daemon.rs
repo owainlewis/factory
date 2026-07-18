@@ -9,7 +9,6 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, SecondsFormat, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
-use sha2::{Digest, Sha256};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
@@ -21,7 +20,7 @@ use crate::runtime::{
     observation_channel,
 };
 use crate::storage::{Ledger, Run, RunOutcome, Task, TaskIdentity};
-use crate::workflow::{Trigger, WorkflowCatalog, WorkflowEntry};
+use crate::workflow::{Trigger, WorkflowCatalog, WorkflowEntry, scheduled_workflow_fingerprint};
 
 const HUMAN_MERGE_POLICY: &str = "Factory-created software pull requests must remain for human merge. Never merge or enable automatic merge.";
 const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -911,7 +910,13 @@ fn initialize_schedules(
                 let schedule = Schedule::from_str(&format!("0 {expression}"))
                     .context("validated cron schedule could not be parsed")?;
                 let calculated = next_occurrence(&schedule, *timezone, startup_at)?;
-                let fingerprint = schedule_fingerprint(expression, *timezone, target)?;
+                let fingerprint = scheduled_workflow_fingerprint(
+                    expression,
+                    *timezone,
+                    &target.runtime,
+                    target.timeout,
+                    &target.prompt,
+                )?;
                 let cursor = ledger.initialize_schedule_cursor(
                     repository,
                     workflow,
@@ -940,23 +945,6 @@ fn initialize_schedules(
         }
     }
     schedules
-}
-
-fn schedule_fingerprint(
-    expression: &str,
-    timezone: Tz,
-    workflow: &WorkflowTarget,
-) -> Result<String> {
-    let definition = serde_json::to_vec(&(
-        expression,
-        timezone.name(),
-        &workflow.runtime,
-        workflow.timeout.as_secs(),
-        workflow.timeout.subsec_nanos(),
-        &workflow.prompt,
-    ))
-    .context("failed to encode scheduled workflow definition")?;
-    Ok(format!("v2:{:x}", Sha256::digest(definition)))
 }
 
 fn evaluate_schedules(
@@ -1156,10 +1144,12 @@ mod tests {
         let tasks = ledger.tasks().unwrap();
         assert_eq!(tasks.len(), 3);
         assert!(tasks.iter().all(|task| task.kind == "scheduled"));
-        assert_eq!(
-            tasks[2].payload.as_deref(),
-            Some(r#"{"scheduled_at":"2026-07-18T15:01:00Z"}"#)
-        );
+        let payload = serde_json::from_str::<serde_json::Value>(
+            tasks[2].payload.as_deref().expect("scheduled payload"),
+        )
+        .unwrap();
+        assert_eq!(payload["scheduled_at"], "2026-07-18T15:01:00Z");
+        assert_eq!(payload["schedule_fingerprint"], schedules[0].fingerprint);
     }
 
     #[test]

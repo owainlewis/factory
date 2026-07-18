@@ -13,7 +13,7 @@ use factory::daemon::FactoryDaemon;
 use factory::github::GitHubClient;
 use factory::runtime::CodexRuntime;
 use factory::storage::{Ledger, TaskIdentity, TaskState};
-use factory::workflow::WorkflowCatalog;
+use factory::workflow::{Trigger, WorkflowCatalog, scheduled_workflow_fingerprint};
 use rusqlite::Connection;
 use tokio_util::sync::CancellationToken;
 
@@ -198,6 +198,38 @@ exit 0
         )
         .unwrap();
         self.catalog = WorkflowCatalog::load(&self.config).unwrap();
+    }
+
+    fn scheduled_fingerprint(&self) -> String {
+        let workflow = self
+            .catalog
+            .entries
+            .iter()
+            .find(|entry| entry.id == "scheduled-maintenance")
+            .unwrap();
+        let Trigger::Schedule {
+            expression,
+            timezone,
+        } = workflow.trigger.as_ref().unwrap()
+        else {
+            panic!("scheduled maintenance workflow has the wrong trigger");
+        };
+        scheduled_workflow_fingerprint(
+            expression,
+            *timezone,
+            workflow.runtime.as_deref().unwrap(),
+            workflow.timeout.unwrap(),
+            workflow.prompt.as_deref().unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn scheduled_payload(&self, scheduled_at: &str) -> String {
+        serde_json::json!({
+            "scheduled_at": scheduled_at,
+            "schedule_fingerprint": self.scheduled_fingerprint(),
+        })
+        .to_string()
     }
 
     fn started_slots(&self) -> Vec<PathBuf> {
@@ -1103,7 +1135,7 @@ async fn scheduled_tasks_use_the_same_worker_and_run_history() {
                 "2026-07-18T12:00:00Z",
             )
             .unwrap(),
-            Some(r#"{"scheduled_at":"2026-07-18T12:00:00Z"}"#),
+            Some(&fixture.scheduled_payload("2026-07-18T12:00:00Z")),
         )
         .unwrap();
     drop(ledger);
@@ -1142,13 +1174,19 @@ async fn failing_scheduled_task_does_not_block_ticket_polling() {
     fixture.add_scheduled_workflow();
     Ledger::open(&fixture.ledger_path)
         .unwrap()
-        .enqueue(
+        .enqueue_with_payload(
             &TaskIdentity::scheduled(
                 "example/repo-0",
                 "scheduled-maintenance",
                 "2026-07-18T12:00:00Z",
             )
             .unwrap(),
+            Some(
+                &serde_json::json!({
+                    "schedule_fingerprint": fixture.scheduled_fingerprint(),
+                })
+                .to_string(),
+            ),
         )
         .unwrap();
     fixture.open_gate();
@@ -1344,7 +1382,7 @@ async fn later_schedule_prompt_includes_previous_successful_run() {
                 "2026-07-18T12:00:00Z",
             )
             .unwrap(),
-            Some(r#"{"scheduled_at":"2026-07-18T12:00:00Z"}"#),
+            Some(&fixture.scheduled_payload("2026-07-18T12:00:00Z")),
         )
         .unwrap();
     drop(ledger);
@@ -1372,7 +1410,7 @@ async fn later_schedule_prompt_includes_previous_successful_run() {
                 "2026-07-18T12:01:00Z",
             )
             .unwrap(),
-            Some(r#"{"scheduled_at":"2026-07-18T12:01:00Z"}"#),
+            Some(&fixture.scheduled_payload("2026-07-18T12:01:00Z")),
         )
         .unwrap();
     wait_for(|| fixture.started_slots().len() == 2).await;
@@ -1447,7 +1485,7 @@ async fn scheduled_and_ticket_tasks_share_concurrency_capacity() {
                 "2026-07-18T12:00:00Z",
             )
             .unwrap(),
-            Some(r#"{"scheduled_at":"2026-07-18T12:00:00Z"}"#),
+            Some(&fixture.scheduled_payload("2026-07-18T12:00:00Z")),
         )
         .unwrap();
     let cancellation = CancellationToken::new();
