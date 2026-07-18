@@ -8,10 +8,12 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 const DATABASE_NAME: &str = "factory.sqlite3";
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION_ID_BYTES: usize = 1024;
+pub const MAX_ACTIVITY_BYTES: usize = 64 * 1024;
+pub const MAX_RECOVERY_ATTEMPTS: u32 = 2;
 const DAEMON_OWNER_LEASE_MILLIS: i64 = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +202,7 @@ pub struct Task {
     pub state: TaskState,
     pub created_at: i64,
     pub updated_at: i64,
+    pub recovery_source_run_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,6 +255,14 @@ pub struct Run {
     pub cancellation_requested_at: Option<i64>,
     pub owner_pid: Option<u32>,
     pub owner_id: Option<String>,
+    pub process_id: Option<u32>,
+    pub process_identity: Option<String>,
+    pub pull_request: Option<String>,
+    pub last_activity_at: i64,
+    pub activity: Option<String>,
+    pub working_directory: Option<String>,
+    pub recovery_of: Option<i64>,
+    pub recovery_attempt: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,6 +278,12 @@ pub enum CancellationRequest {
 pub struct ClaimedRun {
     pub task: Task,
     pub run: Run,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryReport {
+    pub recovered_run_ids: Vec<i64>,
+    pub exhausted_run_ids: Vec<i64>,
 }
 
 pub struct Ledger {
@@ -495,6 +512,27 @@ impl Ledger {
         owner_id: &str,
         owner_pid: u32,
     ) -> Result<Option<ClaimedRun>> {
+        let working_directories = available_repositories
+            .iter()
+            .map(|repository| (repository.clone(), repository.clone()))
+            .collect();
+        self.claim_ticket_and_start_run_with_workdirs(
+            available_repositories,
+            workflow_runtimes,
+            owner_id,
+            owner_pid,
+            &working_directories,
+        )
+    }
+
+    pub fn claim_ticket_and_start_run_with_workdirs(
+        &mut self,
+        available_repositories: &[String],
+        workflow_runtimes: &HashMap<(String, String), String>,
+        owner_id: &str,
+        owner_pid: u32,
+        working_directories: &HashMap<String, String>,
+    ) -> Result<Option<ClaimedRun>> {
         if available_repositories.is_empty() {
             return Ok(None);
         }
@@ -542,11 +580,27 @@ impl Ledger {
         if changed != 1 {
             bail!("queued task {} could not be claimed atomically", task.id);
         }
+        let recovery_source = task.recovery_source_run_id;
+        let recovery_attempt = recovery_source
+            .map(|run_id| {
+                transaction.query_row(
+                    "SELECT recovery_attempt + 1 FROM runs WHERE id = ?1",
+                    [run_id],
+                    |row| row.get::<_, u32>(0),
+                )
+            })
+            .transpose()
+            .context("failed to resolve recovery attempt")?
+            .unwrap_or(0);
+        let working_directory = working_directories
+            .get(&task.repository)
+            .context("claimed repository working directory disappeared")?;
         transaction
             .execute(
                 "INSERT INTO runs
-                 (task_id, workflow, repository, source_item, runtime, started_at, outcome, owner_pid, owner_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running', ?7, ?8)",
+                 (task_id, workflow, repository, source_item, runtime, started_at, outcome,
+                  owner_pid, owner_id, last_activity_at, working_directory, recovery_of, recovery_attempt)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running', ?7, ?8, ?6, ?9, ?10, ?11)",
                 params![
                     task.id,
                     task.workflow,
@@ -555,13 +609,22 @@ impl Ledger {
                     runtime,
                     now,
                     owner_pid,
-                    owner_id
+                    owner_id,
+                    working_directory,
+                    recovery_source,
+                    recovery_attempt,
                 ],
             )
             .context("failed to create run in task claim transaction")?;
         let run_id = transaction.last_insert_rowid();
         let task = query_task(&transaction, task.id)?.context("claimed task disappeared")?;
         let run = query_run(&transaction, run_id)?.context("claimed run disappeared")?;
+        transaction
+            .execute(
+                "UPDATE tasks SET recovery_source_run_id = NULL WHERE id = ?1",
+                [task.id],
+            )
+            .context("failed to clear claimed recovery source")?;
         transaction
             .commit()
             .context("failed to commit atomic task and run claim")?;
@@ -627,6 +690,19 @@ impl Ledger {
             .context("failed to query prior agent session")
     }
 
+    pub fn latest_pull_request_for_task(&self, task_id: i64) -> Result<Option<String>> {
+        self.connection
+            .query_row(
+                "SELECT pull_request FROM runs
+                 WHERE task_id = ?1 AND pull_request IS NOT NULL
+                 ORDER BY id DESC LIMIT 1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed to query recovery pull-request context")
+    }
+
     pub fn tasks(&self) -> Result<Vec<Task>> {
         let mut statement = self
             .connection
@@ -655,8 +731,8 @@ impl Ledger {
         transaction
             .execute(
                 "INSERT INTO runs
-                 (task_id, workflow, repository, source_item, runtime, started_at, outcome)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running')",
+                 (task_id, workflow, repository, source_item, runtime, started_at, outcome, last_activity_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running', ?6)",
                 params![
                     task_id,
                     task.workflow,
@@ -681,22 +757,63 @@ impl Ledger {
         error: Option<&str>,
         session_id: Option<&str>,
     ) -> Result<Run> {
+        self.finish_run_and_task_with_recovery(id, outcome, result, error, session_id, true)
+    }
+
+    pub fn finish_run_and_task_terminal(
+        &mut self,
+        id: i64,
+        outcome: RunOutcome,
+        result: Option<&str>,
+        error: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Result<Run> {
+        self.finish_run_and_task_with_recovery(id, outcome, result, error, session_id, false)
+    }
+
+    fn finish_run_and_task_with_recovery(
+        &mut self,
+        id: i64,
+        outcome: RunOutcome,
+        result: Option<&str>,
+        error: Option<&str>,
+        session_id: Option<&str>,
+        allow_recovery: bool,
+    ) -> Result<Run> {
         if outcome == RunOutcome::Running {
             bail!("finish_run_and_task requires a terminal outcome");
         }
-        let result = result.map(|value| truncate_utf8(value, MAX_RESULT_BYTES));
-        let mut error = error.map(|value| truncate_utf8(value, MAX_ERROR_BYTES));
+        let result = result.map(|value| {
+            truncate_utf8(
+                &crate::inspection::sanitize_for_storage(value),
+                MAX_RESULT_BYTES,
+            )
+        });
+        let mut error = error.map(|value| {
+            truncate_utf8(
+                &crate::inspection::sanitize_for_storage(value),
+                MAX_ERROR_BYTES,
+            )
+        });
         let session_id = session_id.map(|value| truncate_utf8(value, MAX_SESSION_ID_BYTES));
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("failed to begin run completion transaction")?;
-        let (task_id, cancellation_requested) = transaction
+        let (task_id, cancellation_requested, recovery_attempt, process_started) = transaction
             .query_row(
-                "SELECT task_id, cancellation_requested_at IS NOT NULL
+                "SELECT task_id, cancellation_requested_at IS NOT NULL, recovery_attempt,
+                        process_id IS NOT NULL
                  FROM runs WHERE id = ?1 AND outcome = 'running'",
                 [id],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, bool>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, u32>(2)?,
+                        row.get::<_, bool>(3)?,
+                    ))
+                },
             )
             .optional()
             .context("failed to resolve active run task")?
@@ -712,7 +829,7 @@ impl Ledger {
         let changed = transaction
             .execute(
                 "UPDATE runs SET finished_at = ?1, outcome = ?2, result = ?3, error = ?4,
-                 session_id = ?5 WHERE id = ?6 AND outcome = 'running'",
+                 session_id = COALESCE(?5, session_id) WHERE id = ?6 AND outcome = 'running'",
                 params![
                     now_millis()?,
                     outcome.as_str(),
@@ -726,19 +843,31 @@ impl Ledger {
         if changed != 1 {
             bail!("run {id} is missing or already terminal");
         }
+        let retry_recovery = allow_recovery
+            && outcome == RunOutcome::Failed
+            && process_started
+            && recovery_attempt < MAX_RECOVERY_ATTEMPTS
+            && !cancellation_requested;
         let task_state = match outcome {
             RunOutcome::Succeeded => TaskState::Succeeded,
             RunOutcome::Failed => TaskState::Failed,
             RunOutcome::Cancelled => TaskState::Cancelled,
             RunOutcome::Running => unreachable!(),
         };
-        let changed = transaction
-            .execute(
+        let changed = if retry_recovery {
+            transaction.execute(
+                "UPDATE tasks SET state = 'queued', updated_at = ?1, recovery_source_run_id = ?2
+                 WHERE id = ?3 AND state = 'running'",
+                params![now_millis()?, id, task_id],
+            )
+        } else {
+            transaction.execute(
                 "UPDATE tasks SET state = ?1, updated_at = ?2
                  WHERE id = ?3 AND state = 'running'",
                 params![task_state.as_str(), now_millis()?, task_id],
             )
-            .context("failed to record terminal task state")?;
+        }
+        .context("failed to record terminal task state")?;
         if changed != 1 {
             bail!("task {task_id} is not running; run completion was not recorded");
         }
@@ -855,6 +984,172 @@ impl Ledger {
             .map(|requested| requested.unwrap_or(false))
     }
 
+    pub fn observe_run(
+        &mut self,
+        id: i64,
+        process_id: Option<u32>,
+        process_identity: Option<&str>,
+        session_id: Option<&str>,
+        pull_request: Option<&str>,
+        activity: Option<&str>,
+    ) -> Result<()> {
+        if process_id == Some(0) {
+            bail!("run process ID must be positive");
+        }
+        let session_id = session_id.map(|value| truncate_utf8(value, MAX_SESSION_ID_BYTES));
+        let pull_request = pull_request.map(|value| truncate_utf8(value, 2048));
+        let activity = activity.map(|value| {
+            truncate_tail_utf8(
+                &crate::inspection::sanitize_for_storage(value),
+                MAX_ACTIVITY_BYTES,
+            )
+        });
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE runs SET
+               process_id = COALESCE(?1, process_id),
+               process_identity = COALESCE(?2, process_identity),
+               session_id = COALESCE(?3, session_id),
+               pull_request = COALESCE(?4, pull_request),
+               activity = COALESCE(?5, activity),
+               last_activity_at = ?6
+             WHERE id = ?7 AND outcome = 'running'",
+                params![
+                    process_id,
+                    process_identity,
+                    session_id,
+                    pull_request,
+                    activity,
+                    now_millis()?,
+                    id
+                ],
+            )
+            .context("failed to persist runtime activity")?;
+        if changed != 1 {
+            bail!("run {id} is missing or already terminal");
+        }
+        Ok(())
+    }
+
+    pub fn reset_run_runtime_observation(&mut self, id: i64) -> Result<()> {
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE runs SET process_id = NULL, process_identity = NULL,
+                 session_id = NULL, activity = NULL, last_activity_at = ?1
+                 WHERE id = ?2 AND outcome = 'running'",
+                params![now_millis()?, id],
+            )
+            .context("failed to reset failed session-resume observation")?;
+        if changed != 1 {
+            bail!("run {id} is missing or already terminal");
+        }
+        Ok(())
+    }
+
+    pub fn recover_orphaned_runs(&mut self) -> Result<RecoveryReport> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin orphan recovery transaction")?;
+        let active = {
+            let mut statement = transaction
+                .prepare("SELECT * FROM runs WHERE outcome = 'running' ORDER BY id")
+                .context("failed to prepare active run recovery query")?;
+            statement
+                .query_map([], row_to_run)
+                .context("failed to query active runs for recovery")?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .context("failed to read active runs for recovery")?
+        };
+        let mut recovered_run_ids = Vec::new();
+        let mut exhausted_run_ids = Vec::new();
+        let lease_cutoff = now_millis()?.saturating_sub(DAEMON_OWNER_LEASE_MILLIS);
+        for run in active {
+            let owner_is_live = match (&run.owner_id, run.owner_pid) {
+                (Some(owner_id), Some(owner_pid)) => {
+                    transaction
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM daemon_owners
+                     WHERE owner_id = ?1 AND pid = ?2 AND heartbeat_at >= ?3)",
+                            params![owner_id, owner_pid, lease_cutoff],
+                            |row| row.get::<_, bool>(0),
+                        )
+                        .context("failed to validate orphan owner lease")?
+                        && process_is_alive(owner_pid)
+                }
+                _ => false,
+            };
+            if owner_is_live {
+                continue;
+            }
+            if let (Some(process_id), Some(recorded_identity)) =
+                (run.process_id, run.process_identity.as_deref())
+                && process_id > 0
+                && crate::runtime::process_identity(process_id).as_deref()
+                    == Some(recorded_identity)
+            {
+                terminate_orphaned_process_group(process_id).with_context(|| {
+                    format!("failed to stop orphaned process tree for run {}", run.id)
+                })?;
+            }
+            let now = now_millis()?;
+            let cancellation_requested = run.cancellation_requested_at.is_some();
+            let outcome = if cancellation_requested {
+                "cancelled"
+            } else {
+                "failed"
+            };
+            let error = if cancellation_requested {
+                "Factory completed a durable cancellation after its owning daemon stopped"
+            } else {
+                "Factory detected an interrupted run without a live owned process"
+            };
+            transaction
+                .execute(
+                    "UPDATE runs SET outcome = ?1, finished_at = ?2,
+                 error = ?3 WHERE id = ?4 AND outcome = 'running'",
+                    params![outcome, now, error, run.id],
+                )
+                .context("failed to close orphaned run")?;
+            if cancellation_requested {
+                transaction
+                    .execute(
+                        "UPDATE tasks SET state = 'cancelled', updated_at = ?1
+                     WHERE id = ?2 AND state = 'running'",
+                        params![now, run.task_id],
+                    )
+                    .context("failed to complete orphaned run cancellation")?;
+                continue;
+            }
+            if run.recovery_attempt < MAX_RECOVERY_ATTEMPTS {
+                transaction.execute(
+                    "UPDATE tasks SET state = 'queued', updated_at = ?1, recovery_source_run_id = ?2
+                     WHERE id = ?3 AND state = 'running'",
+                    params![now, run.id, run.task_id],
+                ).context("failed to queue orphan recovery")?;
+                recovered_run_ids.push(run.id);
+            } else {
+                transaction
+                    .execute(
+                        "UPDATE tasks SET state = 'failed', updated_at = ?1
+                     WHERE id = ?2 AND state = 'running'",
+                        params![now, run.task_id],
+                    )
+                    .context("failed to exhaust orphan recovery")?;
+                exhausted_run_ids.push(run.id);
+            }
+        }
+        transaction
+            .commit()
+            .context("failed to commit orphan recovery")?;
+        Ok(RecoveryReport {
+            recovered_run_ids,
+            exhausted_run_ids,
+        })
+    }
+
     pub fn register_daemon_owner(&mut self, owner_id: &str, pid: u32) -> Result<()> {
         if owner_id.trim().is_empty() {
             bail!("daemon owner ID must not be empty");
@@ -909,6 +1204,9 @@ fn migrate(connection: &Connection) -> Result<()> {
     }
     if version < 3 {
         migrate_v3(connection)?;
+    }
+    if version < 4 {
+        migrate_v4(connection)?;
     }
     Ok(())
 }
@@ -1004,6 +1302,29 @@ fn migrate_v3(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v4(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+         ALTER TABLE tasks ADD COLUMN recovery_source_run_id INTEGER REFERENCES runs(id);
+         ALTER TABLE runs ADD COLUMN process_id INTEGER;
+         ALTER TABLE runs ADD COLUMN process_identity TEXT;
+         ALTER TABLE runs ADD COLUMN pull_request TEXT;
+         ALTER TABLE runs ADD COLUMN last_activity_at INTEGER;
+         ALTER TABLE runs ADD COLUMN activity TEXT;
+         ALTER TABLE runs ADD COLUMN working_directory TEXT;
+         ALTER TABLE runs ADD COLUMN recovery_of INTEGER REFERENCES runs(id);
+         ALTER TABLE runs ADD COLUMN recovery_attempt INTEGER NOT NULL DEFAULT 0;
+         UPDATE runs SET last_activity_at = started_at WHERE last_activity_at IS NULL;
+         INSERT INTO schema_migrations(version, applied_at)
+             VALUES (4, unixepoch('subsec') * 1000);
+         PRAGMA user_version = 4;
+         COMMIT;",
+        )
+        .context("failed to migrate SQLite ledger to version 4")?;
+    Ok(())
+}
+
 fn query_task(connection: &Connection, id: i64) -> Result<Option<Task>> {
     connection
         .query_row("SELECT * FROM tasks WHERE id = ?1", [id], row_to_task)
@@ -1042,6 +1363,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         state,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
+        recovery_source_run_id: row.get("recovery_source_run_id")?,
     })
 }
 
@@ -1069,6 +1391,14 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         cancellation_requested_at: row.get("cancellation_requested_at")?,
         owner_pid: row.get("owner_pid")?,
         owner_id: row.get("owner_id")?,
+        process_id: row.get("process_id")?,
+        process_identity: row.get("process_identity")?,
+        pull_request: row.get("pull_request")?,
+        last_activity_at: row.get("last_activity_at")?,
+        activity: row.get("activity")?,
+        working_directory: row.get("working_directory")?,
+        recovery_of: row.get("recovery_of")?,
+        recovery_attempt: row.get("recovery_attempt")?,
     })
 }
 
@@ -1083,9 +1413,27 @@ fn process_is_alive(process_id: u32) -> bool {
     }
 }
 
+#[cfg(unix)]
+fn terminate_orphaned_process_group(process_id: u32) -> Result<()> {
+    use nix::sys::signal::{Signal, killpg};
+    if process_id == 0 {
+        bail!("refusing to signal process group zero");
+    }
+    let process_id = i32::try_from(process_id).context("process ID exceeds platform range")?;
+    match killpg(nix::unistd::Pid::from_raw(process_id), Signal::SIGKILL) {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
+        Err(error) => Err(error).context("failed to signal orphaned process group"),
+    }
+}
+
 #[cfg(not(unix))]
 fn process_is_alive(_process_id: u32) -> bool {
     false
+}
+
+#[cfg(not(unix))]
+fn terminate_orphaned_process_group(_process_id: u32) -> Result<()> {
+    Ok(())
 }
 
 fn now_millis() -> Result<i64> {
@@ -1105,4 +1453,15 @@ fn truncate_utf8(value: &str, maximum_bytes: usize) -> String {
         end -= 1;
     }
     value[..end].to_owned()
+}
+
+fn truncate_tail_utf8(value: &str, maximum_bytes: usize) -> String {
+    if value.len() <= maximum_bytes {
+        return value.to_owned();
+    }
+    let mut start = value.len() - maximum_bytes;
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    value[start..].to_owned()
 }

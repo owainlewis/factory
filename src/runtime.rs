@@ -4,13 +4,15 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant as TokioInstant, sleep_until, timeout};
 use tokio_util::sync::CancellationToken;
@@ -22,6 +24,7 @@ const MAX_ACTIVITY_LINE_BYTES: usize = 256 * 1024;
 const MAX_THREAD_ID_BYTES: usize = 256;
 const MAX_FINAL_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_STDERR_BYTES: usize = 64 * 1024;
+const MAX_OBSERVED_ACTIVITY_BYTES: usize = 64 * 1024;
 const MAX_HEALTH_OUTPUT_BYTES: usize = 64 * 1024;
 const OUTPUT_CHANNEL_CAPACITY: usize = 16;
 const OUTPUT_ACK_TIMEOUT: Duration = Duration::from_millis(250);
@@ -52,6 +55,25 @@ pub struct ExecutionResult {
     pub stderr_tail: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeObservation {
+    pub process_id: Option<u32>,
+    pub process_identity: Option<String>,
+    pub session_id: Option<String>,
+    pub pull_request: Option<String>,
+    pub activity: Option<String>,
+    pub sequence: u64,
+}
+
+type BeforeCodexSpawn<'a> = Box<dyn FnOnce(&RuntimeObservation) -> Result<()> + Send + 'a>;
+
+pub fn observation_channel() -> (
+    watch::Sender<RuntimeObservation>,
+    watch::Receiver<RuntimeObservation>,
+) {
+    watch::channel(RuntimeObservation::default())
+}
+
 #[derive(Debug)]
 pub struct RuntimeCancelled;
 
@@ -69,11 +91,139 @@ impl ExecutionResult {
     }
 }
 
+fn preparation_termination(
+    cancellation: &CancellationToken,
+    deadline: TokioInstant,
+) -> Option<Termination> {
+    if cancellation.is_cancelled() {
+        Some(Termination::Cancelled)
+    } else if TokioInstant::now() >= deadline {
+        Some(Termination::TimedOut)
+    } else {
+        None
+    }
+}
+
+#[cfg(unix)]
+fn preparation_result(termination: Termination, started: Instant) -> ExecutionResult {
+    use std::os::unix::process::ExitStatusExt;
+
+    ExecutionResult {
+        status: ExitStatus::from_raw(1 << 8),
+        termination,
+        final_response: String::new(),
+        final_response_truncated: false,
+        thread_id: None,
+        duration: started.elapsed(),
+        activity_lines: 0,
+        activity_error: None,
+        stderr_tail: String::new(),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CodexRuntime {
     executable: PathBuf,
     health_timeout: Duration,
     stream_activity: bool,
+}
+
+struct RunProcessGroup {
+    #[cfg(unix)]
+    anchor: Child,
+    process_id: Option<u32>,
+    process_identity: Option<String>,
+}
+
+impl RunProcessGroup {
+    async fn start() -> Result<Self> {
+        #[cfg(unix)]
+        {
+            let anchor_token = process_group_anchor_token();
+            let mut command = Command::new("/bin/sh");
+            command
+                .args([
+                    "-c",
+                    "trap '' TERM; while :; do sleep 3600; done",
+                    &anchor_token,
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(true);
+            configure_process_group(&mut command);
+            let mut anchor = spawn_with_retry(&mut command)
+                .await
+                .context("failed to start Codex process-group anchor")?;
+            let process_id = anchor
+                .id()
+                .filter(|process_id| *process_id > 0)
+                .context("Codex process-group anchor has no positive process ID")?;
+            let Some(process_identity) = process_identity(process_id) else {
+                let _ = stop_process_group_anchor(&mut anchor, process_id).await;
+                bail!("could not establish Codex process-group anchor identity");
+            };
+            Ok(Self {
+                anchor,
+                process_id: Some(process_id),
+                process_identity: Some(process_identity),
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(Self {
+                process_id: None,
+                process_identity: None,
+            })
+        }
+    }
+
+    fn configure(&self, command: &mut Command) -> Result<()> {
+        #[cfg(unix)]
+        {
+            let process_id = self
+                .process_id
+                .context("Codex process-group anchor has no process ID")?;
+            let process_id = i32::try_from(process_id)
+                .context("Codex process-group anchor ID exceeds platform range")?;
+            command.process_group(process_id);
+        }
+        #[cfg(not(unix))]
+        let _ = command;
+        Ok(())
+    }
+
+    async fn stop(&mut self) -> Result<()> {
+        #[cfg(unix)]
+        if let Some(process_id) = self.process_id {
+            stop_process_group_anchor(&mut self.anchor, process_id).await?;
+            self.process_id = None;
+            self.process_identity = None;
+        }
+        Ok(())
+    }
+
+    async fn reap(&mut self) -> Result<()> {
+        #[cfg(unix)]
+        {
+            self.anchor
+                .wait()
+                .await
+                .context("failed to reap Codex process-group anchor")?;
+            self.process_id = None;
+            self.process_identity = None;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RunProcessGroup {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(process_id) = self.process_id {
+            let _ = signal_process_group(Some(process_id), true);
+        }
+    }
 }
 
 impl Default for CodexRuntime {
@@ -143,31 +293,168 @@ impl CodexRuntime {
         run_timeout: Duration,
         cancellation: CancellationToken,
     ) -> Result<ExecutionResult> {
+        let (observations, _receiver) = observation_channel();
+        self.run_with_session(
+            prompt,
+            working_directory,
+            run_timeout,
+            cancellation,
+            None,
+            observations,
+        )
+        .await
+    }
+
+    pub async fn run_with_session(
+        &self,
+        prompt: &str,
+        working_directory: &Path,
+        run_timeout: Duration,
+        cancellation: CancellationToken,
+        resume_session: Option<&str>,
+        observations: watch::Sender<RuntimeObservation>,
+    ) -> Result<ExecutionResult> {
+        self.run_with_session_inner(
+            prompt,
+            working_directory,
+            run_timeout,
+            cancellation,
+            resume_session,
+            observations,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_with_session_supervised<F>(
+        &self,
+        prompt: &str,
+        working_directory: &Path,
+        run_timeout: Duration,
+        cancellation: CancellationToken,
+        resume_session: Option<&str>,
+        observations: watch::Sender<RuntimeObservation>,
+        before_spawn: F,
+    ) -> Result<ExecutionResult>
+    where
+        F: FnOnce(&RuntimeObservation) -> Result<()> + Send,
+    {
+        self.run_with_session_inner(
+            prompt,
+            working_directory,
+            run_timeout,
+            cancellation,
+            resume_session,
+            observations,
+            Some(Box::new(before_spawn)),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_with_session_inner(
+        &self,
+        prompt: &str,
+        working_directory: &Path,
+        run_timeout: Duration,
+        cancellation: CancellationToken,
+        resume_session: Option<&str>,
+        observations: watch::Sender<RuntimeObservation>,
+        before_spawn: Option<BeforeCodexSpawn<'_>>,
+    ) -> Result<ExecutionResult> {
+        let started = Instant::now();
+        let deadline = TokioInstant::now() + run_timeout;
+        if let Some(termination) = preparation_termination(&cancellation, deadline) {
+            return Ok(preparation_result(termination, started));
+        }
         let output_path = tempfile::NamedTempFile::new()
             .context("failed to create Codex final-response file")?
             .into_temp_path();
         let mut command = Command::new(&self.executable);
+        command.arg("exec");
+        if let Some(session_id) = resume_session {
+            command.arg("resume");
+            command
+                .arg("--json")
+                .arg("--output-last-message")
+                .arg(&output_path)
+                .arg(session_id)
+                .arg("-");
+        } else {
+            command
+                .arg("--json")
+                .arg("--color")
+                .arg("never")
+                .arg("--output-last-message")
+                .arg(&output_path)
+                .arg("-");
+        }
         command
-            .arg("exec")
-            .arg("--json")
-            .arg("--color")
-            .arg("never")
-            .arg("--output-last-message")
-            .arg(&output_path)
-            .arg("-")
             .current_dir(working_directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        configure_process_group(&mut command);
+        let mut process_group = RunProcessGroup::start().await?;
+        process_group.configure(&mut command)?;
+        if let Some(termination) = preparation_termination(&cancellation, deadline) {
+            process_group.stop().await?;
+            return Ok(preparation_result(termination, started));
+        }
+        let anchor_observation = RuntimeObservation {
+            process_id: process_group.process_id,
+            process_identity: process_group.process_identity.clone(),
+            sequence: 1,
+            ..RuntimeObservation::default()
+        };
+        if let Some(before_spawn) = before_spawn
+            && let Err(error) = before_spawn(&anchor_observation)
+        {
+            process_group
+                .stop()
+                .await
+                .context("failed to stop Codex process group after persistence failure")?;
+            return Err(error);
+        }
+        observations.send_replace(anchor_observation);
+        if let Some(termination) = preparation_termination(&cancellation, deadline) {
+            process_group.stop().await?;
+            return Ok(preparation_result(termination, started));
+        }
 
-        let started = Instant::now();
-        let deadline = TokioInstant::now() + run_timeout;
-        let mut child = spawn_with_retry(&mut command).await.with_context(|| {
-            format!("failed to start Codex CLI at {}", self.executable.display())
-        })?;
+        let spawned = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Err(Termination::Cancelled),
+            () = sleep_until(deadline) => Err(Termination::TimedOut),
+            result = spawn_with_retry(&mut command) => Ok(result),
+        };
+        let mut child = match spawned {
+            Err(termination) => {
+                process_group.stop().await?;
+                return Ok(preparation_result(termination, started));
+            }
+            Ok(Ok(child)) => child,
+            Ok(Err(error)) => {
+                let _ = process_group.stop().await;
+                return Err(error).with_context(|| {
+                    format!("failed to start Codex CLI at {}", self.executable.display())
+                });
+            }
+        };
         let process_id = child.id();
+        let observed_process_id = process_group.process_id.or(process_id);
+        let observed_process_identity = process_group
+            .process_identity
+            .clone()
+            .or_else(|| process_id.and_then(process_identity));
+        update_observation(
+            &observations,
+            observed_process_id,
+            observed_process_identity,
+            None,
+            None,
+        );
         let mut stdin = child
             .stdin
             .take()
@@ -181,8 +468,9 @@ impl CodexRuntime {
             .take()
             .context("Codex process did not expose stderr")?;
         let stdout_stream = self.stream_activity.then_some(OutputStream::Stdout);
-        let stdout_task = tokio::spawn(read_stdout(stdout, stdout_stream));
-        let stderr_task = tokio::spawn(read_stderr(stderr, Some(OutputStream::Stderr)));
+        let stderr_stream = self.stream_activity.then_some(OutputStream::Stderr);
+        let stdout_task = tokio::spawn(read_stdout(stdout, stdout_stream, observations.clone()));
+        let stderr_task = tokio::spawn(read_stderr(stderr, stderr_stream, observations.clone()));
 
         let deliver_prompt = async {
             stdin
@@ -208,6 +496,8 @@ impl CodexRuntime {
                     cleanup_failed_delivery(
                         &mut child,
                         process_id,
+                        process_group.process_id.or(process_id),
+                        &mut process_group,
                         stdout_task,
                         stderr_task,
                     )
@@ -219,21 +509,30 @@ impl CodexRuntime {
         };
 
         let (status, termination) = if let Some(termination) = early_termination {
-            (terminate(&mut child, process_id).await?, termination)
+            (
+                terminate(
+                    &mut child,
+                    process_id,
+                    process_group.process_id.or(process_id),
+                )
+                .await?,
+                termination,
+            )
         } else {
             tokio::select! {
                 biased;
                 () = cancellation.cancelled() => {
-                    (terminate(&mut child, process_id).await?, Termination::Cancelled)
+                    (terminate(&mut child, process_id, process_group.process_id.or(process_id)).await?, Termination::Cancelled)
                 }
                 () = sleep_until(deadline) => {
-                    (terminate(&mut child, process_id).await?, Termination::TimedOut)
+                    (terminate(&mut child, process_id, process_group.process_id.or(process_id)).await?, Termination::TimedOut)
                 }
-                status = wait_for_clean_exit(&mut child, process_id) => {
+                status = wait_for_clean_exit(&mut child, process_id, process_group.process_id.or(process_id)) => {
                     (status.context("failed while waiting for Codex")?, Termination::Exited)
                 }
             }
         };
+        process_group.reap().await?;
 
         let capture = join_reader(stdout_task, "stdout").await?;
         let stderr_tail = join_reader(stderr_task, "stderr").await?;
@@ -292,13 +591,13 @@ impl CodexRuntime {
         let status = tokio::select! {
             biased;
             () = cancellation.cancelled() => {
-                terminate(&mut child, process_id).await?;
+                terminate(&mut child, process_id, process_id).await?;
                 join_reader(stdout_task, "health-check stdout").await?;
                 join_reader(stderr_task, "health-check stderr").await?;
                 return Err(RuntimeCancelled.into());
             }
             () = sleep_until(deadline) => {
-                terminate(&mut child, process_id).await?;
+                terminate(&mut child, process_id, process_id).await?;
                 join_reader(stdout_task, "health-check stdout").await?;
                 join_reader(stderr_task, "health-check stderr").await?;
                 bail!(
@@ -306,7 +605,7 @@ impl CodexRuntime {
                     humantime::format_duration(self.health_timeout)
                 );
             }
-            status = wait_for_clean_exit(&mut child, process_id) => {
+            status = wait_for_clean_exit(&mut child, process_id, process_id) => {
                 status.context("failed while waiting for Codex health check")?
             }
         };
@@ -344,6 +643,7 @@ struct ActivityCapture {
 async fn read_stdout(
     mut stdout: tokio::process::ChildStdout,
     activity_stream: Option<OutputStream>,
+    observations: watch::Sender<RuntimeObservation>,
 ) -> Result<ActivityCapture> {
     let mut capture = ActivityCapture::default();
     let mut chunk = [0_u8; 8192];
@@ -364,7 +664,7 @@ async fn read_stdout(
             if *byte == b'\n' {
                 capture.lines += 1;
                 if !discarding {
-                    capture_activity_line(&line, &mut capture);
+                    capture_activity_line(&line, &mut capture, &observations);
                 }
                 line.clear();
                 discarding = false;
@@ -380,21 +680,49 @@ async fn read_stdout(
     if !line.is_empty() || discarding {
         capture.lines += 1;
         if !discarding {
-            capture_activity_line(&line, &mut capture);
+            capture_activity_line(&line, &mut capture, &observations);
         }
     }
     Ok(capture)
 }
 
-fn capture_activity_line(line: &[u8], capture: &mut ActivityCapture) {
+fn capture_activity_line(
+    line: &[u8],
+    capture: &mut ActivityCapture,
+    observations: &watch::Sender<RuntimeObservation>,
+) {
     let line = line.strip_suffix(b"\r").unwrap_or(line);
     match serde_json::from_slice::<Value>(line) {
         Ok(event) => {
+            let event_type = event
+                .get("type")
+                .and_then(Value::as_str)
+                .filter(|value| {
+                    value.len() <= 80
+                        && value.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                        })
+                })
+                .unwrap_or("unknown");
+            update_observation(
+                observations,
+                None,
+                None,
+                None,
+                Some(format!("Codex event: {event_type}\n")),
+            );
+            if let Some(pull_request) = find_pull_request_url(&event) {
+                observations.send_modify(|observation| {
+                    observation.pull_request = Some(pull_request);
+                    observation.sequence = observation.sequence.saturating_add(1);
+                });
+            }
             if capture.thread_id.is_none()
                 && let Some(thread_id) = event.get("thread_id").and_then(Value::as_str)
             {
                 if thread_id.len() <= MAX_THREAD_ID_BYTES {
                     capture.thread_id = Some(thread_id.to_owned());
+                    update_observation(observations, None, None, Some(thread_id.to_owned()), None);
                 } else if capture.malformed_line.is_none() {
                     capture.malformed_line =
                         Some(format!("thread ID exceeds {MAX_THREAD_ID_BYTES} bytes"));
@@ -408,9 +736,36 @@ fn capture_activity_line(line: &[u8], capture: &mut ActivityCapture) {
     }
 }
 
+fn find_pull_request_url(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => value.split_whitespace().find_map(|word| {
+            let candidate = word.trim_matches(|character: char| {
+                matches!(
+                    character,
+                    '(' | ')' | '[' | ']' | ',' | '.' | ';' | '\'' | '"'
+                )
+            });
+            let mut parts = candidate.strip_prefix("https://github.com/")?.split('/');
+            let owner = parts.next()?;
+            let repository = parts.next()?;
+            let pull = parts.next()?;
+            let number = parts.next()?;
+            (!owner.is_empty()
+                && !repository.is_empty()
+                && pull == "pull"
+                && number.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| candidate.to_owned())
+        }),
+        Value::Array(values) => values.iter().find_map(find_pull_request_url),
+        Value::Object(values) => values.values().find_map(find_pull_request_url),
+        _ => None,
+    }
+}
+
 async fn read_stderr(
     mut stderr: tokio::process::ChildStderr,
     activity_stream: Option<OutputStream>,
+    observations: watch::Sender<RuntimeObservation>,
 ) -> Result<String> {
     let mut tail = Vec::new();
     let mut chunk = [0_u8; 8192];
@@ -425,9 +780,124 @@ async fn read_stderr(
         if let Some(stream) = activity_stream {
             stream_output(stream, &chunk[..read]);
         }
+        update_observation(
+            &observations,
+            None,
+            None,
+            None,
+            Some(format!("Codex stderr activity: {read} bytes\n")),
+        );
         append_bounded(&mut tail, &chunk[..read], MAX_STDERR_BYTES);
     }
     Ok(String::from_utf8_lossy(&tail).into_owned())
+}
+
+fn update_observation(
+    observations: &watch::Sender<RuntimeObservation>,
+    process_id: Option<u32>,
+    process_identity: Option<String>,
+    session_id: Option<String>,
+    activity: Option<String>,
+) {
+    observations.send_modify(|observation| {
+        if let Some(process_id) = process_id {
+            observation.process_id = Some(process_id);
+        }
+        if let Some(process_identity) = process_identity {
+            observation.process_identity = Some(process_identity);
+        }
+        if let Some(session_id) = session_id {
+            observation.session_id = Some(session_id);
+        }
+        if let Some(activity) = activity {
+            let observed = observation.activity.get_or_insert_with(String::new);
+            observed.push_str(&crate::inspection::sanitize_for_storage(&activity));
+            if observed.len() > MAX_OBSERVED_ACTIVITY_BYTES {
+                let mut start = observed.len() - MAX_OBSERVED_ACTIVITY_BYTES;
+                while !observed.is_char_boundary(start) {
+                    start += 1;
+                }
+                observed.drain(..start);
+            }
+        }
+        observation.sequence = observation.sequence.saturating_add(1);
+    });
+}
+
+#[cfg(unix)]
+fn process_group_anchor_token() -> String {
+    static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!(
+        "factory-anchor-{}-{timestamp}-{}",
+        std::process::id(),
+        NEXT_TOKEN.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn process_identity(process_id: u32) -> Option<String> {
+    let process_id = i32::try_from(process_id).ok()?;
+    // SAFETY: proc_pidinfo initializes proc_bsdinfo when it returns the full
+    // structure size. The buffer points to valid writable storage.
+    let information = unsafe {
+        let mut information = std::mem::zeroed::<nix::libc::proc_bsdinfo>();
+        let expected = i32::try_from(std::mem::size_of_val(&information)).ok()?;
+        let written = nix::libc::proc_pidinfo(
+            process_id,
+            nix::libc::PROC_PIDTBSDINFO,
+            0,
+            (&raw mut information).cast(),
+            expected,
+        );
+        (written == expected).then_some(information)?
+    };
+    Some(format!(
+        "macos:{}:{}",
+        information.pbi_start_tvsec, information.pbi_start_tvusec
+    ))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn process_identity(process_id: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{process_id}/stat")).ok()?;
+    let start_ticks = stat
+        .get(stat.rfind(')')? + 1..)?
+        .split_whitespace()
+        .nth(19)?;
+    Some(format!("linux:{start_ticks}"))
+}
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+pub(crate) fn process_identity(process_id: u32) -> Option<String> {
+    let process_id = i32::try_from(process_id).ok().filter(|value| *value > 0)?;
+    let output = std::process::Command::new("ps")
+        .env("LC_ALL", "C")
+        .args([
+            "-ww",
+            "-o",
+            "lstart=",
+            "-o",
+            "command=",
+            "-p",
+            &process_id.to_string(),
+        ])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("unix:{value}"))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn process_identity(_process_id: u32) -> Option<String> {
+    None
 }
 
 async fn read_pipe_bounded<R>(mut reader: R, maximum: usize) -> Result<Vec<u8>>
@@ -555,10 +1025,13 @@ pub fn write_stderr_best_effort(bytes: &[u8]) {
 async fn cleanup_failed_delivery(
     child: &mut Child,
     process_id: Option<u32>,
+    process_group_id: Option<u32>,
+    process_group: &mut RunProcessGroup,
     stdout_task: JoinHandle<Result<ActivityCapture>>,
     stderr_task: JoinHandle<Result<String>>,
 ) {
-    let _ = terminate(child, process_id).await;
+    let _ = terminate(child, process_id, process_group_id).await;
+    let _ = process_group.stop().await;
     let _ = join_reader(stdout_task, "stdout").await;
     let _ = join_reader(stderr_task, "stderr").await;
 }
@@ -604,10 +1077,14 @@ fn text_file_busy(_error: &std::io::Error) -> bool {
 }
 
 #[cfg(unix)]
-async fn wait_for_clean_exit(child: &mut Child, process_id: Option<u32>) -> Result<ExitStatus> {
+async fn wait_for_clean_exit(
+    child: &mut Child,
+    process_id: Option<u32>,
+    process_group_id: Option<u32>,
+) -> Result<ExitStatus> {
     let process_id = process_id.context("Codex process has no process ID")?;
     observe_exit(process_id).await?;
-    cleanup_descendants(Some(process_id))?;
+    cleanup_descendants(process_group_id)?;
     child
         .wait()
         .await
@@ -648,7 +1125,11 @@ fn wait_without_reaping(process_id: u32) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-async fn wait_for_clean_exit(child: &mut Child, _process_id: Option<u32>) -> Result<ExitStatus> {
+async fn wait_for_clean_exit(
+    child: &mut Child,
+    _process_id: Option<u32>,
+    _process_group_id: Option<u32>,
+) -> Result<ExitStatus> {
     child
         .wait()
         .await
@@ -656,17 +1137,21 @@ async fn wait_for_clean_exit(child: &mut Child, _process_id: Option<u32>) -> Res
 }
 
 #[cfg(unix)]
-async fn terminate(child: &mut Child, process_id: Option<u32>) -> Result<ExitStatus> {
+async fn terminate(
+    child: &mut Child,
+    process_id: Option<u32>,
+    process_group_id: Option<u32>,
+) -> Result<ExitStatus> {
     let process_id = process_id.context("Codex process has no process ID")?;
-    signal_process_group(Some(process_id), false)?;
+    signal_process_group(process_group_id, false)?;
     match timeout(TERMINATION_GRACE, observe_exit(process_id)).await {
         Ok(observed) => observed?,
         Err(_) => {
-            signal_process_group(Some(process_id), true)?;
+            signal_process_group(process_group_id, true)?;
             observe_exit(process_id).await?;
         }
     }
-    cleanup_descendants(Some(process_id))?;
+    cleanup_descendants(process_group_id)?;
     child
         .wait()
         .await
@@ -674,7 +1159,11 @@ async fn terminate(child: &mut Child, process_id: Option<u32>) -> Result<ExitSta
 }
 
 #[cfg(not(unix))]
-async fn terminate(child: &mut Child, _process_id: Option<u32>) -> Result<ExitStatus> {
+async fn terminate(
+    child: &mut Child,
+    _process_id: Option<u32>,
+    _process_group_id: Option<u32>,
+) -> Result<ExitStatus> {
     child
         .start_kill()
         .context("failed to cancel Codex process")?;
@@ -719,13 +1208,28 @@ fn signal_process_group(process_id: Option<u32>, force: bool) -> Result<()> {
     let Some(process_id) = process_id else {
         return Ok(());
     };
+    if process_id == 0 {
+        bail!("refusing to signal process group zero");
+    }
+    let process_id =
+        i32::try_from(process_id).context("process group ID exceeds platform range")?;
     let signal = if force {
         Signal::SIGKILL
     } else {
         Signal::SIGTERM
     };
-    match killpg(Pid::from_raw(process_id as i32), signal) {
+    match killpg(Pid::from_raw(process_id), signal) {
         Ok(()) | Err(Errno::ESRCH) => Ok(()),
         Err(error) => Err(error).context("failed to signal Codex process group"),
     }
+}
+
+#[cfg(unix)]
+async fn stop_process_group_anchor(anchor: &mut Child, process_id: u32) -> Result<()> {
+    signal_process_group(Some(process_id), true)?;
+    anchor
+        .wait()
+        .await
+        .context("failed to reap Codex process-group anchor")?;
+    Ok(())
 }

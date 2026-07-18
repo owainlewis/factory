@@ -3,9 +3,10 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use factory::runtime::{CodexRuntime, RuntimeCancelled, Termination};
+use factory::runtime::{CodexRuntime, RuntimeCancelled, Termination, observation_channel};
 use tokio_util::sync::CancellationToken;
 
 fn fake_codex(directory: &Path, execution: &str) -> PathBuf {
@@ -167,20 +168,101 @@ exit 0"#,
 #[tokio::test]
 async fn timeout_stops_the_run() {
     let temp = tempfile::tempdir().unwrap();
-    let executable = fake_codex(temp.path(), "cat >/dev/null\nsleep 30");
+    let descendant = temp.path().join("deadline-descendant.pid");
+    let executable = fake_codex(
+        temp.path(),
+        &format!(
+            "sleep 30 &\necho $! > \"{}\"\ncat >/dev/null\nwait",
+            descendant.display()
+        ),
+    );
     let runtime = CodexRuntime::new(executable);
 
     let result = runtime
         .run(
             "Time out.",
             temp.path(),
-            Duration::from_secs(2),
+            Duration::from_secs(5),
             CancellationToken::new(),
         )
         .await
         .unwrap();
 
     assert_eq!(result.termination, Termination::TimedOut);
+    let pid: i32 = fs::read_to_string(descendant)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_process_gone(pid).await;
+}
+
+#[tokio::test]
+async fn active_long_running_agent_is_allowed_to_finish_before_its_deadline() {
+    let temp = tempfile::tempdir().unwrap();
+    let executable = fake_codex(
+        temp.path(),
+        r#"cat >/dev/null
+echo '{"type":"thread.started","thread_id":"active-thread"}'
+echo '{"type":"item.completed","sequence":1}'
+sleep 1
+echo '{"type":"item.completed","sequence":2}'
+printf 'active work completed' > "$output"
+exit 0"#,
+    );
+
+    let result = CodexRuntime::new(executable)
+        .run(
+            "Keep working while active.",
+            temp.path(),
+            Duration::from_secs(10),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    assert!(result.succeeded());
+    assert_eq!(result.activity_lines, 3);
+    assert_eq!(result.final_response, "active work completed");
+}
+
+#[tokio::test]
+async fn persisted_activity_is_structural_and_never_contains_raw_secret_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let executable = fake_codex(
+        temp.path(),
+        r#"cat >/dev/null
+printf '{"type":"item.completed","text":"TOKEN='
+awk 'BEGIN { for (i = 0; i < 70000; i++) printf "s" }'
+echo '","url":"https://github.com/owainlewis/factory/pull/123"}'
+printf 'done' > "$output"
+exit 0"#,
+    );
+    let (observations, receiver) = observation_channel();
+
+    let result = CodexRuntime::new(executable)
+        .with_activity_streaming(false)
+        .run_with_session(
+            "Observe safely.",
+            temp.path(),
+            Duration::from_secs(5),
+            CancellationToken::new(),
+            None,
+            observations,
+        )
+        .await
+        .unwrap();
+    let observation = receiver.borrow().clone();
+
+    assert!(result.succeeded());
+    assert_eq!(
+        observation.pull_request.as_deref(),
+        Some("https://github.com/owainlewis/factory/pull/123")
+    );
+    let activity = observation.activity.unwrap();
+    assert_eq!(activity, "Codex event: item.completed\n");
+    assert!(!activity.contains("TOKEN"));
+    assert!(!activity.contains('s'));
 }
 
 #[tokio::test]
@@ -225,6 +307,301 @@ async fn cancellation_stops_the_run() {
         .parse()
         .unwrap();
     assert_process_gone(pid).await;
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn durable_runs_use_a_verified_process_group_anchor() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex_pid_path = temp.path().join("codex.pid");
+    let executable = fake_codex(
+        temp.path(),
+        &format!(
+            "echo $$ > \"{}\"\ncat >/dev/null\nsleep 30",
+            codex_pid_path.display()
+        ),
+    );
+    let cancellation = CancellationToken::new();
+    let (observations, receiver) = observation_channel();
+    let runtime_cancellation = cancellation.clone();
+    let working_directory = temp.path().to_owned();
+    let run = tokio::spawn(async move {
+        CodexRuntime::new(executable)
+            .run_with_session(
+                "Stay anchored.",
+                &working_directory,
+                Duration::from_secs(5),
+                runtime_cancellation,
+                None,
+                observations,
+            )
+            .await
+    });
+
+    for _ in 0..500 {
+        if receiver.borrow().process_id.is_some() && codex_pid_path.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let observation = receiver.borrow().clone();
+    let anchor_pid = observation.process_id.unwrap();
+    let codex_pid: u32 = fs::read_to_string(&codex_pid_path)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_ne!(anchor_pid, codex_pid);
+    assert!(observation.process_identity.is_some());
+    assert!(matches!(
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(i32::try_from(anchor_pid).unwrap()),
+            None,
+        ),
+        Ok(()) | Err(nix::errno::Errno::EPERM)
+    ));
+
+    cancellation.cancel();
+    assert_eq!(
+        run.await.unwrap().unwrap().termination,
+        Termination::Cancelled
+    );
+    assert_process_gone(i32::try_from(anchor_pid).unwrap()).await;
+    assert_process_gone(i32::try_from(codex_pid).unwrap()).await;
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn aborting_a_run_reaps_its_process_group_anchor() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex_pid_path = temp.path().join("aborted-codex.pid");
+    let executable = fake_codex(
+        temp.path(),
+        &format!(
+            "echo $$ > \"{}\"\ncat >/dev/null\nsleep 30",
+            codex_pid_path.display()
+        ),
+    );
+    let (observations, receiver) = observation_channel();
+    let working_directory = temp.path().to_owned();
+    let run = tokio::spawn(async move {
+        CodexRuntime::new(executable)
+            .run_with_session(
+                "Abort safely.",
+                &working_directory,
+                Duration::from_secs(30),
+                CancellationToken::new(),
+                None,
+                observations,
+            )
+            .await
+    });
+
+    for _ in 0..500 {
+        if receiver.borrow().process_id.is_some() && codex_pid_path.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let anchor_pid = receiver.borrow().process_id.unwrap();
+    let codex_pid: u32 = fs::read_to_string(&codex_pid_path)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+
+    run.abort();
+    let _ = run.await;
+    assert_process_gone(i32::try_from(anchor_pid).unwrap()).await;
+    assert_process_gone(i32::try_from(codex_pid).unwrap()).await;
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn supervisor_persists_the_anchor_before_codex_spawn() {
+    let temp = tempfile::tempdir().unwrap();
+    let persisted = Arc::new(Mutex::new(None));
+    let persisted_for_callback = Arc::clone(&persisted);
+    let (observations, _receiver) = observation_channel();
+
+    let error = CodexRuntime::new(temp.path().join("missing-codex"))
+        .run_with_session_supervised(
+            "Persist first.",
+            temp.path(),
+            Duration::from_secs(5),
+            CancellationToken::new(),
+            None,
+            observations,
+            move |observation| {
+                *persisted_for_callback.lock().unwrap() = Some(observation.clone());
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(format!("{error:#}").contains("failed to start Codex CLI"));
+    let observation = persisted.lock().unwrap().clone().unwrap();
+    let anchor_pid = observation.process_id.unwrap();
+    assert!(observation.process_identity.is_some());
+    assert_process_gone(i32::try_from(anchor_pid).unwrap()).await;
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn failed_anchor_persistence_prevents_spawn_and_reaps_the_group() {
+    let temp = tempfile::tempdir().unwrap();
+    let started_path = temp.path().join("codex-started");
+    let executable = fake_codex(
+        temp.path(),
+        &format!("touch \"{}\"", started_path.display()),
+    );
+    let captured_anchor = Arc::new(Mutex::new(None));
+    let captured_for_callback = Arc::clone(&captured_anchor);
+    let (observations, _receiver) = observation_channel();
+
+    let error = CodexRuntime::new(executable)
+        .run_with_session_supervised(
+            "Fail persistence.",
+            temp.path(),
+            Duration::from_secs(5),
+            CancellationToken::new(),
+            None,
+            observations,
+            move |observation| {
+                *captured_for_callback.lock().unwrap() = observation.process_id;
+                anyhow::bail!("simulated durable persistence failure")
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(format!("{error:#}").contains("simulated durable persistence failure"));
+    assert!(!started_path.exists());
+    let anchor_pid = captured_anchor.lock().unwrap().unwrap();
+    assert_process_gone(i32::try_from(anchor_pid).unwrap()).await;
+}
+
+#[tokio::test]
+async fn pre_cancelled_run_never_spawns_codex() {
+    let temp = tempfile::tempdir().unwrap();
+    let started_path = temp.path().join("pre-cancelled-started");
+    let executable = fake_codex(
+        temp.path(),
+        &format!("touch \"{}\"", started_path.display()),
+    );
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+
+    let result = CodexRuntime::new(executable)
+        .run(
+            "Already cancelled.",
+            temp.path(),
+            Duration::from_secs(5),
+            cancellation,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.termination, Termination::Cancelled);
+    assert!(!started_path.exists());
+}
+
+#[tokio::test]
+async fn zero_timeout_run_never_spawns_codex() {
+    let temp = tempfile::tempdir().unwrap();
+    let started_path = temp.path().join("zero-timeout-started");
+    let executable = fake_codex(
+        temp.path(),
+        &format!("touch \"{}\"", started_path.display()),
+    );
+
+    let result = CodexRuntime::new(executable)
+        .run(
+            "Already timed out.",
+            temp.path(),
+            Duration::ZERO,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.termination, Termination::TimedOut);
+    assert!(!started_path.exists());
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn cancellation_after_anchor_persistence_prevents_spawn_and_reaps() {
+    let temp = tempfile::tempdir().unwrap();
+    let started_path = temp.path().join("post-persistence-cancel-started");
+    let executable = fake_codex(
+        temp.path(),
+        &format!("touch \"{}\"", started_path.display()),
+    );
+    let cancellation = CancellationToken::new();
+    let cancel_from_callback = cancellation.clone();
+    let captured_anchor = Arc::new(Mutex::new(None));
+    let captured_for_callback = Arc::clone(&captured_anchor);
+    let (observations, _receiver) = observation_channel();
+
+    let result = CodexRuntime::new(executable)
+        .run_with_session_supervised(
+            "Cancel after persistence.",
+            temp.path(),
+            Duration::from_secs(5),
+            cancellation,
+            None,
+            observations,
+            move |observation| {
+                *captured_for_callback.lock().unwrap() = observation.process_id;
+                cancel_from_callback.cancel();
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.termination, Termination::Cancelled);
+    assert!(!started_path.exists());
+    let anchor_pid = captured_anchor.lock().unwrap().unwrap();
+    assert_process_gone(i32::try_from(anchor_pid).unwrap()).await;
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn deadline_after_anchor_persistence_prevents_spawn_and_reaps() {
+    let temp = tempfile::tempdir().unwrap();
+    let started_path = temp.path().join("post-persistence-timeout-started");
+    let executable = fake_codex(
+        temp.path(),
+        &format!("touch \"{}\"", started_path.display()),
+    );
+    let captured_anchor = Arc::new(Mutex::new(None));
+    let captured_for_callback = Arc::clone(&captured_anchor);
+    let (observations, _receiver) = observation_channel();
+
+    let result = CodexRuntime::new(executable)
+        .run_with_session_supervised(
+            "Expire after persistence.",
+            temp.path(),
+            Duration::from_millis(500),
+            CancellationToken::new(),
+            None,
+            observations,
+            move |observation| {
+                *captured_for_callback.lock().unwrap() = observation.process_id;
+                std::thread::sleep(Duration::from_millis(700));
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.termination, Termination::TimedOut);
+    assert!(!started_path.exists());
+    let anchor_pid = captured_anchor.lock().unwrap().unwrap();
+    assert_process_gone(i32::try_from(anchor_pid).unwrap()).await;
 }
 
 #[tokio::test]

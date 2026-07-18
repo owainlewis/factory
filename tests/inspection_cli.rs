@@ -181,9 +181,15 @@ fn runs_filters_by_workflow_and_includes_bounded_summaries() {
             "duration_ms",
             "finished_at",
             "id",
+            "last_activity_at",
             "outcome",
             "owner_id",
             "owner_pid",
+            "process_id",
+            "process_identity",
+            "pull_request",
+            "recovery_attempt",
+            "recovery_of",
             "repository",
             "runtime",
             "source_item",
@@ -191,6 +197,7 @@ fn runs_filters_by_workflow_and_includes_bounded_summaries() {
             "summary",
             "task_id",
             "workflow",
+            "working_directory",
         ]
     );
 }
@@ -248,7 +255,10 @@ fn inspect_resolves_task_context_bounds_detail_and_escapes_terminal_controls() {
         .keys()
         .cloned()
         .collect::<Vec<_>>();
-    assert_eq!(keys, ["error", "result", "run", "session_id", "task"]);
+    assert_eq!(
+        keys,
+        ["activity", "error", "result", "run", "session_id", "task"]
+    );
 }
 
 #[test]
