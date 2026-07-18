@@ -215,6 +215,7 @@ fn factory_run_once_fails_for_invalid_ticket_workflow() {
         .stderr(predicates::str::contains(
             "timeout must be greater than zero",
         ));
+    assert!(!data.exists());
 }
 
 #[test]

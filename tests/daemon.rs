@@ -1245,6 +1245,11 @@ fn invalid_label_workflow_fails_daemon_startup() {
         "+++\nlabel = \"factory:ready\"\ntimeout = \"0s\"\n+++\n\nINVALID TICKET WORKFLOW\n",
     )
     .unwrap();
+    fs::write(
+        fixture.config.repositories[0].join(".factory/workflows/invalid-schedule.md"),
+        "+++\nschedule = \"eventually\"\ntimezone = \"UTC\"\n+++\n\nINVALID SCHEDULE\n",
+    )
+    .unwrap();
     let search_path = std::env::join_paths(
         std::iter::once(fixture.gh.parent().unwrap().to_path_buf()).chain(
             std::env::var_os("PATH")
@@ -1269,11 +1274,15 @@ fn invalid_label_workflow_fails_daemon_startup() {
         .assert()
         .failure()
         .stderr(predicates::str::contains(
+            "Factory skipped invalid scheduled workflow",
+        ))
+        .stderr(predicates::str::contains(
             "Factory cannot start with invalid ticket workflows",
         ))
         .stderr(predicates::str::contains(
             "timeout must be greater than zero",
         ));
+    assert!(!fixture.ledger_path.exists());
 }
 
 #[test]

@@ -318,6 +318,17 @@ async fn run_poller(
     let path = config_path.unwrap_or_else(default_config_path);
     let config = Config::load(&path)?;
     let catalog = WorkflowCatalog::load(&config)?;
+    let ticket_validation = catalog.validate_ticket_workflows();
+    if once || ticket_validation.is_err() {
+        for entry in catalog.invalid_scheduled_entries() {
+            eprintln!(
+                "Factory skipped invalid scheduled workflow {}: {}",
+                entry.path.display(),
+                entry.errors.join("; ")
+            );
+        }
+    }
+    ticket_validation?;
     let data_directory = data_directory.unwrap_or_else(|| {
         path.parent()
             .unwrap_or_else(|| std::path::Path::new("."))
@@ -326,14 +337,6 @@ async fn run_poller(
     let mut ledger = Ledger::open_in(&data_directory)?;
     let github = GitHubClient::default();
     if once {
-        for entry in catalog.invalid_scheduled_entries() {
-            eprintln!(
-                "Factory skipped invalid scheduled workflow {}: {}",
-                entry.path.display(),
-                entry.errors.join("; ")
-            );
-        }
-        catalog.validate_ticket_workflows()?;
         let report = github.poll_once(&config, &catalog, &mut ledger).await?;
         print_poll_report(&report);
         return Ok(u8::from(report.failures() > 0));
