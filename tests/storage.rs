@@ -369,6 +369,47 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn crashed_schedule_owner_does_not_preserve_offline_due_work() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut crashed_process = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+    let crashed_pid = crashed_process.id();
+    assert!(crashed_process.wait().unwrap().success());
+    let mut crashed = Ledger::open(&path).unwrap();
+    crashed
+        .register_daemon_owner("crashed-schedule-owner", crashed_pid)
+        .unwrap();
+    crashed
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "same|UTC",
+            60_000,
+            30_000,
+            "crashed-schedule-owner",
+        )
+        .unwrap();
+
+    let mut restarted = Ledger::open(&path).unwrap();
+    restarted
+        .register_daemon_owner("restarted-schedule-owner", std::process::id())
+        .unwrap();
+    let cursor = restarted
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "same|UTC",
+            120_000,
+            90_000,
+            "restarted-schedule-owner",
+        )
+        .unwrap();
+
+    assert_eq!(cursor.next_due_at, 120_000);
+}
+
 #[test]
 fn concurrent_claim_has_exactly_one_winner() {
     let temp = tempfile::tempdir().unwrap();

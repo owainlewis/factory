@@ -547,7 +547,7 @@ impl Ledger {
         let live_owner_fingerprints = {
             let mut statement = transaction
                 .prepare(
-                    "SELECT DISTINCT schedules.fingerprint
+                    "SELECT DISTINCT schedules.fingerprint, owners.pid
                      FROM schedule_owners schedules
                      JOIN daemon_owners owners ON owners.owner_id = schedules.owner_id
                      WHERE schedules.repository = ?1 AND schedules.workflow = ?2
@@ -557,11 +557,14 @@ impl Ledger {
             statement
                 .query_map(
                     params![repository, workflow, owner_id, lease_cutoff],
-                    |row| row.get::<_, String>(0),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?)),
                 )
                 .context("failed to query live schedule owners")?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .context("failed to read live schedule owners")?
+                .into_iter()
+                .filter_map(|(fingerprint, pid)| process_is_alive(pid).then_some(fingerprint))
+                .collect::<Vec<_>>()
         };
         let other_matching_owner = live_owner_fingerprints
             .iter()
