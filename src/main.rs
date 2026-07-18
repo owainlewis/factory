@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 use factory::config::{Config, default_config_path};
@@ -125,6 +126,16 @@ enum WorkflowCommand {
     },
 }
 
+#[derive(Serialize)]
+struct CancellationResponse {
+    run_id: i64,
+    status: &'static str,
+    owner_kind: &'static str,
+    owner_pid: Option<u32>,
+    outcome: String,
+    message: &'static str,
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     match run_cli().await {
@@ -229,34 +240,38 @@ async fn run_cli() -> Result<u8> {
         } => {
             let mut ledger = open_data_ledger(config, data_directory)?;
             let response = match ledger.request_run_cancellation(run_id)? {
-                CancellationRequest::Requested(run) => serde_json::json!({
-                    "run_id": run.id,
-                    "status": "requested",
-                    "owner": "factory-daemon",
-                    "outcome": run.outcome,
-                    "message": "cancellation requested; the owning Factory daemon will stop the active process tree"
-                }),
-                CancellationRequest::AlreadyRequested(run) => serde_json::json!({
-                    "run_id": run.id,
-                    "status": "already_requested",
-                    "owner": "factory-daemon",
-                    "outcome": run.outcome,
-                    "message": "cancellation was already requested from the owning Factory daemon"
-                }),
-                CancellationRequest::Terminal(run) => serde_json::json!({
-                    "run_id": run.id,
-                    "status": "already_terminal",
-                    "owner": null,
-                    "outcome": run.outcome,
-                    "message": "run is already terminal"
-                }),
-                CancellationRequest::OwnedElsewhere(run) => serde_json::json!({
-                    "run_id": run.id,
-                    "status": "owned_elsewhere",
-                    "owner": run.owner_pid,
-                    "outcome": run.outcome,
-                    "message": "run has no live local Factory daemon owner; inspect or recover it before retrying cancellation"
-                }),
+                CancellationRequest::Requested(run) => CancellationResponse {
+                    run_id: run.id,
+                    status: "requested",
+                    owner_kind: "factory-daemon",
+                    owner_pid: run.owner_pid,
+                    outcome: run.outcome,
+                    message: "cancellation requested; the owning Factory daemon will stop the active process tree",
+                },
+                CancellationRequest::AlreadyRequested(run) => CancellationResponse {
+                    run_id: run.id,
+                    status: "already_requested",
+                    owner_kind: "factory-daemon",
+                    owner_pid: run.owner_pid,
+                    outcome: run.outcome,
+                    message: "cancellation was already requested from the owning Factory daemon",
+                },
+                CancellationRequest::Terminal(run) => CancellationResponse {
+                    run_id: run.id,
+                    status: "already_terminal",
+                    owner_kind: "none",
+                    owner_pid: None,
+                    outcome: run.outcome,
+                    message: "run is already terminal",
+                },
+                CancellationRequest::OwnedElsewhere(run) => CancellationResponse {
+                    run_id: run.id,
+                    status: "owned_elsewhere",
+                    owner_kind: "stale-or-foreign",
+                    owner_pid: run.owner_pid,
+                    outcome: run.outcome,
+                    message: "run has no live local Factory daemon owner; inspect or recover it before retrying cancellation",
+                },
                 CancellationRequest::NotFound => bail!("run {run_id} does not exist"),
             };
             if json {
@@ -264,9 +279,7 @@ async fn run_cli() -> Result<u8> {
             } else {
                 println!(
                     "Run {}: {} ({})",
-                    response["run_id"],
-                    response["message"].as_str().unwrap_or("unknown status"),
-                    response["status"].as_str().unwrap_or("unknown")
+                    response.run_id, response.message, response.status
                 );
             }
         }

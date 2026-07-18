@@ -29,7 +29,7 @@ impl Fixture {
             .finish_run_and_task(
                 failed_run.id,
                 RunOutcome::Failed,
-                Some("partial result\nGITHUB_TOKEN=ghp_supersecret\nAWS_ACCESS_KEY_ID=AKIAEXAMPLE\nAuthorization: Bearer abc123"),
+                Some("partial result\nGITHUB_TOKEN=ghp_supersecret\nAWS_ACCESS_KEY_ID=AKIAEXAMPLE\nAuthorization: Bearer abc123\npostgres://standalone:password@host/db\nAKIAIOSFODNN7EXAMPLE"),
                 Some(
                     "failure \u{1b}[31m detail DATABASE_URL=postgres://user:pass@host/db\nPASSWORD=\"correct horse battery staple\"\n{\"PASSWORD\":\"abc\\\"remaining secret\"}\n-----BEGIN PRIVATE KEY-----\ntruncated-key-material",
                 ),
@@ -206,7 +206,8 @@ fn inspect_resolves_task_context_bounds_detail_and_escapes_terminal_controls() {
         .stdout(predicate::str::contains("thread-failed"))
         .stdout(predicate::str::contains("\\u{1b}"))
         .stdout(predicate::str::contains("\u{1b}").not())
-        .stdout(predicate::str::contains("postgres://").not())
+        .stdout(predicate::str::contains("user:pass").not())
+        .stdout(predicate::str::contains("standalone:password").not())
         .stdout(predicate::str::contains("ghp_supersecret").not())
         .stdout(predicate::str::contains("SECRET=").not());
 
@@ -219,9 +220,11 @@ fn inspect_resolves_task_context_bounds_detail_and_escapes_terminal_controls() {
     let failed_json: serde_json::Value = serde_json::from_slice(&failed_output.stdout).unwrap();
     let encoded = serde_json::to_string(&failed_json).unwrap();
     assert!(!encoded.contains("ghp_supersecret"));
-    assert!(!encoded.contains("postgres://"));
+    assert!(!encoded.contains("user:pass"));
     assert!(!encoded.contains("abc123"));
     assert!(!encoded.contains("AKIAEXAMPLE"));
+    assert!(!encoded.contains("standalone:password"));
+    assert!(!encoded.contains("AKIAIOSFODNN7EXAMPLE"));
     assert!(!encoded.contains("horse battery"));
     assert!(!encoded.contains("remaining secret"));
     assert!(!encoded.contains("truncated-key-material"));
@@ -259,7 +262,10 @@ fn cancel_reports_unowned_terminal_and_missing_runs() {
     .assert()
     .success()
     .stdout(predicate::str::contains("\"status\": \"owned_elsewhere\""))
-    .stdout(predicate::str::contains("\"owner\": null"));
+    .stdout(predicate::str::contains(
+        "\"owner_kind\": \"stale-or-foreign\"",
+    ))
+    .stdout(predicate::str::contains("\"owner_pid\": null"));
     command(
         &fixture,
         &["cancel", &fixture.cancelled_run_id.to_string(), "--json"],

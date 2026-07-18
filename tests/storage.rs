@@ -259,6 +259,7 @@ fn cancellation_requests_are_durable_idempotent_and_force_cancelled_outcome() {
 
     let mut reopened = Ledger::open(&path).unwrap();
     assert!(reopened.cancellation_requested(run.id).unwrap());
+    reopened.remove_daemon_owner("storage-test-owner").unwrap();
     assert!(matches!(
         reopened.request_run_cancellation(run.id).unwrap(),
         CancellationRequest::AlreadyRequested(_)

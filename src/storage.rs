@@ -799,6 +799,12 @@ impl Ledger {
                 .context("failed to finish terminal cancellation request")?;
             return Ok(CancellationRequest::Terminal(run));
         }
+        if run.cancellation_requested_at.is_some() {
+            transaction
+                .commit()
+                .context("failed to finish repeated cancellation request")?;
+            return Ok(CancellationRequest::AlreadyRequested(run));
+        }
         let owner_is_live = match (&run.owner_id, run.owner_pid) {
             (Some(owner_id), Some(owner_pid)) => {
                 let lease_cutoff = now_millis()?.saturating_sub(DAEMON_OWNER_LEASE_MILLIS);
@@ -821,12 +827,6 @@ impl Ledger {
                 .commit()
                 .context("failed to finish unowned cancellation request")?;
             return Ok(CancellationRequest::OwnedElsewhere(run));
-        }
-        if run.cancellation_requested_at.is_some() {
-            transaction
-                .commit()
-                .context("failed to finish repeated cancellation request")?;
-            return Ok(CancellationRequest::AlreadyRequested(run));
         }
         transaction
             .execute(

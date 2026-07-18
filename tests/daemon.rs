@@ -119,6 +119,8 @@ done
 slot=1
 while ! mkdir "{root}/slot-$slot" 2>/dev/null; do slot=$((slot + 1)); done
 echo $$ > "{root}/slot-$slot/pid"
+sleep 1000 &
+echo $! > "{root}/slot-$slot/child-pid"
 cat > "{root}/slot-$slot/prompt"
 touch "{root}/slot-$slot/started"
 while [ ! -f "{root}/gate" ]; do sleep 0.02; done
@@ -324,6 +326,7 @@ async fn shutdown_cancels_the_active_codex_process_and_records_it() {
     };
     wait_for(|| fixture.started_slots().len() == 1).await;
     let pid = fs::read_to_string(fixture.started_slots()[0].join("pid")).unwrap();
+    let child_pid = fs::read_to_string(fixture.started_slots()[0].join("child-pid")).unwrap();
     cancellation.cancel();
     running.await.unwrap().unwrap();
 
@@ -332,6 +335,13 @@ async fn shutdown_cancels_the_active_codex_process_and_records_it() {
     assert!(
         !Command::new("kill")
             .args(["-0", pid.trim()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        !Command::new("kill")
+            .args(["-0", child_pid.trim()])
             .status()
             .unwrap()
             .success()
@@ -350,6 +360,7 @@ async fn cli_cancellation_stops_the_owned_process_tree_and_records_cancelled() {
     };
     wait_for(|| fixture.started_slots().len() == 1).await;
     let pid = fs::read_to_string(fixture.started_slots()[0].join("pid")).unwrap();
+    let child_pid = fs::read_to_string(fixture.started_slots()[0].join("child-pid")).unwrap();
     let run_id = Ledger::open(&fixture.ledger_path)
         .unwrap()
         .runs(None)
@@ -402,6 +413,13 @@ async fn cli_cancellation_stops_the_owned_process_tree_and_records_cancelled() {
     assert!(
         !Command::new("kill")
             .args(["-0", pid.trim()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        !Command::new("kill")
+            .args(["-0", child_pid.trim()])
             .status()
             .unwrap()
             .success()

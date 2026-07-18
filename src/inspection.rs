@@ -233,6 +233,8 @@ fn sanitize(value: &str) -> String {
     static ASSIGNMENT: OnceLock<Regex> = OnceLock::new();
     static BEARER: OnceLock<Regex> = OnceLock::new();
     static TOKEN_PREFIX: OnceLock<Regex> = OnceLock::new();
+    static URI_USERINFO: OnceLock<Regex> = OnceLock::new();
+    static AWS_ACCESS_KEY: OnceLock<Regex> = OnceLock::new();
 
     let value = PRIVATE_KEY
         .get_or_init(|| {
@@ -256,6 +258,18 @@ fn sanitize(value: &str) -> String {
             .expect("credential-assignment redaction pattern is valid")
         })
         .replace_all(&value, "${1}[REDACTED]");
+    let value = URI_USERINFO
+        .get_or_init(|| {
+            Regex::new(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^@/\s]+@")
+                .expect("credential-URI redaction pattern is valid")
+        })
+        .replace_all(&value, "${1}[REDACTED]@");
+    let value = AWS_ACCESS_KEY
+        .get_or_init(|| {
+            Regex::new(r"\b(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)[A-Z0-9]{16}\b")
+                .expect("AWS access-key redaction pattern is valid")
+        })
+        .replace_all(&value, "[REDACTED]");
     TOKEN_PREFIX
         .get_or_init(|| {
             Regex::new(
