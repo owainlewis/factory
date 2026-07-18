@@ -288,6 +288,37 @@ fn unsafe_workflow_directory_does_not_hide_other_repositories() {
     assert!(catalog.to_string().contains("not a symlink"));
 }
 
+#[cfg(unix)]
+#[test]
+fn rejects_workflows_reached_through_symlinked_factory_ancestor() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let repository = temp.path().join("repository");
+    let outside_factory = temp.path().join("outside-factory");
+    let outside_workflows = outside_factory.join("workflows");
+    let workspace = temp.path().join("worktrees");
+    fs::create_dir(&repository).unwrap();
+    fs::create_dir_all(&outside_workflows).unwrap();
+    fs::create_dir(&workspace).unwrap();
+    fs::write(
+        outside_workflows.join("escaped.md"),
+        label_workflow("This prompt is outside the repository."),
+    )
+    .unwrap();
+    symlink(&outside_factory, repository.join(".factory")).unwrap();
+    let config_path = temp.path().join("config.toml");
+    write_config(&config_path, &[&repository], &workspace);
+
+    let config = Config::load(&config_path).unwrap();
+    let catalog = WorkflowCatalog::load(&config).unwrap();
+
+    assert_eq!(catalog.invalid_count(), 1);
+    assert_eq!(catalog.entries[0].id, "<workflow-directory>");
+    assert!(catalog.entries[0].prompt.is_none());
+    assert!(catalog.entries[0].errors[0].contains("resolves outside the configured repository"));
+}
+
 #[test]
 fn workflows_command_lists_resolved_catalog_and_fails_for_invalid_entries() {
     let fixture = Fixture::new();

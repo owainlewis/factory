@@ -123,10 +123,37 @@ impl fmt::Display for Trigger {
 }
 
 fn load_repository(repository: &Path, config: &Config) -> Vec<WorkflowEntry> {
+    let factory_directory = repository.join(".factory");
     let directory = repository.join(WORKFLOW_DIRECTORY);
-    let metadata = match fs::symlink_metadata(&directory) {
+    let factory_metadata = match fs::symlink_metadata(&factory_directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            return vec![invalid_entry(
+                repository,
+                &directory,
+                "<workflow-directory>",
+                &format!("could not inspect .factory directory: {error}"),
+            )];
+        }
+    };
+    if !factory_metadata.file_type().is_dir() && !factory_metadata.file_type().is_symlink() {
+        return vec![invalid_entry(
+            repository,
+            &directory,
+            "<workflow-directory>",
+            ".factory path must be a directory",
+        )];
+    }
+
+    let metadata = match fs::symlink_metadata(&directory) {
+        Ok(metadata) => metadata,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && !factory_metadata.file_type().is_symlink() =>
+        {
+            return Vec::new();
+        }
         Err(error) => {
             return vec![invalid_entry(
                 repository,
@@ -144,8 +171,27 @@ fn load_repository(repository: &Path, config: &Config) -> Vec<WorkflowEntry> {
             "workflow path must be a regular directory and not a symlink",
         )];
     }
+    let canonical_directory = match directory.canonicalize() {
+        Ok(directory) => directory,
+        Err(error) => {
+            return vec![invalid_entry(
+                repository,
+                &directory,
+                "<workflow-directory>",
+                &format!("could not resolve workflow directory: {error}"),
+            )];
+        }
+    };
+    if !canonical_directory.starts_with(repository) {
+        return vec![invalid_entry(
+            repository,
+            &directory,
+            "<workflow-directory>",
+            "workflow directory resolves outside the configured repository",
+        )];
+    }
 
-    let read_dir = match fs::read_dir(&directory) {
+    let read_dir = match fs::read_dir(&canonical_directory) {
         Ok(read_dir) => read_dir,
         Err(error) => {
             return vec![invalid_entry(
@@ -214,6 +260,21 @@ fn load_file(repository: &Path, path: &Path, config: &Config) -> WorkflowEntry {
             .errors
             .push("workflow must be a regular file and not a symlink".to_owned());
         return entry;
+    }
+    match path.canonicalize() {
+        Ok(canonical) if canonical.starts_with(repository) => {}
+        Ok(_) => {
+            entry
+                .errors
+                .push("workflow resolves outside the configured repository".to_owned());
+            return entry;
+        }
+        Err(error) => {
+            entry
+                .errors
+                .push(format!("could not resolve workflow file: {error}"));
+            return entry;
+        }
     }
 
     let contents = match fs::read_to_string(path) {
