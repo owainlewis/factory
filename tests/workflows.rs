@@ -131,6 +131,30 @@ Review the code for verified bugs.
 }
 
 #[test]
+fn checked_in_implementation_workflow_is_valid_and_requires_human_merge() {
+    let fixture = Fixture::new();
+    fixture.workflow(
+        "implement-ready-ticket.md",
+        include_str!("../examples/implement-ready-ticket.md"),
+    );
+
+    let catalog = fixture.catalog();
+
+    assert_eq!(catalog.invalid_count(), 0);
+    let workflow = &catalog.entries[0];
+    assert_eq!(
+        workflow.trigger,
+        Some(Trigger::Label("factory:ready".to_owned()))
+    );
+    assert_eq!(workflow.runtime.as_deref(), Some("codex"));
+    assert_eq!(workflow.timeout, Some(Duration::from_secs(4 * 60 * 60)));
+    let prompt = workflow.prompt.as_deref().unwrap();
+    assert!(prompt.contains("Never merge the pull request"));
+    assert!(prompt.contains("factory:needs-review"));
+    assert!(prompt.contains("fresh subagent"));
+}
+
+#[test]
 fn reports_all_invalid_workflows_without_hiding_valid_entries() {
     let fixture = Fixture::new();
     fixture.workflow("valid.md", &label_workflow("A useful prompt."));
