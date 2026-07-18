@@ -91,6 +91,36 @@ impl ExecutionResult {
     }
 }
 
+fn preparation_termination(
+    cancellation: &CancellationToken,
+    deadline: TokioInstant,
+) -> Option<Termination> {
+    if cancellation.is_cancelled() {
+        Some(Termination::Cancelled)
+    } else if TokioInstant::now() >= deadline {
+        Some(Termination::TimedOut)
+    } else {
+        None
+    }
+}
+
+#[cfg(unix)]
+fn preparation_result(termination: Termination, started: Instant) -> ExecutionResult {
+    use std::os::unix::process::ExitStatusExt;
+
+    ExecutionResult {
+        status: ExitStatus::from_raw(1 << 8),
+        termination,
+        final_response: String::new(),
+        final_response_truncated: false,
+        thread_id: None,
+        duration: started.elapsed(),
+        activity_lines: 0,
+        activity_error: None,
+        stderr_tail: String::new(),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CodexRuntime {
     executable: PathBuf,
@@ -333,6 +363,11 @@ impl CodexRuntime {
         observations: watch::Sender<RuntimeObservation>,
         before_spawn: Option<BeforeCodexSpawn<'_>>,
     ) -> Result<ExecutionResult> {
+        let started = Instant::now();
+        let deadline = TokioInstant::now() + run_timeout;
+        if let Some(termination) = preparation_termination(&cancellation, deadline) {
+            return Ok(preparation_result(termination, started));
+        }
         let output_path = tempfile::NamedTempFile::new()
             .context("failed to create Codex final-response file")?
             .into_temp_path();
@@ -363,22 +398,44 @@ impl CodexRuntime {
             .kill_on_drop(true);
         let mut process_group = RunProcessGroup::start().await?;
         process_group.configure(&mut command)?;
+        if let Some(termination) = preparation_termination(&cancellation, deadline) {
+            process_group.stop().await?;
+            return Ok(preparation_result(termination, started));
+        }
         let anchor_observation = RuntimeObservation {
             process_id: process_group.process_id,
             process_identity: process_group.process_identity.clone(),
             sequence: 1,
             ..RuntimeObservation::default()
         };
-        if let Some(before_spawn) = before_spawn {
-            before_spawn(&anchor_observation)?;
+        if let Some(before_spawn) = before_spawn
+            && let Err(error) = before_spawn(&anchor_observation)
+        {
+            process_group
+                .stop()
+                .await
+                .context("failed to stop Codex process group after persistence failure")?;
+            return Err(error);
         }
         observations.send_replace(anchor_observation);
+        if let Some(termination) = preparation_termination(&cancellation, deadline) {
+            process_group.stop().await?;
+            return Ok(preparation_result(termination, started));
+        }
 
-        let started = Instant::now();
-        let deadline = TokioInstant::now() + run_timeout;
-        let mut child = match spawn_with_retry(&mut command).await {
-            Ok(child) => child,
-            Err(error) => {
+        let spawned = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Err(Termination::Cancelled),
+            () = sleep_until(deadline) => Err(Termination::TimedOut),
+            result = spawn_with_retry(&mut command) => Ok(result),
+        };
+        let mut child = match spawned {
+            Err(termination) => {
+                process_group.stop().await?;
+                return Ok(preparation_result(termination, started));
+            }
+            Ok(Ok(child)) => child,
+            Ok(Err(error)) => {
                 let _ = process_group.stop().await;
                 return Err(error).with_context(|| {
                     format!("failed to start Codex CLI at {}", self.executable.display())

@@ -483,6 +483,128 @@ async fn failed_anchor_persistence_prevents_spawn_and_reaps_the_group() {
 }
 
 #[tokio::test]
+async fn pre_cancelled_run_never_spawns_codex() {
+    let temp = tempfile::tempdir().unwrap();
+    let started_path = temp.path().join("pre-cancelled-started");
+    let executable = fake_codex(
+        temp.path(),
+        &format!("touch \"{}\"", started_path.display()),
+    );
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+
+    let result = CodexRuntime::new(executable)
+        .run(
+            "Already cancelled.",
+            temp.path(),
+            Duration::from_secs(5),
+            cancellation,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.termination, Termination::Cancelled);
+    assert!(!started_path.exists());
+}
+
+#[tokio::test]
+async fn zero_timeout_run_never_spawns_codex() {
+    let temp = tempfile::tempdir().unwrap();
+    let started_path = temp.path().join("zero-timeout-started");
+    let executable = fake_codex(
+        temp.path(),
+        &format!("touch \"{}\"", started_path.display()),
+    );
+
+    let result = CodexRuntime::new(executable)
+        .run(
+            "Already timed out.",
+            temp.path(),
+            Duration::ZERO,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.termination, Termination::TimedOut);
+    assert!(!started_path.exists());
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn cancellation_after_anchor_persistence_prevents_spawn_and_reaps() {
+    let temp = tempfile::tempdir().unwrap();
+    let started_path = temp.path().join("post-persistence-cancel-started");
+    let executable = fake_codex(
+        temp.path(),
+        &format!("touch \"{}\"", started_path.display()),
+    );
+    let cancellation = CancellationToken::new();
+    let cancel_from_callback = cancellation.clone();
+    let captured_anchor = Arc::new(Mutex::new(None));
+    let captured_for_callback = Arc::clone(&captured_anchor);
+    let (observations, _receiver) = observation_channel();
+
+    let result = CodexRuntime::new(executable)
+        .run_with_session_supervised(
+            "Cancel after persistence.",
+            temp.path(),
+            Duration::from_secs(5),
+            cancellation,
+            None,
+            observations,
+            move |observation| {
+                *captured_for_callback.lock().unwrap() = observation.process_id;
+                cancel_from_callback.cancel();
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.termination, Termination::Cancelled);
+    assert!(!started_path.exists());
+    let anchor_pid = captured_anchor.lock().unwrap().unwrap();
+    assert_process_gone(i32::try_from(anchor_pid).unwrap()).await;
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn deadline_after_anchor_persistence_prevents_spawn_and_reaps() {
+    let temp = tempfile::tempdir().unwrap();
+    let started_path = temp.path().join("post-persistence-timeout-started");
+    let executable = fake_codex(
+        temp.path(),
+        &format!("touch \"{}\"", started_path.display()),
+    );
+    let captured_anchor = Arc::new(Mutex::new(None));
+    let captured_for_callback = Arc::clone(&captured_anchor);
+    let (observations, _receiver) = observation_channel();
+
+    let result = CodexRuntime::new(executable)
+        .run_with_session_supervised(
+            "Expire after persistence.",
+            temp.path(),
+            Duration::from_millis(500),
+            CancellationToken::new(),
+            None,
+            observations,
+            move |observation| {
+                *captured_for_callback.lock().unwrap() = observation.process_id;
+                std::thread::sleep(Duration::from_millis(700));
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.termination, Termination::TimedOut);
+    assert!(!started_path.exists());
+    let anchor_pid = captured_anchor.lock().unwrap().unwrap();
+    assert_process_gone(i32::try_from(anchor_pid).unwrap()).await;
+}
+
+#[tokio::test]
 async fn authentication_failure_is_actionable() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("codex");
