@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Barrier};
 use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -395,6 +396,94 @@ fn claim_requires_task_kind_to_match_the_current_workflow_trigger() {
         .unwrap();
     assert_eq!(claimed.task.id, task.id);
     assert_eq!(claimed.task.kind, "scheduled");
+}
+
+#[test]
+fn expired_daemon_owner_cannot_claim_or_start_work() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
+    let task = ledger.enqueue(&ticket("expired-claim-owner")).unwrap().task;
+    ledger
+        .register_daemon_owner("expired-claim-owner", std::process::id())
+        .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE daemon_owners SET heartbeat_at = 0 WHERE owner_id = ?1",
+            ["expired-claim-owner"],
+        )
+        .unwrap();
+
+    let error = ledger
+        .claim_and_start_run(
+            &["owainlewis/factory".to_owned()],
+            &ticket_runtimes(),
+            "expired-claim-owner",
+            std::process::id(),
+        )
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("no live lease for task claims"));
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Queued
+    );
+    assert!(ledger.runs(None).unwrap().is_empty());
+}
+
+#[test]
+fn owner_lease_is_checked_after_waiting_for_the_claim_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut setup = Ledger::open(&path).unwrap();
+    let task = setup.enqueue(&ticket("claim-lock-wait")).unwrap().task;
+    setup
+        .register_daemon_owner("claim-lock-owner", std::process::id())
+        .unwrap();
+    let now = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE daemon_owners SET heartbeat_at = ?1 WHERE owner_id = ?2",
+            rusqlite::params![now - 9_500, "claim-lock-owner"],
+        )
+        .unwrap();
+    drop(setup);
+
+    let mut claimant = Ledger::open(&path).unwrap();
+    let blocker = Connection::open(&path).unwrap();
+    blocker.execute_batch("BEGIN IMMEDIATE;").unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let waiting = {
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            claimant.claim_and_start_run(
+                &["owainlewis/factory".to_owned()],
+                &ticket_runtimes(),
+                "claim-lock-owner",
+                std::process::id(),
+            )
+        })
+    };
+    barrier.wait();
+    thread::sleep(Duration::from_millis(700));
+    blocker.execute_batch("COMMIT;").unwrap();
+
+    let error = waiting.join().unwrap().unwrap_err();
+    assert!(format!("{error:#}").contains("no live lease for task claims"));
+    let ledger = Ledger::open(&path).unwrap();
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Queued
+    );
+    assert!(ledger.runs(None).unwrap().is_empty());
 }
 
 #[test]

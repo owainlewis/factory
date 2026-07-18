@@ -748,11 +748,28 @@ impl Ledger {
         let available = available_repositories
             .iter()
             .collect::<std::collections::HashSet<_>>();
-        let now = now_millis()?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("failed to begin atomic task and run claim")?;
+        let now = now_millis()?;
+        let owner_is_live = transaction
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM daemon_owners
+                    WHERE owner_id = ?1 AND pid = ?2 AND heartbeat_at >= ?3
+                 )",
+                params![
+                    owner_id,
+                    owner_pid,
+                    now.saturating_sub(DAEMON_OWNER_LEASE_MILLIS)
+                ],
+                |row| row.get::<_, bool>(0),
+            )
+            .context("failed to validate task claim owner lease")?;
+        if !owner_is_live {
+            bail!("daemon owner {owner_id:?} has no live lease for task claims");
+        }
         let candidates = {
             let mut statement = transaction
                 .prepare(
