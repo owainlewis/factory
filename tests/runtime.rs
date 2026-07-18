@@ -459,7 +459,7 @@ async fn rejects_an_oversized_activity_line_without_unbounded_buffering() {
     let executable = fake_codex(
         temp.path(),
         r#"cat >/dev/null
-perl -e 'print "x" x 300000'
+awk 'BEGIN { for (i = 0; i < 300000; i++) printf "x" }'
 echo
 printf 'done' > "$output"
 exit 0"#,
