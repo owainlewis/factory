@@ -151,6 +151,8 @@ fn checked_in_implementation_workflow_is_valid_and_requires_human_merge() {
     let prompt = workflow.prompt.as_deref().unwrap();
     assert!(prompt.contains("Never merge the pull request"));
     assert!(prompt.contains("factory:needs-review"));
+    assert!(prompt.contains("ensure `factory:ready` is removed"));
+    assert!(prompt.contains("labels mutually exclusive"));
     assert!(prompt.contains("fresh subagent"));
 }
 

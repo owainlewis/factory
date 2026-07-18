@@ -16,8 +16,10 @@ pull request. If the work is already represented by a pull request, reconcile
 and continue that work instead of creating a duplicate.
 
 Remove `factory:ready` when you take ownership. If requirements are materially
-unclear or unsafe, apply `factory:needs-review`, post focused questions, and
-stop without guessing.
+unclear or unsafe, ensure `factory:ready` is removed, apply
+`factory:needs-review`, post focused questions, and stop without guessing. Keep
+the two workflow labels mutually exclusive so a human can explicitly reapply
+`factory:ready` after resolving the blocker.
 
 Create an isolated ticket-numbered branch and worktree using the repository's
 documented conventions. Implement the complete acceptance criteria without
