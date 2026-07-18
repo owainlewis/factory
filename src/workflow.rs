@@ -495,16 +495,11 @@ fn declares_only_schedule(frontmatter: &str) -> bool {
         if line.starts_with('[') {
             return false;
         }
-        let Some((key, value)) = line.split_once('=') else {
+        schedule |= line_declares_key(line, "schedule");
+        label |= line_declares_key(line, "label");
+        let Some((_, value)) = line.split_once('=') else {
             return false;
         };
-        let key = key.trim();
-        if matches!(key, "schedule" | "\"schedule\"" | "'schedule'") {
-            schedule = true;
-        }
-        if matches!(key, "label" | "\"label\"" | "'label'") {
-            label = true;
-        }
         let value = value.trim_start();
         if matches!(value.as_bytes().first(), Some(b'{') | Some(b'['))
             && !inline_container_closes(value)
@@ -521,6 +516,67 @@ fn declares_only_schedule(frontmatter: &str) -> bool {
         }
     }
     schedule && !label && multiline_delimiter.is_none()
+}
+
+fn line_declares_key(line: &str, expected: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'#' {
+            return false;
+        }
+        if matches!(bytes[index], b'\'' | b'"') {
+            let quote = bytes[index];
+            let start = index + 1;
+            index = start;
+            let mut escaped = false;
+            while index < bytes.len() {
+                if quote == b'"' && bytes[index] == b'\\' && !escaped {
+                    escaped = true;
+                    index += 1;
+                    continue;
+                }
+                if bytes[index] == quote && !escaped {
+                    break;
+                }
+                escaped = false;
+                index += 1;
+            }
+            if index < bytes.len()
+                && &line[start..index] == expected
+                && bytes[index + 1..]
+                    .iter()
+                    .copied()
+                    .find(|byte| !byte.is_ascii_whitespace())
+                    == Some(b'=')
+            {
+                return true;
+            }
+            index = index.saturating_add(1);
+            continue;
+        }
+        if bytes[index].is_ascii_alphanumeric() || matches!(bytes[index], b'_' | b'-') {
+            let start = index;
+            index += 1;
+            while index < bytes.len()
+                && (bytes[index].is_ascii_alphanumeric() || matches!(bytes[index], b'_' | b'-'))
+            {
+                index += 1;
+            }
+            if &line[start..index] == expected
+                && bytes[index..]
+                    .iter()
+                    .copied()
+                    .find(|byte| !byte.is_ascii_whitespace())
+                    == Some(b'=')
+            {
+                return true;
+            }
+            continue;
+        }
+        index += 1;
+    }
+    false
 }
 
 fn contains_multiline_closing(value: &str, delimiter: &str) -> bool {
@@ -821,6 +877,12 @@ schedule = "not-a-key"#
         ));
         assert!(!declares_only_schedule(
             "schedule = \"unterminated\n\"label\" = \"factory:ready\""
+        ));
+        assert!(!declares_only_schedule(
+            "schedule = \"0 9 * * 1\" label = \"factory:ready\""
+        ));
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\ndescription = \"label = factory:ready\""
         ));
         assert!(missing_frontmatter_declares_only_schedule(
             "+++\nschedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\nImplement maintenance.\n"
