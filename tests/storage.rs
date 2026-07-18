@@ -171,6 +171,58 @@ fn rejects_a_database_from_a_newer_factory_version_without_changing_it() {
 }
 
 #[test]
+fn migrates_a_version_one_ledger_without_losing_tasks() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("version-one.db");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+             CREATE TABLE tasks (
+                 id INTEGER PRIMARY KEY,
+                 identity_key TEXT NOT NULL UNIQUE,
+                 kind TEXT NOT NULL,
+                 repository TEXT NOT NULL,
+                 workflow TEXT NOT NULL,
+                 source_item TEXT,
+                 state TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE runs (
+                 id INTEGER PRIMARY KEY,
+                 task_id INTEGER NOT NULL REFERENCES tasks(id),
+                 workflow TEXT NOT NULL,
+                 repository TEXT NOT NULL,
+                 source_item TEXT,
+                 runtime TEXT NOT NULL,
+                 started_at INTEGER NOT NULL,
+                 finished_at INTEGER,
+                 outcome TEXT NOT NULL,
+                 result TEXT,
+                 error TEXT,
+                 session_id TEXT
+             );
+             INSERT INTO schema_migrations VALUES (1, 1);
+             INSERT INTO tasks VALUES (7, 'legacy', 'ticket', 'example/repo', 'workflow', '4', 'queued', 1, 1);
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+    drop(connection);
+
+    let ledger = Ledger::open(&path).unwrap();
+    let task = ledger.task(7).unwrap().unwrap();
+
+    assert_eq!(task.repository, "example/repo");
+    assert_eq!(task.payload, None);
+    let connection = Connection::open(path).unwrap();
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+}
+
+#[test]
 fn failed_writes_do_not_damage_prior_state() {
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();

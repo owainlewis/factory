@@ -7,9 +7,11 @@ use tokio_util::sync::CancellationToken;
 
 use factory::config::{Config, default_config_path};
 use factory::execution::ResolvedWorkflow;
+use factory::github::{GitHubClient, PollReport};
 use factory::runtime::{
     CodexRuntime, RuntimeCancelled, Termination, write_stderr_best_effort, write_stdout_best_effort,
 };
+use factory::storage::Ledger;
 use factory::workflow::WorkflowCatalog;
 
 #[derive(Debug, Parser)]
@@ -21,6 +23,18 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Poll configured repositories and persist eligible ticket tasks.
+    Run {
+        /// Poll once and exit without waiting for the next interval.
+        #[arg(long)]
+        once: bool,
+        /// Path to the Factory configuration file.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Directory containing the durable Factory database.
+        #[arg(long)]
+        data_directory: Option<PathBuf>,
+    },
     /// Validate configuration without starting workers or network activity.
     Validate {
         /// Path to the Factory configuration file.
@@ -70,6 +84,13 @@ async fn run_cli() -> Result<u8> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Run {
+            once,
+            config,
+            data_directory,
+        } => {
+            return run_poller(config, data_directory, once).await;
+        }
         Command::Validate { config } => {
             let path = config.unwrap_or_else(default_config_path);
             let config = Config::load(&path)?;
@@ -98,6 +119,75 @@ async fn run_cli() -> Result<u8> {
     }
 
     Ok(0)
+}
+
+async fn run_poller(
+    config_path: Option<PathBuf>,
+    data_directory: Option<PathBuf>,
+    once: bool,
+) -> Result<u8> {
+    let path = config_path.unwrap_or_else(default_config_path);
+    let config = Config::load(&path)?;
+    let catalog = WorkflowCatalog::load(&config)?;
+    let invalid = catalog.invalid_count();
+    if invalid > 0 {
+        bail!("workflow catalog contains {invalid} invalid workflow(s)");
+    }
+    let data_directory = data_directory.unwrap_or_else(|| {
+        path.parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf()
+    });
+    let mut ledger = Ledger::open_in(&data_directory)?;
+    let github = GitHubClient::default();
+    if once {
+        let report = github.poll_once(&config, &catalog, &mut ledger).await?;
+        print_poll_report(&report);
+        return Ok(u8::from(report.failures() > 0));
+    }
+
+    let cancellation = CancellationToken::new();
+    let signal_token = cancellation.clone();
+    let signal_task = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            signal_token.cancel();
+        }
+    });
+    github
+        .poll_until_cancelled(
+            &config,
+            &catalog,
+            &mut ledger,
+            cancellation,
+            print_poll_report,
+        )
+        .await?;
+    signal_task.abort();
+    Ok(0)
+}
+
+fn print_poll_report(report: &PollReport) {
+    for repository in &report.repositories {
+        if let Some(error) = &repository.error {
+            write_stderr_best_effort(
+                format!(
+                    "Poll failed for {}: {error}\n",
+                    repository.repository.display()
+                )
+                .as_bytes(),
+            );
+        } else {
+            write_stdout_best_effort(
+                format!(
+                    "repository={} issues_seen={} tasks_created={}\n",
+                    repository.name_with_owner.as_deref().unwrap_or("-"),
+                    repository.issues_seen,
+                    repository.tasks_created
+                )
+                .as_bytes(),
+            );
+        }
+    }
 }
 
 async fn run_workflow(
