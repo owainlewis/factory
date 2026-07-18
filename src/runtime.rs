@@ -155,7 +155,7 @@ impl CodexRuntime {
 
         let started = Instant::now();
         let deadline = TokioInstant::now() + run_timeout;
-        let mut child = command.spawn().with_context(|| {
+        let mut child = spawn_with_retry(&mut command).await.with_context(|| {
             format!("failed to start Codex CLI at {}", self.executable.display())
         })?;
         let process_id = child.id();
@@ -261,8 +261,8 @@ impl CodexRuntime {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         configure_process_group(&mut command);
-        let mut child = command
-            .spawn()
+        let mut child = spawn_with_retry(&mut command)
+            .await
             .with_context(|| format!("could not execute {}", self.executable.display()))?;
         let process_id = child.id();
         let stdout = child
@@ -481,6 +481,31 @@ fn read_bounded(path: &Path, maximum: usize) -> Result<(String, bool)> {
     let truncated = bytes.len() > maximum;
     bytes.truncate(maximum);
     Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated))
+}
+
+async fn spawn_with_retry(command: &mut Command) -> std::io::Result<Child> {
+    const MAX_ATTEMPTS: usize = 5;
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) if text_file_busy(&error) && attempt < MAX_ATTEMPTS => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("spawn retry loop always returns")
+}
+
+#[cfg(unix)]
+fn text_file_busy(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(nix::libc::ETXTBSY)
+}
+
+#[cfg(not(unix))]
+fn text_file_busy(_error: &std::io::Error) -> bool {
+    false
 }
 
 #[cfg(unix)]
