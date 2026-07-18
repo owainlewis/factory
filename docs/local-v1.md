@@ -173,9 +173,37 @@ Factory never merges as part of recovery.
 
 ## V1 acceptance evidence
 
-The repository records the real clean-checkout exercise for each release in
-the issue and implementation pull request that closes the corresponding
-milestone. Evidence must link the labelled issue, terminal Factory run, green
-draft pull request, restart count comparison, and human-review handoff. Any
-machine-specific paths, temporary data directories, or observed limitations
-must be stated rather than hidden.
+The M3 exercise ran on 18 July 2026 from a clean clone of commit
+`c0804e58e4159b7230116b8262ede837bb7973b2` on the pushed #10 branch. From that
+checkout, `cargo install --path .` installed `factory 0.1.0` into an isolated
+prefix. `factory validate` reported a valid configuration and `factory
+workflows` resolved `implement-ready-ticket` as a valid `factory:ready` Codex
+workflow with a four-hour timeout. Factory was started with local ChatGPT Codex
+authentication and with `OPENAI_API_KEY` removed from its environment.
+
+The real trigger was [issue #23](https://github.com/owainlewis/factory/issues/23).
+The ledger was empty before the label was applied. Factory created task 1 and
+run 1, with Codex session
+`019f76f8-577d-7313-b421-a8680b6eeda7`. The run succeeded in 552,487 ms and
+recorded [draft PR #24](https://github.com/owainlewis/factory/pull/24) at commit
+`68d0a2efeb7b416923d6cc6aa51d0350d6ae4ab8`. The PR remained open, draft, and
+unmerged. Its GitHub Actions `check` job passed, all requested local checks
+passed, and a fresh independent Codex subagent review reported no actionable
+findings. Issue #23 ended with only `factory:needs-review` and a handoff comment
+linking the PR, summary, checks, review state, and limitations.
+
+Restart deduplication was exercised after the terminal run. Before restart the
+ledger contained one succeeded task and one succeeded run linked to PR #24.
+After stopping the daemon, restarting it, and waiting through a five-second
+poll, those counts and the linked PR were unchanged. GitHub still contained
+one open PR for issue #23, so the restart created neither another Codex run nor
+another implementation.
+
+Observed limitations: the pre-merge proof necessarily checked out the pushed
+#10 branch rather than released `main`; the same commit became the candidate
+for the implementation PR. Isolated install, data, configuration, repository,
+and workspace paths lived under a temporary macOS directory whose canonical
+form was `/private/tmp`. GitHub had no submitted review on acceptance PR #24;
+the required automated diff review was the fresh Codex subagent inside the one
+supervised run. No model API key was used. PR #24 is intentionally left for a
+human and must not be merged as part of the milestone closeout.
