@@ -354,11 +354,14 @@ fn load_file(repository: &Path, path: &Path, config: &Config) -> WorkflowEntry {
         entry.prompt = Some(prompt);
     }
 
-    if let Ok(value) = toml::from_str::<toml::Value>(&frontmatter)
-        && let Some(table) = value.as_table()
-    {
-        entry.is_schedule_workflow = table.contains_key("schedule") && !table.contains_key("label");
-    }
+    entry.is_schedule_workflow = toml::from_str::<toml::Value>(&frontmatter)
+        .ok()
+        .and_then(|value| {
+            value
+                .as_table()
+                .map(|table| table.contains_key("schedule") && !table.contains_key("label"))
+        })
+        .unwrap_or_else(|| declares_only_schedule(&frontmatter));
     let raw: Frontmatter = match toml::from_str(&frontmatter) {
         Ok(raw) => raw,
         Err(error) => {
@@ -412,6 +415,26 @@ fn split_frontmatter(contents: &str) -> std::result::Result<(String, String), St
         after_opening[..closing].to_owned(),
         after_opening[prompt_start..].to_owned(),
     ))
+}
+
+fn declares_only_schedule(frontmatter: &str) -> bool {
+    let mut first_key = None;
+    let mut label = false;
+    for line in frontmatter.lines() {
+        let line = line.trim_start();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, _)) = line.split_once('=') else {
+            return false;
+        };
+        let key = key.trim();
+        first_key.get_or_insert(key);
+        if matches!(key, "label" | "\"label\"" | "'label'") {
+            label = true;
+        }
+    }
+    first_key == Some("schedule") && !label
 }
 
 fn resolve_runtime(
@@ -628,6 +651,28 @@ mod tests {
         assert!(valid_cron("0 9 * * 1"));
         assert!(!valid_cron("0 0 9 * * 1"));
         assert!(!valid_cron("eventually"));
+    }
+
+    #[test]
+    fn malformed_frontmatter_schedule_detection_is_conservative() {
+        assert!(declares_only_schedule(
+            "schedule = \"unterminated\ntimezone = \"UTC\""
+        ));
+        assert!(!declares_only_schedule(
+            "description = \"\"\"\nschedule = \"not-a-key"
+        ));
+        assert!(!declares_only_schedule(
+            "[metadata]\nschedule = \"unterminated"
+        ));
+        assert!(!declares_only_schedule(
+            "\"schedule=not-trigger\" = \"unterminated"
+        ));
+        assert!(!declares_only_schedule(
+            "schedule = \"unterminated\nlabel = \"factory:ready\""
+        ));
+        assert!(!declares_only_schedule(
+            "schedule = \"unterminated\n\"label\" = \"factory:ready\""
+        ));
     }
 
     #[test]

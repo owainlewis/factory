@@ -184,6 +184,15 @@ exit 0
         fs::write(self.runtime_dir.join("gate"), "go").unwrap();
     }
 
+    fn add_scheduled_workflow(&mut self) {
+        fs::write(
+            self.config.repositories[0].join(".factory/workflows/scheduled-maintenance.md"),
+            "+++\nschedule = \"0 0 1 1 *\"\ntimezone = \"UTC\"\nruntime = \"codex\"\ntimeout = \"10s\"\n+++\n\nSCHEDULED MAINTENANCE WORKFLOW\n",
+        )
+        .unwrap();
+        self.catalog = WorkflowCatalog::load(&self.config).unwrap();
+    }
+
     fn started_slots(&self) -> Vec<PathBuf> {
         let Ok(entries) = fs::read_dir(&self.runtime_dir) else {
             return Vec::new();
@@ -1048,7 +1057,8 @@ async fn polling_error_cancels_and_drains_an_active_run() {
 
 #[tokio::test]
 async fn scheduled_tasks_use_the_same_worker_and_run_history() {
-    let fixture = Fixture::new(&[vec![]], 1, 1);
+    let mut fixture = Fixture::new(&[vec![]], 1, 1);
+    fixture.add_scheduled_workflow();
     let repository = &fixture.config.repositories[0];
     for args in [
         vec!["init", "-b", "main"],
@@ -1082,7 +1092,7 @@ async fn scheduled_tasks_use_the_same_worker_and_run_history() {
         .enqueue_with_payload(
             &TaskIdentity::scheduled(
                 "example/repo-0",
-                "implement-ready-ticket",
+                "scheduled-maintenance",
                 "2026-07-18T12:00:00Z",
             )
             .unwrap(),
@@ -1121,13 +1131,14 @@ async fn scheduled_tasks_use_the_same_worker_and_run_history() {
 
 #[tokio::test]
 async fn failing_scheduled_task_does_not_block_ticket_polling() {
-    let fixture = Fixture::new(&[vec![issue(29)]], 1, 1);
+    let mut fixture = Fixture::new(&[vec![issue(29)]], 1, 1);
+    fixture.add_scheduled_workflow();
     Ledger::open(&fixture.ledger_path)
         .unwrap()
         .enqueue(
             &TaskIdentity::scheduled(
                 "example/repo-0",
-                "implement-ready-ticket",
+                "scheduled-maintenance",
                 "2026-07-18T12:00:00Z",
             )
             .unwrap(),
@@ -1174,11 +1185,16 @@ async fn invalid_scheduled_workflow_does_not_block_valid_ticket_workflow() {
         "+++\nschedule = \"* * * * *\"\ntimezone = \"UTC\"\nunknown = true\n+++\n\nINVALID SCHEDULE FRONTMATTER\n",
     )
     .unwrap();
+    fs::write(
+        fixture.config.repositories[0].join(".factory/workflows/malformed-schedule.md"),
+        "+++\nschedule = \"unterminated\ntimezone = \"UTC\"\n+++\n\nMALFORMED SCHEDULE\n",
+    )
+    .unwrap();
     assert_eq!(
         WorkflowCatalog::load(&fixture.config)
             .unwrap()
             .invalid_count(),
-        2
+        3
     );
     fixture.open_gate();
     let search_path = std::env::join_paths(
@@ -1301,13 +1317,14 @@ fn ambiguous_schedule_and_label_workflow_fails_daemon_startup() {
 
 #[tokio::test]
 async fn later_schedule_prompt_includes_previous_successful_run() {
-    let fixture = Fixture::new(&[vec![]], 1, 1);
+    let mut fixture = Fixture::new(&[vec![]], 1, 1);
+    fixture.add_scheduled_workflow();
     let mut ledger = Ledger::open(&fixture.ledger_path).unwrap();
     ledger
         .enqueue_with_payload(
             &TaskIdentity::scheduled(
                 "example/repo-0",
-                "implement-ready-ticket",
+                "scheduled-maintenance",
                 "2026-07-18T12:00:00Z",
             )
             .unwrap(),
@@ -1335,7 +1352,7 @@ async fn later_schedule_prompt_includes_previous_successful_run() {
         .enqueue_with_payload(
             &TaskIdentity::scheduled(
                 "example/repo-0",
-                "implement-ready-ticket",
+                "scheduled-maintenance",
                 "2026-07-18T12:01:00Z",
             )
             .unwrap(),
@@ -1359,13 +1376,14 @@ async fn later_schedule_prompt_includes_previous_successful_run() {
 
 #[tokio::test]
 async fn scheduled_and_ticket_tasks_share_concurrency_capacity() {
-    let fixture = Fixture::new(&[vec![issue(30)]], 2, 2);
+    let mut fixture = Fixture::new(&[vec![issue(30)]], 2, 2);
+    fixture.add_scheduled_workflow();
     Ledger::open(&fixture.ledger_path)
         .unwrap()
         .enqueue_with_payload(
             &TaskIdentity::scheduled(
                 "example/repo-0",
-                "implement-ready-ticket",
+                "scheduled-maintenance",
                 "2026-07-18T12:00:00Z",
             )
             .unwrap(),

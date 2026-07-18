@@ -350,8 +350,12 @@ fn dispatch_available(
             .iter()
             .flat_map(|(repository, target)| {
                 target.workflows.iter().map(|(workflow, target)| {
+                    let task_kind = match target.trigger {
+                        Trigger::Schedule { .. } => "scheduled",
+                        Trigger::Label(_) => "ticket",
+                    };
                     (
-                        (repository.clone(), workflow.clone()),
+                        (repository.clone(), workflow.clone(), task_kind.to_owned()),
                         target.runtime.clone(),
                     )
                 })

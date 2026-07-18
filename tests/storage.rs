@@ -23,6 +23,17 @@ fn ticket(revision: &str) -> TaskIdentity {
     .unwrap()
 }
 
+fn ticket_runtimes() -> HashMap<(String, String, String), String> {
+    HashMap::from([(
+        (
+            "owainlewis/factory".to_owned(),
+            "implement-ready-ticket".to_owned(),
+            "ticket".to_owned(),
+        ),
+        "codex".to_owned(),
+    )])
+}
+
 #[test]
 fn initializes_in_data_directory_and_persists_across_reopen() {
     let temp = tempfile::tempdir().unwrap();
@@ -305,6 +316,62 @@ fn concurrent_claim_has_exactly_one_winner() {
 }
 
 #[test]
+fn claim_requires_task_kind_to_match_the_current_workflow_trigger() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    let task = ledger
+        .enqueue(
+            &TaskIdentity::scheduled(
+                "owainlewis/factory",
+                "implement-ready-ticket",
+                "2026-07-20T09:00:00Z",
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .task;
+    ledger
+        .register_daemon_owner("kind-owner", std::process::id())
+        .unwrap();
+
+    assert!(
+        ledger
+            .claim_and_start_run(
+                &["owainlewis/factory".to_owned()],
+                &ticket_runtimes(),
+                "kind-owner",
+                std::process::id(),
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Queued
+    );
+
+    let scheduled_runtimes = HashMap::from([(
+        (
+            "owainlewis/factory".to_owned(),
+            "implement-ready-ticket".to_owned(),
+            "scheduled".to_owned(),
+        ),
+        "codex".to_owned(),
+    )]);
+    let claimed = ledger
+        .claim_and_start_run(
+            &["owainlewis/factory".to_owned()],
+            &scheduled_runtimes,
+            "kind-owner",
+            std::process::id(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.task.id, task.id);
+    assert_eq!(claimed.task.kind, "scheduled");
+}
+
+#[test]
 fn records_bounded_run_history_and_terminal_tasks_cannot_be_reclaimed() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("ledger.db");
@@ -485,13 +552,7 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
         .register_daemon_owner("interrupted-owner", std::process::id())
         .unwrap();
     let task = ledger.enqueue(&ticket("recovery-revision")).unwrap().task;
-    let runtimes = HashMap::from([(
-        (
-            "owainlewis/factory".to_owned(),
-            "implement-ready-ticket".to_owned(),
-        ),
-        "codex".to_owned(),
-    )]);
+    let runtimes = ticket_runtimes();
     let workdirs = HashMap::from([(
         "owainlewis/factory".to_owned(),
         "/worktrees/factory-3".to_owned(),
@@ -618,13 +679,7 @@ fn orphan_recovery_does_not_signal_a_reused_process_group() {
         .register_daemon_owner("gone-owner", std::process::id())
         .unwrap();
     ledger.enqueue(&ticket("pid-reuse-revision")).unwrap();
-    let runtimes = HashMap::from([(
-        (
-            "owainlewis/factory".to_owned(),
-            "implement-ready-ticket".to_owned(),
-        ),
-        "codex".to_owned(),
-    )]);
+    let runtimes = ticket_runtimes();
     let run = ledger
         .claim_and_start_run(
             &["owainlewis/factory".to_owned()],
@@ -679,13 +734,7 @@ fn cancellation_requests_are_durable_idempotent_and_force_cancelled_outcome() {
     let path = temp.path().join("ledger.db");
     let mut ledger = Ledger::open(&path).unwrap();
     let task = ledger.enqueue(&ticket("cancel-revision")).unwrap().task;
-    let runtimes = HashMap::from([(
-        (
-            "owainlewis/factory".to_owned(),
-            "implement-ready-ticket".to_owned(),
-        ),
-        "codex".to_owned(),
-    )]);
+    let runtimes = ticket_runtimes();
     ledger
         .register_daemon_owner("storage-test-owner", std::process::id())
         .unwrap();
@@ -761,13 +810,7 @@ fn cancellation_rejects_a_reused_live_pid_when_the_owner_lease_is_stale() {
         .register_daemon_owner("stale-owner", std::process::id())
         .unwrap();
     ledger.enqueue(&ticket("stale-owner-revision")).unwrap();
-    let runtimes = HashMap::from([(
-        (
-            "owainlewis/factory".to_owned(),
-            "implement-ready-ticket".to_owned(),
-        ),
-        "codex".to_owned(),
-    )]);
+    let runtimes = ticket_runtimes();
     let run = ledger
         .claim_and_start_run(
             &["owainlewis/factory".to_owned()],
@@ -802,13 +845,7 @@ fn orphan_recovery_completes_a_pending_cancellation_without_retrying() {
         .enqueue(&ticket("orphan-cancel-revision"))
         .unwrap()
         .task;
-    let runtimes = HashMap::from([(
-        (
-            "owainlewis/factory".to_owned(),
-            "implement-ready-ticket".to_owned(),
-        ),
-        "codex".to_owned(),
-    )]);
+    let runtimes = ticket_runtimes();
     ledger
         .register_daemon_owner("cancelled-owner", std::process::id())
         .unwrap();
@@ -846,13 +883,7 @@ fn orphan_recovery_completes_a_pending_cancellation_without_retrying() {
 fn concurrent_completion_and_cancellation_always_leave_a_terminal_run() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("ledger.db");
-    let runtimes = HashMap::from([(
-        (
-            "owainlewis/factory".to_owned(),
-            "implement-ready-ticket".to_owned(),
-        ),
-        "codex".to_owned(),
-    )]);
+    let runtimes = ticket_runtimes();
     let mut setup = Ledger::open(&path).unwrap();
     setup
         .register_daemon_owner("race-owner", std::process::id())

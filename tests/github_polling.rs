@@ -222,7 +222,7 @@ fn factory_run_once_skips_invalid_schedule_and_polls_tickets() {
     let fixture = Fixture::new(1);
     fs::write(
         fixture.repositories[0].join(".factory/workflows/invalid-schedule.md"),
-        "+++\nschedule = \"eventually\"\ntimezone = \"UTC\"\n+++\n\nINVALID SCHEDULE\n",
+        "+++\nschedule = \"unterminated\ntimezone = \"UTC\"\n+++\n\nINVALID SCHEDULE\n",
     )
     .unwrap();
     write_issues(

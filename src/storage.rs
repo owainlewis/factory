@@ -719,7 +719,7 @@ impl Ledger {
     pub fn claim_and_start_run(
         &mut self,
         available_repositories: &[String],
-        workflow_runtimes: &HashMap<(String, String), String>,
+        workflow_runtimes: &HashMap<(String, String, String), String>,
         owner_id: &str,
         owner_pid: u32,
     ) -> Result<Option<ClaimedRun>> {
@@ -739,7 +739,7 @@ impl Ledger {
     pub fn claim_and_start_run_with_workdirs(
         &mut self,
         available_repositories: &[String],
-        workflow_runtimes: &HashMap<(String, String), String>,
+        workflow_runtimes: &HashMap<(String, String, String), String>,
         owner_id: &str,
         owner_pid: u32,
         working_directories: &HashMap<String, String>,
@@ -771,7 +771,11 @@ impl Ledger {
         };
         let Some(task) = candidates.into_iter().find(|task| {
             available.contains(&task.repository)
-                && workflow_runtimes.contains_key(&(task.repository.clone(), task.workflow.clone()))
+                && workflow_runtimes.contains_key(&(
+                    task.repository.clone(),
+                    task.workflow.clone(),
+                    task.kind.clone(),
+                ))
         }) else {
             transaction
                 .commit()
@@ -779,7 +783,11 @@ impl Ledger {
             return Ok(None);
         };
         let runtime = workflow_runtimes
-            .get(&(task.repository.clone(), task.workflow.clone()))
+            .get(&(
+                task.repository.clone(),
+                task.workflow.clone(),
+                task.kind.clone(),
+            ))
             .context("claimed workflow runtime disappeared")?;
         let changed = transaction
             .execute(
