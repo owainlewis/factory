@@ -7,6 +7,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
+use assert_cmd::Command as AssertCommand;
 use factory::config::Config;
 use factory::daemon::FactoryDaemon;
 use factory::github::GitHubClient;
@@ -118,6 +119,8 @@ done
 slot=1
 while ! mkdir "{root}/slot-$slot" 2>/dev/null; do slot=$((slot + 1)); done
 echo $$ > "{root}/slot-$slot/pid"
+sleep 1000 &
+echo $! > "{root}/slot-$slot/child-pid"
 cat > "{root}/slot-$slot/prompt"
 touch "{root}/slot-$slot/started"
 while [ ! -f "{root}/gate" ]; do sleep 0.02; done
@@ -129,7 +132,7 @@ exit 0
             ),
         );
         Self {
-            ledger_path: temp.path().join("factory.db"),
+            ledger_path: temp.path().join("data/factory.sqlite3"),
             _temp: temp,
             config,
             catalog,
@@ -323,6 +326,7 @@ async fn shutdown_cancels_the_active_codex_process_and_records_it() {
     };
     wait_for(|| fixture.started_slots().len() == 1).await;
     let pid = fs::read_to_string(fixture.started_slots()[0].join("pid")).unwrap();
+    let child_pid = fs::read_to_string(fixture.started_slots()[0].join("child-pid")).unwrap();
     cancellation.cancel();
     running.await.unwrap().unwrap();
 
@@ -335,6 +339,116 @@ async fn shutdown_cancels_the_active_codex_process_and_records_it() {
             .unwrap()
             .success()
     );
+    assert!(
+        !Command::new("kill")
+            .args(["-0", child_pid.trim()])
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[tokio::test]
+async fn cli_cancellation_stops_the_owned_process_tree_and_records_cancelled() {
+    let fixture = Fixture::new(&[vec![issue(12)]], 1, 1);
+    let shutdown = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let running = {
+        let daemon = Arc::clone(&daemon);
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move { daemon.run(shutdown).await })
+    };
+    wait_for(|| fixture.started_slots().len() == 1).await;
+    let pid = fs::read_to_string(fixture.started_slots()[0].join("pid")).unwrap();
+    let child_pid = fs::read_to_string(fixture.started_slots()[0].join("child-pid")).unwrap();
+    let run_id = Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .runs(None)
+        .unwrap()[0]
+        .id;
+
+    let run_id_string = run_id.to_string();
+    for args in [
+        vec!["tasks", "--json"],
+        vec!["runs", "--json"],
+        vec!["inspect", run_id_string.as_str(), "--json"],
+    ] {
+        let output = AssertCommand::cargo_bin("factory")
+            .unwrap()
+            .args(args)
+            .args([
+                "--data-directory",
+                fixture.ledger_path.parent().unwrap().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(value.is_array() || value.is_object());
+        assert!(
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .contains("running")
+        );
+    }
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .args([
+            "cancel",
+            &run_id.to_string(),
+            "--data-directory",
+            fixture.ledger_path.parent().unwrap().to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks[0].state == TaskState::Cancelled)
+    })
+    .await;
+    assert!(
+        !Command::new("kill")
+            .args(["-0", pid.trim()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        !Command::new("kill")
+            .args(["-0", child_pid.trim()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    shutdown.cancel();
+    running.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn losing_the_durable_owner_lease_is_a_daemon_error() {
+    let fixture = Fixture::new(&[vec![issue(13)]], 1, 1);
+    let cancellation = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let running = {
+        let daemon = Arc::clone(&daemon);
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move { daemon.run(cancellation).await })
+    };
+    wait_for(|| fixture.started_slots().len() == 1).await;
+    let mut ledger = Ledger::open(&fixture.ledger_path).unwrap();
+    let owner_id = ledger.runs(None).unwrap()[0].owner_id.clone().unwrap();
+    ledger.remove_daemon_owner(&owner_id).unwrap();
+    drop(ledger);
+
+    let error = running.await.unwrap().unwrap_err();
+
+    assert!(format!("{error:#}").contains("is not registered"));
+    let ledger = Ledger::open(&fixture.ledger_path).unwrap();
+    assert_eq!(ledger.tasks().unwrap()[0].state, TaskState::Cancelled);
 }
 
 #[tokio::test]
