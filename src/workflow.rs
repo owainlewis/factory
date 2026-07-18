@@ -524,6 +524,8 @@ fn line_declares_key(line: &str, expected: &str) -> bool {
     let mut brace_depth = 0_u32;
     let mut bracket_depth = 0_u32;
     let mut expecting_value = false;
+    let mut can_start_key = true;
+    let mut container_is_value = false;
     while index < bytes.len() {
         if bytes[index] == b'#' {
             return false;
@@ -548,18 +550,22 @@ fn line_declares_key(line: &str, expected: &str) -> bool {
             }
             if expecting_value {
                 expecting_value = false;
-            } else if index < bytes.len()
-                && brace_depth == 0
-                && bracket_depth == 0
-                && previous_non_whitespace(bytes, quoted_key_start) != Some(b'.')
-                && &line[start..index] == expected
-                && bytes[index + 1..]
+                can_start_key = true;
+            } else if can_start_key && index < bytes.len() {
+                let followed_by_equal = bytes[index + 1..]
                     .iter()
                     .copied()
                     .find(|byte| !byte.is_ascii_whitespace())
-                    == Some(b'=')
-            {
-                return true;
+                    == Some(b'=');
+                let is_top_level_key = brace_depth == 0
+                    && bracket_depth == 0
+                    && previous_non_whitespace(bytes, quoted_key_start) != Some(b'.');
+                if is_top_level_key && &line[start..index] == expected && followed_by_equal {
+                    return true;
+                }
+                if is_top_level_key && !followed_by_equal {
+                    can_start_key = false;
+                }
             }
             index = index.saturating_add(1);
             continue;
@@ -574,32 +580,60 @@ fn line_declares_key(line: &str, expected: &str) -> bool {
             }
             if expecting_value {
                 expecting_value = false;
-            } else if brace_depth == 0
-                && bracket_depth == 0
-                && previous_non_whitespace(bytes, start) != Some(b'.')
-                && &line[start..index] == expected
-                && bytes[index..]
+                can_start_key = false;
+            } else if can_start_key {
+                let followed_by_equal = bytes[index..]
                     .iter()
                     .copied()
                     .find(|byte| !byte.is_ascii_whitespace())
-                    == Some(b'=')
-            {
-                return true;
+                    == Some(b'=');
+                let is_top_level_key = brace_depth == 0
+                    && bracket_depth == 0
+                    && previous_non_whitespace(bytes, start) != Some(b'.');
+                if is_top_level_key && &line[start..index] == expected && followed_by_equal {
+                    return true;
+                }
+                if is_top_level_key && !followed_by_equal {
+                    can_start_key = false;
+                }
             }
             continue;
         }
         match bytes[index] {
-            b'=' if brace_depth == 0 && bracket_depth == 0 => expecting_value = true,
+            b'=' if brace_depth == 0 && bracket_depth == 0 => {
+                expecting_value = true;
+                can_start_key = false;
+            }
             b'{' => {
+                if brace_depth == 0 && bracket_depth == 0 {
+                    container_is_value = expecting_value;
+                }
                 brace_depth = brace_depth.saturating_add(1);
                 expecting_value = false;
+                can_start_key = false;
             }
-            b'}' => brace_depth = brace_depth.saturating_sub(1),
+            b'}' => {
+                brace_depth = brace_depth.saturating_sub(1);
+                if brace_depth == 0 && bracket_depth == 0 && container_is_value {
+                    can_start_key = true;
+                    container_is_value = false;
+                }
+            }
             b'[' => {
+                if brace_depth == 0 && bracket_depth == 0 {
+                    container_is_value = expecting_value;
+                }
                 bracket_depth = bracket_depth.saturating_add(1);
                 expecting_value = false;
+                can_start_key = false;
             }
-            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b']' => {
+                bracket_depth = bracket_depth.saturating_sub(1);
+                if brace_depth == 0 && bracket_depth == 0 && container_is_value {
+                    can_start_key = true;
+                    container_is_value = false;
+                }
+            }
             _ => {}
         }
         index += 1;
@@ -936,6 +970,31 @@ schedule = "not-a-key"#
         ));
         assert!(declares_only_schedule(
             "schedule = \"0 9 * * 1\"\ndescription = label = ???"
+        ));
+        assert!(!declares_only_schedule("description = run schedule = ???"));
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\ndescription = run label = ???"
+        ));
+        for scalar_tail in ["run {}", "run []", "run }"] {
+            assert!(!declares_only_schedule(&format!(
+                "description = {scalar_tail} schedule = ???"
+            )));
+            assert!(declares_only_schedule(&format!(
+                "schedule = \"0 9 * * 1\"\ndescription = {scalar_tail} label = ???"
+            )));
+        }
+        for completed_value in ["\"done\"", "{}", "[]"] {
+            assert!(!line_declares_key(
+                &format!("description = {completed_value} run schedule = ???"),
+                "schedule",
+            ));
+            assert!(!line_declares_key(
+                &format!("description = {completed_value} run label = ???"),
+                "label",
+            ));
+        }
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\ndescription = \"done\" run label = ???"
         ));
         assert!(missing_frontmatter_declares_only_schedule(
             "+++\nschedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\nImplement maintenance.\n"
