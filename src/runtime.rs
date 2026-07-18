@@ -605,8 +605,10 @@ pub(crate) fn process_identity(process_id: u32) -> Option<String> {
 #[cfg(target_os = "linux")]
 pub(crate) fn process_identity(process_id: u32) -> Option<String> {
     let stat = std::fs::read_to_string(format!("/proc/{process_id}/stat")).ok()?;
-    let fields = stat.get(stat.rfind(')')? + 1..)?.split_whitespace();
-    let start_ticks = fields.skip(19).next()?;
+    let start_ticks = stat
+        .get(stat.rfind(')')? + 1..)?
+        .split_whitespace()
+        .nth(19)?;
     Some(format!("linux:{start_ticks}"))
 }
 
