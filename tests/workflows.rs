@@ -178,6 +178,28 @@ fn reports_all_invalid_workflows_without_hiding_valid_entries() {
 }
 
 #[test]
+fn missing_schedule_frontmatter_delimiter_stays_isolated_from_tickets() {
+    let fixture = Fixture::new();
+    fixture.workflow(
+        "broken-schedule.md",
+        "+++\nschedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\nRun maintenance.\n",
+    );
+    fixture.workflow("valid-ticket.md", &label_workflow("Implement the ticket."));
+
+    let catalog = fixture.catalog();
+
+    assert_eq!(catalog.invalid_scheduled_entries().count(), 1);
+    assert!(catalog.validate_ticket_workflows().is_ok());
+    assert!(catalog.entries.iter().any(|entry| {
+        entry.id == "broken-schedule"
+            && entry
+                .errors
+                .iter()
+                .any(|error| error.contains("missing its closing +++ delimiter"))
+    }));
+}
+
+#[test]
 fn rejects_missing_trigger_timezone_and_invalid_timeout() {
     let fixture = Fixture::new();
     fixture.workflow("no-trigger.md", "+++\n+++\nPrompt.\n");

@@ -342,6 +342,7 @@ fn load_file(repository: &Path, path: &Path, config: &Config) -> WorkflowEntry {
     let (frontmatter, prompt) = match split_frontmatter(&contents) {
         Ok(parts) => parts,
         Err(error) => {
+            entry.is_schedule_workflow = missing_frontmatter_declares_only_schedule(&contents);
             entry.errors.push(error);
             return entry;
         }
@@ -415,6 +416,31 @@ fn split_frontmatter(contents: &str) -> std::result::Result<(String, String), St
         after_opening[..closing].to_owned(),
         after_opening[prompt_start..].to_owned(),
     ))
+}
+
+fn missing_frontmatter_declares_only_schedule(contents: &str) -> bool {
+    let contents = contents.replace("\r\n", "\n");
+    let Some(after_opening) = contents.strip_prefix("+++\n") else {
+        return false;
+    };
+    let mut frontmatter_prefix = String::new();
+    for line in after_opening.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.contains('=') {
+            frontmatter_prefix.push_str(line);
+            frontmatter_prefix.push('\n');
+        } else {
+            break;
+        }
+    }
+    toml::from_str::<toml::Value>(&frontmatter_prefix)
+        .ok()
+        .and_then(|value| {
+            value
+                .as_table()
+                .map(|table| table.contains_key("schedule") && !table.contains_key("label"))
+        })
+        .unwrap_or(false)
 }
 
 fn declares_only_schedule(frontmatter: &str) -> bool {
@@ -675,6 +701,18 @@ mod tests {
         ));
         assert!(!declares_only_schedule(
             "schedule = \"unterminated\n\"label\" = \"factory:ready\""
+        ));
+        assert!(missing_frontmatter_declares_only_schedule(
+            "+++\nschedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\nImplement maintenance.\n"
+        ));
+        assert!(!missing_frontmatter_declares_only_schedule(
+            "+++\nschedule = \"0 9 * * 1\"\nlabel = \"factory:ready\"\nImplement it.\n"
+        ));
+        assert!(!missing_frontmatter_declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\n"
+        ));
+        assert!(!missing_frontmatter_declares_only_schedule(
+            "+++\nschedule = \"0 9 * * 1\"\nruntime = \"\"\"\ncodex\n\"\"\"\nlabel = \"factory:ready\"\nPrompt.\n"
         ));
     }
 

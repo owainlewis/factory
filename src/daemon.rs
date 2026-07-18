@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, SecondsFormat, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
+use sha2::{Digest, Sha256};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
@@ -878,7 +879,7 @@ fn initialize_schedules(
                 let schedule = Schedule::from_str(&format!("0 {expression}"))
                     .context("validated cron schedule could not be parsed")?;
                 let calculated = next_occurrence(&schedule, *timezone, startup_at)?;
-                let fingerprint = format!("{expression}|{}", timezone.name());
+                let fingerprint = schedule_fingerprint(expression, *timezone, target)?;
                 let cursor = ledger.initialize_schedule_cursor(
                     repository,
                     workflow,
@@ -907,6 +908,23 @@ fn initialize_schedules(
         }
     }
     schedules
+}
+
+fn schedule_fingerprint(
+    expression: &str,
+    timezone: Tz,
+    workflow: &WorkflowTarget,
+) -> Result<String> {
+    let definition = serde_json::to_vec(&(
+        expression,
+        timezone.name(),
+        &workflow.runtime,
+        workflow.timeout.as_secs(),
+        workflow.timeout.subsec_nanos(),
+        &workflow.prompt,
+    ))
+    .context("failed to encode scheduled workflow definition")?;
+    Ok(format!("v2:{:x}", Sha256::digest(definition)))
 }
 
 fn evaluate_schedules(
@@ -1180,6 +1198,58 @@ mod tests {
         assert_eq!(schedules.len(), 1);
         evaluate_schedules(&mut new, &mut schedules, utc("2026-07-18T12:02:00Z"));
         assert_eq!(new.tasks().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn workflow_definition_changes_block_overlapping_daemons() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("ledger.db");
+        let old_targets = scheduled_targets(temp.path(), "* * * * *", chrono_tz::UTC);
+        let mut new_targets = old_targets.clone();
+        new_targets
+            .get_mut("example/repo")
+            .unwrap()
+            .workflows
+            .get_mut("scheduled-review")
+            .unwrap()
+            .prompt = "Use the new workflow definition.".to_owned();
+        let mut old = Ledger::open(&path).unwrap();
+        old.register_daemon_owner("old-definition-owner", std::process::id())
+            .unwrap();
+        assert_eq!(
+            initialize_schedules(
+                &mut old,
+                &old_targets,
+                utc("2026-07-18T12:00:10Z"),
+                "old-definition-owner",
+            )
+            .len(),
+            1
+        );
+
+        let mut new = Ledger::open(&path).unwrap();
+        new.register_daemon_owner("new-definition-owner", std::process::id())
+            .unwrap();
+        assert!(
+            initialize_schedules(
+                &mut new,
+                &new_targets,
+                utc("2026-07-18T12:00:20Z"),
+                "new-definition-owner",
+            )
+            .is_empty()
+        );
+        old.remove_daemon_owner("old-definition-owner").unwrap();
+        assert_eq!(
+            initialize_schedules(
+                &mut new,
+                &new_targets,
+                utc("2026-07-18T12:00:30Z"),
+                "new-definition-owner",
+            )
+            .len(),
+            1
+        );
     }
 
     #[test]
