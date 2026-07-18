@@ -119,10 +119,9 @@ impl FactoryDaemon {
             Err(error) => return Err(error),
         };
         let mut ledger = Ledger::open(&self.ledger_path)?;
+        report_recovery(ledger.recover_orphaned_runs()?);
         let owner = DaemonOwner::new()?;
         ledger.register_daemon_owner(&owner.id, owner.pid)?;
-        report_recovery(ledger.recover_orphaned_runs()?);
-        let mut schedules = initialize_schedules(&mut ledger, &targets, Utc::now(), &owner.id);
         let owner_heartbeat_shutdown = CancellationToken::new();
         let owner_heartbeat_task = {
             let ledger_path = self.ledger_path.clone();
@@ -138,6 +137,7 @@ impl FactoryDaemon {
                 result
             })
         };
+        let mut schedules = initialize_schedules(&mut ledger, &targets, Utc::now(), &owner.id);
         let mut active = HashMap::<String, usize>::new();
         let mut runs = JoinSet::<(String, Result<()>)>::new();
         let mut github_polls = JoinSet::<Result<()>>::new();

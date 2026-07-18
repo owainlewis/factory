@@ -444,23 +444,92 @@ fn missing_frontmatter_declares_only_schedule(contents: &str) -> bool {
 }
 
 fn declares_only_schedule(frontmatter: &str) -> bool {
-    let mut first_key = None;
+    let mut schedule = false;
     let mut label = false;
+    let mut multiline_delimiter = None;
     for line in frontmatter.lines() {
         let line = line.trim_start();
+        if let Some(delimiter) = multiline_delimiter {
+            if contains_multiline_closing(line, delimiter) {
+                multiline_delimiter = None;
+            }
+            continue;
+        }
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((key, _)) = line.split_once('=') else {
+        if line.starts_with('[') {
+            return false;
+        }
+        let Some((key, value)) = line.split_once('=') else {
             return false;
         };
         let key = key.trim();
-        first_key.get_or_insert(key);
+        if matches!(key, "schedule" | "\"schedule\"" | "'schedule'") {
+            schedule = true;
+        }
         if matches!(key, "label" | "\"label\"" | "'label'") {
             label = true;
         }
+        let value = value.trim_start();
+        if matches!(value.as_bytes().first(), Some(b'{') | Some(b'['))
+            && !inline_container_closes(value)
+        {
+            return false;
+        }
+        for delimiter in ["\"\"\"", "'''"] {
+            if let Some(remainder) = value.strip_prefix(delimiter)
+                && !contains_multiline_closing(remainder, delimiter)
+            {
+                multiline_delimiter = Some(delimiter);
+                break;
+            }
+        }
     }
-    first_key == Some("schedule") && !label
+    schedule && !label && multiline_delimiter.is_none()
+}
+
+fn contains_multiline_closing(value: &str, delimiter: &str) -> bool {
+    value.match_indices(delimiter).any(|(index, _)| {
+        delimiter == "'''"
+            || value.as_bytes()[..index]
+                .iter()
+                .rev()
+                .take_while(|byte| **byte == b'\\')
+                .count()
+                .is_multiple_of(2)
+    })
+}
+
+fn inline_container_closes(value: &str) -> bool {
+    let mut stack = Vec::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, character) in value.char_indices() {
+        if let Some(active_quote) = quote {
+            if active_quote == '"' && character == '\\' && !escaped {
+                escaped = true;
+                continue;
+            }
+            if character == active_quote && !escaped {
+                quote = None;
+            }
+            escaped = false;
+            continue;
+        }
+        match character {
+            '"' | '\'' => quote = Some(character),
+            '{' => stack.push('}'),
+            '[' => stack.push(']'),
+            '}' | ']' if stack.pop() != Some(character) => return false,
+            '}' | ']' if stack.is_empty() => {
+                let trailing = value[index + character.len_utf8()..].trim_start();
+                return trailing.is_empty() || trailing.starts_with('#');
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn resolve_runtime(
@@ -687,11 +756,31 @@ mod tests {
         assert!(declares_only_schedule(
             "schedule = \"unterminated\ntimezone = \"UTC\""
         ));
+        assert!(declares_only_schedule(
+            "timezone = \"UTC\"\nruntime = \"codex\"\nschedule = \"unterminated"
+        ));
+        assert!(declares_only_schedule(
+            "timezone = \"UTC\"\n\"schedule\" = \"unterminated"
+        ));
         assert!(!declares_only_schedule(
             "description = \"\"\"\nschedule = \"not-a-key"
         ));
+        assert!(declares_only_schedule(
+            "description = \"\"\"\nescaped triple: \\\n+\"\"\"\nschedule = \"not-a-key"
+        ));
+        assert!(!declares_only_schedule(
+            r#"description = """
+escaped triple: \"""
+schedule = "not-a-key"#
+        ));
         assert!(!declares_only_schedule(
             "[metadata]\nschedule = \"unterminated"
+        ));
+        assert!(!declares_only_schedule(
+            "metadata = {\nschedule = \"unterminated"
+        ));
+        assert!(!declares_only_schedule(
+            "metadata = [\nschedule = \"unterminated"
         ));
         assert!(!declares_only_schedule(
             "\"schedule=not-trigger\" = \"unterminated"

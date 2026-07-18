@@ -200,6 +200,21 @@ fn missing_schedule_frontmatter_delimiter_stays_isolated_from_tickets() {
 }
 
 #[test]
+fn malformed_schedule_isolation_is_independent_of_key_order() {
+    let fixture = Fixture::new();
+    fixture.workflow(
+        "broken-schedule.md",
+        "+++\ntimezone = \"UTC\"\nruntime = \"codex\"\nschedule = \"unterminated\n+++\nPrompt.\n",
+    );
+    fixture.workflow("valid-ticket.md", &label_workflow("Implement the ticket."));
+
+    let catalog = fixture.catalog();
+
+    assert_eq!(catalog.invalid_scheduled_entries().count(), 1);
+    assert!(catalog.validate_ticket_workflows().is_ok());
+}
+
+#[test]
 fn rejects_missing_trigger_timezone_and_invalid_timeout() {
     let fixture = Fixture::new();
     fixture.workflow("no-trigger.md", "+++\n+++\nPrompt.\n");
