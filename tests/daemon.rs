@@ -141,6 +141,9 @@ if [ -f "{root}/malformed-once" ]; then
   exit 0
 fi
 if [ "$mode" = "resume" ] && [ -f "{root}/fail-resume" ]; then
+  if [ -f "{root}/pause-resume-before-fail" ]; then
+    while [ ! -f "{root}/release-resume" ]; do sleep 0.02; done
+  fi
   echo "stored session is missing" >&2
   exit 44
 fi
@@ -278,6 +281,45 @@ async fn discovers_claims_and_records_a_complete_codex_run() {
     ] {
         assert!(prompt.contains(expected), "missing {expected:?} in prompt");
     }
+}
+
+#[tokio::test]
+async fn workflow_deadline_is_terminal_and_does_not_queue_recovery() {
+    let mut fixture = Fixture::new(&[vec![issue(28)]], 1, 1);
+    fs::write(
+        fixture.config.repositories[0].join(".factory/workflows/implement-ready-ticket.md"),
+        "+++\nlabel = \"factory:ready\"\nruntime = \"codex\"\ntimeout = \"100ms\"\n+++\n\nTIME-BOUNDED WORKFLOW\n",
+    )
+    .unwrap();
+    fixture.catalog = WorkflowCatalog::load(&fixture.config).unwrap();
+    let shutdown = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let running = {
+        let daemon = Arc::clone(&daemon);
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move { daemon.run(shutdown).await })
+    };
+
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| {
+                tasks
+                    .first()
+                    .is_some_and(|task| task.state == TaskState::Failed)
+            })
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    shutdown.cancel();
+    running.await.unwrap().unwrap();
+
+    let ledger = Ledger::open(&fixture.ledger_path).unwrap();
+    let runs = ledger.runs(None).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].outcome, "failed");
+    assert_eq!(runs[0].error.as_deref(), Some("Codex execution timed out"));
+    assert_eq!(fixture.started_slots().len(), 1);
 }
 
 #[tokio::test]
@@ -917,6 +959,58 @@ async fn failed_fallback_before_thread_cannot_restore_stale_resume_observation()
     }
     shutdown.cancel();
     running.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn failed_fallback_reset_records_an_outcome_instead_of_stranding_the_run() {
+    let fixture = Fixture::new(&[vec![issue(27)]], 1, 1);
+    fs::write(fixture.runtime_dir.join("malformed-once"), "yes").unwrap();
+    fs::write(fixture.runtime_dir.join("fail-resume"), "yes").unwrap();
+    fs::write(fixture.runtime_dir.join("pause-resume-before-fail"), "yes").unwrap();
+    let shutdown = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let running = {
+        let daemon = Arc::clone(&daemon);
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move { daemon.run(shutdown).await })
+    };
+
+    wait_for(|| fixture.started_slots().len() == 2).await;
+    rusqlite::Connection::open(&fixture.ledger_path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER reject_fallback_reset
+             BEFORE UPDATE OF process_id ON runs
+             WHEN OLD.outcome = 'running'
+              AND OLD.process_id IS NOT NULL
+              AND NEW.process_id IS NULL
+             BEGIN
+               SELECT RAISE(ABORT, 'injected fallback reset failure');
+             END;",
+        )
+        .unwrap();
+    fs::write(fixture.runtime_dir.join("release-resume"), "go").unwrap();
+
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks[0].state == TaskState::Failed)
+    })
+    .await;
+    shutdown.cancel();
+    running.await.unwrap().unwrap();
+
+    let runs = Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .runs(None)
+        .unwrap();
+    assert_eq!(runs.len(), 3);
+    assert!(runs.iter().all(|run| run.outcome != "running"));
+    assert!(runs[1..].iter().all(|run| {
+        run.error
+            .as_deref()
+            .is_some_and(|error| error.contains("failed to prepare a fresh recovery fallback"))
+    }));
 }
 
 #[tokio::test]

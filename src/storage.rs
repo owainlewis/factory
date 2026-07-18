@@ -757,6 +757,29 @@ impl Ledger {
         error: Option<&str>,
         session_id: Option<&str>,
     ) -> Result<Run> {
+        self.finish_run_and_task_with_recovery(id, outcome, result, error, session_id, true)
+    }
+
+    pub fn finish_run_and_task_terminal(
+        &mut self,
+        id: i64,
+        outcome: RunOutcome,
+        result: Option<&str>,
+        error: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Result<Run> {
+        self.finish_run_and_task_with_recovery(id, outcome, result, error, session_id, false)
+    }
+
+    fn finish_run_and_task_with_recovery(
+        &mut self,
+        id: i64,
+        outcome: RunOutcome,
+        result: Option<&str>,
+        error: Option<&str>,
+        session_id: Option<&str>,
+        allow_recovery: bool,
+    ) -> Result<Run> {
         if outcome == RunOutcome::Running {
             bail!("finish_run_and_task requires a terminal outcome");
         }
@@ -820,7 +843,8 @@ impl Ledger {
         if changed != 1 {
             bail!("run {id} is missing or already terminal");
         }
-        let retry_recovery = outcome == RunOutcome::Failed
+        let retry_recovery = allow_recovery
+            && outcome == RunOutcome::Failed
             && process_started
             && recovery_attempt < MAX_RECOVERY_ATTEMPTS
             && !cancellation_requested;

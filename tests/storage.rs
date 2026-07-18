@@ -130,6 +130,41 @@ fn records_bounded_run_history_and_terminal_tasks_cannot_be_reclaimed() {
 }
 
 #[test]
+fn terminal_failure_does_not_requeue_a_started_run() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    let task = ledger.enqueue(&ticket("deadline-revision")).unwrap().task;
+    ledger.claim_next().unwrap().unwrap();
+    let run = ledger.start_run(task.id, "codex").unwrap();
+    ledger
+        .observe_run(
+            run.id,
+            Some(std::process::id()),
+            Some("started-process"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    ledger
+        .finish_run_and_task_terminal(
+            run.id,
+            RunOutcome::Failed,
+            None,
+            Some("execution deadline elapsed"),
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Failed
+    );
+    assert!(ledger.claim_next().unwrap().is_none());
+}
+
+#[test]
 fn only_one_active_run_can_start_for_a_claimed_task() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("ledger.db");

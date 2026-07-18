@@ -486,7 +486,18 @@ async fn execute_task(
             } else {
                 cancellation_monitor.abort();
                 let _ = (&mut cancellation_monitor).await;
-                ledger.reset_run_runtime_observation(run_id)?;
+                if let Err(error) = ledger.reset_run_runtime_observation(run_id) {
+                    ledger.finish_run_and_task(
+                        run_id,
+                        RunOutcome::Failed,
+                        None,
+                        Some(&format!(
+                            "failed to prepare a fresh recovery fallback: {error:#}"
+                        )),
+                        None,
+                    )?;
+                    return Err(error.context("failed to prepare a fresh recovery fallback"));
+                }
                 let (fallback_observations, fallback_receiver) = observation_channel();
                 observations = fallback_observations;
                 cancellation_monitor = spawn_run_monitor(
@@ -774,7 +785,13 @@ fn record_execution(ledger: &mut Ledger, run_id: i64, result: &ExecutionResult) 
             )),
         ),
     };
-    ledger.finish_run_and_task(
+    let finish = if result.termination == Termination::TimedOut {
+        Ledger::finish_run_and_task_terminal
+    } else {
+        Ledger::finish_run_and_task
+    };
+    finish(
+        ledger,
         run_id,
         outcome,
         Some(&result.final_response),
