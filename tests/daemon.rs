@@ -13,7 +13,8 @@ use factory::daemon::FactoryDaemon;
 use factory::github::GitHubClient;
 use factory::runtime::CodexRuntime;
 use factory::storage::{Ledger, TaskIdentity, TaskState};
-use factory::workflow::WorkflowCatalog;
+use factory::workflow::{Trigger, WorkflowCatalog, scheduled_workflow_fingerprint};
+use rusqlite::Connection;
 use tokio_util::sync::CancellationToken;
 
 struct Fixture {
@@ -92,6 +93,11 @@ if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
 fi
 if [ "$1" = "repo" ]; then cat .gh-name; exit 0; fi
 if [ "$1" = "api" ]; then
+  if ! mkdir "$0.api-active" 2>/dev/null; then touch "$0.api-concurrent"; fi
+  touch "$0.api-started"
+  if [ -f "$0.api-block" ]; then
+    while [ ! -f "$0.api-release" ]; do sleep 0.02; done
+  fi
   endpoint="$4"
   case "$endpoint" in
     */comments*)
@@ -100,6 +106,7 @@ if [ "$1" = "api" ]; then
       ;;
     *) cat .issues.json ;;
   esac
+  rmdir "$0.api-active" 2>/dev/null || true
   exit 0
 fi
 exit 64
@@ -182,6 +189,47 @@ exit 0
 
     fn open_gate(&self) {
         fs::write(self.runtime_dir.join("gate"), "go").unwrap();
+    }
+
+    fn add_scheduled_workflow(&mut self) {
+        fs::write(
+            self.config.repositories[0].join(".factory/workflows/scheduled-maintenance.md"),
+            "+++\nschedule = \"0 0 1 1 *\"\ntimezone = \"UTC\"\nruntime = \"codex\"\ntimeout = \"10s\"\n+++\n\nSCHEDULED MAINTENANCE WORKFLOW\n",
+        )
+        .unwrap();
+        self.catalog = WorkflowCatalog::load(&self.config).unwrap();
+    }
+
+    fn scheduled_fingerprint(&self) -> String {
+        let workflow = self
+            .catalog
+            .entries
+            .iter()
+            .find(|entry| entry.id == "scheduled-maintenance")
+            .unwrap();
+        let Trigger::Schedule {
+            expression,
+            timezone,
+        } = workflow.trigger.as_ref().unwrap()
+        else {
+            panic!("scheduled maintenance workflow has the wrong trigger");
+        };
+        scheduled_workflow_fingerprint(
+            expression,
+            *timezone,
+            workflow.runtime.as_deref().unwrap(),
+            workflow.timeout.unwrap(),
+            workflow.prompt.as_deref().unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn scheduled_payload(&self, scheduled_at: &str) -> String {
+        serde_json::json!({
+            "scheduled_at": scheduled_at,
+            "schedule_fingerprint": self.scheduled_fingerprint(),
+        })
+        .to_string()
     }
 
     fn started_slots(&self) -> Vec<PathBuf> {
@@ -1047,20 +1095,51 @@ async fn polling_error_cancels_and_drains_an_active_run() {
 }
 
 #[tokio::test]
-async fn scheduled_tasks_are_not_claimed_by_ticket_workers() {
-    let fixture = Fixture::new(&[vec![]], 1, 1);
+async fn scheduled_tasks_use_the_same_worker_and_run_history() {
+    let mut fixture = Fixture::new(&[vec![]], 1, 1);
+    fixture.add_scheduled_workflow();
+    let repository = &fixture.config.repositories[0];
+    for args in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.email", "factory@example.test"],
+        vec!["config", "user.name", "Factory Test"],
+        vec!["add", "."],
+        vec!["commit", "-m", "scheduled fixture"],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let inspected_commit = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repository)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
     let mut ledger = Ledger::open(&fixture.ledger_path).unwrap();
     ledger
-        .enqueue(
+        .enqueue_with_payload(
             &TaskIdentity::scheduled(
                 "example/repo-0",
-                "implement-ready-ticket",
+                "scheduled-maintenance",
                 "2026-07-18T12:00:00Z",
             )
             .unwrap(),
+            Some(&fixture.scheduled_payload("2026-07-18T12:00:00Z")),
         )
         .unwrap();
     drop(ledger);
+    fixture.open_gate();
     let cancellation = CancellationToken::new();
     let daemon = Arc::new(fixture.daemon());
     let running = {
@@ -1068,12 +1147,378 @@ async fn scheduled_tasks_are_not_claimed_by_ticket_workers() {
         let token = cancellation.clone();
         tokio::spawn(async move { daemon.run(token).await })
     };
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks[0].state == TaskState::Succeeded)
+    })
+    .await;
     cancellation.cancel();
     running.await.unwrap().unwrap();
 
-    let tasks = Ledger::open(&fixture.ledger_path).unwrap().tasks().unwrap();
+    let ledger = Ledger::open(&fixture.ledger_path).unwrap();
+    let tasks = ledger.tasks().unwrap();
     assert_eq!(tasks.len(), 1);
-    assert_eq!(tasks[0].state, TaskState::Queued);
-    assert!(fixture.started_slots().is_empty());
+    assert_eq!(tasks[0].state, TaskState::Succeeded);
+    assert_eq!(ledger.runs_for_task(tasks[0].id).unwrap().len(), 1);
+    let prompt = fs::read_to_string(fixture.started_slots()[0].join("prompt")).unwrap();
+    assert!(prompt.contains("Scheduled occurrence: 2026-07-18T12:00:00Z"));
+    assert!(prompt.contains("You may use the authenticated gh CLI"));
+    assert!(prompt.contains("Factory does not create tickets for you"));
+    assert!(prompt.contains(&format!("Inspected repository commit: {inspected_commit}")));
+}
+
+#[tokio::test]
+async fn failing_scheduled_task_does_not_block_ticket_polling() {
+    let mut fixture = Fixture::new(&[vec![issue(29)]], 1, 1);
+    fixture.add_scheduled_workflow();
+    Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .enqueue_with_payload(
+            &TaskIdentity::scheduled(
+                "example/repo-0",
+                "scheduled-maintenance",
+                "2026-07-18T12:00:00Z",
+            )
+            .unwrap(),
+            Some(
+                &serde_json::json!({
+                    "schedule_fingerprint": fixture.scheduled_fingerprint(),
+                })
+                .to_string(),
+            ),
+        )
+        .unwrap();
+    fixture.open_gate();
+    let cancellation = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let running = {
+        let daemon = Arc::clone(&daemon);
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move { daemon.run(cancellation).await })
+    };
+
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| {
+                tasks.len() == 2
+                    && tasks
+                        .iter()
+                        .any(|task| task.kind == "scheduled" && task.state == TaskState::Failed)
+                    && tasks
+                        .iter()
+                        .any(|task| task.kind == "ticket" && task.state == TaskState::Succeeded)
+            })
+    })
+    .await;
+    cancellation.cancel();
+    running.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn invalid_scheduled_workflow_does_not_block_valid_ticket_workflow() {
+    let fixture = Fixture::new(&[vec![issue(31)]], 1, 1);
+    fs::write(
+        fixture.config.repositories[0].join(".factory/workflows/invalid-schedule.md"),
+        "+++\nschedule = \"eventually\"\ntimezone = \"UTC\"\n+++\n\nINVALID SCHEDULE\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.config.repositories[0]
+            .join(".factory/workflows/invalid-schedule-frontmatter.md"),
+        "+++\nschedule = \"* * * * *\"\ntimezone = \"UTC\"\nunknown = true\n+++\n\nINVALID SCHEDULE FRONTMATTER\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.config.repositories[0].join(".factory/workflows/malformed-schedule.md"),
+        "+++\nschedule = \"unterminated\ntimezone = \"UTC\"\n+++\n\nMALFORMED SCHEDULE\n",
+    )
+    .unwrap();
+    assert_eq!(
+        WorkflowCatalog::load(&fixture.config)
+            .unwrap()
+            .invalid_count(),
+        3
+    );
+    fixture.open_gate();
+    let search_path = std::env::join_paths(
+        std::iter::once(fixture.gh.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .as_deref()
+                .map(std::env::split_paths)
+                .into_iter()
+                .flatten(),
+        ),
+    )
+    .unwrap();
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_factory"));
+    daemon
+        .args([
+            "run",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            fixture.ledger_path.parent().unwrap().to_str().unwrap(),
+        ])
+        .env("PATH", search_path);
+    let mut daemon = daemon.spawn().unwrap();
+
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| {
+                tasks.len() == 1
+                    && tasks[0].kind == "ticket"
+                    && tasks[0].state == TaskState::Succeeded
+            })
+    })
+    .await;
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(i32::try_from(daemon.id()).unwrap()),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .unwrap();
+    assert!(daemon.wait().unwrap().success());
+}
+
+#[test]
+fn invalid_label_workflow_fails_daemon_startup() {
+    let fixture = Fixture::new(&[vec![issue(32)]], 1, 1);
+    fs::write(
+        fixture.config.repositories[0].join(".factory/workflows/implement-ready-ticket.md"),
+        "+++\nlabel = \"factory:ready\"\ntimeout = \"0s\"\n+++\n\nINVALID TICKET WORKFLOW\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.config.repositories[0].join(".factory/workflows/invalid-schedule.md"),
+        "+++\nschedule = \"eventually\"\ntimezone = \"UTC\"\n+++\n\nINVALID SCHEDULE\n",
+    )
+    .unwrap();
+    let search_path = std::env::join_paths(
+        std::iter::once(fixture.gh.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .as_deref()
+                .map(std::env::split_paths)
+                .into_iter()
+                .flatten(),
+        ),
+    )
+    .unwrap();
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .args([
+            "run",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            fixture.ledger_path.parent().unwrap().to_str().unwrap(),
+        ])
+        .env("PATH", search_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "Factory skipped invalid scheduled workflow",
+        ))
+        .stderr(predicates::str::contains(
+            "Factory cannot start with invalid ticket workflows",
+        ))
+        .stderr(predicates::str::contains(
+            "timeout must be greater than zero",
+        ));
+    assert!(!fixture.ledger_path.exists());
+}
+
+#[test]
+fn ambiguous_schedule_and_label_workflow_fails_daemon_startup() {
+    let fixture = Fixture::new(&[vec![issue(33)]], 1, 1);
+    fs::write(
+        fixture.config.repositories[0].join(".factory/workflows/ambiguous.md"),
+        "+++\nschedule = \"* * * * *\"\ntimezone = \"UTC\"\nlabel = \"factory:ready\"\n+++\n\nAMBIGUOUS WORKFLOW\n",
+    )
+    .unwrap();
+    let search_path = std::env::join_paths(
+        std::iter::once(fixture.gh.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .as_deref()
+                .map(std::env::split_paths)
+                .into_iter()
+                .flatten(),
+        ),
+    )
+    .unwrap();
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .args([
+            "run",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            fixture.ledger_path.parent().unwrap().to_str().unwrap(),
+        ])
+        .env("PATH", search_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "Factory cannot start with invalid ticket workflows",
+        ))
+        .stderr(predicates::str::contains(
+            "workflow must declare exactly one trigger",
+        ));
+}
+
+#[tokio::test]
+async fn later_schedule_prompt_includes_previous_successful_run() {
+    let mut fixture = Fixture::new(&[vec![]], 1, 1);
+    fixture.add_scheduled_workflow();
+    let mut ledger = Ledger::open(&fixture.ledger_path).unwrap();
+    ledger
+        .enqueue_with_payload(
+            &TaskIdentity::scheduled(
+                "example/repo-0",
+                "scheduled-maintenance",
+                "2026-07-18T12:00:00Z",
+            )
+            .unwrap(),
+            Some(&fixture.scheduled_payload("2026-07-18T12:00:00Z")),
+        )
+        .unwrap();
+    drop(ledger);
+    fixture.open_gate();
+    let cancellation = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let running = {
+        let daemon = Arc::clone(&daemon);
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move { daemon.run(cancellation).await })
+    };
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks[0].state == TaskState::Succeeded)
+    })
+    .await;
+
+    Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .enqueue_with_payload(
+            &TaskIdentity::scheduled(
+                "example/repo-0",
+                "scheduled-maintenance",
+                "2026-07-18T12:01:00Z",
+            )
+            .unwrap(),
+            Some(&fixture.scheduled_payload("2026-07-18T12:01:00Z")),
+        )
+        .unwrap();
+    wait_for(|| fixture.started_slots().len() == 2).await;
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks.len() == 2 && tasks[1].state == TaskState::Succeeded)
+    })
+    .await;
+    cancellation.cancel();
+    running.await.unwrap().unwrap();
+
+    let prompt = fs::read_to_string(fixture.started_slots()[1].join("prompt")).unwrap();
+    assert!(prompt.contains("Previous successful run: 20"));
+    assert!(!prompt.contains("Previous successful run: none"));
+}
+
+#[tokio::test]
+async fn blocked_github_poll_does_not_delay_schedule_ticks_or_start_another_poll() {
+    let mut fixture = Fixture::new(&[vec![]], 1, 1);
+    fixture.add_scheduled_workflow();
+    fixture.open_gate();
+    let api_block = PathBuf::from(format!("{}.api-block", fixture.gh.display()));
+    let api_started = PathBuf::from(format!("{}.api-started", fixture.gh.display()));
+    let api_release = PathBuf::from(format!("{}.api-release", fixture.gh.display()));
+    let api_concurrent = PathBuf::from(format!("{}.api-concurrent", fixture.gh.display()));
+    fs::write(&api_block, "block").unwrap();
+    let cancellation = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let running = {
+        let daemon = Arc::clone(&daemon);
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move { daemon.run(cancellation).await })
+    };
+    wait_for(|| api_started.exists()).await;
+    Connection::open(&fixture.ledger_path)
+        .unwrap()
+        .execute(
+            "UPDATE schedule_cursors
+             SET next_due_at = (CAST(strftime('%s', 'now') AS INTEGER) * 1000) - 100",
+            [],
+        )
+        .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while fixture.started_slots().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("scheduled task did not start while GitHub polling was blocked");
+    assert!(api_block.exists());
+    assert!(!api_release.exists());
+    assert!(!api_concurrent.exists());
+
+    fs::write(api_release, "release").unwrap();
+    cancellation.cancel();
+    running.await.unwrap().unwrap();
+    assert_eq!(fixture.started_slots().len(), 1);
+}
+
+#[tokio::test]
+async fn scheduled_and_ticket_tasks_share_concurrency_capacity() {
+    let mut fixture = Fixture::new(&[vec![issue(30)]], 2, 2);
+    fixture.add_scheduled_workflow();
+    Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .enqueue_with_payload(
+            &TaskIdentity::scheduled(
+                "example/repo-0",
+                "scheduled-maintenance",
+                "2026-07-18T12:00:00Z",
+            )
+            .unwrap(),
+            Some(&fixture.scheduled_payload("2026-07-18T12:00:00Z")),
+        )
+        .unwrap();
+    let cancellation = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let running = {
+        let daemon = Arc::clone(&daemon);
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move { daemon.run(cancellation).await })
+    };
+
+    wait_for(|| fixture.started_slots().len() == 2).await;
+    let prompts = fixture
+        .started_slots()
+        .iter()
+        .map(|slot| fs::read_to_string(slot.join("prompt")).unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt.contains("Scheduled occurrence"))
+    );
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt.contains("Current ticket and discussion"))
+    );
+    fixture.open_gate();
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks.iter().all(|task| task.state == TaskState::Succeeded))
+    })
+    .await;
+    cancellation.cancel();
+    running.await.unwrap().unwrap();
 }

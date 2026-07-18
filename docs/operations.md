@@ -1,7 +1,8 @@
 # Factory operation
 
-`factory run` validates `gh` and Codex subscription authentication, polls all
-configured repositories, and dispatches durable ready-ticket tasks. Global and
+`factory run` validates `gh` and Codex subscription authentication, evaluates
+scheduled workflows, polls all configured repositories, and dispatches durable
+scheduled and ready-ticket tasks. Global and
 per-repository concurrency are controlled by `max_concurrent_runs` and
 `max_concurrent_runs_per_repository`. The per-repository value defaults to 1.
 
@@ -9,6 +10,18 @@ Factory requires the conventional `factory:ready` and
 `factory:needs-review` labels to be created by repository maintainers. Factory
 does not create, remove, or otherwise mutate labels itself. The delegated
 workflow owns ticket and pull-request updates.
+
+Five-field cron schedules are evaluated in the IANA timezone declared by the
+workflow. Factory stores the next occurrence and atomically advances that
+cursor when it creates the durable task, so repeated ticks, restarts, and
+multiple daemon loops cannot duplicate one UTC scheduled instant. Startup moves
+an overdue cursor to the next future occurrence instead of replaying work missed
+while Factory was offline. Disabled workflows are not evaluated. Invalid or
+failing scheduled workflows are reported and isolated from ready-ticket
+polling. A scheduled prompt receives its UTC occurrence, repository path,
+inspected commit, and previous successful run time when available. The agent may
+use its authenticated `gh` CLI to create or update tickets; Factory does not
+hard-code those effects.
 
 Every active run records the Factory owner, a durable supervisor anchor that
 owns the Codex process group, the anchor's process-start identity, Codex session

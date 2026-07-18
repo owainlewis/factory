@@ -318,10 +318,17 @@ async fn run_poller(
     let path = config_path.unwrap_or_else(default_config_path);
     let config = Config::load(&path)?;
     let catalog = WorkflowCatalog::load(&config)?;
-    let invalid = catalog.invalid_count();
-    if invalid > 0 {
-        bail!("workflow catalog contains {invalid} invalid workflow(s)");
+    let ticket_validation = catalog.validate_ticket_workflows();
+    if once || ticket_validation.is_err() {
+        for entry in catalog.invalid_scheduled_entries() {
+            eprintln!(
+                "Factory skipped invalid scheduled workflow {}: {}",
+                entry.path.display(),
+                entry.errors.join("; ")
+            );
+        }
     }
+    ticket_validation?;
     let data_directory = data_directory.unwrap_or_else(|| {
         path.parent()
             .unwrap_or_else(|| std::path::Path::new("."))

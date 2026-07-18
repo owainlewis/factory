@@ -178,6 +178,58 @@ fn reports_all_invalid_workflows_without_hiding_valid_entries() {
 }
 
 #[test]
+fn missing_schedule_frontmatter_delimiter_stays_isolated_from_tickets() {
+    let fixture = Fixture::new();
+    fixture.workflow(
+        "broken-schedule.md",
+        "+++\nschedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\ntimeout = O(n) before maintenance.\n",
+    );
+    fixture.workflow("valid-ticket.md", &label_workflow("Implement the ticket."));
+
+    let catalog = fixture.catalog();
+
+    assert_eq!(catalog.invalid_scheduled_entries().count(), 1);
+    assert!(catalog.validate_ticket_workflows().is_ok());
+    assert!(catalog.entries.iter().any(|entry| {
+        entry.id == "broken-schedule"
+            && entry
+                .errors
+                .iter()
+                .any(|error| error.contains("missing its closing +++ delimiter"))
+    }));
+}
+
+#[test]
+fn malformed_schedule_isolation_is_independent_of_key_order() {
+    let fixture = Fixture::new();
+    fixture.workflow(
+        "broken-schedule.md",
+        "+++\ntimezone = \"UTC\"\nruntime = \"codex\"\nschedule = \"unterminated\n+++\nPrompt.\n",
+    );
+    fixture.workflow("valid-ticket.md", &label_workflow("Implement the ticket."));
+
+    let catalog = fixture.catalog();
+
+    assert_eq!(catalog.invalid_scheduled_entries().count(), 1);
+    assert!(catalog.validate_ticket_workflows().is_ok());
+}
+
+#[test]
+fn malformed_same_line_mixed_triggers_remain_fail_fast() {
+    let fixture = Fixture::new();
+    fixture.workflow(
+        "ambiguous-workflow.md",
+        "+++\nschedule = \"0 9 * * 1\" label = \"factory:ready\"\n+++\nPrompt.\n",
+    );
+    fixture.workflow("valid-ticket.md", &label_workflow("Implement the ticket."));
+
+    let catalog = fixture.catalog();
+
+    assert_eq!(catalog.invalid_scheduled_entries().count(), 0);
+    assert!(catalog.validate_ticket_workflows().is_err());
+}
+
+#[test]
 fn rejects_missing_trigger_timezone_and_invalid_timeout() {
     let fixture = Fixture::new();
     fixture.workflow("no-trigger.md", "+++\n+++\nPrompt.\n");

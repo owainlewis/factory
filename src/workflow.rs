@@ -10,10 +10,29 @@ use anyhow::Result;
 use chrono_tz::Tz;
 use cron::Schedule;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::config::Config;
 
 const WORKFLOW_DIRECTORY: &str = ".factory/workflows";
+
+pub fn scheduled_workflow_fingerprint(
+    expression: &str,
+    timezone: Tz,
+    runtime: &str,
+    timeout: Duration,
+    prompt: &str,
+) -> Result<String> {
+    let definition = serde_json::to_vec(&(
+        expression,
+        timezone.name(),
+        runtime,
+        timeout.as_secs(),
+        timeout.subsec_nanos(),
+        prompt,
+    ))?;
+    Ok(format!("v2:{:x}", Sha256::digest(definition)))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowCatalog {
@@ -30,6 +49,7 @@ pub struct WorkflowEntry {
     pub timeout: Option<Duration>,
     pub prompt: Option<String>,
     pub errors: Vec<String>,
+    pub(crate) is_schedule_workflow: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +90,28 @@ impl WorkflowCatalog {
             .iter()
             .filter(|entry| !entry.errors.is_empty())
             .count()
+    }
+
+    pub fn invalid_scheduled_entries(&self) -> impl Iterator<Item = &WorkflowEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| !entry.errors.is_empty() && entry.is_schedule_workflow)
+    }
+
+    pub fn validate_ticket_workflows(&self) -> Result<()> {
+        let errors = self
+            .entries
+            .iter()
+            .filter(|entry| !entry.errors.is_empty() && !entry.is_schedule_workflow)
+            .map(|entry| format!("{}: {}", entry.path.display(), entry.errors.join("; ")))
+            .collect::<Vec<_>>();
+        if !errors.is_empty() {
+            anyhow::bail!(
+                "Factory cannot start with invalid ticket workflows:\n{}",
+                errors.join("\n")
+            );
+        }
+        Ok(())
     }
 }
 
@@ -244,6 +286,7 @@ fn load_file(repository: &Path, path: &Path, config: &Config) -> WorkflowEntry {
         timeout: None,
         prompt: None,
         errors: Vec::new(),
+        is_schedule_workflow: false,
     };
 
     if !valid_workflow_id(&entry.id) {
@@ -318,6 +361,7 @@ fn load_file(repository: &Path, path: &Path, config: &Config) -> WorkflowEntry {
     let (frontmatter, prompt) = match split_frontmatter(&contents) {
         Ok(parts) => parts,
         Err(error) => {
+            entry.is_schedule_workflow = missing_frontmatter_declares_only_schedule(&contents);
             entry.errors.push(error);
             return entry;
         }
@@ -330,6 +374,14 @@ fn load_file(repository: &Path, path: &Path, config: &Config) -> WorkflowEntry {
         entry.prompt = Some(prompt);
     }
 
+    entry.is_schedule_workflow = toml::from_str::<toml::Value>(&frontmatter)
+        .ok()
+        .and_then(|value| {
+            value
+                .as_table()
+                .map(|table| table.contains_key("schedule") && !table.contains_key("label"))
+        })
+        .unwrap_or_else(|| declares_only_schedule(&frontmatter));
     let raw: Frontmatter = match toml::from_str(&frontmatter) {
         Ok(raw) => raw,
         Err(error) => {
@@ -383,6 +435,261 @@ fn split_frontmatter(contents: &str) -> std::result::Result<(String, String), St
         after_opening[..closing].to_owned(),
         after_opening[prompt_start..].to_owned(),
     ))
+}
+
+fn missing_frontmatter_declares_only_schedule(contents: &str) -> bool {
+    let contents = contents.replace("\r\n", "\n");
+    let Some(after_opening) = contents.strip_prefix("+++\n") else {
+        return false;
+    };
+    let mut frontmatter_prefix = String::new();
+    let mut multiline_delimiter = None;
+    for line in after_opening.lines() {
+        let trimmed = line.trim_start();
+        if let Some(delimiter) = multiline_delimiter {
+            frontmatter_prefix.push_str(line);
+            frontmatter_prefix.push('\n');
+            if contains_multiline_closing(trimmed, delimiter) {
+                multiline_delimiter = None;
+            }
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            frontmatter_prefix.push_str(line);
+            frontmatter_prefix.push('\n');
+            continue;
+        }
+        let Some((_, value)) = trimmed.split_once('=') else {
+            break;
+        };
+        frontmatter_prefix.push_str(line);
+        frontmatter_prefix.push('\n');
+        let value = value.trim_start();
+        for delimiter in ["\"\"\"", "'''"] {
+            if let Some(remainder) = value.strip_prefix(delimiter)
+                && !contains_multiline_closing(remainder, delimiter)
+            {
+                multiline_delimiter = Some(delimiter);
+                break;
+            }
+        }
+    }
+    declares_only_schedule(&frontmatter_prefix)
+}
+
+fn declares_only_schedule(frontmatter: &str) -> bool {
+    let mut schedule = false;
+    let mut label = false;
+    let mut multiline_delimiter = None;
+    for line in frontmatter.lines() {
+        let line = line.trim_start();
+        if let Some(delimiter) = multiline_delimiter {
+            if contains_multiline_closing(line, delimiter) {
+                multiline_delimiter = None;
+            }
+            continue;
+        }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            return false;
+        }
+        schedule |= line_declares_key(line, "schedule");
+        label |= line_declares_key(line, "label");
+        let Some((_, value)) = line.split_once('=') else {
+            return false;
+        };
+        let value = value.trim_start();
+        if matches!(value.as_bytes().first(), Some(b'{') | Some(b'['))
+            && !inline_container_closes(value)
+        {
+            return false;
+        }
+        for delimiter in ["\"\"\"", "'''"] {
+            if let Some(remainder) = value.strip_prefix(delimiter)
+                && !contains_multiline_closing(remainder, delimiter)
+            {
+                multiline_delimiter = Some(delimiter);
+                break;
+            }
+        }
+    }
+    schedule && !label && multiline_delimiter.is_none()
+}
+
+fn line_declares_key(line: &str, expected: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut index = 0;
+    let mut brace_depth = 0_u32;
+    let mut bracket_depth = 0_u32;
+    let mut expecting_value = false;
+    let mut can_start_key = true;
+    let mut container_is_value = false;
+    while index < bytes.len() {
+        if bytes[index] == b'#' {
+            return false;
+        }
+        if matches!(bytes[index], b'\'' | b'"') {
+            let quoted_key_start = index;
+            let quote = bytes[index];
+            let start = index + 1;
+            index = start;
+            let mut escaped = false;
+            while index < bytes.len() {
+                if quote == b'"' && bytes[index] == b'\\' && !escaped {
+                    escaped = true;
+                    index += 1;
+                    continue;
+                }
+                if bytes[index] == quote && !escaped {
+                    break;
+                }
+                escaped = false;
+                index += 1;
+            }
+            if expecting_value {
+                expecting_value = false;
+                can_start_key = true;
+            } else if can_start_key && index < bytes.len() {
+                let followed_by_equal = bytes[index + 1..]
+                    .iter()
+                    .copied()
+                    .find(|byte| !byte.is_ascii_whitespace())
+                    == Some(b'=');
+                let is_top_level_key = brace_depth == 0
+                    && bracket_depth == 0
+                    && previous_non_whitespace(bytes, quoted_key_start) != Some(b'.');
+                if is_top_level_key && &line[start..index] == expected && followed_by_equal {
+                    return true;
+                }
+                if is_top_level_key && !followed_by_equal {
+                    can_start_key = false;
+                }
+            }
+            index = index.saturating_add(1);
+            continue;
+        }
+        if bytes[index].is_ascii_alphanumeric() || matches!(bytes[index], b'_' | b'-') {
+            let start = index;
+            index += 1;
+            while index < bytes.len()
+                && (bytes[index].is_ascii_alphanumeric() || matches!(bytes[index], b'_' | b'-'))
+            {
+                index += 1;
+            }
+            if expecting_value {
+                expecting_value = false;
+                can_start_key = false;
+            } else if can_start_key {
+                let followed_by_equal = bytes[index..]
+                    .iter()
+                    .copied()
+                    .find(|byte| !byte.is_ascii_whitespace())
+                    == Some(b'=');
+                let is_top_level_key = brace_depth == 0
+                    && bracket_depth == 0
+                    && previous_non_whitespace(bytes, start) != Some(b'.');
+                if is_top_level_key && &line[start..index] == expected && followed_by_equal {
+                    return true;
+                }
+                if is_top_level_key && !followed_by_equal {
+                    can_start_key = false;
+                }
+            }
+            continue;
+        }
+        match bytes[index] {
+            b'=' if brace_depth == 0 && bracket_depth == 0 => {
+                expecting_value = true;
+                can_start_key = false;
+            }
+            b'{' => {
+                if brace_depth == 0 && bracket_depth == 0 {
+                    container_is_value = expecting_value;
+                }
+                brace_depth = brace_depth.saturating_add(1);
+                expecting_value = false;
+                can_start_key = false;
+            }
+            b'}' => {
+                brace_depth = brace_depth.saturating_sub(1);
+                if brace_depth == 0 && bracket_depth == 0 && container_is_value {
+                    can_start_key = true;
+                    container_is_value = false;
+                }
+            }
+            b'[' => {
+                if brace_depth == 0 && bracket_depth == 0 {
+                    container_is_value = expecting_value;
+                }
+                bracket_depth = bracket_depth.saturating_add(1);
+                expecting_value = false;
+                can_start_key = false;
+            }
+            b']' => {
+                bracket_depth = bracket_depth.saturating_sub(1);
+                if brace_depth == 0 && bracket_depth == 0 && container_is_value {
+                    can_start_key = true;
+                    container_is_value = false;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    false
+}
+
+fn previous_non_whitespace(bytes: &[u8], before: usize) -> Option<u8> {
+    bytes[..before]
+        .iter()
+        .rev()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+}
+
+fn contains_multiline_closing(value: &str, delimiter: &str) -> bool {
+    value.match_indices(delimiter).any(|(index, _)| {
+        delimiter == "'''"
+            || value.as_bytes()[..index]
+                .iter()
+                .rev()
+                .take_while(|byte| **byte == b'\\')
+                .count()
+                .is_multiple_of(2)
+    })
+}
+
+fn inline_container_closes(value: &str) -> bool {
+    let mut stack = Vec::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, character) in value.char_indices() {
+        if let Some(active_quote) = quote {
+            if active_quote == '"' && character == '\\' && !escaped {
+                escaped = true;
+                continue;
+            }
+            if character == active_quote && !escaped {
+                quote = None;
+            }
+            escaped = false;
+            continue;
+        }
+        match character {
+            '"' | '\'' => quote = Some(character),
+            '{' => stack.push('}'),
+            '[' => stack.push(']'),
+            '}' | ']' if stack.pop() != Some(character) => return false,
+            '}' | ']' if stack.is_empty() => {
+                let trailing = value[index + character.len_utf8()..].trim_start();
+                return trailing.is_empty() || trailing.starts_with('#');
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn resolve_runtime(
@@ -560,6 +867,9 @@ fn open_workflow_file(path: &Path) -> std::io::Result<File> {
 fn mark_duplicate_ids(entries: &mut [WorkflowEntry]) {
     let mut groups: HashMap<(PathBuf, String), Vec<usize>> = HashMap::new();
     for (index, entry) in entries.iter().enumerate() {
+        if entry.is_schedule_workflow && !entry.errors.is_empty() {
+            continue;
+        }
         groups
             .entry((entry.repository.clone(), entry.id.clone()))
             .or_default()
@@ -586,6 +896,7 @@ fn invalid_entry(repository: &Path, path: &Path, id: &str, error: &str) -> Workf
         timeout: None,
         prompt: None,
         errors: vec![error.to_owned()],
+        is_schedule_workflow: false,
     }
 }
 
@@ -598,6 +909,117 @@ mod tests {
         assert!(valid_cron("0 9 * * 1"));
         assert!(!valid_cron("0 0 9 * * 1"));
         assert!(!valid_cron("eventually"));
+    }
+
+    #[test]
+    fn malformed_frontmatter_schedule_detection_is_conservative() {
+        assert!(declares_only_schedule(
+            "schedule = \"unterminated\ntimezone = \"UTC\""
+        ));
+        assert!(declares_only_schedule(
+            "timezone = \"UTC\"\nruntime = \"codex\"\nschedule = \"unterminated"
+        ));
+        assert!(declares_only_schedule(
+            "timezone = \"UTC\"\n\"schedule\" = \"unterminated"
+        ));
+        assert!(!declares_only_schedule(
+            "description = \"\"\"\nschedule = \"not-a-key"
+        ));
+        assert!(!declares_only_schedule(
+            r#"description = """
+escaped triple: \"""
+schedule = "not-a-key"#
+        ));
+        assert!(!declares_only_schedule(
+            "[metadata]\nschedule = \"unterminated"
+        ));
+        assert!(!declares_only_schedule(
+            "metadata = {\nschedule = \"unterminated"
+        ));
+        assert!(!declares_only_schedule(
+            "metadata = [\nschedule = \"unterminated"
+        ));
+        assert!(!declares_only_schedule(
+            "\"schedule=not-trigger\" = \"unterminated"
+        ));
+        assert!(!declares_only_schedule(
+            "schedule = \"unterminated\nlabel = \"factory:ready\""
+        ));
+        assert!(!declares_only_schedule(
+            "schedule = \"unterminated\n\"label\" = \"factory:ready\""
+        ));
+        assert!(!declares_only_schedule(
+            "schedule = \"0 9 * * 1\" label = \"factory:ready\""
+        ));
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\ndescription = \"label = factory:ready\""
+        ));
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\nmetadata = { label = \"triage\" }\nbroken = ???"
+        ));
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\nmetadata.label = \"triage\"\nbroken = ???"
+        ));
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\n\"metadata\".\"label\" = \"triage\"\nbroken = ???"
+        ));
+        assert!(!declares_only_schedule("description = \"schedule\" = ???"));
+        assert!(!declares_only_schedule("description = schedule = ???"));
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\ndescription = \"label\" = ???"
+        ));
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\ndescription = label = ???"
+        ));
+        assert!(!declares_only_schedule("description = run schedule = ???"));
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\ndescription = run label = ???"
+        ));
+        for scalar_tail in ["run {}", "run []", "run }"] {
+            assert!(!declares_only_schedule(&format!(
+                "description = {scalar_tail} schedule = ???"
+            )));
+            assert!(declares_only_schedule(&format!(
+                "schedule = \"0 9 * * 1\"\ndescription = {scalar_tail} label = ???"
+            )));
+        }
+        for completed_value in ["\"done\"", "{}", "[]"] {
+            assert!(!line_declares_key(
+                &format!("description = {completed_value} run schedule = ???"),
+                "schedule",
+            ));
+            assert!(!line_declares_key(
+                &format!("description = {completed_value} run label = ???"),
+                "label",
+            ));
+        }
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\ndescription = \"done\" run label = ???"
+        ));
+        assert!(missing_frontmatter_declares_only_schedule(
+            "+++\nschedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\nImplement maintenance.\n"
+        ));
+        assert!(missing_frontmatter_declares_only_schedule(
+            "+++\nschedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\nCheck x = y before editing.\n"
+        ));
+        assert!(missing_frontmatter_declares_only_schedule(
+            "+++\nschedule = \"0 9 * * 1\"\ntimeout = O(n) before pruning.\n"
+        ));
+        assert!(missing_frontmatter_declares_only_schedule(
+            "+++\nschedule = \"0 9 * * 1\"\nruntime = \"\"\"\ncodex\n\"\"\"\nPrompt.\n"
+        ));
+        assert!(!missing_frontmatter_declares_only_schedule(
+            "+++\nschedule = \"0 9 * * 1\"\nsurprise = true\nlabel = \"factory:ready\"\nPrompt.\n"
+        ));
+        assert!(!missing_frontmatter_declares_only_schedule(
+            "+++\nschedule = \"0 9 * * 1\"\nlabel = \"factory:ready\"\nImplement it.\n"
+        ));
+        assert!(!missing_frontmatter_declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\n"
+        ));
+        assert!(!missing_frontmatter_declares_only_schedule(
+            "+++\nschedule = \"0 9 * * 1\"\nruntime = \"\"\"\ncodex\n\"\"\"\nlabel = \"factory:ready\"\nPrompt.\n"
+        ));
     }
 
     #[test]
@@ -616,6 +1038,40 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("duplicate workflow ID"))
         }));
+    }
+
+    #[test]
+    fn invalid_schedule_does_not_poison_ticket_with_the_same_id() {
+        let repository = PathBuf::from("/repo");
+        let mut skipped_schedule = invalid_entry(
+            &repository,
+            Path::new("SAME.md"),
+            "same",
+            "invalid schedule",
+        );
+        skipped_schedule.is_schedule_workflow = true;
+        let ticket = WorkflowEntry {
+            repository: repository.clone(),
+            path: PathBuf::from("same.md"),
+            id: "same".to_owned(),
+            trigger: Some(Trigger::Label("factory:ready".to_owned())),
+            runtime: Some("codex".to_owned()),
+            timeout: Some(Duration::from_secs(60)),
+            prompt: Some("implement".to_owned()),
+            errors: Vec::new(),
+            is_schedule_workflow: false,
+        };
+        let mut entries = vec![skipped_schedule, ticket];
+
+        mark_duplicate_ids(&mut entries);
+
+        assert!(entries[1].errors.is_empty());
+        assert!(
+            !entries[0]
+                .errors
+                .iter()
+                .any(|error| error.contains("duplicate workflow ID"))
+        );
     }
 
     #[cfg(unix)]

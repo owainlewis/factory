@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Barrier};
 use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -23,6 +24,17 @@ fn ticket(revision: &str) -> TaskIdentity {
     .unwrap()
 }
 
+fn ticket_runtimes() -> HashMap<(String, String, String), String> {
+    HashMap::from([(
+        (
+            "owainlewis/factory".to_owned(),
+            "implement-ready-ticket".to_owned(),
+            "ticket".to_owned(),
+        ),
+        "codex".to_owned(),
+    )])
+}
+
 #[test]
 fn initializes_in_data_directory_and_persists_across_reopen() {
     let temp = tempfile::tempdir().unwrap();
@@ -39,6 +51,42 @@ fn initializes_in_data_directory_and_persists_across_reopen() {
     assert_eq!(persisted.state, TaskState::Queued);
     assert_eq!(persisted.repository, "owainlewis/factory");
     assert_eq!(persisted.source_item.as_deref(), Some("3"));
+}
+
+#[test]
+fn concurrent_first_open_converges_on_one_complete_schema() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let barrier = Arc::new(Barrier::new(9));
+    let handles = (0..8)
+        .map(|_| {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                Ledger::open(&path)
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+    for handle in handles {
+        handle.join().unwrap().unwrap();
+    }
+
+    let connection = rusqlite::Connection::open(path).unwrap();
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 5);
+    let schedule_tables: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_schema
+             WHERE type = 'table' AND name IN ('schedule_cursors', 'schedule_owners')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(schedule_tables, 2);
 }
 
 #[test]
@@ -62,6 +110,383 @@ fn ticket_and_schedule_identities_deduplicate_exact_triggers() {
     assert!(first_schedule.created);
     assert!(!duplicate_schedule.created);
     assert_eq!(duplicate_schedule.task.id, first_schedule.task.id);
+}
+
+#[test]
+fn previous_schedule_success_excludes_ticket_runs_for_the_same_workflow() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
+    let scheduled = ledger
+        .enqueue(
+            &TaskIdentity::scheduled(
+                "owainlewis/factory",
+                "shared-workflow",
+                "2026-07-20T09:00:00Z",
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .task;
+    ledger.claim_next().unwrap();
+    let scheduled_run = ledger.start_run(scheduled.id, "codex").unwrap();
+    ledger
+        .finish_run_and_task(scheduled_run.id, RunOutcome::Succeeded, None, None, None)
+        .unwrap();
+    let ticket = ledger
+        .enqueue(
+            &TaskIdentity::ticket("owainlewis/factory", "shared-workflow", "7", "revision-1")
+                .unwrap(),
+        )
+        .unwrap()
+        .task;
+    ledger.claim_next().unwrap();
+    let ticket_run = ledger.start_run(ticket.id, "codex").unwrap();
+    ledger
+        .finish_run_and_task(ticket_run.id, RunOutcome::Succeeded, None, None, None)
+        .unwrap();
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE runs SET finished_at = 100 WHERE id = ?1",
+            [scheduled_run.id],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE runs SET finished_at = 200 WHERE id = ?1",
+            [ticket_run.id],
+        )
+        .unwrap();
+
+    assert_eq!(
+        ledger
+            .latest_successful_scheduled_run_finished_at("owainlewis/factory", "shared-workflow",)
+            .unwrap(),
+        Some(100)
+    );
+}
+
+#[test]
+fn schedule_cursor_atomically_enqueues_advances_and_skips_downtime() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
+    ledger
+        .register_daemon_owner("schedule-storage-owner", std::process::id())
+        .unwrap();
+    let cursor = ledger
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "* * * * *|UTC",
+            60_000,
+            30_000,
+            "schedule-storage-owner",
+        )
+        .unwrap();
+    assert_eq!(cursor.next_due_at, 60_000);
+    let identity =
+        TaskIdentity::scheduled("owainlewis/factory", "find-bugs", "1970-01-01T00:01:00Z").unwrap();
+    let first = ledger
+        .enqueue_scheduled_occurrence(
+            &identity,
+            r#"{"scheduled_at":"1970-01-01T00:01:00Z"}"#,
+            "* * * * *|UTC",
+            60_000,
+            120_000,
+        )
+        .unwrap();
+    let repeated = ledger
+        .enqueue_scheduled_occurrence(
+            &identity,
+            r#"{"scheduled_at":"1970-01-01T00:01:00Z"}"#,
+            "* * * * *|UTC",
+            60_000,
+            120_000,
+        )
+        .unwrap();
+    assert!(first.is_some_and(|task| task.created));
+    assert!(repeated.is_none());
+    assert_eq!(ledger.tasks().unwrap().len(), 1);
+
+    let restart = ledger
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "* * * * *|UTC",
+            120_000,
+            90_000,
+            "schedule-storage-owner",
+        )
+        .unwrap();
+    assert_eq!(restart.next_due_at, 120_000);
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE daemon_owners SET heartbeat_at = 0 WHERE owner_id = ?1",
+            ["schedule-storage-owner"],
+        )
+        .unwrap();
+    assert!(
+        ledger
+            .heartbeat_daemon_owner("schedule-storage-owner")
+            .unwrap_err()
+            .to_string()
+            .contains("lease expired")
+    );
+    let after_sleep = ledger
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "* * * * *|UTC",
+            660_000,
+            630_000,
+            "schedule-storage-owner",
+        )
+        .unwrap();
+    assert_eq!(after_sleep.next_due_at, 660_000);
+    ledger
+        .remove_daemon_owner("schedule-storage-owner")
+        .unwrap();
+    ledger
+        .register_daemon_owner("schedule-storage-owner-2", std::process::id())
+        .unwrap();
+    let after_downtime = ledger
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "* * * * *|UTC",
+            660_000,
+            630_000,
+            "schedule-storage-owner-2",
+        )
+        .unwrap();
+    assert_eq!(after_downtime.next_due_at, 660_000);
+    assert_eq!(ledger.tasks().unwrap().len(), 1);
+}
+
+#[test]
+fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut first = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    first
+        .register_daemon_owner("schedule-owner-a", std::process::id())
+        .unwrap();
+    first
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "old|UTC",
+            60_000,
+            30_000,
+            "schedule-owner-a",
+        )
+        .unwrap();
+
+    let mut second = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    second
+        .register_daemon_owner("schedule-owner-b", std::process::id())
+        .unwrap();
+    let preserved = second
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "old|UTC",
+            120_000,
+            70_000,
+            "schedule-owner-b",
+        )
+        .unwrap();
+    assert_eq!(preserved.next_due_at, 60_000);
+    let queued_under_old_definition =
+        TaskIdentity::scheduled("owainlewis/factory", "find-bugs", "1970-01-01T00:01:00Z").unwrap();
+    first
+        .enqueue_scheduled_occurrence(
+            &queued_under_old_definition,
+            r#"{"scheduled_at":"1970-01-01T00:01:00Z"}"#,
+            "old|UTC",
+            60_000,
+            120_000,
+        )
+        .unwrap()
+        .unwrap();
+
+    let conflict = second.initialize_schedule_cursor(
+        "owainlewis/factory",
+        "find-bugs",
+        "new|UTC",
+        90_000,
+        80_000,
+        "schedule-owner-b",
+    );
+    assert!(
+        format!("{:#}", conflict.unwrap_err()).contains("live owner using different fingerprint")
+    );
+    Connection::open(temp.path().join("ledger.db"))
+        .unwrap()
+        .execute(
+            "UPDATE daemon_owners SET heartbeat_at = 0 WHERE owner_id = ?1",
+            ["schedule-owner-a"],
+        )
+        .unwrap();
+    let changed = second
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "new|UTC",
+            90_000,
+            80_000,
+            "schedule-owner-b",
+        )
+        .unwrap();
+    assert_eq!(changed.next_due_at, 90_000);
+    let resumed_at = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    Connection::open(temp.path().join("ledger.db"))
+        .unwrap()
+        .execute(
+            "UPDATE daemon_owners SET heartbeat_at = ?1 WHERE owner_id = ?2",
+            rusqlite::params![resumed_at, "schedule-owner-a"],
+        )
+        .unwrap();
+    let scheduled_runtimes = HashMap::from([(
+        (
+            "owainlewis/factory".to_owned(),
+            "find-bugs".to_owned(),
+            "scheduled".to_owned(),
+        ),
+        "codex".to_owned(),
+    )]);
+    assert!(
+        first
+            .claim_and_start_run(
+                &["owainlewis/factory".to_owned()],
+                &scheduled_runtimes,
+                "schedule-owner-a",
+                std::process::id(),
+            )
+            .unwrap()
+            .is_none()
+    );
+    let mut stale_daemon = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    stale_daemon
+        .register_daemon_owner("schedule-owner-c", std::process::id())
+        .unwrap();
+    assert!(
+        stale_daemon
+            .initialize_schedule_cursor(
+                "owainlewis/factory",
+                "find-bugs",
+                "old|UTC",
+                120_000,
+                100_000,
+                "schedule-owner-c",
+            )
+            .is_err()
+    );
+    let stale =
+        TaskIdentity::scheduled("owainlewis/factory", "find-bugs", "1970-01-01T00:00:30Z").unwrap();
+    assert!(
+        first
+            .enqueue_scheduled_occurrence(
+                &stale,
+                r#"{"scheduled_at":"1970-01-01T00:00:30Z"}"#,
+                "old|UTC",
+                60_000,
+                120_000,
+            )
+            .unwrap()
+            .is_none()
+    );
+    let current =
+        TaskIdentity::scheduled("owainlewis/factory", "find-bugs", "1970-01-01T00:01:30Z").unwrap();
+    assert!(
+        second
+            .enqueue_scheduled_occurrence(
+                &current,
+                r#"{"scheduled_at":"1970-01-01T00:01:30Z"}"#,
+                "new|UTC",
+                90_000,
+                150_000,
+            )
+            .unwrap()
+            .is_some()
+    );
+    let claimed = second
+        .claim_and_start_run(
+            &["owainlewis/factory".to_owned()],
+            &scheduled_runtimes,
+            "schedule-owner-b",
+            std::process::id(),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(
+        claimed
+            .task
+            .payload
+            .as_deref()
+            .unwrap()
+            .contains("1970-01-01T00:01:30Z")
+    );
+    let stale_task = second
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .find(|task| {
+            task.payload
+                .as_deref()
+                .is_some_and(|payload| payload.contains("1970-01-01T00:01:00Z"))
+        })
+        .unwrap();
+    assert_eq!(stale_task.state, TaskState::Queued);
+}
+
+#[cfg(unix)]
+#[test]
+fn crashed_schedule_owner_does_not_preserve_offline_due_work() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut crashed_process = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+    let crashed_pid = crashed_process.id();
+    assert!(crashed_process.wait().unwrap().success());
+    let mut crashed = Ledger::open(&path).unwrap();
+    crashed
+        .register_daemon_owner("crashed-schedule-owner", crashed_pid)
+        .unwrap();
+    crashed
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "same|UTC",
+            60_000,
+            30_000,
+            "crashed-schedule-owner",
+        )
+        .unwrap();
+
+    let mut restarted = Ledger::open(&path).unwrap();
+    restarted
+        .register_daemon_owner("restarted-schedule-owner", std::process::id())
+        .unwrap();
+    let cursor = restarted
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "same|UTC",
+            120_000,
+            90_000,
+            "restarted-schedule-owner",
+        )
+        .unwrap();
+
+    assert_eq!(cursor.next_due_at, 120_000);
 }
 
 #[test]
@@ -90,6 +515,154 @@ fn concurrent_claim_has_exactly_one_winner() {
         .collect::<Vec<_>>();
 
     assert_eq!(claims, vec![task_id]);
+}
+
+#[test]
+fn claim_requires_task_kind_to_match_the_current_workflow_trigger() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    let task = ledger
+        .enqueue(
+            &TaskIdentity::scheduled(
+                "owainlewis/factory",
+                "implement-ready-ticket",
+                "2026-07-20T09:00:00Z",
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .task;
+    ledger
+        .register_daemon_owner("kind-owner", std::process::id())
+        .unwrap();
+
+    assert!(
+        ledger
+            .claim_and_start_run(
+                &["owainlewis/factory".to_owned()],
+                &ticket_runtimes(),
+                "kind-owner",
+                std::process::id(),
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Queued
+    );
+
+    let scheduled_runtimes = HashMap::from([(
+        (
+            "owainlewis/factory".to_owned(),
+            "implement-ready-ticket".to_owned(),
+            "scheduled".to_owned(),
+        ),
+        "codex".to_owned(),
+    )]);
+    assert!(
+        ledger
+            .claim_and_start_run(
+                &["owainlewis/factory".to_owned()],
+                &scheduled_runtimes,
+                "kind-owner",
+                std::process::id(),
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Queued
+    );
+}
+
+#[test]
+fn expired_daemon_owner_cannot_claim_or_start_work() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
+    let task = ledger.enqueue(&ticket("expired-claim-owner")).unwrap().task;
+    ledger
+        .register_daemon_owner("expired-claim-owner", std::process::id())
+        .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE daemon_owners SET heartbeat_at = 0 WHERE owner_id = ?1",
+            ["expired-claim-owner"],
+        )
+        .unwrap();
+
+    let error = ledger
+        .claim_and_start_run(
+            &["owainlewis/factory".to_owned()],
+            &ticket_runtimes(),
+            "expired-claim-owner",
+            std::process::id(),
+        )
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("no live lease for task claims"));
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Queued
+    );
+    assert!(ledger.runs(None).unwrap().is_empty());
+}
+
+#[test]
+fn owner_lease_is_checked_after_waiting_for_the_claim_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut setup = Ledger::open(&path).unwrap();
+    let task = setup.enqueue(&ticket("claim-lock-wait")).unwrap().task;
+    setup
+        .register_daemon_owner("claim-lock-owner", std::process::id())
+        .unwrap();
+    let now = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE daemon_owners SET heartbeat_at = ?1 WHERE owner_id = ?2",
+            rusqlite::params![now - 9_500, "claim-lock-owner"],
+        )
+        .unwrap();
+    drop(setup);
+
+    let mut claimant = Ledger::open(&path).unwrap();
+    let blocker = Connection::open(&path).unwrap();
+    blocker.execute_batch("BEGIN IMMEDIATE;").unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let waiting = {
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            claimant.claim_and_start_run(
+                &["owainlewis/factory".to_owned()],
+                &ticket_runtimes(),
+                "claim-lock-owner",
+                std::process::id(),
+            )
+        })
+    };
+    barrier.wait();
+    thread::sleep(Duration::from_millis(700));
+    blocker.execute_batch("COMMIT;").unwrap();
+
+    let error = waiting.join().unwrap().unwrap_err();
+    assert!(format!("{error:#}").contains("no live lease for task claims"));
+    let ledger = Ledger::open(&path).unwrap();
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Queued
+    );
+    assert!(ledger.runs(None).unwrap().is_empty());
 }
 
 #[test]
@@ -261,7 +834,7 @@ fn migrates_a_version_one_ledger_without_losing_tasks() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 }
 
 #[test]
@@ -273,19 +846,13 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
         .register_daemon_owner("interrupted-owner", std::process::id())
         .unwrap();
     let task = ledger.enqueue(&ticket("recovery-revision")).unwrap().task;
-    let runtimes = HashMap::from([(
-        (
-            "owainlewis/factory".to_owned(),
-            "implement-ready-ticket".to_owned(),
-        ),
-        "codex".to_owned(),
-    )]);
+    let runtimes = ticket_runtimes();
     let workdirs = HashMap::from([(
         "owainlewis/factory".to_owned(),
         "/worktrees/factory-3".to_owned(),
     )]);
     let interrupted = ledger
-        .claim_ticket_and_start_run_with_workdirs(
+        .claim_and_start_run_with_workdirs(
             &["owainlewis/factory".to_owned()],
             &runtimes,
             "interrupted-owner",
@@ -327,7 +894,7 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
         .register_daemon_owner("recovery-owner", std::process::id())
         .unwrap();
     let first_recovery = ledger
-        .claim_ticket_and_start_run_with_workdirs(
+        .claim_and_start_run_with_workdirs(
             &["owainlewis/factory".to_owned()],
             &runtimes,
             "recovery-owner",
@@ -359,7 +926,7 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
         .register_daemon_owner("recovery-owner", std::process::id())
         .unwrap();
     let final_recovery = ledger
-        .claim_ticket_and_start_run_with_workdirs(
+        .claim_and_start_run_with_workdirs(
             &["owainlewis/factory".to_owned()],
             &runtimes,
             "recovery-owner",
@@ -406,15 +973,9 @@ fn orphan_recovery_does_not_signal_a_reused_process_group() {
         .register_daemon_owner("gone-owner", std::process::id())
         .unwrap();
     ledger.enqueue(&ticket("pid-reuse-revision")).unwrap();
-    let runtimes = HashMap::from([(
-        (
-            "owainlewis/factory".to_owned(),
-            "implement-ready-ticket".to_owned(),
-        ),
-        "codex".to_owned(),
-    )]);
+    let runtimes = ticket_runtimes();
     let run = ledger
-        .claim_ticket_and_start_run(
+        .claim_and_start_run(
             &["owainlewis/factory".to_owned()],
             &runtimes,
             "gone-owner",
@@ -467,18 +1028,12 @@ fn cancellation_requests_are_durable_idempotent_and_force_cancelled_outcome() {
     let path = temp.path().join("ledger.db");
     let mut ledger = Ledger::open(&path).unwrap();
     let task = ledger.enqueue(&ticket("cancel-revision")).unwrap().task;
-    let runtimes = HashMap::from([(
-        (
-            "owainlewis/factory".to_owned(),
-            "implement-ready-ticket".to_owned(),
-        ),
-        "codex".to_owned(),
-    )]);
+    let runtimes = ticket_runtimes();
     ledger
         .register_daemon_owner("storage-test-owner", std::process::id())
         .unwrap();
     let run = ledger
-        .claim_ticket_and_start_run(
+        .claim_and_start_run(
             &["owainlewis/factory".to_owned()],
             &runtimes,
             "storage-test-owner",
@@ -549,15 +1104,9 @@ fn cancellation_rejects_a_reused_live_pid_when_the_owner_lease_is_stale() {
         .register_daemon_owner("stale-owner", std::process::id())
         .unwrap();
     ledger.enqueue(&ticket("stale-owner-revision")).unwrap();
-    let runtimes = HashMap::from([(
-        (
-            "owainlewis/factory".to_owned(),
-            "implement-ready-ticket".to_owned(),
-        ),
-        "codex".to_owned(),
-    )]);
+    let runtimes = ticket_runtimes();
     let run = ledger
-        .claim_ticket_and_start_run(
+        .claim_and_start_run(
             &["owainlewis/factory".to_owned()],
             &runtimes,
             "stale-owner",
@@ -590,18 +1139,12 @@ fn orphan_recovery_completes_a_pending_cancellation_without_retrying() {
         .enqueue(&ticket("orphan-cancel-revision"))
         .unwrap()
         .task;
-    let runtimes = HashMap::from([(
-        (
-            "owainlewis/factory".to_owned(),
-            "implement-ready-ticket".to_owned(),
-        ),
-        "codex".to_owned(),
-    )]);
+    let runtimes = ticket_runtimes();
     ledger
         .register_daemon_owner("cancelled-owner", std::process::id())
         .unwrap();
     let run = ledger
-        .claim_ticket_and_start_run(
+        .claim_and_start_run(
             &["owainlewis/factory".to_owned()],
             &runtimes,
             "cancelled-owner",
@@ -634,13 +1177,7 @@ fn orphan_recovery_completes_a_pending_cancellation_without_retrying() {
 fn concurrent_completion_and_cancellation_always_leave_a_terminal_run() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("ledger.db");
-    let runtimes = HashMap::from([(
-        (
-            "owainlewis/factory".to_owned(),
-            "implement-ready-ticket".to_owned(),
-        ),
-        "codex".to_owned(),
-    )]);
+    let runtimes = ticket_runtimes();
     let mut setup = Ledger::open(&path).unwrap();
     setup
         .register_daemon_owner("race-owner", std::process::id())
@@ -653,7 +1190,7 @@ fn concurrent_completion_and_cancellation_always_leave_a_terminal_run() {
             .unwrap()
             .task;
         let run = setup
-            .claim_ticket_and_start_run(
+            .claim_and_start_run(
                 &["owainlewis/factory".to_owned()],
                 &runtimes,
                 "race-owner",
