@@ -111,6 +111,8 @@ exit 64
                 r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "codex-cli 1.2.3"; exit 0; fi
 if [ "$1" = "login" ] && [ "$2" = "status" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+mode=initial
+if [ "$1" = "exec" ] && [ "$2" = "resume" ]; then mode=resume; fi
 output=""
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--output-last-message" ]; then shift; output="$1"; fi
@@ -119,12 +121,30 @@ done
 slot=1
 while ! mkdir "{root}/slot-$slot" 2>/dev/null; do slot=$((slot + 1)); done
 echo $$ > "{root}/slot-$slot/pid"
+echo "$mode" > "{root}/slot-$slot/mode"
 sleep 1000 &
 echo $! > "{root}/slot-$slot/child-pid"
 cat > "{root}/slot-$slot/prompt"
 touch "{root}/slot-$slot/started"
-while [ ! -f "{root}/gate" ]; do sleep 0.02; done
 echo "{{\"type\":\"thread.started\",\"thread_id\":\"thread-$slot\"}}"
+echo "{{\"type\":\"item.completed\",\"item\":{{\"text\":\"active SECRET=hunter2\"}}}}"
+if [ -f "{root}/emit-pr-first" ] && [ "$slot" = "1" ]; then
+  echo "{{\"type\":\"item.completed\",\"item\":{{\"text\":\"https://github.com/example/repo-0/pull/77\"}}}}"
+fi
+if [ -f "{root}/malformed-once" ]; then
+  rm "{root}/malformed-once"
+  echo "not-json"
+  exit 0
+fi
+if [ "$mode" = "resume" ] && [ -f "{root}/fail-resume" ]; then
+  echo "stored session is missing" >&2
+  exit 44
+fi
+if [ -f "{root}/fail-all" ]; then
+  echo "agent process exited unexpectedly" >&2
+  exit 55
+fi
+while [ ! -f "{root}/gate" ]; do sleep 0.02; done
 printf 'Draft PR: https://example.test/pr/%s' "$slot" > "$output"
 exit 0
 "#,
@@ -449,6 +469,285 @@ async fn losing_the_durable_owner_lease_is_a_daemon_error() {
     assert!(format!("{error:#}").contains("is not registered"));
     let ledger = Ledger::open(&fixture.ledger_path).unwrap();
     assert_eq!(ledger.tasks().unwrap()[0].state, TaskState::Cancelled);
+}
+
+#[tokio::test]
+async fn restart_recovers_one_orphan_by_resuming_its_live_observed_session() {
+    let fixture = Fixture::new(&[vec![issue(21)]], 1, 1);
+    let first_daemon = Arc::new(fixture.daemon());
+    let first_shutdown = CancellationToken::new();
+    let first = {
+        let daemon = Arc::clone(&first_daemon);
+        let shutdown = first_shutdown.clone();
+        tokio::spawn(async move { daemon.run(shutdown).await })
+    };
+    wait_for(|| fixture.started_slots().len() == 1).await;
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.runs(None))
+            .is_ok_and(|runs| {
+                runs.len() == 1
+                    && runs[0].process_id.is_some()
+                    && runs[0].session_id.as_deref() == Some("thread-1")
+                    && runs[0].last_activity_at >= runs[0].started_at
+                    && runs[0]
+                        .activity
+                        .as_deref()
+                        .is_some_and(|activity| !activity.contains("hunter2"))
+            })
+    })
+    .await;
+    let owner_id = Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .runs(None)
+        .unwrap()[0]
+        .owner_id
+        .clone()
+        .unwrap();
+    first.abort();
+    let _ = first.await;
+    Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .remove_daemon_owner(&owner_id)
+        .unwrap();
+
+    let second_daemon = Arc::new(fixture.daemon());
+    let second_shutdown = CancellationToken::new();
+    let second = {
+        let daemon = Arc::clone(&second_daemon);
+        let shutdown = second_shutdown.clone();
+        tokio::spawn(async move { daemon.run(shutdown).await })
+    };
+    wait_for(|| fixture.started_slots().len() == 2).await;
+    let slots = fixture.started_slots();
+    assert_eq!(
+        fs::read_to_string(slots[1].join("mode")).unwrap().trim(),
+        "resume"
+    );
+    let prompt = fs::read_to_string(slots[1].join("prompt")).unwrap();
+    assert!(prompt.contains("Interrupted-run recovery"));
+    assert!(prompt.contains("Inspect current repository, ticket, GitHub"));
+    assert!(prompt.contains("thread-1"));
+    fixture.open_gate();
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks[0].state == TaskState::Succeeded)
+    })
+    .await;
+    let runs = Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .runs(None)
+        .unwrap();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].outcome, "failed");
+    assert_eq!(runs[1].recovery_of, Some(runs[0].id));
+    assert_eq!(runs[1].recovery_attempt, 1);
+    second_shutdown.cancel();
+    second.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn live_second_daemon_recovers_when_the_first_owner_disappears_later() {
+    let fixture = Fixture::new(&[vec![issue(24)]], 1, 1);
+    let first_daemon = Arc::new(fixture.daemon());
+    let first = {
+        let daemon = Arc::clone(&first_daemon);
+        tokio::spawn(async move { daemon.run(CancellationToken::new()).await })
+    };
+    wait_for(|| fixture.started_slots().len() == 1).await;
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.runs(None))
+            .is_ok_and(|runs| runs[0].session_id.as_deref() == Some("thread-1"))
+    })
+    .await;
+    let first_owner = Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .runs(None)
+        .unwrap()[0]
+        .owner_id
+        .clone()
+        .unwrap();
+
+    let second_shutdown = CancellationToken::new();
+    let second_daemon = Arc::new(fixture.daemon());
+    let second = {
+        let daemon = Arc::clone(&second_daemon);
+        let shutdown = second_shutdown.clone();
+        tokio::spawn(async move { daemon.run(shutdown).await })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(fixture.started_slots().len(), 1);
+
+    first.abort();
+    let _ = first.await;
+    Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .remove_daemon_owner(&first_owner)
+        .unwrap();
+    wait_for(|| fixture.started_slots().len() == 2).await;
+    let slots = fixture.started_slots();
+    assert_eq!(
+        fs::read_to_string(slots[1].join("mode")).unwrap().trim(),
+        "resume"
+    );
+    fixture.open_gate();
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks[0].state == TaskState::Succeeded)
+    })
+    .await;
+    second_shutdown.cancel();
+    second.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn missing_stored_session_gets_one_fresh_recovery_fallback() {
+    let fixture = Fixture::new(&[vec![issue(22)]], 1, 1);
+    let first_daemon = Arc::new(fixture.daemon());
+    let first = {
+        let daemon = Arc::clone(&first_daemon);
+        tokio::spawn(async move { daemon.run(CancellationToken::new()).await })
+    };
+    wait_for(|| fixture.started_slots().len() == 1).await;
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.runs(None))
+            .is_ok_and(|runs| runs[0].session_id.as_deref() == Some("thread-1"))
+    })
+    .await;
+    let owner_id = Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .runs(None)
+        .unwrap()[0]
+        .owner_id
+        .clone()
+        .unwrap();
+    first.abort();
+    let _ = first.await;
+    Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .remove_daemon_owner(&owner_id)
+        .unwrap();
+    fs::write(fixture.runtime_dir.join("fail-resume"), "yes").unwrap();
+
+    let shutdown = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let restarted = {
+        let daemon = Arc::clone(&daemon);
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move { daemon.run(shutdown).await })
+    };
+    wait_for(|| fixture.started_slots().len() == 3).await;
+    let slots = fixture.started_slots();
+    assert_eq!(
+        fs::read_to_string(slots[1].join("mode")).unwrap().trim(),
+        "resume"
+    );
+    assert_eq!(
+        fs::read_to_string(slots[2].join("mode")).unwrap().trim(),
+        "initial"
+    );
+    let fallback_prompt = fs::read_to_string(slots[2].join("prompt")).unwrap();
+    assert!(fallback_prompt.contains("Session fallback"));
+    assert!(fallback_prompt.contains("Do not replay assumed steps"));
+    fixture.open_gate();
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks[0].state == TaskState::Succeeded)
+    })
+    .await;
+    assert_eq!(
+        Ledger::open(&fixture.ledger_path)
+            .unwrap()
+            .runs(None)
+            .unwrap()
+            .len(),
+        2,
+        "resume fallback stays within one durable recovery attempt"
+    );
+    shutdown.cancel();
+    restarted.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn repeated_agent_exit_uses_two_recoveries_then_leaves_failed_task() {
+    let fixture = Fixture::new(&[vec![issue(23)]], 1, 1);
+    fs::write(fixture.runtime_dir.join("fail-all"), "yes").unwrap();
+    fs::write(fixture.runtime_dir.join("emit-pr-first"), "yes").unwrap();
+    let shutdown = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let running = {
+        let daemon = Arc::clone(&daemon);
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move { daemon.run(shutdown).await })
+    };
+
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| {
+                tasks
+                    .first()
+                    .is_some_and(|task| task.state == TaskState::Failed)
+            })
+    })
+    .await;
+    let runs = Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .runs(None)
+        .unwrap();
+    assert_eq!(runs.len(), 3);
+    assert_eq!(
+        runs.iter()
+            .map(|run| run.recovery_attempt)
+            .collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+    assert!(runs.iter().all(|run| run.outcome == "failed"));
+    assert_eq!(fixture.started_slots().len(), 5);
+    let final_recovery_prompt =
+        fs::read_to_string(fixture.started_slots()[3].join("prompt")).unwrap();
+    assert!(final_recovery_prompt.contains("https://github.com/example/repo-0/pull/77"));
+    shutdown.cancel();
+    running.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn observed_session_survives_later_malformed_activity_and_is_resumed() {
+    let fixture = Fixture::new(&[vec![issue(25)]], 1, 1);
+    fs::write(fixture.runtime_dir.join("malformed-once"), "yes").unwrap();
+    let shutdown = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let running = {
+        let daemon = Arc::clone(&daemon);
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move { daemon.run(shutdown).await })
+    };
+
+    wait_for(|| fixture.started_slots().len() == 2).await;
+    let slots = fixture.started_slots();
+    assert_eq!(
+        fs::read_to_string(slots[1].join("mode")).unwrap().trim(),
+        "resume"
+    );
+    let runs = Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .runs(None)
+        .unwrap();
+    assert_eq!(runs[0].session_id.as_deref(), Some("thread-1"));
+    fixture.open_gate();
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks[0].state == TaskState::Succeeded)
+    })
+    .await;
+    shutdown.cancel();
+    running.await.unwrap().unwrap();
 }
 
 #[tokio::test]

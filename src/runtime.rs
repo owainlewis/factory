@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant as TokioInstant, sleep_until, timeout};
 use tokio_util::sync::CancellationToken;
@@ -22,6 +23,7 @@ const MAX_ACTIVITY_LINE_BYTES: usize = 256 * 1024;
 const MAX_THREAD_ID_BYTES: usize = 256;
 const MAX_FINAL_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_STDERR_BYTES: usize = 64 * 1024;
+const MAX_OBSERVED_ACTIVITY_BYTES: usize = 64 * 1024;
 const MAX_HEALTH_OUTPUT_BYTES: usize = 64 * 1024;
 const OUTPUT_CHANNEL_CAPACITY: usize = 16;
 const OUTPUT_ACK_TIMEOUT: Duration = Duration::from_millis(250);
@@ -50,6 +52,23 @@ pub struct ExecutionResult {
     pub activity_lines: usize,
     pub activity_error: Option<String>,
     pub stderr_tail: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeObservation {
+    pub process_id: Option<u32>,
+    pub process_identity: Option<String>,
+    pub session_id: Option<String>,
+    pub pull_request: Option<String>,
+    pub activity: Option<String>,
+    pub sequence: u64,
+}
+
+pub fn observation_channel() -> (
+    watch::Sender<RuntimeObservation>,
+    watch::Receiver<RuntimeObservation>,
+) {
+    watch::channel(RuntimeObservation::default())
 }
 
 #[derive(Debug)]
@@ -143,18 +162,50 @@ impl CodexRuntime {
         run_timeout: Duration,
         cancellation: CancellationToken,
     ) -> Result<ExecutionResult> {
+        let (observations, _receiver) = observation_channel();
+        self.run_with_session(
+            prompt,
+            working_directory,
+            run_timeout,
+            cancellation,
+            None,
+            observations,
+        )
+        .await
+    }
+
+    pub async fn run_with_session(
+        &self,
+        prompt: &str,
+        working_directory: &Path,
+        run_timeout: Duration,
+        cancellation: CancellationToken,
+        resume_session: Option<&str>,
+        observations: watch::Sender<RuntimeObservation>,
+    ) -> Result<ExecutionResult> {
         let output_path = tempfile::NamedTempFile::new()
             .context("failed to create Codex final-response file")?
             .into_temp_path();
         let mut command = Command::new(&self.executable);
+        command.arg("exec");
+        if let Some(session_id) = resume_session {
+            command.arg("resume");
+            command
+                .arg("--json")
+                .arg("--output-last-message")
+                .arg(&output_path)
+                .arg(session_id)
+                .arg("-");
+        } else {
+            command
+                .arg("--json")
+                .arg("--color")
+                .arg("never")
+                .arg("--output-last-message")
+                .arg(&output_path)
+                .arg("-");
+        }
         command
-            .arg("exec")
-            .arg("--json")
-            .arg("--color")
-            .arg("never")
-            .arg("--output-last-message")
-            .arg(&output_path)
-            .arg("-")
             .current_dir(working_directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -168,6 +219,8 @@ impl CodexRuntime {
             format!("failed to start Codex CLI at {}", self.executable.display())
         })?;
         let process_id = child.id();
+        let identity = process_id.and_then(process_identity);
+        update_observation(&observations, process_id, identity, None, None);
         let mut stdin = child
             .stdin
             .take()
@@ -181,8 +234,9 @@ impl CodexRuntime {
             .take()
             .context("Codex process did not expose stderr")?;
         let stdout_stream = self.stream_activity.then_some(OutputStream::Stdout);
-        let stdout_task = tokio::spawn(read_stdout(stdout, stdout_stream));
-        let stderr_task = tokio::spawn(read_stderr(stderr, Some(OutputStream::Stderr)));
+        let stderr_stream = self.stream_activity.then_some(OutputStream::Stderr);
+        let stdout_task = tokio::spawn(read_stdout(stdout, stdout_stream, observations.clone()));
+        let stderr_task = tokio::spawn(read_stderr(stderr, stderr_stream, observations.clone()));
 
         let deliver_prompt = async {
             stdin
@@ -344,6 +398,7 @@ struct ActivityCapture {
 async fn read_stdout(
     mut stdout: tokio::process::ChildStdout,
     activity_stream: Option<OutputStream>,
+    observations: watch::Sender<RuntimeObservation>,
 ) -> Result<ActivityCapture> {
     let mut capture = ActivityCapture::default();
     let mut chunk = [0_u8; 8192];
@@ -364,7 +419,7 @@ async fn read_stdout(
             if *byte == b'\n' {
                 capture.lines += 1;
                 if !discarding {
-                    capture_activity_line(&line, &mut capture);
+                    capture_activity_line(&line, &mut capture, &observations);
                 }
                 line.clear();
                 discarding = false;
@@ -380,21 +435,49 @@ async fn read_stdout(
     if !line.is_empty() || discarding {
         capture.lines += 1;
         if !discarding {
-            capture_activity_line(&line, &mut capture);
+            capture_activity_line(&line, &mut capture, &observations);
         }
     }
     Ok(capture)
 }
 
-fn capture_activity_line(line: &[u8], capture: &mut ActivityCapture) {
+fn capture_activity_line(
+    line: &[u8],
+    capture: &mut ActivityCapture,
+    observations: &watch::Sender<RuntimeObservation>,
+) {
     let line = line.strip_suffix(b"\r").unwrap_or(line);
     match serde_json::from_slice::<Value>(line) {
         Ok(event) => {
+            let event_type = event
+                .get("type")
+                .and_then(Value::as_str)
+                .filter(|value| {
+                    value.len() <= 80
+                        && value.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                        })
+                })
+                .unwrap_or("unknown");
+            update_observation(
+                observations,
+                None,
+                None,
+                None,
+                Some(format!("Codex event: {event_type}\n")),
+            );
+            if let Some(pull_request) = find_pull_request_url(&event) {
+                observations.send_modify(|observation| {
+                    observation.pull_request = Some(pull_request);
+                    observation.sequence = observation.sequence.saturating_add(1);
+                });
+            }
             if capture.thread_id.is_none()
                 && let Some(thread_id) = event.get("thread_id").and_then(Value::as_str)
             {
                 if thread_id.len() <= MAX_THREAD_ID_BYTES {
                     capture.thread_id = Some(thread_id.to_owned());
+                    update_observation(observations, None, None, Some(thread_id.to_owned()), None);
                 } else if capture.malformed_line.is_none() {
                     capture.malformed_line =
                         Some(format!("thread ID exceeds {MAX_THREAD_ID_BYTES} bytes"));
@@ -408,9 +491,36 @@ fn capture_activity_line(line: &[u8], capture: &mut ActivityCapture) {
     }
 }
 
+fn find_pull_request_url(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => value.split_whitespace().find_map(|word| {
+            let candidate = word.trim_matches(|character: char| {
+                matches!(
+                    character,
+                    '(' | ')' | '[' | ']' | ',' | '.' | ';' | '\'' | '"'
+                )
+            });
+            let mut parts = candidate.strip_prefix("https://github.com/")?.split('/');
+            let owner = parts.next()?;
+            let repository = parts.next()?;
+            let pull = parts.next()?;
+            let number = parts.next()?;
+            (!owner.is_empty()
+                && !repository.is_empty()
+                && pull == "pull"
+                && number.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| candidate.to_owned())
+        }),
+        Value::Array(values) => values.iter().find_map(find_pull_request_url),
+        Value::Object(values) => values.values().find_map(find_pull_request_url),
+        _ => None,
+    }
+}
+
 async fn read_stderr(
     mut stderr: tokio::process::ChildStderr,
     activity_stream: Option<OutputStream>,
+    observations: watch::Sender<RuntimeObservation>,
 ) -> Result<String> {
     let mut tail = Vec::new();
     let mut chunk = [0_u8; 8192];
@@ -425,9 +535,84 @@ async fn read_stderr(
         if let Some(stream) = activity_stream {
             stream_output(stream, &chunk[..read]);
         }
+        update_observation(
+            &observations,
+            None,
+            None,
+            None,
+            Some(format!("Codex stderr activity: {read} bytes\n")),
+        );
         append_bounded(&mut tail, &chunk[..read], MAX_STDERR_BYTES);
     }
     Ok(String::from_utf8_lossy(&tail).into_owned())
+}
+
+fn update_observation(
+    observations: &watch::Sender<RuntimeObservation>,
+    process_id: Option<u32>,
+    process_identity: Option<String>,
+    session_id: Option<String>,
+    activity: Option<String>,
+) {
+    observations.send_modify(|observation| {
+        if let Some(process_id) = process_id {
+            observation.process_id = Some(process_id);
+        }
+        if let Some(process_identity) = process_identity {
+            observation.process_identity = Some(process_identity);
+        }
+        if let Some(session_id) = session_id {
+            observation.session_id = Some(session_id);
+        }
+        if let Some(activity) = activity {
+            let observed = observation.activity.get_or_insert_with(String::new);
+            observed.push_str(&crate::inspection::sanitize_for_storage(&activity));
+            if observed.len() > MAX_OBSERVED_ACTIVITY_BYTES {
+                let mut start = observed.len() - MAX_OBSERVED_ACTIVITY_BYTES;
+                while !observed.is_char_boundary(start) {
+                    start += 1;
+                }
+                observed.drain(..start);
+            }
+        }
+        observation.sequence = observation.sequence.saturating_add(1);
+    });
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn process_identity(process_id: u32) -> Option<String> {
+    let process_id = i32::try_from(process_id).ok()?;
+    // SAFETY: proc_pidinfo initializes proc_bsdinfo when it returns the full
+    // structure size. The buffer points to valid writable storage.
+    let information = unsafe {
+        let mut information = std::mem::zeroed::<nix::libc::proc_bsdinfo>();
+        let expected = i32::try_from(std::mem::size_of_val(&information)).ok()?;
+        let written = nix::libc::proc_pidinfo(
+            process_id,
+            nix::libc::PROC_PIDTBSDINFO,
+            0,
+            (&raw mut information).cast(),
+            expected,
+        );
+        (written == expected).then_some(information)?
+    };
+    Some(format!(
+        "macos:{}:{}",
+        information.pbi_start_tvsec, information.pbi_start_tvusec
+    ))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn process_identity(process_id: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{process_id}/stat")).ok()?;
+    let fields = stat.get(stat.rfind(')')? + 1..)?.split_whitespace();
+    let start_ticks = fields.skip(19).next()?;
+    Some(format!("linux:{start_ticks}"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn process_identity(_process_id: u32) -> Option<String> {
+    None
 }
 
 async fn read_pipe_bounded<R>(mut reader: R, maximum: usize) -> Result<Vec<u8>>

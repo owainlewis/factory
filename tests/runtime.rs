@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use factory::runtime::{CodexRuntime, RuntimeCancelled, Termination};
+use factory::runtime::{CodexRuntime, RuntimeCancelled, Termination, observation_channel};
 use tokio_util::sync::CancellationToken;
 
 fn fake_codex(directory: &Path, execution: &str) -> PathBuf {
@@ -167,20 +167,101 @@ exit 0"#,
 #[tokio::test]
 async fn timeout_stops_the_run() {
     let temp = tempfile::tempdir().unwrap();
-    let executable = fake_codex(temp.path(), "cat >/dev/null\nsleep 30");
+    let descendant = temp.path().join("deadline-descendant.pid");
+    let executable = fake_codex(
+        temp.path(),
+        &format!(
+            "sleep 30 &\necho $! > \"{}\"\ncat >/dev/null\nwait",
+            descendant.display()
+        ),
+    );
     let runtime = CodexRuntime::new(executable);
 
     let result = runtime
         .run(
             "Time out.",
             temp.path(),
-            Duration::from_secs(2),
+            Duration::from_secs(5),
             CancellationToken::new(),
         )
         .await
         .unwrap();
 
     assert_eq!(result.termination, Termination::TimedOut);
+    let pid: i32 = fs::read_to_string(descendant)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_process_gone(pid).await;
+}
+
+#[tokio::test]
+async fn active_long_running_agent_is_allowed_to_finish_before_its_deadline() {
+    let temp = tempfile::tempdir().unwrap();
+    let executable = fake_codex(
+        temp.path(),
+        r#"cat >/dev/null
+echo '{"type":"thread.started","thread_id":"active-thread"}'
+echo '{"type":"item.completed","sequence":1}'
+sleep 1
+echo '{"type":"item.completed","sequence":2}'
+printf 'active work completed' > "$output"
+exit 0"#,
+    );
+
+    let result = CodexRuntime::new(executable)
+        .run(
+            "Keep working while active.",
+            temp.path(),
+            Duration::from_secs(10),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    assert!(result.succeeded());
+    assert_eq!(result.activity_lines, 3);
+    assert_eq!(result.final_response, "active work completed");
+}
+
+#[tokio::test]
+async fn persisted_activity_is_structural_and_never_contains_raw_secret_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let executable = fake_codex(
+        temp.path(),
+        r#"cat >/dev/null
+printf '{"type":"item.completed","text":"TOKEN='
+awk 'BEGIN { for (i = 0; i < 70000; i++) printf "s" }'
+echo '","url":"https://github.com/owainlewis/factory/pull/123"}'
+printf 'done' > "$output"
+exit 0"#,
+    );
+    let (observations, receiver) = observation_channel();
+
+    let result = CodexRuntime::new(executable)
+        .with_activity_streaming(false)
+        .run_with_session(
+            "Observe safely.",
+            temp.path(),
+            Duration::from_secs(5),
+            CancellationToken::new(),
+            None,
+            observations,
+        )
+        .await
+        .unwrap();
+    let observation = receiver.borrow().clone();
+
+    assert!(result.succeeded());
+    assert_eq!(
+        observation.pull_request.as_deref(),
+        Some("https://github.com/owainlewis/factory/pull/123")
+    );
+    let activity = observation.activity.unwrap();
+    assert_eq!(activity, "Codex event: item.completed\n");
+    assert!(!activity.contains("TOKEN"));
+    assert!(!activity.contains('s'));
 }
 
 #[tokio::test]

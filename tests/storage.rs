@@ -2,6 +2,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Barrier};
 use std::thread;
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+#[cfg(unix)]
+use std::process::Command;
+
 use factory::storage::{
     CancellationRequest, Ledger, MAX_ERROR_BYTES, MAX_RESULT_BYTES, RunOutcome, TaskIdentity,
     TaskState,
@@ -221,7 +226,226 @@ fn migrates_a_version_one_ledger_without_losing_tasks() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
+}
+
+#[test]
+fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
+    ledger
+        .register_daemon_owner("interrupted-owner", std::process::id())
+        .unwrap();
+    let task = ledger.enqueue(&ticket("recovery-revision")).unwrap().task;
+    let runtimes = HashMap::from([(
+        (
+            "owainlewis/factory".to_owned(),
+            "implement-ready-ticket".to_owned(),
+        ),
+        "codex".to_owned(),
+    )]);
+    let workdirs = HashMap::from([(
+        "owainlewis/factory".to_owned(),
+        "/worktrees/factory-3".to_owned(),
+    )]);
+    let interrupted = ledger
+        .claim_ticket_and_start_run_with_workdirs(
+            &["owainlewis/factory".to_owned()],
+            &runtimes,
+            "interrupted-owner",
+            std::process::id(),
+            &workdirs,
+        )
+        .unwrap()
+        .unwrap()
+        .run;
+    ledger
+        .observe_run(
+            interrupted.id,
+            None,
+            None,
+            Some("thread-recover"),
+            Some("https://github.com/owainlewis/factory/pull/99"),
+            Some("PR https://github.com/owainlewis/factory/pull/99 SECRET=hunter2"),
+        )
+        .unwrap();
+    ledger.remove_daemon_owner("interrupted-owner").unwrap();
+
+    let report = ledger.recover_orphaned_runs().unwrap();
+    assert_eq!(report.recovered_run_ids, [interrupted.id]);
+    assert!(report.exhausted_run_ids.is_empty());
+    assert!(
+        ledger
+            .recover_orphaned_runs()
+            .unwrap()
+            .recovered_run_ids
+            .is_empty()
+    );
+    let closed = ledger.run(interrupted.id).unwrap().unwrap();
+    assert_eq!(closed.outcome, "failed");
+    assert_eq!(closed.process_id, None);
+    assert_eq!(closed.session_id.as_deref(), Some("thread-recover"));
+    assert!(!closed.activity.unwrap().contains("hunter2"));
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Queued
+    );
+
+    ledger
+        .register_daemon_owner("recovery-owner", std::process::id())
+        .unwrap();
+    let first_recovery = ledger
+        .claim_ticket_and_start_run_with_workdirs(
+            &["owainlewis/factory".to_owned()],
+            &runtimes,
+            "recovery-owner",
+            std::process::id(),
+            &workdirs,
+        )
+        .unwrap()
+        .unwrap()
+        .run;
+    assert_eq!(first_recovery.recovery_of, Some(interrupted.id));
+    assert_eq!(first_recovery.recovery_attempt, 1);
+    assert_eq!(
+        first_recovery.working_directory.as_deref(),
+        Some("/worktrees/factory-3")
+    );
+    ledger
+        .observe_run(
+            first_recovery.id,
+            Some(std::process::id()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    ledger
+        .finish_run_and_task(
+            first_recovery.id,
+            RunOutcome::Failed,
+            None,
+            Some("first recovery failed"),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Queued
+    );
+
+    let final_recovery = ledger
+        .claim_ticket_and_start_run_with_workdirs(
+            &["owainlewis/factory".to_owned()],
+            &runtimes,
+            "recovery-owner",
+            std::process::id(),
+            &workdirs,
+        )
+        .unwrap()
+        .unwrap()
+        .run;
+    assert_eq!(final_recovery.recovery_of, Some(first_recovery.id));
+    assert_eq!(final_recovery.recovery_attempt, 2);
+    ledger
+        .observe_run(
+            final_recovery.id,
+            Some(std::process::id()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    ledger
+        .finish_run_and_task(
+            final_recovery.id,
+            RunOutcome::Failed,
+            None,
+            Some("second recovery failed TOKEN=secret"),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Failed
+    );
+    assert!(
+        ledger
+            .recover_orphaned_runs()
+            .unwrap()
+            .recovered_run_ids
+            .is_empty()
+    );
+    assert!(
+        !ledger
+            .run(final_recovery.id)
+            .unwrap()
+            .unwrap()
+            .error
+            .unwrap()
+            .contains("secret")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn orphan_recovery_does_not_signal_a_reused_process_group() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
+    ledger
+        .register_daemon_owner("gone-owner", std::process::id())
+        .unwrap();
+    ledger.enqueue(&ticket("pid-reuse-revision")).unwrap();
+    let runtimes = HashMap::from([(
+        (
+            "owainlewis/factory".to_owned(),
+            "implement-ready-ticket".to_owned(),
+        ),
+        "codex".to_owned(),
+    )]);
+    let run = ledger
+        .claim_ticket_and_start_run(
+            &["owainlewis/factory".to_owned()],
+            &runtimes,
+            "gone-owner",
+            std::process::id(),
+        )
+        .unwrap()
+        .unwrap()
+        .run;
+    let mut unrelated = Command::new("sleep")
+        .arg("30")
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let unrelated_pid = unrelated.id();
+    ledger
+        .observe_run(
+            run.id,
+            Some(unrelated_pid),
+            Some("different-process-start-identity"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    ledger.remove_daemon_owner("gone-owner").unwrap();
+
+    ledger.recover_orphaned_runs().unwrap();
+
+    assert!(matches!(
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(i32::try_from(unrelated_pid).unwrap()),
+            None,
+        ),
+        Ok(()) | Err(nix::errno::Errno::EPERM)
+    ));
+    unrelated.kill().unwrap();
+    unrelated.wait().unwrap();
 }
 
 #[test]

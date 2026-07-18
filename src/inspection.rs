@@ -49,6 +49,13 @@ pub struct RunView {
     pub cancellation_requested_at: Option<i64>,
     pub owner_pid: Option<u32>,
     pub owner_id: Option<String>,
+    pub process_id: Option<u32>,
+    pub process_identity: Option<String>,
+    pub pull_request: Option<String>,
+    pub last_activity_at: i64,
+    pub working_directory: Option<String>,
+    pub recovery_of: Option<i64>,
+    pub recovery_attempt: u32,
 }
 
 impl From<&Run> for RunView {
@@ -76,6 +83,13 @@ impl From<&Run> for RunView {
             cancellation_requested_at: run.cancellation_requested_at,
             owner_pid: run.owner_pid,
             owner_id: run.owner_id.clone(),
+            process_id: run.process_id,
+            process_identity: run.process_identity.clone(),
+            pull_request: run.pull_request.clone(),
+            last_activity_at: run.last_activity_at,
+            working_directory: run.working_directory.clone(),
+            recovery_of: run.recovery_of,
+            recovery_attempt: run.recovery_attempt,
         }
     }
 }
@@ -101,6 +115,7 @@ pub struct RunInspection {
     pub session_id: Option<String>,
     pub result: Option<BoundedText>,
     pub error: Option<BoundedText>,
+    pub activity: Option<BoundedText>,
 }
 
 impl RunInspection {
@@ -111,6 +126,7 @@ impl RunInspection {
             session_id: run.session_id.clone(),
             result: run.result.as_deref().map(BoundedText::new),
             error: run.error.as_deref().map(BoundedText::new),
+            activity: run.activity.as_deref().map(BoundedText::new),
         }
     }
 }
@@ -162,6 +178,34 @@ pub fn print_inspection(inspection: &RunInspection) {
     println!("Runtime: {}", safe_text(&inspection.run.runtime));
     println!("Outcome: {}", safe_text(&inspection.run.outcome));
     println!("Started: {}", inspection.run.started_at);
+    println!("Last activity: {}", inspection.run.last_activity_at);
+    println!(
+        "Process: {}",
+        inspection
+            .run
+            .process_id
+            .map_or_else(|| "-".to_owned(), |value| value.to_string())
+    );
+    println!(
+        "Process identity: {}",
+        safe_text(inspection.run.process_identity.as_deref().unwrap_or("-"))
+    );
+    println!(
+        "Working directory: {}",
+        safe_text(inspection.run.working_directory.as_deref().unwrap_or("-"))
+    );
+    println!(
+        "Pull request: {}",
+        safe_text(inspection.run.pull_request.as_deref().unwrap_or("-"))
+    );
+    println!(
+        "Recovery: {} (attempt {})",
+        inspection
+            .run
+            .recovery_of
+            .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+        inspection.run.recovery_attempt,
+    );
     println!(
         "Finished: {}",
         inspection
@@ -182,6 +226,7 @@ pub fn print_inspection(inspection: &RunInspection) {
     );
     print_detail("Result", inspection.result.as_ref());
     print_detail("Error", inspection.error.as_ref());
+    print_detail("Activity", inspection.activity.as_ref());
 }
 
 fn print_detail(label: &str, detail: Option<&BoundedText>) {
@@ -228,7 +273,7 @@ fn truncate(value: &str, maximum_bytes: usize) -> (String, bool) {
     (value[..end].to_owned(), true)
 }
 
-fn sanitize(value: &str) -> String {
+pub(crate) fn sanitize_for_storage(value: &str) -> String {
     static PRIVATE_KEY: OnceLock<Regex> = OnceLock::new();
     static ASSIGNMENT: OnceLock<Regex> = OnceLock::new();
     static BEARER: OnceLock<Regex> = OnceLock::new();
@@ -279,4 +324,8 @@ fn sanitize(value: &str) -> String {
         })
         .replace_all(&value, "[REDACTED]")
         .into_owned()
+}
+
+fn sanitize(value: &str) -> String {
+    sanitize_for_storage(value)
 }
