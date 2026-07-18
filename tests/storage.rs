@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Barrier};
 use std::thread;
 
 use factory::storage::{
-    Ledger, MAX_ERROR_BYTES, MAX_RESULT_BYTES, RunOutcome, TaskIdentity, TaskState,
+    CancellationRequest, Ledger, MAX_ERROR_BYTES, MAX_RESULT_BYTES, RunOutcome, TaskIdentity,
+    TaskState,
 };
 use rusqlite::Connection;
 
@@ -219,7 +221,126 @@ fn migrates_a_version_one_ledger_without_losing_tasks() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
+}
+
+#[test]
+fn cancellation_requests_are_durable_idempotent_and_force_cancelled_outcome() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
+    let task = ledger.enqueue(&ticket("cancel-revision")).unwrap().task;
+    let runtimes = HashMap::from([(
+        (
+            "owainlewis/factory".to_owned(),
+            "implement-ready-ticket".to_owned(),
+        ),
+        "codex".to_owned(),
+    )]);
+    ledger
+        .register_daemon_owner("storage-test-owner", std::process::id())
+        .unwrap();
+    let run = ledger
+        .claim_ticket_and_start_run(
+            &["owainlewis/factory".to_owned()],
+            &runtimes,
+            "storage-test-owner",
+            std::process::id(),
+        )
+        .unwrap()
+        .unwrap()
+        .run;
+
+    assert!(matches!(
+        ledger.request_run_cancellation(run.id).unwrap(),
+        CancellationRequest::Requested(_)
+    ));
+    drop(ledger);
+
+    let mut reopened = Ledger::open(&path).unwrap();
+    assert!(reopened.cancellation_requested(run.id).unwrap());
+    assert!(matches!(
+        reopened.request_run_cancellation(run.id).unwrap(),
+        CancellationRequest::AlreadyRequested(_)
+    ));
+    let completed = reopened
+        .finish_run_and_task(
+            run.id,
+            RunOutcome::Succeeded,
+            Some("runtime exited during cancellation"),
+            None,
+            Some("thread-cancel"),
+        )
+        .unwrap();
+
+    assert_eq!(completed.outcome, "cancelled");
+    assert_eq!(
+        reopened.task(task.id).unwrap().unwrap().state,
+        TaskState::Cancelled
+    );
+    assert!(matches!(
+        reopened.request_run_cancellation(run.id).unwrap(),
+        CancellationRequest::Terminal(_)
+    ));
+    assert!(matches!(
+        reopened.request_run_cancellation(99_999).unwrap(),
+        CancellationRequest::NotFound
+    ));
+}
+
+#[test]
+fn cancellation_rejects_a_running_row_without_a_live_daemon_owner() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    let task = ledger.enqueue(&ticket("unowned-revision")).unwrap().task;
+    ledger.claim_next().unwrap().unwrap();
+    let run = ledger.start_run(task.id, "codex").unwrap();
+
+    let status = ledger.request_run_cancellation(run.id).unwrap();
+
+    assert!(matches!(status, CancellationRequest::OwnedElsewhere(_)));
+    assert!(!ledger.cancellation_requested(run.id).unwrap());
+}
+
+#[test]
+fn cancellation_rejects_a_reused_live_pid_when_the_owner_lease_is_stale() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
+    ledger
+        .register_daemon_owner("stale-owner", std::process::id())
+        .unwrap();
+    ledger.enqueue(&ticket("stale-owner-revision")).unwrap();
+    let runtimes = HashMap::from([(
+        (
+            "owainlewis/factory".to_owned(),
+            "implement-ready-ticket".to_owned(),
+        ),
+        "codex".to_owned(),
+    )]);
+    let run = ledger
+        .claim_ticket_and_start_run(
+            &["owainlewis/factory".to_owned()],
+            &runtimes,
+            "stale-owner",
+            std::process::id(),
+        )
+        .unwrap()
+        .unwrap()
+        .run;
+    drop(ledger);
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute("UPDATE daemon_owners SET heartbeat_at = 0", [])
+        .unwrap();
+    drop(connection);
+    let mut ledger = Ledger::open(&path).unwrap();
+
+    assert!(matches!(
+        ledger.request_run_cancellation(run.id).unwrap(),
+        CancellationRequest::OwnedElsewhere(_)
+    ));
+    assert!(!ledger.cancellation_requested(run.id).unwrap());
 }
 
 #[test]

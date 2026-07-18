@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use tokio::task::JoinSet;
@@ -14,6 +16,27 @@ use crate::storage::{Ledger, RunOutcome, Task};
 use crate::workflow::{WorkflowCatalog, WorkflowEntry};
 
 const HUMAN_MERGE_POLICY: &str = "Factory-created software pull requests must remain for human merge. Never merge or enable automatic merge.";
+static OWNER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+struct DaemonOwner {
+    id: String,
+    pid: u32,
+}
+
+impl DaemonOwner {
+    fn new() -> Result<Self> {
+        let pid = std::process::id();
+        let started = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("system clock is before the Unix epoch")?
+            .as_nanos();
+        let sequence = OWNER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        Ok(Self {
+            id: format!("{pid}-{started}-{sequence}"),
+            pid,
+        })
+    }
+}
 
 #[derive(Clone)]
 struct RepositoryTarget {
@@ -76,6 +99,23 @@ impl FactoryDaemon {
             Err(error) => return Err(error),
         };
         let mut ledger = Ledger::open(&self.ledger_path)?;
+        let owner = DaemonOwner::new()?;
+        ledger.register_daemon_owner(&owner.id, owner.pid)?;
+        let owner_heartbeat_shutdown = CancellationToken::new();
+        let owner_heartbeat_task = {
+            let ledger_path = self.ledger_path.clone();
+            let owner_id = owner.id.clone();
+            let shutdown = owner_heartbeat_shutdown.clone();
+            let daemon_cancellation = cancellation.clone();
+            tokio::spawn(async move {
+                let result = maintain_owner_lease(&ledger_path, &owner_id, shutdown).await;
+                if let Err(error) = &result {
+                    eprintln!("Factory daemon owner heartbeat failed: {error:#}");
+                    daemon_cancellation.cancel();
+                }
+                result
+            })
+        };
         let mut active = HashMap::<String, usize>::new();
         let mut runs = JoinSet::<(String, Result<()>)>::new();
         let mut poll_interval = tokio::time::interval_at(Instant::now(), self.config.poll_every);
@@ -93,6 +133,7 @@ impl FactoryDaemon {
                     &self.ledger_path,
                     &self.codex,
                     &cancellation,
+                    &owner,
                 )?;
 
                 tokio::select! {
@@ -146,7 +187,14 @@ impl FactoryDaemon {
                 }
             }
         }
+        owner_heartbeat_shutdown.cancel();
+        let heartbeat_result = owner_heartbeat_task
+            .await
+            .context("daemon owner heartbeat task panicked")?;
+        let cleanup_result = ledger.remove_daemon_owner(&owner.id);
         loop_result?;
+        heartbeat_result?;
+        cleanup_result?;
         if let Some(error) = drain_error {
             return Err(error);
         }
@@ -200,6 +248,22 @@ impl FactoryDaemon {
     }
 }
 
+async fn maintain_owner_lease(
+    ledger_path: &Path,
+    owner_id: &str,
+    shutdown: CancellationToken,
+) -> Result<()> {
+    let mut ledger = Ledger::open(ledger_path)?;
+    let mut interval = tokio::time::interval(Duration::from_millis(250));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => return Ok(()),
+            _ = interval.tick() => ledger.heartbeat_daemon_owner(owner_id)?,
+        }
+    }
+}
+
 fn resolve_workflow_target(entry: &WorkflowEntry) -> Option<(String, WorkflowTarget)> {
     Some((
         entry.id.clone(),
@@ -222,6 +286,7 @@ fn dispatch_available(
     ledger_path: &Path,
     codex: &CodexRuntime,
     cancellation: &CancellationToken,
+    owner: &DaemonOwner,
 ) -> Result<()> {
     while runs.len() < global_limit && !cancellation.is_cancelled() {
         let available = targets
@@ -241,7 +306,12 @@ fn dispatch_available(
             })
             .collect::<HashMap<_, _>>();
         let mut worker_ledger = Ledger::open(ledger_path)?;
-        let Some(claimed) = ledger.claim_ticket_and_start_run(&available, &workflow_runtimes)?
+        let Some(claimed) = ledger.claim_ticket_and_start_run(
+            &available,
+            &workflow_runtimes,
+            &owner.id,
+            owner.pid,
+        )?
         else {
             break;
         };
@@ -321,10 +391,25 @@ async fn execute_task(
     prompt: String,
     cancellation: CancellationToken,
 ) -> Result<()> {
-    match codex
-        .run(&prompt, &repository.path, workflow.timeout, cancellation)
-        .await
-    {
+    let run_cancellation = cancellation.child_token();
+    let monitor_token = run_cancellation.clone();
+    let ledger_path = ledger.path().to_owned();
+    let cancellation_monitor = tokio::spawn(async move {
+        if let Err(error) = monitor_run_cancellation(&ledger_path, run_id, &monitor_token).await {
+            eprintln!("Factory cancellation monitor failed for run {run_id}: {error:#}");
+            monitor_token.cancel();
+        }
+    });
+    let execution = codex
+        .run(
+            &prompt,
+            &repository.path,
+            workflow.timeout,
+            run_cancellation,
+        )
+        .await;
+    cancellation_monitor.abort();
+    match execution {
         Ok(result) => record_execution(&mut ledger, run_id, &result),
         Err(error) => {
             ledger.finish_run_and_task(
@@ -335,6 +420,27 @@ async fn execute_task(
                 None,
             )?;
             Err(error)
+        }
+    }
+}
+
+async fn monitor_run_cancellation(
+    ledger_path: &Path,
+    run_id: i64,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let ledger = Ledger::open(ledger_path)?;
+    let mut interval = tokio::time::interval(Duration::from_millis(50));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = cancellation.cancelled() => return Ok(()),
+            _ = interval.tick() => {
+                if ledger.cancellation_requested(run_id)? {
+                    cancellation.cancel();
+                    return Ok(());
+                }
+            }
         }
     }
 }

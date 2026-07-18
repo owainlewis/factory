@@ -8,10 +8,11 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 const DATABASE_NAME: &str = "factory.sqlite3";
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION_ID_BYTES: usize = 1024;
+const DAEMON_OWNER_LEASE_MILLIS: i64 = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
@@ -248,6 +249,18 @@ pub struct Run {
     pub result: Option<String>,
     pub error: Option<String>,
     pub session_id: Option<String>,
+    pub cancellation_requested_at: Option<i64>,
+    pub owner_pid: Option<u32>,
+    pub owner_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancellationRequest {
+    Requested(Run),
+    AlreadyRequested(Run),
+    Terminal(Run),
+    OwnedElsewhere(Run),
+    NotFound,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -479,6 +492,8 @@ impl Ledger {
         &mut self,
         available_repositories: &[String],
         workflow_runtimes: &HashMap<(String, String), String>,
+        owner_id: &str,
+        owner_pid: u32,
     ) -> Result<Option<ClaimedRun>> {
         if available_repositories.is_empty() {
             return Ok(None);
@@ -530,15 +545,17 @@ impl Ledger {
         transaction
             .execute(
                 "INSERT INTO runs
-                 (task_id, workflow, repository, source_item, runtime, started_at, outcome)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running')",
+                 (task_id, workflow, repository, source_item, runtime, started_at, outcome, owner_pid, owner_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running', ?7, ?8)",
                 params![
                     task.id,
                     task.workflow,
                     task.repository,
                     task.source_item,
                     runtime,
-                    now
+                    now,
+                    owner_pid,
+                    owner_id
                 ],
             )
             .context("failed to create run in task claim transaction")?;
@@ -668,21 +685,30 @@ impl Ledger {
             bail!("finish_run_and_task requires a terminal outcome");
         }
         let result = result.map(|value| truncate_utf8(value, MAX_RESULT_BYTES));
-        let error = error.map(|value| truncate_utf8(value, MAX_ERROR_BYTES));
+        let mut error = error.map(|value| truncate_utf8(value, MAX_ERROR_BYTES));
         let session_id = session_id.map(|value| truncate_utf8(value, MAX_SESSION_ID_BYTES));
         let transaction = self
             .connection
             .transaction()
             .context("failed to begin run completion transaction")?;
-        let task_id = transaction
+        let (task_id, cancellation_requested) = transaction
             .query_row(
-                "SELECT task_id FROM runs WHERE id = ?1 AND outcome = 'running'",
+                "SELECT task_id, cancellation_requested_at IS NOT NULL
+                 FROM runs WHERE id = ?1 AND outcome = 'running'",
                 [id],
-                |row| row.get::<_, i64>(0),
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, bool>(1)?)),
             )
             .optional()
             .context("failed to resolve active run task")?
             .with_context(|| format!("run {id} is missing or already terminal"))?;
+        let outcome = if cancellation_requested {
+            if error.is_none() {
+                error = Some("Cancellation requested by local operator".to_owned());
+            }
+            RunOutcome::Cancelled
+        } else {
+            outcome
+        };
         let changed = transaction
             .execute(
                 "UPDATE runs SET finished_at = ?1, outcome = ?2, result = ?3, error = ?4,
@@ -735,6 +761,137 @@ impl Ledger {
             .context("failed to read run history")?;
         Ok(runs)
     }
+
+    pub fn runs(&self, workflow: Option<&str>) -> Result<Vec<Run>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT * FROM runs
+                 WHERE (?1 IS NULL OR workflow = ?1)
+                 ORDER BY id",
+            )
+            .context("failed to prepare runs query")?;
+        statement
+            .query_map([workflow], row_to_run)
+            .context("failed to query runs")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read runs")
+    }
+
+    pub fn run(&self, id: i64) -> Result<Option<Run>> {
+        query_run(&self.connection, id)
+    }
+
+    pub fn request_run_cancellation(&mut self, id: i64) -> Result<CancellationRequest> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin cancellation request transaction")?;
+        let Some(run) = query_run(&transaction, id)? else {
+            transaction
+                .commit()
+                .context("failed to finish missing cancellation request")?;
+            return Ok(CancellationRequest::NotFound);
+        };
+        if run.outcome != "running" {
+            transaction
+                .commit()
+                .context("failed to finish terminal cancellation request")?;
+            return Ok(CancellationRequest::Terminal(run));
+        }
+        let owner_is_live = match (&run.owner_id, run.owner_pid) {
+            (Some(owner_id), Some(owner_pid)) => {
+                let lease_cutoff = now_millis()?.saturating_sub(DAEMON_OWNER_LEASE_MILLIS);
+                transaction
+                    .query_row(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM daemon_owners
+                            WHERE owner_id = ?1 AND pid = ?2 AND heartbeat_at >= ?3
+                        )",
+                        params![owner_id, owner_pid, lease_cutoff],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .context("failed to validate run owner lease")?
+                    && process_is_alive(owner_pid)
+            }
+            _ => false,
+        };
+        if !owner_is_live {
+            transaction
+                .commit()
+                .context("failed to finish unowned cancellation request")?;
+            return Ok(CancellationRequest::OwnedElsewhere(run));
+        }
+        if run.cancellation_requested_at.is_some() {
+            transaction
+                .commit()
+                .context("failed to finish repeated cancellation request")?;
+            return Ok(CancellationRequest::AlreadyRequested(run));
+        }
+        transaction
+            .execute(
+                "UPDATE runs SET cancellation_requested_at = ?1
+                 WHERE id = ?2 AND outcome = 'running' AND cancellation_requested_at IS NULL",
+                params![now_millis()?, id],
+            )
+            .context("failed to persist cancellation request")?;
+        let run = query_run(&transaction, id)?.context("cancelled run disappeared")?;
+        transaction
+            .commit()
+            .context("failed to commit cancellation request")?;
+        Ok(CancellationRequest::Requested(run))
+    }
+
+    pub fn cancellation_requested(&self, id: i64) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT cancellation_requested_at IS NOT NULL
+                 FROM runs WHERE id = ?1 AND outcome = 'running'",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed to query cancellation request")
+            .map(|requested| requested.unwrap_or(false))
+    }
+
+    pub fn register_daemon_owner(&mut self, owner_id: &str, pid: u32) -> Result<()> {
+        if owner_id.trim().is_empty() {
+            bail!("daemon owner ID must not be empty");
+        }
+        self.connection
+            .execute(
+                "INSERT INTO daemon_owners(owner_id, pid, heartbeat_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(owner_id) DO UPDATE SET
+                   pid = excluded.pid,
+                   heartbeat_at = excluded.heartbeat_at",
+                params![owner_id, pid, now_millis()?],
+            )
+            .context("failed to register daemon owner")?;
+        Ok(())
+    }
+
+    pub fn heartbeat_daemon_owner(&mut self, owner_id: &str) -> Result<()> {
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE daemon_owners SET heartbeat_at = ?1 WHERE owner_id = ?2",
+                params![now_millis()?, owner_id],
+            )
+            .context("failed to update daemon owner heartbeat")?;
+        if changed != 1 {
+            bail!("daemon owner {owner_id:?} is not registered");
+        }
+        Ok(())
+    }
+
+    pub fn remove_daemon_owner(&mut self, owner_id: &str) -> Result<()> {
+        self.connection
+            .execute("DELETE FROM daemon_owners WHERE owner_id = ?1", [owner_id])
+            .context("failed to remove daemon owner")?;
+        Ok(())
+    }
 }
 
 fn migrate(connection: &Connection) -> Result<()> {
@@ -749,6 +906,9 @@ fn migrate(connection: &Connection) -> Result<()> {
     }
     if version < 2 {
         migrate_v2(connection)?;
+    }
+    if version < 3 {
+        migrate_v3(connection)?;
     }
     Ok(())
 }
@@ -823,6 +983,27 @@ fn migrate_v2(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v3(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE runs ADD COLUMN cancellation_requested_at INTEGER;
+             ALTER TABLE runs ADD COLUMN owner_pid INTEGER;
+             ALTER TABLE runs ADD COLUMN owner_id TEXT;
+             CREATE TABLE daemon_owners (
+                 owner_id TEXT PRIMARY KEY,
+                 pid INTEGER NOT NULL,
+                 heartbeat_at INTEGER NOT NULL
+             );
+             INSERT INTO schema_migrations(version, applied_at)
+                 VALUES (3, unixepoch('subsec') * 1000);
+             PRAGMA user_version = 3;
+             COMMIT;",
+        )
+        .context("failed to migrate SQLite ledger to version 3")?;
+    Ok(())
+}
+
 fn query_task(connection: &Connection, id: i64) -> Result<Option<Task>> {
     connection
         .query_row("SELECT * FROM tasks WHERE id = ?1", [id], row_to_task)
@@ -885,7 +1066,26 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         result: row.get("result")?,
         error: row.get("error")?,
         session_id: row.get("session_id")?,
+        cancellation_requested_at: row.get("cancellation_requested_at")?,
+        owner_pid: row.get("owner_pid")?,
+        owner_id: row.get("owner_id")?,
     })
+}
+
+#[cfg(unix)]
+fn process_is_alive(process_id: u32) -> bool {
+    let Ok(process_id) = i32::try_from(process_id) else {
+        return false;
+    };
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(process_id), None) {
+        Ok(()) | Err(nix::errno::Errno::EPERM) => true,
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn process_is_alive(_process_id: u32) -> bool {
+    false
 }
 
 fn now_millis() -> Result<i64> {
