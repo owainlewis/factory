@@ -547,6 +547,55 @@ fn cancellation_rejects_a_reused_live_pid_when_the_owner_lease_is_stale() {
 }
 
 #[test]
+fn orphan_recovery_completes_a_pending_cancellation_without_retrying() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
+    let task = ledger
+        .enqueue(&ticket("orphan-cancel-revision"))
+        .unwrap()
+        .task;
+    let runtimes = HashMap::from([(
+        (
+            "owainlewis/factory".to_owned(),
+            "implement-ready-ticket".to_owned(),
+        ),
+        "codex".to_owned(),
+    )]);
+    ledger
+        .register_daemon_owner("cancelled-owner", std::process::id())
+        .unwrap();
+    let run = ledger
+        .claim_ticket_and_start_run(
+            &["owainlewis/factory".to_owned()],
+            &runtimes,
+            "cancelled-owner",
+            std::process::id(),
+        )
+        .unwrap()
+        .unwrap()
+        .run;
+    assert!(matches!(
+        ledger.request_run_cancellation(run.id).unwrap(),
+        CancellationRequest::Requested(_)
+    ));
+    ledger.remove_daemon_owner("cancelled-owner").unwrap();
+
+    let report = ledger.recover_orphaned_runs().unwrap();
+
+    assert!(report.recovered_run_ids.is_empty());
+    assert!(report.exhausted_run_ids.is_empty());
+    assert_eq!(ledger.run(run.id).unwrap().unwrap().outcome, "cancelled");
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Cancelled
+    );
+    let second = ledger.recover_orphaned_runs().unwrap();
+    assert!(second.recovered_run_ids.is_empty());
+    assert!(second.exhausted_run_ids.is_empty());
+}
+
+#[test]
 fn concurrent_completion_and_cancellation_always_leave_a_terminal_run() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("ledger.db");

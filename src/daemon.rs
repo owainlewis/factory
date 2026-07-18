@@ -454,13 +454,14 @@ async fn execute_task(
     );
     let execution = if let Some(session_id) = recovery_session.as_deref() {
         let resumed = codex
-            .run_with_session(
+            .run_with_session_supervised(
                 &prompt,
                 &repository.path,
                 workflow.timeout,
                 run_cancellation.clone(),
                 Some(session_id),
                 observations.clone(),
+                |observation| persist_run_anchor(&ledger_path, run_id, observation),
             )
             .await;
         let needs_fallback = match &resumed {
@@ -496,13 +497,14 @@ async fn execute_task(
                 );
                 let remaining = execution_deadline.saturating_duration_since(Instant::now());
                 codex
-                    .run_with_session(
+                    .run_with_session_supervised(
                         &fallback_prompt,
                         &repository.path,
                         remaining,
                         run_cancellation.clone(),
                         None,
                         observations.clone(),
+                        |observation| persist_run_anchor(&ledger_path, run_id, observation),
                     )
                     .await
             }
@@ -511,13 +513,14 @@ async fn execute_task(
         }
     } else {
         codex
-            .run_with_session(
+            .run_with_session_supervised(
                 &prompt,
                 &repository.path,
                 workflow.timeout,
                 run_cancellation.clone(),
                 None,
                 observations.clone(),
+                |observation| persist_run_anchor(&ledger_path, run_id, observation),
             )
             .await
     };
@@ -547,6 +550,22 @@ async fn execute_task(
             Err(error)
         }
     }
+}
+
+fn persist_run_anchor(
+    ledger_path: &Path,
+    run_id: i64,
+    observation: &RuntimeObservation,
+) -> Result<()> {
+    let mut ledger = Ledger::open(ledger_path)?;
+    ledger.observe_run(
+        run_id,
+        observation.process_id,
+        observation.process_identity.as_deref(),
+        None,
+        None,
+        None,
+    )
 }
 
 fn spawn_run_monitor(

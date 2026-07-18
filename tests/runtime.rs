@@ -3,6 +3,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use factory::runtime::{CodexRuntime, RuntimeCancelled, Termination, observation_channel};
@@ -413,6 +414,72 @@ async fn aborting_a_run_reaps_its_process_group_anchor() {
     let _ = run.await;
     assert_process_gone(i32::try_from(anchor_pid).unwrap()).await;
     assert_process_gone(i32::try_from(codex_pid).unwrap()).await;
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn supervisor_persists_the_anchor_before_codex_spawn() {
+    let temp = tempfile::tempdir().unwrap();
+    let persisted = Arc::new(Mutex::new(None));
+    let persisted_for_callback = Arc::clone(&persisted);
+    let (observations, _receiver) = observation_channel();
+
+    let error = CodexRuntime::new(temp.path().join("missing-codex"))
+        .run_with_session_supervised(
+            "Persist first.",
+            temp.path(),
+            Duration::from_secs(5),
+            CancellationToken::new(),
+            None,
+            observations,
+            move |observation| {
+                *persisted_for_callback.lock().unwrap() = Some(observation.clone());
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(format!("{error:#}").contains("failed to start Codex CLI"));
+    let observation = persisted.lock().unwrap().clone().unwrap();
+    let anchor_pid = observation.process_id.unwrap();
+    assert!(observation.process_identity.is_some());
+    assert_process_gone(i32::try_from(anchor_pid).unwrap()).await;
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn failed_anchor_persistence_prevents_spawn_and_reaps_the_group() {
+    let temp = tempfile::tempdir().unwrap();
+    let started_path = temp.path().join("codex-started");
+    let executable = fake_codex(
+        temp.path(),
+        &format!("touch \"{}\"", started_path.display()),
+    );
+    let captured_anchor = Arc::new(Mutex::new(None));
+    let captured_for_callback = Arc::clone(&captured_anchor);
+    let (observations, _receiver) = observation_channel();
+
+    let error = CodexRuntime::new(executable)
+        .run_with_session_supervised(
+            "Fail persistence.",
+            temp.path(),
+            Duration::from_secs(5),
+            CancellationToken::new(),
+            None,
+            observations,
+            move |observation| {
+                *captured_for_callback.lock().unwrap() = observation.process_id;
+                anyhow::bail!("simulated durable persistence failure")
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(format!("{error:#}").contains("simulated durable persistence failure"));
+    assert!(!started_path.exists());
+    let anchor_pid = captured_anchor.lock().unwrap().unwrap();
+    assert_process_gone(i32::try_from(anchor_pid).unwrap()).await;
 }
 
 #[tokio::test]

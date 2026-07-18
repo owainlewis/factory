@@ -65,6 +65,8 @@ pub struct RuntimeObservation {
     pub sequence: u64,
 }
 
+type BeforeCodexSpawn<'a> = Box<dyn FnOnce(&RuntimeObservation) -> Result<()> + Send + 'a>;
+
 pub fn observation_channel() -> (
     watch::Sender<RuntimeObservation>,
     watch::Receiver<RuntimeObservation>,
@@ -282,6 +284,55 @@ impl CodexRuntime {
         resume_session: Option<&str>,
         observations: watch::Sender<RuntimeObservation>,
     ) -> Result<ExecutionResult> {
+        self.run_with_session_inner(
+            prompt,
+            working_directory,
+            run_timeout,
+            cancellation,
+            resume_session,
+            observations,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_with_session_supervised<F>(
+        &self,
+        prompt: &str,
+        working_directory: &Path,
+        run_timeout: Duration,
+        cancellation: CancellationToken,
+        resume_session: Option<&str>,
+        observations: watch::Sender<RuntimeObservation>,
+        before_spawn: F,
+    ) -> Result<ExecutionResult>
+    where
+        F: FnOnce(&RuntimeObservation) -> Result<()> + Send,
+    {
+        self.run_with_session_inner(
+            prompt,
+            working_directory,
+            run_timeout,
+            cancellation,
+            resume_session,
+            observations,
+            Some(Box::new(before_spawn)),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_with_session_inner(
+        &self,
+        prompt: &str,
+        working_directory: &Path,
+        run_timeout: Duration,
+        cancellation: CancellationToken,
+        resume_session: Option<&str>,
+        observations: watch::Sender<RuntimeObservation>,
+        before_spawn: Option<BeforeCodexSpawn<'_>>,
+    ) -> Result<ExecutionResult> {
         let output_path = tempfile::NamedTempFile::new()
             .context("failed to create Codex final-response file")?
             .into_temp_path();
@@ -312,6 +363,16 @@ impl CodexRuntime {
             .kill_on_drop(true);
         let mut process_group = RunProcessGroup::start().await?;
         process_group.configure(&mut command)?;
+        let anchor_observation = RuntimeObservation {
+            process_id: process_group.process_id,
+            process_identity: process_group.process_identity.clone(),
+            sequence: 1,
+            ..RuntimeObservation::default()
+        };
+        if let Some(before_spawn) = before_spawn {
+            before_spawn(&anchor_observation)?;
+        }
+        observations.send_replace(anchor_observation);
 
         let started = Instant::now();
         let deadline = TokioInstant::now() + run_timeout;

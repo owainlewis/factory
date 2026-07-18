@@ -1071,17 +1071,34 @@ impl Ledger {
                 })?;
             }
             let now = now_millis()?;
+            let cancellation_requested = run.cancellation_requested_at.is_some();
+            let outcome = if cancellation_requested {
+                "cancelled"
+            } else {
+                "failed"
+            };
+            let error = if cancellation_requested {
+                "Factory completed a durable cancellation after its owning daemon stopped"
+            } else {
+                "Factory detected an interrupted run without a live owned process"
+            };
             transaction
                 .execute(
-                    "UPDATE runs SET outcome = 'failed', finished_at = ?1,
-                 error = ?2 WHERE id = ?3 AND outcome = 'running'",
-                    params![
-                        now,
-                        "Factory detected an interrupted run without a live owned process",
-                        run.id
-                    ],
+                    "UPDATE runs SET outcome = ?1, finished_at = ?2,
+                 error = ?3 WHERE id = ?4 AND outcome = 'running'",
+                    params![outcome, now, error, run.id],
                 )
                 .context("failed to close orphaned run")?;
+            if cancellation_requested {
+                transaction
+                    .execute(
+                        "UPDATE tasks SET state = 'cancelled', updated_at = ?1
+                     WHERE id = ?2 AND state = 'running'",
+                        params![now, run.task_id],
+                    )
+                    .context("failed to complete orphaned run cancellation")?;
+                continue;
+            }
             if run.recovery_attempt < MAX_RECOVERY_ATTEMPTS {
                 transaction.execute(
                     "UPDATE tasks SET state = 'queued', updated_at = ?1, recovery_source_run_id = ?2
