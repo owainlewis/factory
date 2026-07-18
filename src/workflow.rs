@@ -521,11 +521,15 @@ fn declares_only_schedule(frontmatter: &str) -> bool {
 fn line_declares_key(line: &str, expected: &str) -> bool {
     let bytes = line.as_bytes();
     let mut index = 0;
+    let mut brace_depth = 0_u32;
+    let mut bracket_depth = 0_u32;
+    let mut expecting_value = false;
     while index < bytes.len() {
         if bytes[index] == b'#' {
             return false;
         }
         if matches!(bytes[index], b'\'' | b'"') {
+            let quoted_key_start = index;
             let quote = bytes[index];
             let start = index + 1;
             index = start;
@@ -542,7 +546,12 @@ fn line_declares_key(line: &str, expected: &str) -> bool {
                 escaped = false;
                 index += 1;
             }
-            if index < bytes.len()
+            if expecting_value {
+                expecting_value = false;
+            } else if index < bytes.len()
+                && brace_depth == 0
+                && bracket_depth == 0
+                && previous_non_whitespace(bytes, quoted_key_start) != Some(b'.')
                 && &line[start..index] == expected
                 && bytes[index + 1..]
                     .iter()
@@ -563,7 +572,12 @@ fn line_declares_key(line: &str, expected: &str) -> bool {
             {
                 index += 1;
             }
-            if &line[start..index] == expected
+            if expecting_value {
+                expecting_value = false;
+            } else if brace_depth == 0
+                && bracket_depth == 0
+                && previous_non_whitespace(bytes, start) != Some(b'.')
+                && &line[start..index] == expected
                 && bytes[index..]
                     .iter()
                     .copied()
@@ -574,9 +588,31 @@ fn line_declares_key(line: &str, expected: &str) -> bool {
             }
             continue;
         }
+        match bytes[index] {
+            b'=' if brace_depth == 0 && bracket_depth == 0 => expecting_value = true,
+            b'{' => {
+                brace_depth = brace_depth.saturating_add(1);
+                expecting_value = false;
+            }
+            b'}' => brace_depth = brace_depth.saturating_sub(1),
+            b'[' => {
+                bracket_depth = bracket_depth.saturating_add(1);
+                expecting_value = false;
+            }
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            _ => {}
+        }
         index += 1;
     }
     false
+}
+
+fn previous_non_whitespace(bytes: &[u8], before: usize) -> Option<u8> {
+    bytes[..before]
+        .iter()
+        .rev()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
 }
 
 fn contains_multiline_closing(value: &str, delimiter: &str) -> bool {
@@ -883,6 +919,23 @@ schedule = "not-a-key"#
         ));
         assert!(declares_only_schedule(
             "schedule = \"0 9 * * 1\"\ndescription = \"label = factory:ready\""
+        ));
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\nmetadata = { label = \"triage\" }\nbroken = ???"
+        ));
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\nmetadata.label = \"triage\"\nbroken = ???"
+        ));
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\n\"metadata\".\"label\" = \"triage\"\nbroken = ???"
+        ));
+        assert!(!declares_only_schedule("description = \"schedule\" = ???"));
+        assert!(!declares_only_schedule("description = schedule = ???"));
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\ndescription = \"label\" = ???"
+        ));
+        assert!(declares_only_schedule(
+            "schedule = \"0 9 * * 1\"\ndescription = label = ???"
         ));
         assert!(missing_frontmatter_declares_only_schedule(
             "+++\nschedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\nImplement maintenance.\n"
