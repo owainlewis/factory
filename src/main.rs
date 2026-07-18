@@ -326,17 +326,14 @@ async fn run_poller(
     let mut ledger = Ledger::open_in(&data_directory)?;
     let github = GitHubClient::default();
     if once {
-        for entry in catalog
-            .entries
-            .iter()
-            .filter(|entry| !entry.errors.is_empty())
-        {
+        for entry in catalog.invalid_scheduled_entries() {
             eprintln!(
-                "Factory skipped invalid workflow {}: {}",
+                "Factory skipped invalid scheduled workflow {}: {}",
                 entry.path.display(),
                 entry.errors.join("; ")
             );
         }
+        catalog.validate_ticket_workflows()?;
         let report = github.poll_once(&config, &catalog, &mut ledger).await?;
         print_poll_report(&report);
         return Ok(u8::from(report.failures() > 0));

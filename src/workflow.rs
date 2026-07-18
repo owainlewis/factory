@@ -72,6 +72,28 @@ impl WorkflowCatalog {
             .filter(|entry| !entry.errors.is_empty())
             .count()
     }
+
+    pub fn invalid_scheduled_entries(&self) -> impl Iterator<Item = &WorkflowEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| !entry.errors.is_empty() && entry.is_schedule_workflow)
+    }
+
+    pub fn validate_ticket_workflows(&self) -> Result<()> {
+        let errors = self
+            .entries
+            .iter()
+            .filter(|entry| !entry.errors.is_empty() && !entry.is_schedule_workflow)
+            .map(|entry| format!("{}: {}", entry.path.display(), entry.errors.join("; ")))
+            .collect::<Vec<_>>();
+        if !errors.is_empty() {
+            anyhow::bail!(
+                "Factory cannot start with invalid ticket workflows:\n{}",
+                errors.join("\n")
+            );
+        }
+        Ok(())
+    }
 }
 
 impl fmt::Display for WorkflowCatalog {

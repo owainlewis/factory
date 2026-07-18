@@ -181,6 +181,80 @@ fn factory_run_once_persists_a_task_without_launching_codex() {
     );
 }
 
+#[test]
+fn factory_run_once_fails_for_invalid_ticket_workflow() {
+    let fixture = Fixture::new(1);
+    fs::write(
+        fixture.repositories[0].join(".factory/workflows/implement-ready-ticket.md"),
+        "+++\nlabel = \"factory:ready\"\ntimeout = \"0s\"\n+++\n\nINVALID TICKET WORKFLOW\n",
+    )
+    .unwrap();
+    let data = fixture._temp.path().join("data");
+    let path = format!(
+        "{}:{}",
+        fixture._temp.path().display(),
+        std::env::var("PATH").unwrap()
+    );
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .args([
+            "run",
+            "--once",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            data.to_str().unwrap(),
+        ])
+        .env("PATH", path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "Factory cannot start with invalid ticket workflows",
+        ))
+        .stderr(predicates::str::contains(
+            "timeout must be greater than zero",
+        ));
+}
+
+#[test]
+fn factory_run_once_skips_invalid_schedule_and_polls_tickets() {
+    let fixture = Fixture::new(1);
+    fs::write(
+        fixture.repositories[0].join(".factory/workflows/invalid-schedule.md"),
+        "+++\nschedule = \"eventually\"\ntimezone = \"UTC\"\n+++\n\nINVALID SCHEDULE\n",
+    )
+    .unwrap();
+    write_issues(
+        &fixture.repositories[0],
+        &[vec![issue(10, "revision-1", &["factory:ready"])]],
+    );
+    let data = fixture._temp.path().join("data");
+    let path = format!(
+        "{}:{}",
+        fixture._temp.path().display(),
+        std::env::var("PATH").unwrap()
+    );
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .args([
+            "run",
+            "--once",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            data.to_str().unwrap(),
+        ])
+        .env("PATH", path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("tasks_created=1"))
+        .stderr(predicates::str::contains(
+            "Factory skipped invalid scheduled workflow",
+        ));
+}
+
 #[tokio::test]
 async fn no_matches_creates_no_tasks() {
     let fixture = Fixture::new(1);
