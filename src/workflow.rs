@@ -612,6 +612,9 @@ fn open_workflow_file(path: &Path) -> std::io::Result<File> {
 fn mark_duplicate_ids(entries: &mut [WorkflowEntry]) {
     let mut groups: HashMap<(PathBuf, String), Vec<usize>> = HashMap::new();
     for (index, entry) in entries.iter().enumerate() {
+        if entry.is_schedule_workflow && !entry.errors.is_empty() {
+            continue;
+        }
         groups
             .entry((entry.repository.clone(), entry.id.clone()))
             .or_default()
@@ -691,6 +694,40 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("duplicate workflow ID"))
         }));
+    }
+
+    #[test]
+    fn invalid_schedule_does_not_poison_ticket_with_the_same_id() {
+        let repository = PathBuf::from("/repo");
+        let mut skipped_schedule = invalid_entry(
+            &repository,
+            Path::new("SAME.md"),
+            "same",
+            "invalid schedule",
+        );
+        skipped_schedule.is_schedule_workflow = true;
+        let ticket = WorkflowEntry {
+            repository: repository.clone(),
+            path: PathBuf::from("same.md"),
+            id: "same".to_owned(),
+            trigger: Some(Trigger::Label("factory:ready".to_owned())),
+            runtime: Some("codex".to_owned()),
+            timeout: Some(Duration::from_secs(60)),
+            prompt: Some("implement".to_owned()),
+            errors: Vec::new(),
+            is_schedule_workflow: false,
+        };
+        let mut entries = vec![skipped_schedule, ticket];
+
+        mark_duplicate_ids(&mut entries);
+
+        assert!(entries[1].errors.is_empty());
+        assert!(
+            !entries[0]
+                .errors
+                .iter()
+                .any(|error| error.contains("duplicate workflow ID"))
+        );
     }
 
     #[cfg(unix)]
