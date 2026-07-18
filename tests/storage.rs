@@ -113,6 +113,61 @@ fn ticket_and_schedule_identities_deduplicate_exact_triggers() {
 }
 
 #[test]
+fn previous_schedule_success_excludes_ticket_runs_for_the_same_workflow() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
+    let scheduled = ledger
+        .enqueue(
+            &TaskIdentity::scheduled(
+                "owainlewis/factory",
+                "shared-workflow",
+                "2026-07-20T09:00:00Z",
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .task;
+    ledger.claim_next().unwrap();
+    let scheduled_run = ledger.start_run(scheduled.id, "codex").unwrap();
+    ledger
+        .finish_run_and_task(scheduled_run.id, RunOutcome::Succeeded, None, None, None)
+        .unwrap();
+    let ticket = ledger
+        .enqueue(
+            &TaskIdentity::ticket("owainlewis/factory", "shared-workflow", "7", "revision-1")
+                .unwrap(),
+        )
+        .unwrap()
+        .task;
+    ledger.claim_next().unwrap();
+    let ticket_run = ledger.start_run(ticket.id, "codex").unwrap();
+    ledger
+        .finish_run_and_task(ticket_run.id, RunOutcome::Succeeded, None, None, None)
+        .unwrap();
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE runs SET finished_at = 100 WHERE id = ?1",
+            [scheduled_run.id],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE runs SET finished_at = 200 WHERE id = ?1",
+            [ticket_run.id],
+        )
+        .unwrap();
+
+    assert_eq!(
+        ledger
+            .latest_successful_scheduled_run_finished_at("owainlewis/factory", "shared-workflow",)
+            .unwrap(),
+        Some(100)
+    );
+}
+
+#[test]
 fn schedule_cursor_atomically_enqueues_advances_and_skips_downtime() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("ledger.db");

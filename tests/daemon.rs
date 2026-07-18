@@ -14,6 +14,7 @@ use factory::github::GitHubClient;
 use factory::runtime::CodexRuntime;
 use factory::storage::{Ledger, TaskIdentity, TaskState};
 use factory::workflow::WorkflowCatalog;
+use rusqlite::Connection;
 use tokio_util::sync::CancellationToken;
 
 struct Fixture {
@@ -92,6 +93,11 @@ if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
 fi
 if [ "$1" = "repo" ]; then cat .gh-name; exit 0; fi
 if [ "$1" = "api" ]; then
+  if ! mkdir "$0.api-active" 2>/dev/null; then touch "$0.api-concurrent"; fi
+  touch "$0.api-started"
+  if [ -f "$0.api-block" ]; then
+    while [ ! -f "$0.api-release" ]; do sleep 0.02; done
+  fi
   endpoint="$4"
   case "$endpoint" in
     */comments*)
@@ -100,6 +106,7 @@ if [ "$1" = "api" ]; then
       ;;
     *) cat .issues.json ;;
   esac
+  rmdir "$0.api-active" 2>/dev/null || true
   exit 0
 fi
 exit 64
@@ -1381,6 +1388,50 @@ async fn later_schedule_prompt_includes_previous_successful_run() {
     let prompt = fs::read_to_string(fixture.started_slots()[1].join("prompt")).unwrap();
     assert!(prompt.contains("Previous successful run: 20"));
     assert!(!prompt.contains("Previous successful run: none"));
+}
+
+#[tokio::test]
+async fn blocked_github_poll_does_not_delay_schedule_ticks_or_start_another_poll() {
+    let mut fixture = Fixture::new(&[vec![]], 1, 1);
+    fixture.add_scheduled_workflow();
+    fixture.open_gate();
+    let api_block = PathBuf::from(format!("{}.api-block", fixture.gh.display()));
+    let api_started = PathBuf::from(format!("{}.api-started", fixture.gh.display()));
+    let api_release = PathBuf::from(format!("{}.api-release", fixture.gh.display()));
+    let api_concurrent = PathBuf::from(format!("{}.api-concurrent", fixture.gh.display()));
+    fs::write(&api_block, "block").unwrap();
+    let cancellation = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let running = {
+        let daemon = Arc::clone(&daemon);
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move { daemon.run(cancellation).await })
+    };
+    wait_for(|| api_started.exists()).await;
+    Connection::open(&fixture.ledger_path)
+        .unwrap()
+        .execute(
+            "UPDATE schedule_cursors
+             SET next_due_at = (CAST(strftime('%s', 'now') AS INTEGER) * 1000) - 100",
+            [],
+        )
+        .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while fixture.started_slots().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("scheduled task did not start while GitHub polling was blocked");
+    assert!(api_block.exists());
+    assert!(!api_release.exists());
+    assert!(!api_concurrent.exists());
+
+    fs::write(api_release, "release").unwrap();
+    cancellation.cancel();
+    running.await.unwrap().unwrap();
+    assert_eq!(fixture.started_slots().len(), 1);
 }
 
 #[tokio::test]

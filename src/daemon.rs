@@ -25,6 +25,7 @@ use crate::workflow::{Trigger, WorkflowCatalog, WorkflowEntry};
 
 const HUMAN_MERGE_POLICY: &str = "Factory-created software pull requests must remain for human merge. Never merge or enable automatic merge.";
 const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const SCHEDULE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 static OWNER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 struct DaemonOwner {
@@ -139,8 +140,30 @@ impl FactoryDaemon {
         };
         let mut active = HashMap::<String, usize>::new();
         let mut runs = JoinSet::<(String, Result<()>)>::new();
-        let mut poll_interval = tokio::time::interval_at(Instant::now(), self.config.poll_every);
-        poll_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut github_polls = JoinSet::<Result<()>>::new();
+        {
+            let config = self.config.clone();
+            let catalog = self.catalog.clone();
+            let ledger_path = self.ledger_path.clone();
+            let github = self.github.clone();
+            let poll_cancellation = cancellation.clone();
+            github_polls.spawn(async move {
+                let mut poll_ledger = Ledger::open(&ledger_path)?;
+                github
+                    .poll_until_cancelled(
+                        &config,
+                        &catalog,
+                        &mut poll_ledger,
+                        poll_cancellation,
+                        |_| {},
+                    )
+                    .await
+                    .context("GitHub polling failed")
+            });
+        }
+        let mut schedule_interval =
+            tokio::time::interval_at(Instant::now(), SCHEDULE_POLL_INTERVAL);
+        schedule_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut recovery_interval = tokio::time::interval_at(
             Instant::now() + RECOVERY_POLL_INTERVAL,
             RECOVERY_POLL_INTERVAL,
@@ -167,7 +190,7 @@ impl FactoryDaemon {
                     _ = recovery_interval.tick() => {
                         report_recovery(ledger.recover_orphaned_runs()?);
                     }
-                    _ = poll_interval.tick() => {
+                    _ = schedule_interval.tick() => {
                         schedules = initialize_schedules(
                             &mut ledger,
                             &targets,
@@ -175,20 +198,11 @@ impl FactoryDaemon {
                             &owner.id,
                         );
                         evaluate_schedules(&mut ledger, &mut schedules, Utc::now());
-                        let report = self.github
-                            .poll_once_with_cancellation(
-                                &self.config,
-                                &self.catalog,
-                                &mut ledger,
-                                cancellation.clone(),
-                            )
-                            .await;
-                        if let Err(error) = report {
-                            if cancellation.is_cancelled() {
-                                return Ok(());
-                            }
-                            return Err(error).context("GitHub polling failed");
-                        }
+                    }
+                    completed = github_polls.join_next(), if !github_polls.is_empty() => {
+                        return completed
+                            .context("GitHub polling task disappeared")?
+                            .context("GitHub polling task panicked")?;
                     }
                     completed = runs.join_next(), if !runs.is_empty() => {
                         let (repository, result) = completed
@@ -219,6 +233,20 @@ impl FactoryDaemon {
                 Err(error) => {
                     drain_error.get_or_insert_with(|| {
                         anyhow::anyhow!(error).context("worker task panicked during shutdown")
+                    });
+                }
+            }
+        }
+        while let Some(completed) = github_polls.join_next().await {
+            match completed {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    drain_error.get_or_insert(error);
+                }
+                Err(error) => {
+                    drain_error.get_or_insert_with(|| {
+                        anyhow::anyhow!(error)
+                            .context("GitHub polling task panicked during shutdown")
                     });
                 }
             }
@@ -405,8 +433,12 @@ fn dispatch_available(
         {
             previous.pull_request = worker_ledger.latest_pull_request_for_task(task.id)?;
         }
-        let prior_successful_run_at =
-            worker_ledger.latest_successful_run_finished_at(&task.repository, &task.workflow)?;
+        let prior_successful_run_at = if task.kind == "scheduled" {
+            worker_ledger
+                .latest_successful_scheduled_run_finished_at(&task.repository, &task.workflow)?
+        } else {
+            None
+        };
         let prompt_result = execution_prompt(
             &task,
             run_id,

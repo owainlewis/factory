@@ -924,17 +924,19 @@ impl Ledger {
             .context("failed to query prior agent session")
     }
 
-    pub fn latest_successful_run_finished_at(
+    pub fn latest_successful_scheduled_run_finished_at(
         &self,
         repository: &str,
         workflow: &str,
     ) -> Result<Option<i64>> {
         self.connection
             .query_row(
-                "SELECT finished_at FROM runs
-                 WHERE repository = ?1 AND workflow = ?2
-                   AND outcome = 'succeeded' AND finished_at IS NOT NULL
-                 ORDER BY finished_at DESC, id DESC LIMIT 1",
+                "SELECT runs.finished_at FROM runs
+                 JOIN tasks ON tasks.id = runs.task_id
+                 WHERE runs.repository = ?1 AND runs.workflow = ?2
+                   AND tasks.kind = 'scheduled'
+                   AND runs.outcome = 'succeeded' AND runs.finished_at IS NOT NULL
+                 ORDER BY runs.finished_at DESC, runs.id DESC LIMIT 1",
                 params![repository, workflow],
                 |row| row.get(0),
             )
