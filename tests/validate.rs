@@ -30,16 +30,54 @@ workspace_root = "{}"
 }
 
 #[test]
-fn validates_explicit_config() {
+fn default_output_remains_unchanged() {
     let (_temp, path) = valid_config();
+    let config_dir = path.parent().unwrap();
+    let repository = config_dir.join("repository").canonicalize().unwrap();
+    let workspace = config_dir.join("worktrees").canonicalize().unwrap();
+    let expected = format!(
+        "Configuration is valid.\nrepositories:\n  - {}\npoll_every: 30s\ndefault_runtime: codex\ndefault_timeout: 2h\nmaximum_timeout: 8h\nmax_concurrent_runs: 2\nmax_concurrent_runs_per_repository: 1\nworkspace_root: {}\n",
+        repository.display(),
+        workspace.display()
+    );
 
     Command::cargo_bin("factory")
         .unwrap()
         .args(["validate", "--config", path.to_str().unwrap()])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Configuration is valid."))
-        .stdout(predicate::str::contains("default_runtime: codex"));
+        .stdout(expected);
+}
+
+#[test]
+fn prints_resolved_config_as_json() {
+    let (_temp, path) = valid_config();
+    let config_dir = path.parent().unwrap();
+    let repository = config_dir.join("repository").canonicalize().unwrap();
+    let workspace = config_dir.join("worktrees").canonicalize().unwrap();
+
+    let output = Command::cargo_bin("factory")
+        .unwrap()
+        .args(["validate", "--json", "--config", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "repositories": [repository.display().to_string()],
+            "poll_every": "30s",
+            "default_runtime": "codex",
+            "default_timeout": "2h",
+            "maximum_timeout": "8h",
+            "max_concurrent_runs": 2,
+            "max_concurrent_runs_per_repository": 1,
+            "workspace_root": workspace.display().to_string(),
+        })
+    );
 }
 
 #[test]
@@ -57,6 +95,27 @@ fn reports_specific_validation_failures() {
         .args(["validate", "--config", path.to_str().unwrap()])
         .assert()
         .failure()
+        .stderr(predicate::str::contains(
+            "max_concurrent_runs must be greater than zero",
+        ));
+}
+
+#[test]
+fn json_mode_preserves_validation_failures() {
+    let (_temp, path) = valid_config();
+    let contents = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        contents.replace("max_concurrent_runs = 2", "max_concurrent_runs = 0"),
+    )
+    .unwrap();
+
+    Command::cargo_bin("factory")
+        .unwrap()
+        .args(["validate", "--json", "--config", path.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains(
             "max_concurrent_runs must be greater than zero",
         ));

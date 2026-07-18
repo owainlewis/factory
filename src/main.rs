@@ -42,6 +42,9 @@ enum Command {
     },
     /// Validate configuration without starting workers or network activity.
     Validate {
+        /// Print stable machine-readable JSON.
+        #[arg(long)]
+        json: bool,
         /// Path to the Factory configuration file.
         #[arg(long)]
         config: Option<PathBuf>,
@@ -136,6 +139,37 @@ struct CancellationResponse {
     message: &'static str,
 }
 
+#[derive(Serialize)]
+struct ValidationResponse {
+    repositories: Vec<String>,
+    poll_every: String,
+    default_runtime: String,
+    default_timeout: String,
+    maximum_timeout: String,
+    max_concurrent_runs: usize,
+    max_concurrent_runs_per_repository: usize,
+    workspace_root: String,
+}
+
+impl From<&Config> for ValidationResponse {
+    fn from(config: &Config) -> Self {
+        Self {
+            repositories: config
+                .repositories
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            poll_every: humantime::format_duration(config.poll_every).to_string(),
+            default_runtime: config.default_runtime.clone(),
+            default_timeout: humantime::format_duration(config.default_timeout).to_string(),
+            maximum_timeout: humantime::format_duration(config.maximum_timeout).to_string(),
+            max_concurrent_runs: config.max_concurrent_runs,
+            max_concurrent_runs_per_repository: config.max_concurrent_runs_per_repository,
+            workspace_root: config.workspace_root.display().to_string(),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     match run_cli().await {
@@ -158,10 +192,14 @@ async fn run_cli() -> Result<u8> {
         } => {
             return run_poller(config, data_directory, once).await;
         }
-        Command::Validate { config } => {
+        Command::Validate { json, config } => {
             let path = config.unwrap_or_else(default_config_path);
             let config = Config::load(&path)?;
-            print!("{config}");
+            if json {
+                print_json(&ValidationResponse::from(&config))?;
+            } else {
+                print!("{config}");
+            }
         }
         Command::Workflows { config } => {
             let path = config.unwrap_or_else(default_config_path);

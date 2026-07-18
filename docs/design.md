@@ -255,7 +255,7 @@ V1 implements Codex completely and Claude Code second to prove portability. Runt
 The daemon runs as `factory run`, initially in a terminal and later under `launchd` or `systemd`. A small CLI exposes operational state:
 
 ```text
-factory validate
+factory validate [--json]
 factory workflows
 factory workflow run <workflow-id> --repository <path>
 factory tasks
