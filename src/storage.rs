@@ -543,6 +543,7 @@ impl Ledger {
             )
             .optional()
             .context("failed to query schedule cursor")?;
+        let lease_cutoff = now_millis()? - DAEMON_OWNER_LEASE_MILLIS;
         let live_owner_fingerprints = {
             let mut statement = transaction
                 .prepare(
@@ -555,12 +556,7 @@ impl Ledger {
                 .context("failed to prepare live schedule owner query")?;
             statement
                 .query_map(
-                    params![
-                        repository,
-                        workflow,
-                        owner_id,
-                        now_millis()? - DAEMON_OWNER_LEASE_MILLIS
-                    ],
+                    params![repository, workflow, owner_id, lease_cutoff],
                     |row| row.get::<_, String>(0),
                 )
                 .context("failed to query live schedule owners")?
@@ -573,11 +569,13 @@ impl Ledger {
         let current_owner_matches = transaction
             .query_row(
                 "SELECT EXISTS(
-                    SELECT 1 FROM schedule_owners
-                    WHERE repository = ?1 AND workflow = ?2
-                      AND owner_id = ?3 AND fingerprint = ?4
+                    SELECT 1 FROM schedule_owners schedules
+                    JOIN daemon_owners owners ON owners.owner_id = schedules.owner_id
+                    WHERE schedules.repository = ?1 AND schedules.workflow = ?2
+                      AND schedules.owner_id = ?3 AND schedules.fingerprint = ?4
+                      AND owners.heartbeat_at >= ?5
                  )",
-                params![repository, workflow, owner_id, fingerprint],
+                params![repository, workflow, owner_id, fingerprint, lease_cutoff],
                 |row| row.get::<_, bool>(0),
             )
             .context("failed to query current schedule ownership")?;
@@ -1405,15 +1403,17 @@ impl Ledger {
     }
 
     pub fn heartbeat_daemon_owner(&mut self, owner_id: &str) -> Result<()> {
+        let now = now_millis()?;
         let changed = self
             .connection
             .execute(
-                "UPDATE daemon_owners SET heartbeat_at = ?1 WHERE owner_id = ?2",
-                params![now_millis()?, owner_id],
+                "UPDATE daemon_owners SET heartbeat_at = ?1
+                 WHERE owner_id = ?2 AND heartbeat_at >= ?3",
+                params![now, owner_id, now - DAEMON_OWNER_LEASE_MILLIS],
             )
             .context("failed to update daemon owner heartbeat")?;
         if changed != 1 {
-            bail!("daemon owner {owner_id:?} is not registered");
+            bail!("daemon owner {owner_id:?} is not registered or its lease expired");
         }
         Ok(())
     }

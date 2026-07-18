@@ -114,7 +114,8 @@ fn ticket_and_schedule_identities_deduplicate_exact_triggers() {
 #[test]
 fn schedule_cursor_atomically_enqueues_advances_and_skips_downtime() {
     let temp = tempfile::tempdir().unwrap();
-    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
     ledger
         .register_daemon_owner("schedule-storage-owner", std::process::id())
         .unwrap();
@@ -164,6 +165,31 @@ fn schedule_cursor_atomically_enqueues_advances_and_skips_downtime() {
         )
         .unwrap();
     assert_eq!(restart.next_due_at, 120_000);
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE daemon_owners SET heartbeat_at = 0 WHERE owner_id = ?1",
+            ["schedule-storage-owner"],
+        )
+        .unwrap();
+    assert!(
+        ledger
+            .heartbeat_daemon_owner("schedule-storage-owner")
+            .unwrap_err()
+            .to_string()
+            .contains("lease expired")
+    );
+    let after_sleep = ledger
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "* * * * *|UTC",
+            660_000,
+            630_000,
+            "schedule-storage-owner",
+        )
+        .unwrap();
+    assert_eq!(after_sleep.next_due_at, 660_000);
     ledger
         .remove_daemon_owner("schedule-storage-owner")
         .unwrap();
