@@ -1,10 +1,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use chrono::{DateTime, SecondsFormat, Utc};
+use chrono_tz::Tz;
+use cron::Schedule;
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
@@ -15,8 +19,8 @@ use crate::runtime::{
     CodexRuntime, ExecutionResult, RuntimeCancelled, RuntimeObservation, Termination,
     observation_channel,
 };
-use crate::storage::{Ledger, Run, RunOutcome, Task};
-use crate::workflow::{WorkflowCatalog, WorkflowEntry};
+use crate::storage::{Ledger, Run, RunOutcome, Task, TaskIdentity};
+use crate::workflow::{Trigger, WorkflowCatalog, WorkflowEntry};
 
 const HUMAN_MERGE_POLICY: &str = "Factory-created software pull requests must remain for human merge. Never merge or enable automatic merge.";
 const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -53,6 +57,16 @@ struct WorkflowTarget {
     prompt: String,
     runtime: String,
     timeout: Duration,
+    trigger: Trigger,
+}
+
+struct ScheduledTarget {
+    repository: String,
+    workflow: String,
+    schedule: Schedule,
+    timezone: Tz,
+    fingerprint: String,
+    next_due: DateTime<Utc>,
 }
 
 pub struct FactoryDaemon {
@@ -106,6 +120,7 @@ impl FactoryDaemon {
         let owner = DaemonOwner::new()?;
         ledger.register_daemon_owner(&owner.id, owner.pid)?;
         report_recovery(ledger.recover_orphaned_runs()?);
+        let mut schedules = initialize_schedules(&mut ledger, &targets, Utc::now(), &owner.id);
         let owner_heartbeat_shutdown = CancellationToken::new();
         let owner_heartbeat_task = {
             let ledger_path = self.ledger_path.clone();
@@ -152,6 +167,13 @@ impl FactoryDaemon {
                         report_recovery(ledger.recover_orphaned_runs()?);
                     }
                     _ = poll_interval.tick() => {
+                        schedules = initialize_schedules(
+                            &mut ledger,
+                            &targets,
+                            Utc::now(),
+                            &owner.id,
+                        );
+                        evaluate_schedules(&mut ledger, &mut schedules, Utc::now());
                         let report = self.github
                             .poll_once_with_cancellation(
                                 &self.config,
@@ -215,8 +237,17 @@ impl FactoryDaemon {
     }
 
     async fn validate(&self, cancellation: &CancellationToken) -> Result<()> {
-        if self.catalog.invalid_count() > 0 {
-            bail!("workflow catalog contains invalid workflows");
+        for entry in self
+            .catalog
+            .entries
+            .iter()
+            .filter(|entry| !entry.errors.is_empty())
+        {
+            eprintln!(
+                "Factory skipped invalid workflow {}: {}",
+                entry.path.display(),
+                entry.errors.join("; ")
+            );
         }
         self.github.validate_global(cancellation).await?;
         match self
@@ -295,6 +326,7 @@ fn resolve_workflow_target(entry: &WorkflowEntry) -> Option<(String, WorkflowTar
             prompt: entry.prompt.clone()?,
             runtime: entry.runtime.clone()?,
             timeout: entry.timeout?,
+            trigger: entry.trigger.clone()?,
         },
     ))
 }
@@ -334,7 +366,7 @@ fn dispatch_available(
             .map(|(repository, target)| (repository.clone(), target.path.display().to_string()))
             .collect::<HashMap<_, _>>();
         let mut worker_ledger = Ledger::open(ledger_path)?;
-        let Some(claimed) = ledger.claim_ticket_and_start_run_with_workdirs(
+        let Some(claimed) = ledger.claim_and_start_run_with_workdirs(
             &available,
             &workflow_runtimes,
             &owner.id,
@@ -372,14 +404,21 @@ fn dispatch_available(
         {
             previous.pull_request = worker_ledger.latest_pull_request_for_task(task.id)?;
         }
-        let prompt_result =
-            execution_prompt(&task, run_id, &target, &workflow, prior_session.as_deref()).map(
-                |prompt| {
-                    recovery_source.as_ref().map_or(prompt.clone(), |previous| {
-                        recovery_prompt(&prompt, previous, &target)
-                    })
-                },
-            );
+        let prior_successful_run_at =
+            worker_ledger.latest_successful_run_finished_at(&task.repository, &task.workflow)?;
+        let prompt_result = execution_prompt(
+            &task,
+            run_id,
+            &target,
+            &workflow,
+            prior_session.as_deref(),
+            prior_successful_run_at,
+        )
+        .map(|prompt| {
+            recovery_source.as_ref().map_or(prompt.clone(), |previous| {
+                recovery_prompt(&prompt, previous, &target)
+            })
+        });
         let prompt = match prompt_result {
             Ok(prompt) => prompt,
             Err(error) => {
@@ -734,7 +773,47 @@ fn execution_prompt(
     repository: &RepositoryTarget,
     workflow: &WorkflowTarget,
     prior_session: Option<&str>,
+    prior_successful_run_at: Option<i64>,
 ) -> Result<String> {
+    if task.kind == "scheduled" {
+        let payload = task
+            .payload
+            .as_deref()
+            .context("scheduled task has no occurrence context")?;
+        let context: serde_json::Value = serde_json::from_str(payload)
+            .context("scheduled task contains invalid occurrence context")?;
+        let scheduled_at = context
+            .get("scheduled_at")
+            .and_then(serde_json::Value::as_str)
+            .context("scheduled task occurrence context has no scheduled_at")?;
+        let prior_success = prior_successful_run_at
+            .and_then(DateTime::<Utc>::from_timestamp_millis)
+            .map(|value| value.to_rfc3339_opts(SecondsFormat::Millis, true))
+            .unwrap_or_else(|| "none".to_owned());
+        let inspected_commit = current_commit(&repository.path)
+            .unwrap_or_else(|| "unavailable; inspect Git before making changes".to_owned());
+        return Ok(format!(
+            "# Factory execution policy\n\n\
+             {HUMAN_MERGE_POLICY}\n\
+             Factory owns durable scheduling, claims, concurrency, timeout, cancellation, and run history.\n\
+             You own the adaptive repository inspection and GitHub effects requested by the workflow. You may use the authenticated gh CLI; Factory does not create tickets for you.\n\n\
+             Run ID: {run_id}\n\
+             Repository: {}\n\
+             Repository path: {}\n\
+             Scheduled occurrence: {scheduled_at}\n\
+             Previous successful run: {prior_success}\n\
+             Inspected repository commit: {}\n\
+             Timeout: {}\n\
+             Prior Codex session: {}\n\n\
+             # Validated workflow\n\n{}",
+            task.repository,
+            repository.path.display(),
+            crate::inspection::sanitize_for_storage(&inspected_commit),
+            humantime::format_duration(workflow.timeout),
+            prior_session.unwrap_or("none"),
+            workflow.prompt
+        ));
+    }
     let payload = task
         .payload
         .as_deref()
@@ -764,6 +843,135 @@ fn execution_prompt(
         prior_session.unwrap_or("none"),
         workflow.prompt
     ))
+}
+
+fn current_commit(repository: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repository)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|commit| !commit.is_empty())
+}
+
+fn initialize_schedules(
+    ledger: &mut Ledger,
+    targets: &HashMap<String, RepositoryTarget>,
+    startup_at: DateTime<Utc>,
+    owner_id: &str,
+) -> Vec<ScheduledTarget> {
+    let mut schedules = Vec::new();
+    for (repository, target) in targets {
+        for (workflow, target) in &target.workflows {
+            let Trigger::Schedule {
+                expression,
+                timezone,
+            } = &target.trigger
+            else {
+                continue;
+            };
+            let initialized = (|| -> Result<ScheduledTarget> {
+                let schedule = Schedule::from_str(&format!("0 {expression}"))
+                    .context("validated cron schedule could not be parsed")?;
+                let calculated = next_occurrence(&schedule, *timezone, startup_at)?;
+                let fingerprint = format!("{expression}|{}", timezone.name());
+                let cursor = ledger.initialize_schedule_cursor(
+                    repository,
+                    workflow,
+                    &fingerprint,
+                    calculated.timestamp_millis(),
+                    startup_at.timestamp_millis(),
+                    owner_id,
+                )?;
+                let next_due = DateTime::<Utc>::from_timestamp_millis(cursor.next_due_at)
+                    .context("stored schedule cursor is outside the supported time range")?;
+                Ok(ScheduledTarget {
+                    repository: repository.clone(),
+                    workflow: workflow.clone(),
+                    schedule,
+                    timezone: *timezone,
+                    fingerprint,
+                    next_due,
+                })
+            })();
+            match initialized {
+                Ok(schedule) => schedules.push(schedule),
+                Err(error) => {
+                    eprintln!("Factory skipped schedule {repository}/{workflow}: {error:#}")
+                }
+            }
+        }
+    }
+    schedules
+}
+
+fn evaluate_schedules(
+    ledger: &mut Ledger,
+    schedules: &mut [ScheduledTarget],
+    through: DateTime<Utc>,
+) {
+    for target in schedules {
+        while target.next_due <= through {
+            let due = target.next_due;
+            let result = (|| -> Result<DateTime<Utc>> {
+                let next = next_occurrence(&target.schedule, target.timezone, due)?;
+                let scheduled_at = due.to_rfc3339_opts(SecondsFormat::Secs, true);
+                let identity =
+                    TaskIdentity::scheduled(&target.repository, &target.workflow, &scheduled_at)?;
+                let payload = serde_json::json!({ "scheduled_at": scheduled_at }).to_string();
+                ledger.enqueue_scheduled_occurrence(
+                    &identity,
+                    &payload,
+                    &target.fingerprint,
+                    due.timestamp_millis(),
+                    next.timestamp_millis(),
+                )?;
+                Ok(next)
+            })();
+            match result {
+                Ok(next) => target.next_due = next,
+                Err(error) => {
+                    eprintln!(
+                        "Factory schedule tick failed for {}/{}: {error:#}",
+                        target.repository, target.workflow
+                    );
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn next_occurrence(
+    schedule: &Schedule,
+    timezone: Tz,
+    after: DateTime<Utc>,
+) -> Result<DateTime<Utc>> {
+    let candidate = schedule
+        .after(&after.with_timezone(&timezone))
+        .next()
+        .map(|occurrence| occurrence.with_timezone(&Utc))
+        .context("schedule has no future occurrence")?;
+    let scan_until = candidate.min(after + chrono::Duration::hours(3));
+    let next_minute = after
+        .timestamp()
+        .div_euclid(60)
+        .checked_add(1)
+        .and_then(|minute| minute.checked_mul(60))
+        .context("schedule cursor exceeds the supported time range")?;
+    let mut probe = DateTime::<Utc>::from_timestamp(next_minute, 0)
+        .context("schedule cursor exceeds the supported time range")?;
+    while probe <= scan_until {
+        if schedule.includes(probe.with_timezone(&timezone)) {
+            return Ok(probe);
+        }
+        probe += chrono::Duration::minutes(1);
+    }
+    Ok(candidate)
 }
 
 fn record_execution(ledger: &mut Ledger, run_id: i64, result: &ExecutionResult) -> Result<()> {
@@ -813,6 +1021,184 @@ fn decrement_active(active: &mut HashMap<String, usize>, repository: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn utc(value: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(value)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn scheduled_targets(
+        repository: &Path,
+        expression: &str,
+        timezone: Tz,
+    ) -> HashMap<String, RepositoryTarget> {
+        HashMap::from([(
+            "example/repo".to_owned(),
+            RepositoryTarget {
+                path: repository.to_owned(),
+                workflows: HashMap::from([(
+                    "scheduled-review".to_owned(),
+                    WorkflowTarget {
+                        prompt: "Review the repository.".to_owned(),
+                        runtime: "codex".to_owned(),
+                        timeout: Duration::from_secs(60),
+                        trigger: Trigger::Schedule {
+                            expression: expression.to_owned(),
+                            timezone,
+                        },
+                    },
+                )]),
+            },
+        )])
+    }
+
+    #[test]
+    fn schedule_ticks_deduplicate_restart_and_skip_offline_backlog() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("ledger.db");
+        let targets = scheduled_targets(temp.path(), "* * * * *", chrono_tz::UTC);
+        let mut ledger = Ledger::open(&path).unwrap();
+        ledger
+            .register_daemon_owner("schedule-owner-1", std::process::id())
+            .unwrap();
+        let mut schedules = initialize_schedules(
+            &mut ledger,
+            &targets,
+            utc("2026-07-18T12:00:30Z"),
+            "schedule-owner-1",
+        );
+
+        evaluate_schedules(&mut ledger, &mut schedules, utc("2026-07-18T12:01:30Z"));
+        evaluate_schedules(&mut ledger, &mut schedules, utc("2026-07-18T12:01:30Z"));
+        assert_eq!(ledger.tasks().unwrap().len(), 1);
+        ledger.remove_daemon_owner("schedule-owner-1").unwrap();
+        drop(ledger);
+
+        let mut ledger = Ledger::open(&path).unwrap();
+        ledger
+            .register_daemon_owner("schedule-owner-2", std::process::id())
+            .unwrap();
+        let mut schedules = initialize_schedules(
+            &mut ledger,
+            &targets,
+            utc("2026-07-18T12:01:40Z"),
+            "schedule-owner-2",
+        );
+        evaluate_schedules(&mut ledger, &mut schedules, utc("2026-07-18T12:02:00Z"));
+        assert_eq!(ledger.tasks().unwrap().len(), 2);
+        ledger.remove_daemon_owner("schedule-owner-2").unwrap();
+        drop(ledger);
+
+        let mut ledger = Ledger::open(&path).unwrap();
+        ledger
+            .register_daemon_owner("schedule-owner-3", std::process::id())
+            .unwrap();
+        let mut schedules = initialize_schedules(
+            &mut ledger,
+            &targets,
+            utc("2026-07-18T15:00:30Z"),
+            "schedule-owner-3",
+        );
+        evaluate_schedules(&mut ledger, &mut schedules, utc("2026-07-18T15:00:30Z"));
+        assert_eq!(ledger.tasks().unwrap().len(), 2);
+        evaluate_schedules(&mut ledger, &mut schedules, utc("2026-07-18T15:01:00Z"));
+        let tasks = ledger.tasks().unwrap();
+        assert_eq!(tasks.len(), 3);
+        assert!(tasks.iter().all(|task| task.kind == "scheduled"));
+        assert_eq!(
+            tasks[2].payload.as_deref(),
+            Some(r#"{"scheduled_at":"2026-07-18T15:01:00Z"}"#)
+        );
+    }
+
+    #[test]
+    fn disabled_schedule_is_not_initialized_or_replayed() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+        ledger
+            .register_daemon_owner("disabled-owner", std::process::id())
+            .unwrap();
+        let targets = HashMap::from([(
+            "example/repo".to_owned(),
+            RepositoryTarget {
+                path: temp.path().to_owned(),
+                workflows: HashMap::new(),
+            },
+        )]);
+        let mut schedules = initialize_schedules(
+            &mut ledger,
+            &targets,
+            utc("2026-07-18T12:00:00Z"),
+            "disabled-owner",
+        );
+        evaluate_schedules(&mut ledger, &mut schedules, utc("2026-07-19T12:00:00Z"));
+        assert!(schedules.is_empty());
+        assert!(ledger.tasks().unwrap().is_empty());
+    }
+
+    #[test]
+    fn conflicting_schedule_initialization_retries_after_owner_exits() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("ledger.db");
+        let old_targets = scheduled_targets(temp.path(), "* * * * *", chrono_tz::UTC);
+        let new_targets = scheduled_targets(temp.path(), "*/2 * * * *", chrono_tz::UTC);
+        let mut old = Ledger::open(&path).unwrap();
+        old.register_daemon_owner("old-schedule-owner", std::process::id())
+            .unwrap();
+        assert_eq!(
+            initialize_schedules(
+                &mut old,
+                &old_targets,
+                utc("2026-07-18T12:00:10Z"),
+                "old-schedule-owner",
+            )
+            .len(),
+            1
+        );
+
+        let mut new = Ledger::open(&path).unwrap();
+        new.register_daemon_owner("new-schedule-owner", std::process::id())
+            .unwrap();
+        assert!(
+            initialize_schedules(
+                &mut new,
+                &new_targets,
+                utc("2026-07-18T12:00:20Z"),
+                "new-schedule-owner",
+            )
+            .is_empty()
+        );
+        old.remove_daemon_owner("old-schedule-owner").unwrap();
+
+        let mut schedules = initialize_schedules(
+            &mut new,
+            &new_targets,
+            utc("2026-07-18T12:00:30Z"),
+            "new-schedule-owner",
+        );
+        assert_eq!(schedules.len(), 1);
+        evaluate_schedules(&mut new, &mut schedules, utc("2026-07-18T12:02:00Z"));
+        assert_eq!(new.tasks().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn timezone_and_dst_gaps_and_repeats_produce_real_utc_instants() {
+        let london = chrono_tz::Europe::London;
+        let schedule = Schedule::from_str("0 30 1 * * *").unwrap();
+
+        let gap = next_occurrence(&schedule, london, utc("2026-03-29T00:00:00Z")).unwrap();
+        assert_eq!(gap, utc("2026-03-30T00:30:00Z"));
+
+        let first_repeat = next_occurrence(&schedule, london, utc("2026-10-24T23:59:59Z")).unwrap();
+        let second_repeat = next_occurrence(&schedule, london, first_repeat).unwrap();
+        assert_eq!(first_repeat, utc("2026-10-25T00:30:00Z"));
+        assert_eq!(second_repeat, utc("2026-10-25T01:30:00Z"));
+        assert_ne!(
+            first_repeat.to_rfc3339_opts(SecondsFormat::Secs, true),
+            second_repeat.to_rfc3339_opts(SecondsFormat::Secs, true)
+        );
+    }
 
     #[test]
     fn recovery_prompt_includes_discovered_worktrees_pr_and_all_nonempty_evidence() {

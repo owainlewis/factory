@@ -1047,10 +1047,83 @@ async fn polling_error_cancels_and_drains_an_active_run() {
 }
 
 #[tokio::test]
-async fn scheduled_tasks_are_not_claimed_by_ticket_workers() {
+async fn scheduled_tasks_use_the_same_worker_and_run_history() {
     let fixture = Fixture::new(&[vec![]], 1, 1);
+    let repository = &fixture.config.repositories[0];
+    for args in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.email", "factory@example.test"],
+        vec!["config", "user.name", "Factory Test"],
+        vec!["add", "."],
+        vec!["commit", "-m", "scheduled fixture"],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let inspected_commit = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repository)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
     let mut ledger = Ledger::open(&fixture.ledger_path).unwrap();
     ledger
+        .enqueue_with_payload(
+            &TaskIdentity::scheduled(
+                "example/repo-0",
+                "implement-ready-ticket",
+                "2026-07-18T12:00:00Z",
+            )
+            .unwrap(),
+            Some(r#"{"scheduled_at":"2026-07-18T12:00:00Z"}"#),
+        )
+        .unwrap();
+    drop(ledger);
+    fixture.open_gate();
+    let cancellation = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let running = {
+        let daemon = Arc::clone(&daemon);
+        let token = cancellation.clone();
+        tokio::spawn(async move { daemon.run(token).await })
+    };
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks[0].state == TaskState::Succeeded)
+    })
+    .await;
+    cancellation.cancel();
+    running.await.unwrap().unwrap();
+
+    let ledger = Ledger::open(&fixture.ledger_path).unwrap();
+    let tasks = ledger.tasks().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].state, TaskState::Succeeded);
+    assert_eq!(ledger.runs_for_task(tasks[0].id).unwrap().len(), 1);
+    let prompt = fs::read_to_string(fixture.started_slots()[0].join("prompt")).unwrap();
+    assert!(prompt.contains("Scheduled occurrence: 2026-07-18T12:00:00Z"));
+    assert!(prompt.contains("You may use the authenticated gh CLI"));
+    assert!(prompt.contains("Factory does not create tickets for you"));
+    assert!(prompt.contains(&format!("Inspected repository commit: {inspected_commit}")));
+}
+
+#[tokio::test]
+async fn failing_scheduled_task_does_not_block_ticket_polling() {
+    let fixture = Fixture::new(&[vec![issue(29)]], 1, 1);
+    Ledger::open(&fixture.ledger_path)
+        .unwrap()
         .enqueue(
             &TaskIdentity::scheduled(
                 "example/repo-0",
@@ -1060,20 +1133,192 @@ async fn scheduled_tasks_are_not_claimed_by_ticket_workers() {
             .unwrap(),
         )
         .unwrap();
-    drop(ledger);
+    fixture.open_gate();
     let cancellation = CancellationToken::new();
     let daemon = Arc::new(fixture.daemon());
     let running = {
         let daemon = Arc::clone(&daemon);
-        let token = cancellation.clone();
-        tokio::spawn(async move { daemon.run(token).await })
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move { daemon.run(cancellation).await })
     };
-    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| {
+                tasks.len() == 2
+                    && tasks
+                        .iter()
+                        .any(|task| task.kind == "scheduled" && task.state == TaskState::Failed)
+                    && tasks
+                        .iter()
+                        .any(|task| task.kind == "ticket" && task.state == TaskState::Succeeded)
+            })
+    })
+    .await;
+    cancellation.cancel();
+    running.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn invalid_scheduled_workflow_does_not_block_valid_ticket_workflow() {
+    let fixture = Fixture::new(&[vec![issue(31)]], 1, 1);
+    fs::write(
+        fixture.config.repositories[0].join(".factory/workflows/invalid-schedule.md"),
+        "+++\nschedule = \"eventually\"\ntimezone = \"UTC\"\n+++\n\nINVALID SCHEDULE\n",
+    )
+    .unwrap();
+    assert_eq!(
+        WorkflowCatalog::load(&fixture.config)
+            .unwrap()
+            .invalid_count(),
+        1
+    );
+    fixture.open_gate();
+    let search_path = std::env::join_paths(
+        std::iter::once(fixture.gh.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .as_deref()
+                .map(std::env::split_paths)
+                .into_iter()
+                .flatten(),
+        ),
+    )
+    .unwrap();
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_factory"));
+    daemon
+        .args([
+            "run",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            fixture.ledger_path.parent().unwrap().to_str().unwrap(),
+        ])
+        .env("PATH", search_path);
+    let mut daemon = daemon.spawn().unwrap();
+
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| {
+                tasks.len() == 1
+                    && tasks[0].kind == "ticket"
+                    && tasks[0].state == TaskState::Succeeded
+            })
+    })
+    .await;
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(i32::try_from(daemon.id()).unwrap()),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .unwrap();
+    assert!(daemon.wait().unwrap().success());
+}
+
+#[tokio::test]
+async fn later_schedule_prompt_includes_previous_successful_run() {
+    let fixture = Fixture::new(&[vec![]], 1, 1);
+    let mut ledger = Ledger::open(&fixture.ledger_path).unwrap();
+    ledger
+        .enqueue_with_payload(
+            &TaskIdentity::scheduled(
+                "example/repo-0",
+                "implement-ready-ticket",
+                "2026-07-18T12:00:00Z",
+            )
+            .unwrap(),
+            Some(r#"{"scheduled_at":"2026-07-18T12:00:00Z"}"#),
+        )
+        .unwrap();
+    drop(ledger);
+    fixture.open_gate();
+    let cancellation = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let running = {
+        let daemon = Arc::clone(&daemon);
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move { daemon.run(cancellation).await })
+    };
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks[0].state == TaskState::Succeeded)
+    })
+    .await;
+
+    Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .enqueue_with_payload(
+            &TaskIdentity::scheduled(
+                "example/repo-0",
+                "implement-ready-ticket",
+                "2026-07-18T12:01:00Z",
+            )
+            .unwrap(),
+            Some(r#"{"scheduled_at":"2026-07-18T12:01:00Z"}"#),
+        )
+        .unwrap();
+    wait_for(|| fixture.started_slots().len() == 2).await;
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks.len() == 2 && tasks[1].state == TaskState::Succeeded)
+    })
+    .await;
     cancellation.cancel();
     running.await.unwrap().unwrap();
 
-    let tasks = Ledger::open(&fixture.ledger_path).unwrap().tasks().unwrap();
-    assert_eq!(tasks.len(), 1);
-    assert_eq!(tasks[0].state, TaskState::Queued);
-    assert!(fixture.started_slots().is_empty());
+    let prompt = fs::read_to_string(fixture.started_slots()[1].join("prompt")).unwrap();
+    assert!(prompt.contains("Previous successful run: 20"));
+    assert!(!prompt.contains("Previous successful run: none"));
+}
+
+#[tokio::test]
+async fn scheduled_and_ticket_tasks_share_concurrency_capacity() {
+    let fixture = Fixture::new(&[vec![issue(30)]], 2, 2);
+    Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .enqueue_with_payload(
+            &TaskIdentity::scheduled(
+                "example/repo-0",
+                "implement-ready-ticket",
+                "2026-07-18T12:00:00Z",
+            )
+            .unwrap(),
+            Some(r#"{"scheduled_at":"2026-07-18T12:00:00Z"}"#),
+        )
+        .unwrap();
+    let cancellation = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let running = {
+        let daemon = Arc::clone(&daemon);
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move { daemon.run(cancellation).await })
+    };
+
+    wait_for(|| fixture.started_slots().len() == 2).await;
+    let prompts = fixture
+        .started_slots()
+        .iter()
+        .map(|slot| fs::read_to_string(slot.join("prompt")).unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt.contains("Scheduled occurrence"))
+    );
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt.contains("Current ticket and discussion"))
+    );
+    fixture.open_gate();
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks.iter().all(|task| task.state == TaskState::Succeeded))
+    })
+    .await;
+    cancellation.cancel();
+    running.await.unwrap().unwrap();
 }

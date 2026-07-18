@@ -318,10 +318,6 @@ async fn run_poller(
     let path = config_path.unwrap_or_else(default_config_path);
     let config = Config::load(&path)?;
     let catalog = WorkflowCatalog::load(&config)?;
-    let invalid = catalog.invalid_count();
-    if invalid > 0 {
-        bail!("workflow catalog contains {invalid} invalid workflow(s)");
-    }
     let data_directory = data_directory.unwrap_or_else(|| {
         path.parent()
             .unwrap_or_else(|| std::path::Path::new("."))
@@ -330,6 +326,17 @@ async fn run_poller(
     let mut ledger = Ledger::open_in(&data_directory)?;
     let github = GitHubClient::default();
     if once {
+        for entry in catalog
+            .entries
+            .iter()
+            .filter(|entry| !entry.errors.is_empty())
+        {
+            eprintln!(
+                "Factory skipped invalid workflow {}: {}",
+                entry.path.display(),
+                entry.errors.join("; ")
+            );
+        }
         let report = github.poll_once(&config, &catalog, &mut ledger).await?;
         print_poll_report(&report);
         return Ok(u8::from(report.failures() > 0));

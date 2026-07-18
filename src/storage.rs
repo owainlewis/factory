@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 const DATABASE_NAME: &str = "factory.sqlite3";
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION_ID_BYTES: usize = 1024;
@@ -209,6 +209,11 @@ pub struct Task {
 pub struct EnqueuedTask {
     pub task: Task,
     pub created: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleCursor {
+    pub next_due_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -505,7 +510,212 @@ impl Ledger {
         self.claim_next_matching(Some(&repositories))
     }
 
-    pub fn claim_ticket_and_start_run(
+    pub fn initialize_schedule_cursor(
+        &mut self,
+        repository: &str,
+        workflow: &str,
+        fingerprint: &str,
+        next_due_at: i64,
+        startup_at: i64,
+        owner_id: &str,
+    ) -> Result<ScheduleCursor> {
+        if repository.trim().is_empty()
+            || workflow.trim().is_empty()
+            || fingerprint.trim().is_empty()
+            || owner_id.trim().is_empty()
+        {
+            bail!("schedule repository, workflow, fingerprint, and owner must not be empty");
+        }
+        if next_due_at <= startup_at {
+            bail!("initialized schedule occurrence must be after startup");
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin schedule initialization transaction")?;
+        let prior = transaction
+            .query_row(
+                "SELECT fingerprint, next_due_at FROM schedule_cursors
+                 WHERE repository = ?1 AND workflow = ?2",
+                params![repository, workflow],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .context("failed to query schedule cursor")?;
+        let live_owner_fingerprints = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT DISTINCT schedules.fingerprint
+                     FROM schedule_owners schedules
+                     JOIN daemon_owners owners ON owners.owner_id = schedules.owner_id
+                     WHERE schedules.repository = ?1 AND schedules.workflow = ?2
+                       AND owners.owner_id != ?3 AND owners.heartbeat_at >= ?4",
+                )
+                .context("failed to prepare live schedule owner query")?;
+            statement
+                .query_map(
+                    params![
+                        repository,
+                        workflow,
+                        owner_id,
+                        now_millis()? - DAEMON_OWNER_LEASE_MILLIS
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .context("failed to query live schedule owners")?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .context("failed to read live schedule owners")?
+        };
+        let other_matching_owner = live_owner_fingerprints
+            .iter()
+            .any(|owner_fingerprint| owner_fingerprint == fingerprint);
+        let current_owner_matches = transaction
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM schedule_owners
+                    WHERE repository = ?1 AND workflow = ?2
+                      AND owner_id = ?3 AND fingerprint = ?4
+                 )",
+                params![repository, workflow, owner_id, fingerprint],
+                |row| row.get::<_, bool>(0),
+            )
+            .context("failed to query current schedule ownership")?;
+        if let Some((prior_fingerprint, _)) = &prior
+            && prior_fingerprint != fingerprint
+            && live_owner_fingerprints
+                .iter()
+                .any(|owner_fingerprint| owner_fingerprint == prior_fingerprint)
+        {
+            bail!(
+                "schedule {repository}/{workflow} has live owner using different fingerprint {prior_fingerprint:?}"
+            );
+        }
+        let resolved = match prior {
+            Some((prior_fingerprint, prior_due))
+                if prior_fingerprint == fingerprint
+                    && (prior_due > startup_at
+                        || other_matching_owner
+                        || current_owner_matches) =>
+            {
+                prior_due
+            }
+            _ => {
+                transaction
+                    .execute(
+                        "INSERT INTO schedule_cursors
+                         (repository, workflow, fingerprint, next_due_at, updated_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)
+                         ON CONFLICT(repository, workflow) DO UPDATE SET
+                           fingerprint = excluded.fingerprint,
+                           next_due_at = excluded.next_due_at,
+                           updated_at = excluded.updated_at",
+                        params![
+                            repository,
+                            workflow,
+                            fingerprint,
+                            next_due_at,
+                            now_millis()?
+                        ],
+                    )
+                    .context("failed to initialize schedule cursor")?;
+                next_due_at
+            }
+        };
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO schedule_owners
+                 (repository, workflow, owner_id, fingerprint)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![repository, workflow, owner_id, fingerprint],
+            )
+            .context("failed to register schedule owner")?;
+        transaction
+            .commit()
+            .context("failed to commit schedule initialization")?;
+        Ok(ScheduleCursor {
+            next_due_at: resolved,
+        })
+    }
+
+    pub fn enqueue_scheduled_occurrence(
+        &mut self,
+        identity: &TaskIdentity,
+        payload: &str,
+        expected_fingerprint: &str,
+        expected_due_at: i64,
+        next_due_at: i64,
+    ) -> Result<Option<EnqueuedTask>> {
+        let TaskIdentity::Scheduled {
+            repository,
+            workflow,
+            ..
+        } = identity
+        else {
+            bail!("scheduled occurrence requires a scheduled task identity");
+        };
+        identity.validate()?;
+        if next_due_at <= expected_due_at {
+            bail!("next scheduled occurrence must follow the due occurrence");
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin scheduled occurrence transaction")?;
+        let cursor = transaction
+            .query_row(
+                "SELECT fingerprint, next_due_at FROM schedule_cursors
+                 WHERE repository = ?1 AND workflow = ?2",
+                params![repository, workflow],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .context("failed to read due schedule cursor")?;
+        if cursor != Some((expected_fingerprint.to_owned(), expected_due_at)) {
+            transaction
+                .commit()
+                .context("failed to finish superseded schedule occurrence")?;
+            return Ok(None);
+        }
+        let now = now_millis()?;
+        let inserted = transaction
+            .execute(
+                "INSERT OR IGNORE INTO tasks
+                 (identity_key, kind, repository, workflow, source_item, payload, state, created_at, updated_at)
+                 VALUES (?1, 'scheduled', ?2, ?3, NULL, ?4, 'queued', ?5, ?5)",
+                params![identity.key(), repository, workflow, payload, now],
+            )
+            .context("failed to enqueue scheduled occurrence")?
+            == 1;
+        let task = query_task_by_key(&transaction, &identity.key())?
+            .context("scheduled occurrence task disappeared")?;
+        let changed = transaction
+            .execute(
+                "UPDATE schedule_cursors SET next_due_at = ?1, updated_at = ?2
+                 WHERE repository = ?3 AND workflow = ?4
+                   AND fingerprint = ?5 AND next_due_at = ?6",
+                params![
+                    next_due_at,
+                    now,
+                    repository,
+                    workflow,
+                    expected_fingerprint,
+                    expected_due_at
+                ],
+            )
+            .context("failed to advance schedule cursor")?;
+        if changed != 1 {
+            bail!("scheduled occurrence cursor changed during enqueue");
+        }
+        transaction
+            .commit()
+            .context("failed to commit scheduled occurrence")?;
+        Ok(Some(EnqueuedTask {
+            task,
+            created: inserted,
+        }))
+    }
+
+    pub fn claim_and_start_run(
         &mut self,
         available_repositories: &[String],
         workflow_runtimes: &HashMap<(String, String), String>,
@@ -516,7 +726,7 @@ impl Ledger {
             .iter()
             .map(|repository| (repository.clone(), repository.clone()))
             .collect();
-        self.claim_ticket_and_start_run_with_workdirs(
+        self.claim_and_start_run_with_workdirs(
             available_repositories,
             workflow_runtimes,
             owner_id,
@@ -525,7 +735,7 @@ impl Ledger {
         )
     }
 
-    pub fn claim_ticket_and_start_run_with_workdirs(
+    pub fn claim_and_start_run_with_workdirs(
         &mut self,
         available_repositories: &[String],
         workflow_runtimes: &HashMap<(String, String), String>,
@@ -548,15 +758,15 @@ impl Ledger {
             let mut statement = transaction
                 .prepare(
                     "SELECT * FROM tasks
-                     WHERE state = 'queued' AND kind = 'ticket'
+                     WHERE state = 'queued'
                      ORDER BY created_at, id",
                 )
-                .context("failed to prepare ticket claim query")?;
+                .context("failed to prepare task claim query")?;
             statement
                 .query_map([], row_to_task)
-                .context("failed to query queued ticket tasks")?
+                .context("failed to query queued tasks")?
                 .collect::<rusqlite::Result<Vec<_>>>()
-                .context("failed to read queued ticket tasks")?
+                .context("failed to read queued tasks")?
         };
         let Some(task) = candidates.into_iter().find(|task| {
             available.contains(&task.repository)
@@ -564,7 +774,7 @@ impl Ledger {
         }) else {
             transaction
                 .commit()
-                .context("failed to finish empty ticket claim")?;
+                .context("failed to finish empty task claim")?;
             return Ok(None);
         };
         let runtime = workflow_runtimes
@@ -688,6 +898,24 @@ impl Ledger {
             )
             .optional()
             .context("failed to query prior agent session")
+    }
+
+    pub fn latest_successful_run_finished_at(
+        &self,
+        repository: &str,
+        workflow: &str,
+    ) -> Result<Option<i64>> {
+        self.connection
+            .query_row(
+                "SELECT finished_at FROM runs
+                 WHERE repository = ?1 AND workflow = ?2
+                   AND outcome = 'succeeded' AND finished_at IS NOT NULL
+                 ORDER BY finished_at DESC, id DESC LIMIT 1",
+                params![repository, workflow],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed to query previous successful workflow run")
     }
 
     pub fn latest_pull_request_for_task(&self, task_id: i64) -> Result<Option<String>> {
@@ -1208,6 +1436,9 @@ fn migrate(connection: &Connection) -> Result<()> {
     if version < 4 {
         migrate_v4(connection)?;
     }
+    if version < 5 {
+        migrate_v5(connection)?;
+    }
     Ok(())
 }
 
@@ -1322,6 +1553,34 @@ fn migrate_v4(connection: &Connection) -> Result<()> {
          COMMIT;",
         )
         .context("failed to migrate SQLite ledger to version 4")?;
+    Ok(())
+}
+
+fn migrate_v5(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+             CREATE TABLE schedule_cursors (
+                 repository TEXT NOT NULL,
+                 workflow TEXT NOT NULL,
+                 fingerprint TEXT NOT NULL,
+                 next_due_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 PRIMARY KEY(repository, workflow)
+             );
+             CREATE TABLE schedule_owners (
+                 repository TEXT NOT NULL,
+                 workflow TEXT NOT NULL,
+                 owner_id TEXT NOT NULL REFERENCES daemon_owners(owner_id) ON DELETE CASCADE,
+                 fingerprint TEXT NOT NULL,
+                 PRIMARY KEY(repository, workflow, owner_id)
+             );
+             INSERT INTO schema_migrations(version, applied_at)
+                 VALUES (5, unixepoch('subsec') * 1000);
+             PRAGMA user_version = 5;
+             COMMIT;",
+        )
+        .context("failed to migrate SQLite ledger to version 5")?;
     Ok(())
 }
 

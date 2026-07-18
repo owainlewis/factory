@@ -65,6 +65,182 @@ fn ticket_and_schedule_identities_deduplicate_exact_triggers() {
 }
 
 #[test]
+fn schedule_cursor_atomically_enqueues_advances_and_skips_downtime() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    ledger
+        .register_daemon_owner("schedule-storage-owner", std::process::id())
+        .unwrap();
+    let cursor = ledger
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "* * * * *|UTC",
+            60_000,
+            30_000,
+            "schedule-storage-owner",
+        )
+        .unwrap();
+    assert_eq!(cursor.next_due_at, 60_000);
+    let identity =
+        TaskIdentity::scheduled("owainlewis/factory", "find-bugs", "1970-01-01T00:01:00Z").unwrap();
+    let first = ledger
+        .enqueue_scheduled_occurrence(
+            &identity,
+            r#"{"scheduled_at":"1970-01-01T00:01:00Z"}"#,
+            "* * * * *|UTC",
+            60_000,
+            120_000,
+        )
+        .unwrap();
+    let repeated = ledger
+        .enqueue_scheduled_occurrence(
+            &identity,
+            r#"{"scheduled_at":"1970-01-01T00:01:00Z"}"#,
+            "* * * * *|UTC",
+            60_000,
+            120_000,
+        )
+        .unwrap();
+    assert!(first.is_some_and(|task| task.created));
+    assert!(repeated.is_none());
+    assert_eq!(ledger.tasks().unwrap().len(), 1);
+
+    let restart = ledger
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "* * * * *|UTC",
+            120_000,
+            90_000,
+            "schedule-storage-owner",
+        )
+        .unwrap();
+    assert_eq!(restart.next_due_at, 120_000);
+    ledger
+        .remove_daemon_owner("schedule-storage-owner")
+        .unwrap();
+    ledger
+        .register_daemon_owner("schedule-storage-owner-2", std::process::id())
+        .unwrap();
+    let after_downtime = ledger
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "* * * * *|UTC",
+            660_000,
+            630_000,
+            "schedule-storage-owner-2",
+        )
+        .unwrap();
+    assert_eq!(after_downtime.next_due_at, 660_000);
+    assert_eq!(ledger.tasks().unwrap().len(), 1);
+}
+
+#[test]
+fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut first = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    first
+        .register_daemon_owner("schedule-owner-a", std::process::id())
+        .unwrap();
+    first
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "old|UTC",
+            60_000,
+            30_000,
+            "schedule-owner-a",
+        )
+        .unwrap();
+
+    let mut second = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    second
+        .register_daemon_owner("schedule-owner-b", std::process::id())
+        .unwrap();
+    let preserved = second
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "old|UTC",
+            120_000,
+            70_000,
+            "schedule-owner-b",
+        )
+        .unwrap();
+    assert_eq!(preserved.next_due_at, 60_000);
+
+    let conflict = second.initialize_schedule_cursor(
+        "owainlewis/factory",
+        "find-bugs",
+        "new|UTC",
+        90_000,
+        80_000,
+        "schedule-owner-b",
+    );
+    assert!(
+        format!("{:#}", conflict.unwrap_err()).contains("live owner using different fingerprint")
+    );
+    first.remove_daemon_owner("schedule-owner-a").unwrap();
+    let changed = second
+        .initialize_schedule_cursor(
+            "owainlewis/factory",
+            "find-bugs",
+            "new|UTC",
+            90_000,
+            80_000,
+            "schedule-owner-b",
+        )
+        .unwrap();
+    assert_eq!(changed.next_due_at, 90_000);
+    let mut stale_daemon = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    stale_daemon
+        .register_daemon_owner("schedule-owner-c", std::process::id())
+        .unwrap();
+    assert!(
+        stale_daemon
+            .initialize_schedule_cursor(
+                "owainlewis/factory",
+                "find-bugs",
+                "old|UTC",
+                120_000,
+                100_000,
+                "schedule-owner-c",
+            )
+            .is_err()
+    );
+    let stale =
+        TaskIdentity::scheduled("owainlewis/factory", "find-bugs", "1970-01-01T00:01:00Z").unwrap();
+    assert!(
+        first
+            .enqueue_scheduled_occurrence(
+                &stale,
+                r#"{"scheduled_at":"1970-01-01T00:01:00Z"}"#,
+                "old|UTC",
+                60_000,
+                120_000,
+            )
+            .unwrap()
+            .is_none()
+    );
+    let current =
+        TaskIdentity::scheduled("owainlewis/factory", "find-bugs", "1970-01-01T00:01:30Z").unwrap();
+    assert!(
+        second
+            .enqueue_scheduled_occurrence(
+                &current,
+                r#"{"scheduled_at":"1970-01-01T00:01:30Z"}"#,
+                "new|UTC",
+                90_000,
+                150_000,
+            )
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
 fn concurrent_claim_has_exactly_one_winner() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("ledger.db");
@@ -261,7 +437,7 @@ fn migrates_a_version_one_ledger_without_losing_tasks() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 }
 
 #[test]
@@ -285,7 +461,7 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
         "/worktrees/factory-3".to_owned(),
     )]);
     let interrupted = ledger
-        .claim_ticket_and_start_run_with_workdirs(
+        .claim_and_start_run_with_workdirs(
             &["owainlewis/factory".to_owned()],
             &runtimes,
             "interrupted-owner",
@@ -327,7 +503,7 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
         .register_daemon_owner("recovery-owner", std::process::id())
         .unwrap();
     let first_recovery = ledger
-        .claim_ticket_and_start_run_with_workdirs(
+        .claim_and_start_run_with_workdirs(
             &["owainlewis/factory".to_owned()],
             &runtimes,
             "recovery-owner",
@@ -359,7 +535,7 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
         .register_daemon_owner("recovery-owner", std::process::id())
         .unwrap();
     let final_recovery = ledger
-        .claim_ticket_and_start_run_with_workdirs(
+        .claim_and_start_run_with_workdirs(
             &["owainlewis/factory".to_owned()],
             &runtimes,
             "recovery-owner",
@@ -414,7 +590,7 @@ fn orphan_recovery_does_not_signal_a_reused_process_group() {
         "codex".to_owned(),
     )]);
     let run = ledger
-        .claim_ticket_and_start_run(
+        .claim_and_start_run(
             &["owainlewis/factory".to_owned()],
             &runtimes,
             "gone-owner",
@@ -478,7 +654,7 @@ fn cancellation_requests_are_durable_idempotent_and_force_cancelled_outcome() {
         .register_daemon_owner("storage-test-owner", std::process::id())
         .unwrap();
     let run = ledger
-        .claim_ticket_and_start_run(
+        .claim_and_start_run(
             &["owainlewis/factory".to_owned()],
             &runtimes,
             "storage-test-owner",
@@ -557,7 +733,7 @@ fn cancellation_rejects_a_reused_live_pid_when_the_owner_lease_is_stale() {
         "codex".to_owned(),
     )]);
     let run = ledger
-        .claim_ticket_and_start_run(
+        .claim_and_start_run(
             &["owainlewis/factory".to_owned()],
             &runtimes,
             "stale-owner",
@@ -601,7 +777,7 @@ fn orphan_recovery_completes_a_pending_cancellation_without_retrying() {
         .register_daemon_owner("cancelled-owner", std::process::id())
         .unwrap();
     let run = ledger
-        .claim_ticket_and_start_run(
+        .claim_and_start_run(
             &["owainlewis/factory".to_owned()],
             &runtimes,
             "cancelled-owner",
@@ -653,7 +829,7 @@ fn concurrent_completion_and_cancellation_always_leave_a_terminal_run() {
             .unwrap()
             .task;
         let run = setup
-            .claim_ticket_and_start_run(
+            .claim_and_start_run(
                 &["owainlewis/factory".to_owned()],
                 &runtimes,
                 "race-owner",
