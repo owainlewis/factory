@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -7,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 const DATABASE_NAME: &str = "factory.sqlite3";
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION_ID_BYTES: usize = 1024;
@@ -194,6 +195,7 @@ pub struct Task {
     pub repository: String,
     pub workflow: String,
     pub source_item: Option<String>,
+    pub payload: Option<String>,
     pub state: TaskState,
     pub created_at: i64,
     pub updated_at: i64,
@@ -203,6 +205,14 @@ pub struct Task {
 pub struct EnqueuedTask {
     pub task: Task,
     pub created: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedTicket {
+    pub source_item: String,
+    pub revision: String,
+    pub eligible: bool,
+    pub payload: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,6 +292,14 @@ impl Ledger {
     }
 
     pub fn enqueue(&mut self, identity: &TaskIdentity) -> Result<EnqueuedTask> {
+        self.enqueue_with_payload(identity, None)
+    }
+
+    pub fn enqueue_with_payload(
+        &mut self,
+        identity: &TaskIdentity,
+        payload: Option<&str>,
+    ) -> Result<EnqueuedTask> {
         identity.validate()?;
         let now = now_millis()?;
         let key = identity.key();
@@ -292,15 +310,16 @@ impl Ledger {
         let inserted = transaction
             .execute(
                 "INSERT OR IGNORE INTO tasks
-                 (identity_key, kind, repository, workflow, source_item, state, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?6)",
+                 (identity_key, kind, repository, workflow, source_item, payload, state, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'queued', ?7, ?7)",
                 params![
                     key,
                     identity.kind(),
                     identity.repository(),
                     identity.workflow(),
                     identity.source_item(),
-                    now
+                    payload,
+                    now,
                 ],
             )
             .context("failed to persist queued task")?
@@ -314,6 +333,123 @@ impl Ledger {
             task,
             created: inserted,
         })
+    }
+
+    pub fn reconcile_ticket_poll(
+        &mut self,
+        repository: &str,
+        workflow: &str,
+        observations: &[ObservedTicket],
+    ) -> Result<Vec<EnqueuedTask>> {
+        if repository.trim().is_empty() || workflow.trim().is_empty() {
+            bail!("poll repository and workflow must not be empty");
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin ticket poll transaction")?;
+        let previous = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT source_item, eligible FROM trigger_observations
+                     WHERE repository = ?1 AND workflow = ?2",
+                )
+                .context("failed to prepare prior ticket eligibility query")?;
+            statement
+                .query_map(params![repository, workflow], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+                })
+                .context("failed to query prior ticket eligibility")?
+                .collect::<rusqlite::Result<HashMap<_, _>>>()
+                .context("failed to read prior ticket eligibility")?
+        };
+        transaction
+            .execute(
+                "UPDATE trigger_observations SET eligible = 0
+                 WHERE repository = ?1 AND workflow = ?2",
+                params![repository, workflow],
+            )
+            .context("failed to reset ticket eligibility observations")?;
+        let mut enqueued = Vec::new();
+        for observation in observations {
+            if observation.source_item.trim().is_empty() || observation.revision.trim().is_empty() {
+                bail!("observed ticket source item and revision must not be empty");
+            }
+            let was_eligible = previous
+                .get(&observation.source_item)
+                .copied()
+                .unwrap_or(false);
+            if observation.eligible && !was_eligible {
+                let identity = TaskIdentity::ticket(
+                    repository,
+                    workflow,
+                    &observation.source_item,
+                    &observation.revision,
+                )?;
+                let active_exists = transaction
+                    .query_row(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM tasks
+                            WHERE repository = ?1 AND workflow = ?2 AND source_item = ?3
+                              AND state IN ('queued', 'running')
+                        )",
+                        params![repository, workflow, observation.source_item],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .context("failed to check for an active ticket task")?;
+                if !active_exists {
+                    let key = identity.key();
+                    let now = now_millis()?;
+                    let inserted = transaction
+                        .execute(
+                        "INSERT OR IGNORE INTO tasks
+                         (identity_key, kind, repository, workflow, source_item, payload, state, created_at, updated_at)
+                         VALUES (?1, 'ticket', ?2, ?3, ?4, ?5, 'queued', ?6, ?6)",
+                        params![
+                            key,
+                            repository,
+                            workflow,
+                            observation.source_item,
+                            observation.payload,
+                            now
+                        ],
+                        )
+                        .context("failed to enqueue observed ticket")?
+                        == 1;
+                    let task = query_task_by_key(&transaction, &identity.key())?
+                        .context("observed ticket task disappeared")?;
+                    enqueued.push(EnqueuedTask {
+                        task,
+                        created: inserted,
+                    });
+                }
+            }
+            transaction
+                .execute(
+                    "INSERT INTO trigger_observations
+                     (repository, workflow, source_item, revision, eligible, payload, observed_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                     ON CONFLICT(repository, workflow, source_item) DO UPDATE SET
+                       revision = excluded.revision,
+                       eligible = excluded.eligible,
+                       payload = excluded.payload,
+                       observed_at = excluded.observed_at",
+                    params![
+                        repository,
+                        workflow,
+                        observation.source_item,
+                        observation.revision,
+                        observation.eligible,
+                        observation.payload,
+                        now_millis()?
+                    ],
+                )
+                .context("failed to persist ticket observation")?;
+        }
+        transaction
+            .commit()
+            .context("failed to commit ticket poll transaction")?;
+        Ok(enqueued)
     }
 
     pub fn task(&self, id: i64) -> Result<Option<Task>> {
@@ -479,9 +615,16 @@ fn migrate(connection: &Connection) -> Result<()> {
     if version > SCHEMA_VERSION {
         bail!("SQLite schema version {version} is newer than supported version {SCHEMA_VERSION}");
     }
-    if version == SCHEMA_VERSION {
-        return Ok(());
+    if version < 1 {
+        migrate_v1(connection)?;
     }
+    if version < 2 {
+        migrate_v2(connection)?;
+    }
+    Ok(())
+}
+
+fn migrate_v1(connection: &Connection) -> Result<()> {
     connection
         .execute_batch(
             "BEGIN IMMEDIATE;
@@ -527,6 +670,30 @@ fn migrate(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v2(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE tasks ADD COLUMN payload TEXT;
+             CREATE TABLE trigger_observations (
+                 repository TEXT NOT NULL,
+                 workflow TEXT NOT NULL,
+                 source_item TEXT NOT NULL,
+                 revision TEXT NOT NULL,
+                 eligible INTEGER NOT NULL CHECK (eligible IN (0, 1)),
+                 payload TEXT NOT NULL,
+                 observed_at INTEGER NOT NULL,
+                 PRIMARY KEY(repository, workflow, source_item)
+             );
+             INSERT INTO schema_migrations(version, applied_at)
+                 VALUES (2, unixepoch('subsec') * 1000);
+             PRAGMA user_version = 2;
+             COMMIT;",
+        )
+        .context("failed to migrate SQLite ledger to version 2")?;
+    Ok(())
+}
+
 fn query_task(connection: &Connection, id: i64) -> Result<Option<Task>> {
     connection
         .query_row("SELECT * FROM tasks WHERE id = ?1", [id], row_to_task)
@@ -561,6 +728,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         repository: row.get("repository")?,
         workflow: row.get("workflow")?,
         source_item: row.get("source_item")?,
+        payload: row.get("payload")?,
         state,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
