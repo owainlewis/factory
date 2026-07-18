@@ -30,6 +30,7 @@ pub struct WorkflowEntry {
     pub timeout: Option<Duration>,
     pub prompt: Option<String>,
     pub errors: Vec<String>,
+    pub(crate) is_schedule_workflow: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,6 +245,7 @@ fn load_file(repository: &Path, path: &Path, config: &Config) -> WorkflowEntry {
         timeout: None,
         prompt: None,
         errors: Vec::new(),
+        is_schedule_workflow: false,
     };
 
     if !valid_workflow_id(&entry.id) {
@@ -330,6 +332,11 @@ fn load_file(repository: &Path, path: &Path, config: &Config) -> WorkflowEntry {
         entry.prompt = Some(prompt);
     }
 
+    if let Ok(value) = toml::from_str::<toml::Value>(&frontmatter)
+        && let Some(table) = value.as_table()
+    {
+        entry.is_schedule_workflow = table.contains_key("schedule") && !table.contains_key("label");
+    }
     let raw: Frontmatter = match toml::from_str(&frontmatter) {
         Ok(raw) => raw,
         Err(error) => {
@@ -586,6 +593,7 @@ fn invalid_entry(repository: &Path, path: &Path, id: &str, error: &str) -> Workf
         timeout: None,
         prompt: None,
         errors: vec![error.to_owned()],
+        is_schedule_workflow: false,
     }
 }
 

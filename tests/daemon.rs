@@ -1168,11 +1168,17 @@ async fn invalid_scheduled_workflow_does_not_block_valid_ticket_workflow() {
         "+++\nschedule = \"eventually\"\ntimezone = \"UTC\"\n+++\n\nINVALID SCHEDULE\n",
     )
     .unwrap();
+    fs::write(
+        fixture.config.repositories[0]
+            .join(".factory/workflows/invalid-schedule-frontmatter.md"),
+        "+++\nschedule = \"* * * * *\"\ntimezone = \"UTC\"\nunknown = true\n+++\n\nINVALID SCHEDULE FRONTMATTER\n",
+    )
+    .unwrap();
     assert_eq!(
         WorkflowCatalog::load(&fixture.config)
             .unwrap()
             .invalid_count(),
-        1
+        2
     );
     fixture.open_gate();
     let search_path = std::env::join_paths(
@@ -1213,6 +1219,84 @@ async fn invalid_scheduled_workflow_does_not_block_valid_ticket_workflow() {
     )
     .unwrap();
     assert!(daemon.wait().unwrap().success());
+}
+
+#[test]
+fn invalid_label_workflow_fails_daemon_startup() {
+    let fixture = Fixture::new(&[vec![issue(32)]], 1, 1);
+    fs::write(
+        fixture.config.repositories[0].join(".factory/workflows/implement-ready-ticket.md"),
+        "+++\nlabel = \"factory:ready\"\ntimeout = \"0s\"\n+++\n\nINVALID TICKET WORKFLOW\n",
+    )
+    .unwrap();
+    let search_path = std::env::join_paths(
+        std::iter::once(fixture.gh.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .as_deref()
+                .map(std::env::split_paths)
+                .into_iter()
+                .flatten(),
+        ),
+    )
+    .unwrap();
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .args([
+            "run",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            fixture.ledger_path.parent().unwrap().to_str().unwrap(),
+        ])
+        .env("PATH", search_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "Factory cannot start with invalid ticket workflows",
+        ))
+        .stderr(predicates::str::contains(
+            "timeout must be greater than zero",
+        ));
+}
+
+#[test]
+fn ambiguous_schedule_and_label_workflow_fails_daemon_startup() {
+    let fixture = Fixture::new(&[vec![issue(33)]], 1, 1);
+    fs::write(
+        fixture.config.repositories[0].join(".factory/workflows/ambiguous.md"),
+        "+++\nschedule = \"* * * * *\"\ntimezone = \"UTC\"\nlabel = \"factory:ready\"\n+++\n\nAMBIGUOUS WORKFLOW\n",
+    )
+    .unwrap();
+    let search_path = std::env::join_paths(
+        std::iter::once(fixture.gh.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .as_deref()
+                .map(std::env::split_paths)
+                .into_iter()
+                .flatten(),
+        ),
+    )
+    .unwrap();
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .args([
+            "run",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            fixture.ledger_path.parent().unwrap().to_str().unwrap(),
+        ])
+        .env("PATH", search_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "Factory cannot start with invalid ticket workflows",
+        ))
+        .stderr(predicates::str::contains(
+            "workflow must declare exactly one trigger",
+        ));
 }
 
 #[tokio::test]

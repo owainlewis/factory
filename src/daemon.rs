@@ -237,16 +237,31 @@ impl FactoryDaemon {
     }
 
     async fn validate(&self, cancellation: &CancellationToken) -> Result<()> {
-        for entry in self
+        let invalid_entries = self
             .catalog
             .entries
             .iter()
             .filter(|entry| !entry.errors.is_empty())
+            .collect::<Vec<_>>();
+        for entry in invalid_entries
+            .iter()
+            .filter(|entry| entry.is_schedule_workflow)
         {
             eprintln!(
-                "Factory skipped invalid workflow {}: {}",
+                "Factory skipped invalid scheduled workflow {}: {}",
                 entry.path.display(),
                 entry.errors.join("; ")
+            );
+        }
+        let invalid_non_schedules = invalid_entries
+            .iter()
+            .filter(|entry| !entry.is_schedule_workflow)
+            .map(|entry| format!("{}: {}", entry.path.display(), entry.errors.join("; ")))
+            .collect::<Vec<_>>();
+        if !invalid_non_schedules.is_empty() {
+            bail!(
+                "Factory cannot start with invalid ticket workflows:\n{}",
+                invalid_non_schedules.join("\n")
             );
         }
         self.github.validate_global(cancellation).await?;
