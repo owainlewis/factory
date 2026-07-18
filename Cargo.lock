@@ -275,6 +275,7 @@ dependencies = [
  "dirs",
  "humantime",
  "predicates",
+ "rustix",
  "serde",
  "tempfile",
  "toml",

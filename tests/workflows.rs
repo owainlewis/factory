@@ -360,3 +360,32 @@ fn loading_workflows_never_executes_prompt_text() {
     assert_eq!(catalog.invalid_count(), 0);
     assert!(!marker.exists());
 }
+
+#[test]
+fn catalog_output_escapes_control_characters_in_every_dynamic_cell() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = temp.path().join("repository\u{1b}[2J");
+    let workflows = repository.join(".factory/workflows");
+    let workspace = temp.path().join("worktrees");
+    fs::create_dir_all(&workflows).unwrap();
+    fs::create_dir(&workspace).unwrap();
+    fs::write(
+        workflows.join("bad\u{1b}[31m.md"),
+        "+++\nlabel = \"factory:ready\"\nruntime = \"\\u001b[32m\"\n+++\nPrompt.\n",
+    )
+    .unwrap();
+    let config = Config {
+        repositories: vec![repository.canonicalize().unwrap()],
+        poll_every: Duration::from_secs(30),
+        default_runtime: "codex".to_owned(),
+        default_timeout: Duration::from_secs(2 * 60 * 60),
+        maximum_timeout: Duration::from_secs(8 * 60 * 60),
+        max_concurrent_runs: 1,
+        workspace_root: workspace,
+    };
+
+    let output = WorkflowCatalog::load(&config).unwrap().to_string();
+
+    assert!(!output.contains('\u{1b}'));
+    assert!(output.matches("\\u{1b}").count() >= 3, "{output}");
+}

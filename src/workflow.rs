@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
@@ -74,10 +75,16 @@ impl WorkflowCatalog {
 
 impl fmt::Display for WorkflowCatalog {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(
-            formatter,
-            "REPOSITORY\tWORKFLOW\tTRIGGER\tRUNTIME\tTIMEOUT\tVALIDITY"
-        )?;
+        let headers = [
+            "REPOSITORY",
+            "WORKFLOW",
+            "TRIGGER",
+            "RUNTIME",
+            "TIMEOUT",
+            "VALIDITY",
+        ]
+        .map(sanitize_catalog_cell);
+        writeln!(formatter, "{}", headers.join("\t"))?;
         for entry in &self.entries {
             let trigger = entry
                 .trigger
@@ -95,16 +102,16 @@ impl fmt::Display for WorkflowCatalog {
             } else {
                 format!("invalid: {}", entry.errors.join("; "))
             };
-            writeln!(
-                formatter,
-                "{}\t{}\t{}\t{}\t{}\t{}",
-                entry.repository.display(),
-                entry.id,
+            let cells = [
+                entry.repository.display().to_string(),
+                entry.id.clone(),
                 trigger,
-                runtime,
+                runtime.to_owned(),
                 timeout,
-                validity
-            )?;
+                validity,
+            ]
+            .map(|cell| sanitize_catalog_cell(&cell));
+            writeln!(formatter, "{}", cells.join("\t"))?;
         }
         Ok(())
     }
@@ -277,15 +284,37 @@ fn load_file(repository: &Path, path: &Path, config: &Config) -> WorkflowEntry {
         }
     }
 
-    let contents = match fs::read_to_string(path) {
-        Ok(contents) => contents,
+    let mut file = match open_workflow_file(path) {
+        Ok(file) => file,
         Err(error) => {
             entry
                 .errors
-                .push(format!("could not read workflow as UTF-8: {error}"));
+                .push(format!("could not safely open workflow: {error}"));
             return entry;
         }
     };
+    match file.metadata() {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => {
+            entry
+                .errors
+                .push("opened workflow is not a regular file".to_owned());
+            return entry;
+        }
+        Err(error) => {
+            entry
+                .errors
+                .push(format!("could not inspect opened workflow: {error}"));
+            return entry;
+        }
+    }
+    let mut contents = String::new();
+    if let Err(error) = file.read_to_string(&mut contents) {
+        entry
+            .errors
+            .push(format!("could not read workflow as UTF-8: {error}"));
+        return entry;
+    }
     let (frontmatter, prompt) = match split_frontmatter(&contents) {
         Ok(parts) => parts,
         Err(error) => {
@@ -499,6 +528,35 @@ fn valid_workflow_id(id: &str) -> bool {
         })
 }
 
+fn sanitize_catalog_cell(value: &str) -> String {
+    let mut sanitized = String::with_capacity(value.len());
+    for character in value.chars() {
+        if character.is_control() {
+            sanitized.extend(character.escape_default());
+        } else {
+            sanitized.push(character);
+        }
+    }
+    sanitized
+}
+
+#[cfg(unix)]
+fn open_workflow_file(path: &Path) -> std::io::Result<File> {
+    use rustix::fs::{Mode, OFlags, open};
+
+    let descriptor = open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )?;
+    Ok(descriptor.into())
+}
+
+#[cfg(not(unix))]
+fn open_workflow_file(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
+
 fn mark_duplicate_ids(entries: &mut [WorkflowEntry]) {
     let mut groups: HashMap<(PathBuf, String), Vec<usize>> = HashMap::new();
     for (index, entry) in entries.iter().enumerate() {
@@ -558,5 +616,19 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("duplicate workflow ID"))
         }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_follow_open_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target.md");
+        let link = temp.path().join("link.md");
+        fs::write(&target, "prompt").unwrap();
+        symlink(target, &link).unwrap();
+
+        assert!(open_workflow_file(&link).is_err());
     }
 }
