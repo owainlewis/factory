@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use factory::config::{Config, default_config_path};
+use factory::workflow::WorkflowCatalog;
 
 #[derive(Debug, Parser)]
 #[command(name = "factory", version, about)]
@@ -20,6 +21,12 @@ enum Command {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    /// List resolved workflows without executing their prompts.
+    Workflows {
+        /// Path to the Factory configuration file.
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -30,6 +37,16 @@ fn main() -> Result<()> {
             let path = config.unwrap_or_else(default_config_path);
             let config = Config::load(&path)?;
             print!("{config}");
+        }
+        Command::Workflows { config } => {
+            let path = config.unwrap_or_else(default_config_path);
+            let config = Config::load(&path)?;
+            let catalog = WorkflowCatalog::load(&config)?;
+            print!("{catalog}");
+            let invalid = catalog.invalid_count();
+            if invalid > 0 {
+                anyhow::bail!("workflow catalog contains {invalid} invalid workflow(s)");
+            }
         }
     }
 
