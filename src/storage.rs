@@ -316,11 +316,12 @@ impl Ledger {
         let connection = Connection::open(path)
             .with_context(|| format!("failed to open SQLite database {}", path.display()))?;
         connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .context("failed to enable SQLite foreign keys")?;
+        configure_wal(&connection)?;
+        connection
             .busy_timeout(std::time::Duration::from_secs(5))
             .context("failed to configure SQLite busy timeout")?;
-        connection
-            .execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
-            .context("failed to configure SQLite database")?;
         migrate(&connection)?;
         Ok(Self {
             connection,
@@ -1417,36 +1418,86 @@ impl Ledger {
     }
 }
 
+fn configure_wal(connection: &Connection) -> Result<()> {
+    connection
+        .busy_timeout(std::time::Duration::from_millis(10))
+        .context("failed to configure SQLite WAL setup timeout")?;
+    let mut last_error = None;
+    for _ in 0..100 {
+        match connection.query_row("PRAGMA journal_mode = WAL", [], |row| {
+            row.get::<_, String>(0)
+        }) {
+            Ok(mode) if mode.eq_ignore_ascii_case("wal") => return Ok(()),
+            Ok(mode) => bail!("SQLite refused WAL journal mode and selected {mode:?}"),
+            Err(error) if sqlite_is_busy(&error) => {
+                last_error = Some(error);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => return Err(error).context("failed to configure SQLite WAL mode"),
+        }
+    }
+    Err(anyhow::Error::new(
+        last_error.expect("WAL retry loop records each lock failure"),
+    ))
+    .context("failed to configure SQLite WAL mode after lock retries")
+}
+
+fn sqlite_is_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(code, _)
+            if matches!(
+                code.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            )
+    )
+}
+
 fn migrate(connection: &Connection) -> Result<()> {
-    let version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .context("failed to read SQLite schema version")?;
-    if version > SCHEMA_VERSION {
-        bail!("SQLite schema version {version} is newer than supported version {SCHEMA_VERSION}");
+    connection
+        .execute_batch("BEGIN IMMEDIATE;")
+        .context("failed to lock SQLite schema for migration")?;
+    let result = (|| -> Result<()> {
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .context("failed to read SQLite schema version")?;
+        if version > SCHEMA_VERSION {
+            bail!(
+                "SQLite schema version {version} is newer than supported version {SCHEMA_VERSION}"
+            );
+        }
+        if version < 1 {
+            migrate_v1(connection)?;
+        }
+        if version < 2 {
+            migrate_v2(connection)?;
+        }
+        if version < 3 {
+            migrate_v3(connection)?;
+        }
+        if version < 4 {
+            migrate_v4(connection)?;
+        }
+        if version < 5 {
+            migrate_v5(connection)?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => connection
+            .execute_batch("COMMIT;")
+            .context("failed to commit SQLite schema migration"),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            Err(error)
+        }
     }
-    if version < 1 {
-        migrate_v1(connection)?;
-    }
-    if version < 2 {
-        migrate_v2(connection)?;
-    }
-    if version < 3 {
-        migrate_v3(connection)?;
-    }
-    if version < 4 {
-        migrate_v4(connection)?;
-    }
-    if version < 5 {
-        migrate_v5(connection)?;
-    }
-    Ok(())
 }
 
 fn migrate_v1(connection: &Connection) -> Result<()> {
     connection
         .execute_batch(
-            "BEGIN IMMEDIATE;
-             CREATE TABLE IF NOT EXISTS schema_migrations (
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
                  version INTEGER PRIMARY KEY,
                  applied_at INTEGER NOT NULL
              );
@@ -1481,8 +1532,7 @@ fn migrate_v1(connection: &Connection) -> Result<()> {
                  ON runs(task_id) WHERE outcome = 'running';
              INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                  VALUES (1, unixepoch('subsec') * 1000);
-             PRAGMA user_version = 1;
-             COMMIT;",
+             PRAGMA user_version = 1;",
         )
         .context("failed to initialize or migrate SQLite ledger")?;
     Ok(())
@@ -1491,8 +1541,7 @@ fn migrate_v1(connection: &Connection) -> Result<()> {
 fn migrate_v2(connection: &Connection) -> Result<()> {
     connection
         .execute_batch(
-            "BEGIN IMMEDIATE;
-             ALTER TABLE tasks ADD COLUMN payload TEXT;
+            "ALTER TABLE tasks ADD COLUMN payload TEXT;
              CREATE TABLE trigger_observations (
                  repository TEXT NOT NULL,
                  workflow TEXT NOT NULL,
@@ -1505,8 +1554,7 @@ fn migrate_v2(connection: &Connection) -> Result<()> {
              );
              INSERT INTO schema_migrations(version, applied_at)
                  VALUES (2, unixepoch('subsec') * 1000);
-             PRAGMA user_version = 2;
-             COMMIT;",
+             PRAGMA user_version = 2;",
         )
         .context("failed to migrate SQLite ledger to version 2")?;
     Ok(())
@@ -1515,8 +1563,7 @@ fn migrate_v2(connection: &Connection) -> Result<()> {
 fn migrate_v3(connection: &Connection) -> Result<()> {
     connection
         .execute_batch(
-            "BEGIN IMMEDIATE;
-             ALTER TABLE runs ADD COLUMN cancellation_requested_at INTEGER;
+            "ALTER TABLE runs ADD COLUMN cancellation_requested_at INTEGER;
              ALTER TABLE runs ADD COLUMN owner_pid INTEGER;
              ALTER TABLE runs ADD COLUMN owner_id TEXT;
              CREATE TABLE daemon_owners (
@@ -1526,8 +1573,7 @@ fn migrate_v3(connection: &Connection) -> Result<()> {
              );
              INSERT INTO schema_migrations(version, applied_at)
                  VALUES (3, unixepoch('subsec') * 1000);
-             PRAGMA user_version = 3;
-             COMMIT;",
+             PRAGMA user_version = 3;",
         )
         .context("failed to migrate SQLite ledger to version 3")?;
     Ok(())
@@ -1536,8 +1582,7 @@ fn migrate_v3(connection: &Connection) -> Result<()> {
 fn migrate_v4(connection: &Connection) -> Result<()> {
     connection
         .execute_batch(
-            "BEGIN IMMEDIATE;
-         ALTER TABLE tasks ADD COLUMN recovery_source_run_id INTEGER REFERENCES runs(id);
+            "ALTER TABLE tasks ADD COLUMN recovery_source_run_id INTEGER REFERENCES runs(id);
          ALTER TABLE runs ADD COLUMN process_id INTEGER;
          ALTER TABLE runs ADD COLUMN process_identity TEXT;
          ALTER TABLE runs ADD COLUMN pull_request TEXT;
@@ -1549,8 +1594,7 @@ fn migrate_v4(connection: &Connection) -> Result<()> {
          UPDATE runs SET last_activity_at = started_at WHERE last_activity_at IS NULL;
          INSERT INTO schema_migrations(version, applied_at)
              VALUES (4, unixepoch('subsec') * 1000);
-         PRAGMA user_version = 4;
-         COMMIT;",
+         PRAGMA user_version = 4;",
         )
         .context("failed to migrate SQLite ledger to version 4")?;
     Ok(())
@@ -1559,8 +1603,7 @@ fn migrate_v4(connection: &Connection) -> Result<()> {
 fn migrate_v5(connection: &Connection) -> Result<()> {
     connection
         .execute_batch(
-            "BEGIN IMMEDIATE;
-             CREATE TABLE schedule_cursors (
+            "CREATE TABLE schedule_cursors (
                  repository TEXT NOT NULL,
                  workflow TEXT NOT NULL,
                  fingerprint TEXT NOT NULL,
@@ -1577,8 +1620,7 @@ fn migrate_v5(connection: &Connection) -> Result<()> {
              );
              INSERT INTO schema_migrations(version, applied_at)
                  VALUES (5, unixepoch('subsec') * 1000);
-             PRAGMA user_version = 5;
-             COMMIT;",
+             PRAGMA user_version = 5;",
         )
         .context("failed to migrate SQLite ledger to version 5")?;
     Ok(())

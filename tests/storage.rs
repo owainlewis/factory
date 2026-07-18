@@ -42,6 +42,42 @@ fn initializes_in_data_directory_and_persists_across_reopen() {
 }
 
 #[test]
+fn concurrent_first_open_converges_on_one_complete_schema() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let barrier = Arc::new(Barrier::new(9));
+    let handles = (0..8)
+        .map(|_| {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                Ledger::open(&path)
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+    for handle in handles {
+        handle.join().unwrap().unwrap();
+    }
+
+    let connection = rusqlite::Connection::open(path).unwrap();
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 5);
+    let schedule_tables: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_schema
+             WHERE type = 'table' AND name IN ('schedule_cursors', 'schedule_owners')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(schedule_tables, 2);
+}
+
+#[test]
 fn ticket_and_schedule_identities_deduplicate_exact_triggers() {
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = Ledger::open(temp.path().join("ledger.db").as_path()).unwrap();
