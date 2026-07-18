@@ -78,3 +78,37 @@ fn uses_default_config_path() {
         .success()
         .stdout(predicate::str::contains("Configuration is valid."));
 }
+
+#[test]
+fn resolves_relative_paths_from_config_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let config_dir = temp.path().join("configuration");
+    let repository = config_dir.join("repository");
+    let workspace = config_dir.join("worktrees");
+    let launch_dir = temp.path().join("launch");
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir(&workspace).unwrap();
+    fs::create_dir(&launch_dir).unwrap();
+    let path = config_dir.join("config.toml");
+    fs::write(
+        &path,
+        r#"repositories = ["repository"]
+poll_every = "30s"
+default_runtime = "codex"
+default_timeout = "2h"
+maximum_timeout = "8h"
+max_concurrent_runs = 2
+workspace_root = "worktrees"
+"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("factory")
+        .unwrap()
+        .current_dir(launch_dir)
+        .args(["validate", "--config", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(repository.to_str().unwrap()))
+        .stdout(predicate::str::contains(workspace.to_str().unwrap()));
+}
