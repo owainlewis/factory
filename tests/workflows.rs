@@ -381,6 +381,7 @@ fn catalog_output_escapes_control_characters_in_every_dynamic_cell() {
         default_timeout: Duration::from_secs(2 * 60 * 60),
         maximum_timeout: Duration::from_secs(8 * 60 * 60),
         max_concurrent_runs: 1,
+        max_concurrent_runs_per_repository: 1,
         workspace_root: workspace,
     };
 

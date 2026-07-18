@@ -142,7 +142,7 @@ impl GitHubClient {
             .await
     }
 
-    async fn poll_once_with_cancellation(
+    pub async fn poll_once_with_cancellation(
         &self,
         config: &Config,
         catalog: &WorkflowCatalog,

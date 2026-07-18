@@ -250,6 +250,12 @@ pub struct Run {
     pub session_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedRun {
+    pub task: Task,
+    pub run: Run,
+}
+
 pub struct Ledger {
     connection: Connection,
     path: PathBuf,
@@ -457,6 +463,95 @@ impl Ledger {
     }
 
     pub fn claim_next(&mut self) -> Result<Option<Task>> {
+        self.claim_next_matching(None)
+    }
+
+    pub fn claim_next_for_repositories(&mut self, repositories: &[String]) -> Result<Option<Task>> {
+        if repositories.is_empty() {
+            return Ok(None);
+        }
+        let repositories = serde_json::to_string(repositories)
+            .context("failed to encode claim repository filter")?;
+        self.claim_next_matching(Some(&repositories))
+    }
+
+    pub fn claim_ticket_and_start_run(
+        &mut self,
+        available_repositories: &[String],
+        workflow_runtimes: &HashMap<(String, String), String>,
+    ) -> Result<Option<ClaimedRun>> {
+        if available_repositories.is_empty() {
+            return Ok(None);
+        }
+        let available = available_repositories
+            .iter()
+            .collect::<std::collections::HashSet<_>>();
+        let now = now_millis()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin atomic task and run claim")?;
+        let candidates = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT * FROM tasks
+                     WHERE state = 'queued' AND kind = 'ticket'
+                     ORDER BY created_at, id",
+                )
+                .context("failed to prepare ticket claim query")?;
+            statement
+                .query_map([], row_to_task)
+                .context("failed to query queued ticket tasks")?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .context("failed to read queued ticket tasks")?
+        };
+        let Some(task) = candidates.into_iter().find(|task| {
+            available.contains(&task.repository)
+                && workflow_runtimes.contains_key(&(task.repository.clone(), task.workflow.clone()))
+        }) else {
+            transaction
+                .commit()
+                .context("failed to finish empty ticket claim")?;
+            return Ok(None);
+        };
+        let runtime = workflow_runtimes
+            .get(&(task.repository.clone(), task.workflow.clone()))
+            .context("claimed workflow runtime disappeared")?;
+        let changed = transaction
+            .execute(
+                "UPDATE tasks SET state = 'running', updated_at = ?1
+                 WHERE id = ?2 AND state = 'queued'",
+                params![now, task.id],
+            )
+            .context("failed to claim queued ticket task")?;
+        if changed != 1 {
+            bail!("queued task {} could not be claimed atomically", task.id);
+        }
+        transaction
+            .execute(
+                "INSERT INTO runs
+                 (task_id, workflow, repository, source_item, runtime, started_at, outcome)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running')",
+                params![
+                    task.id,
+                    task.workflow,
+                    task.repository,
+                    task.source_item,
+                    runtime,
+                    now
+                ],
+            )
+            .context("failed to create run in task claim transaction")?;
+        let run_id = transaction.last_insert_rowid();
+        let task = query_task(&transaction, task.id)?.context("claimed task disappeared")?;
+        let run = query_run(&transaction, run_id)?.context("claimed run disappeared")?;
+        transaction
+            .commit()
+            .context("failed to commit atomic task and run claim")?;
+        Ok(Some(ClaimedRun { task, run }))
+    }
+
+    fn claim_next_matching(&mut self, repositories: Option<&str>) -> Result<Option<Task>> {
         let now = now_millis()?;
         let transaction = self
             .connection
@@ -464,8 +559,11 @@ impl Ledger {
             .context("failed to begin atomic task claim")?;
         let id = transaction
             .query_row(
-                "SELECT id FROM tasks WHERE state = 'queued' ORDER BY created_at, id LIMIT 1",
-                [],
+                "SELECT id FROM tasks
+                 WHERE state = 'queued'
+                   AND (?1 IS NULL OR repository IN (SELECT value FROM json_each(?1)))
+                 ORDER BY created_at, id LIMIT 1",
+                [repositories],
                 |row| row.get::<_, i64>(0),
             )
             .optional()
@@ -491,6 +589,37 @@ impl Ledger {
             .commit()
             .context("failed to commit atomic task claim")?;
         Ok(Some(task))
+    }
+
+    pub fn latest_session(
+        &self,
+        repository: &str,
+        workflow: &str,
+        source_item: Option<&str>,
+    ) -> Result<Option<String>> {
+        self.connection
+            .query_row(
+                "SELECT session_id FROM runs
+                 WHERE repository = ?1 AND workflow = ?2
+                   AND source_item IS ?3 AND session_id IS NOT NULL
+                 ORDER BY id DESC LIMIT 1",
+                params![repository, workflow, source_item],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed to query prior agent session")
+    }
+
+    pub fn tasks(&self) -> Result<Vec<Task>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT * FROM tasks ORDER BY id")
+            .context("failed to prepare tasks query")?;
+        statement
+            .query_map([], row_to_task)
+            .context("failed to query tasks")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read tasks")
     }
 
     pub fn start_run(&mut self, task_id: i64, runtime: &str) -> Result<Run> {
