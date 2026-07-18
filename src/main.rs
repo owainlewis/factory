@@ -7,7 +7,9 @@ use tokio_util::sync::CancellationToken;
 
 use factory::config::{Config, default_config_path};
 use factory::execution::ResolvedWorkflow;
-use factory::runtime::{CodexRuntime, RuntimeCancelled, Termination};
+use factory::runtime::{
+    CodexRuntime, RuntimeCancelled, Termination, write_stderr_best_effort, write_stdout_best_effort,
+};
 use factory::workflow::WorkflowCatalog;
 
 #[derive(Debug, Parser)]
@@ -58,7 +60,7 @@ async fn main() -> ExitCode {
     match run_cli().await {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            eprintln!("Error: {error:#}");
+            write_stderr_best_effort(format!("Error: {error:#}\n").as_bytes());
             ExitCode::FAILURE
         }
     }
@@ -134,15 +136,16 @@ async fn run_workflow(
         }
         Err(error) => return Err(error),
     };
-    eprintln!(
-        "Codex ready: {} ({})",
-        health.version, health.authentication
-    );
-    eprintln!(
-        "Running workflow {:?} in {} with timeout {}",
-        workflow.id,
-        workflow.working_directory.display(),
-        humantime::format_duration(workflow.timeout)
+    write_stderr_best_effort(
+        format!(
+            "Codex ready: {} ({})\nRunning workflow {:?} in {} with timeout {}\n",
+            health.version,
+            health.authentication,
+            workflow.id,
+            workflow.working_directory.display(),
+            humantime::format_duration(workflow.timeout)
+        )
+        .as_bytes(),
     );
     let result = runtime
         .run(
@@ -155,20 +158,20 @@ async fn run_workflow(
     signal_task.abort();
 
     if !result.final_response.is_empty() {
-        print!("{}", result.final_response);
-        if !result.final_response.ends_with('\n') {
-            println!();
-        }
+        write_final_response(&result.final_response);
     }
-    eprintln!(
-        "Run finished: status={} termination={:?} duration={} thread={} activity_lines={} activity_error={} response_truncated={}",
-        result.status,
-        result.termination,
-        humantime::format_duration(result.duration),
-        result.thread_id.as_deref().unwrap_or("-"),
-        result.activity_lines,
-        result.activity_error.as_deref().unwrap_or("-"),
-        result.final_response_truncated
+    write_stderr_best_effort(
+        format!(
+            "Run finished: status={} termination={:?} duration={} thread={} activity_lines={} activity_error={} response_truncated={}\n",
+            result.status,
+            result.termination,
+            humantime::format_duration(result.duration),
+            result.thread_id.as_deref().unwrap_or("-"),
+            result.activity_lines,
+            result.activity_error.as_deref().unwrap_or("-"),
+            result.final_response_truncated
+        )
+        .as_bytes(),
     );
 
     match result.termination {
@@ -181,4 +184,12 @@ async fn run_workflow(
             .and_then(|code| u8::try_from(code).ok())
             .unwrap_or(1)),
     }
+}
+
+fn write_final_response(response: &str) {
+    let mut output = response.as_bytes().to_vec();
+    if !response.ends_with('\n') {
+        output.push(b'\n');
+    }
+    write_stdout_best_effort(&output);
 }

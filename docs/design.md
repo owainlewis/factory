@@ -30,6 +30,8 @@ Factory is a local-first daemon that turns scheduled prompts and ready tickets i
 ## Constraints
 
 - V1 runs one daemon on a trusted local machine and polls GitHub through the authenticated `gh` CLI.
+- V1 supports Unix-like operating systems only. Its process-tree guarantees rely
+  on Unix process groups and wait-without-reaping semantics.
 - Agent runtimes keep ownership of their authentication, tools, skills, MCP servers, and permissions.
 - Workflows may run for hours and adapt while watching CI. Timeouts must supervise stalled or runaway work without decomposing it into deterministic steps.
 - Agents may mutate tickets and repositories. V1 therefore manages only trusted repositories and relies on explicit runtime permissions.
@@ -330,4 +332,3 @@ Backout means stopping the daemon. Tickets, comments, branches, worktrees, and p
 - Should workflow files live in each target repository, one central Factory repository, or support both with explicit precedence?
 
 ## Decision
-

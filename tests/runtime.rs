@@ -113,6 +113,33 @@ exit 17"#,
 }
 
 #[tokio::test]
+async fn early_exit_before_prompt_read_preserves_status_and_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let executable = fake_codex(
+        temp.path(),
+        r#"echo '{"type":"thread.started","thread_id":"early-thread"}'
+printf 'Rejected before prompt.' > "$output"
+exit 23"#,
+    );
+    let runtime = CodexRuntime::new(executable);
+    let prompt = "large prompt ".repeat(200_000);
+
+    let result = runtime
+        .run(
+            &prompt,
+            temp.path(),
+            Duration::from_secs(5),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.status.code(), Some(23));
+    assert_eq!(result.thread_id.as_deref(), Some("early-thread"));
+    assert_eq!(result.final_response, "Rejected before prompt.");
+}
+
+#[tokio::test]
 async fn rejects_malformed_json_activity() {
     let temp = tempfile::tempdir().unwrap();
     let executable = fake_codex(

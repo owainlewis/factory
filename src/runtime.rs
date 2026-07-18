@@ -3,6 +3,8 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::sync::OnceLock;
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -21,6 +23,8 @@ const MAX_THREAD_ID_BYTES: usize = 256;
 const MAX_FINAL_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_STDERR_BYTES: usize = 64 * 1024;
 const MAX_HEALTH_OUTPUT_BYTES: usize = 64 * 1024;
+const OUTPUT_CHANNEL_CAPACITY: usize = 16;
+const OUTPUT_ACK_TIMEOUT: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeHealth {
@@ -171,8 +175,9 @@ impl CodexRuntime {
             .stderr
             .take()
             .context("Codex process did not expose stderr")?;
-        let stdout_task = tokio::spawn(read_stdout(stdout, self.stream_activity));
-        let stderr_task = tokio::spawn(read_stderr(stderr));
+        let stdout_stream = self.stream_activity.then_some(OutputStream::Stdout);
+        let stdout_task = tokio::spawn(read_stdout(stdout, stdout_stream));
+        let stderr_task = tokio::spawn(read_stderr(stderr, Some(OutputStream::Stderr)));
 
         let deliver_prompt = async {
             stdin
@@ -192,7 +197,9 @@ impl CodexRuntime {
             () = cancellation.cancelled() => Some(Termination::Cancelled),
             () = sleep_until(deadline) => Some(Termination::TimedOut),
             delivery = &mut deliver_prompt => {
-                if let Err(error) = delivery {
+                if let Err(error) = delivery
+                    && !is_broken_pipe(&error)
+                {
                     cleanup_failed_delivery(
                         &mut child,
                         process_id,
@@ -331,7 +338,7 @@ struct ActivityCapture {
 
 async fn read_stdout(
     mut stdout: tokio::process::ChildStdout,
-    stream_activity: bool,
+    activity_stream: Option<OutputStream>,
 ) -> Result<ActivityCapture> {
     let mut capture = ActivityCapture::default();
     let mut chunk = [0_u8; 8192];
@@ -345,11 +352,8 @@ async fn read_stdout(
         if read == 0 {
             break;
         }
-        if stream_activity {
-            std::io::stdout()
-                .write_all(&chunk[..read])
-                .context("failed to stream Codex activity")?;
-            std::io::stdout().flush().ok();
+        if let Some(stream) = activity_stream {
+            stream_output(stream, &chunk[..read]);
         }
         for byte in &chunk[..read] {
             if *byte == b'\n' {
@@ -399,7 +403,10 @@ fn capture_activity_line(line: &[u8], capture: &mut ActivityCapture) {
     }
 }
 
-async fn read_stderr(mut stderr: tokio::process::ChildStderr) -> Result<String> {
+async fn read_stderr(
+    mut stderr: tokio::process::ChildStderr,
+    activity_stream: Option<OutputStream>,
+) -> Result<String> {
     let mut tail = Vec::new();
     let mut chunk = [0_u8; 8192];
     loop {
@@ -410,10 +417,9 @@ async fn read_stderr(mut stderr: tokio::process::ChildStderr) -> Result<String> 
         if read == 0 {
             break;
         }
-        std::io::stderr()
-            .write_all(&chunk[..read])
-            .context("failed to stream Codex stderr")?;
-        std::io::stderr().flush().ok();
+        if let Some(stream) = activity_stream {
+            stream_output(stream, &chunk[..read]);
+        }
         append_bounded(&mut tail, &chunk[..read], MAX_STDERR_BYTES);
     }
     Ok(String::from_utf8_lossy(&tail).into_owned())
@@ -463,6 +469,84 @@ async fn join_reader<T>(mut task: JoinHandle<Result<T>>, name: &str) -> Result<T
     }
 }
 
+#[derive(Clone, Copy)]
+enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+struct OutputMessage {
+    bytes: Vec<u8>,
+    acknowledgement: Option<SyncSender<()>>,
+}
+
+fn output_sender(stream: OutputStream) -> &'static SyncSender<OutputMessage> {
+    static STDOUT: OnceLock<SyncSender<OutputMessage>> = OnceLock::new();
+    static STDERR: OnceLock<SyncSender<OutputMessage>> = OnceLock::new();
+    match stream {
+        OutputStream::Stdout => {
+            STDOUT.get_or_init(|| spawn_output_thread("factory-stdout", std::io::stdout()))
+        }
+        OutputStream::Stderr => {
+            STDERR.get_or_init(|| spawn_output_thread("factory-stderr", std::io::stderr()))
+        }
+    }
+}
+
+fn spawn_output_thread(
+    name: &str,
+    writer: impl Write + Send + 'static,
+) -> SyncSender<OutputMessage> {
+    let (sender, receiver) = sync_channel(OUTPUT_CHANNEL_CAPACITY);
+    let _ = std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(move || write_output(writer, receiver));
+    sender
+}
+
+fn write_output(mut writer: impl Write, receiver: Receiver<OutputMessage>) {
+    while let Ok(message) = receiver.recv() {
+        let delivered = writer
+            .write_all(&message.bytes)
+            .and_then(|()| writer.flush())
+            .is_ok();
+        if let Some(acknowledgement) = message.acknowledgement {
+            let _ = acknowledgement.try_send(());
+        }
+        if !delivered {
+            return;
+        }
+    }
+}
+
+fn stream_output(stream: OutputStream, bytes: &[u8]) {
+    let _ = output_sender(stream).try_send(OutputMessage {
+        bytes: bytes.to_vec(),
+        acknowledgement: None,
+    });
+}
+
+fn write_output_best_effort(stream: OutputStream, bytes: &[u8]) {
+    let (acknowledgement, delivered) = sync_channel(1);
+    if output_sender(stream)
+        .try_send(OutputMessage {
+            bytes: bytes.to_vec(),
+            acknowledgement: Some(acknowledgement),
+        })
+        .is_ok()
+    {
+        let _ = delivered.recv_timeout(OUTPUT_ACK_TIMEOUT);
+    }
+}
+
+pub fn write_stdout_best_effort(bytes: &[u8]) {
+    write_output_best_effort(OutputStream::Stdout, bytes);
+}
+
+pub fn write_stderr_best_effort(bytes: &[u8]) {
+    write_output_best_effort(OutputStream::Stderr, bytes);
+}
+
 async fn cleanup_failed_delivery(
     child: &mut Child,
     process_id: Option<u32>,
@@ -472,6 +556,12 @@ async fn cleanup_failed_delivery(
     let _ = terminate(child, process_id).await;
     let _ = join_reader(stdout_task, "stdout").await;
     let _ = join_reader(stderr_task, "stderr").await;
+}
+
+fn is_broken_pipe(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::BrokenPipe)
 }
 
 fn read_bounded(path: &Path, maximum: usize) -> Result<(String, bool)> {
@@ -511,14 +601,19 @@ fn text_file_busy(_error: &std::io::Error) -> bool {
 #[cfg(unix)]
 async fn wait_for_clean_exit(child: &mut Child, process_id: Option<u32>) -> Result<ExitStatus> {
     let process_id = process_id.context("Codex process has no process ID")?;
-    tokio::task::spawn_blocking(move || wait_without_reaping(process_id))
-        .await
-        .context("Codex exit observer stopped unexpectedly")??;
+    observe_exit(process_id).await?;
     cleanup_descendants(Some(process_id))?;
     child
         .wait()
         .await
         .context("failed to reap Codex process after observing its exit")
+}
+
+#[cfg(unix)]
+async fn observe_exit(process_id: u32) -> Result<()> {
+    tokio::task::spawn_blocking(move || wait_without_reaping(process_id))
+        .await
+        .context("Codex exit observer stopped unexpectedly")?
 }
 
 #[cfg(unix)]
@@ -557,19 +652,20 @@ async fn wait_for_clean_exit(child: &mut Child, _process_id: Option<u32>) -> Res
 
 #[cfg(unix)]
 async fn terminate(child: &mut Child, process_id: Option<u32>) -> Result<ExitStatus> {
-    signal_process_group(process_id, false)?;
-    let status = match timeout(TERMINATION_GRACE, child.wait()).await {
-        Ok(status) => status.context("failed while waiting for cancelled Codex process")?,
+    let process_id = process_id.context("Codex process has no process ID")?;
+    signal_process_group(Some(process_id), false)?;
+    match timeout(TERMINATION_GRACE, observe_exit(process_id)).await {
+        Ok(observed) => observed?,
         Err(_) => {
-            signal_process_group(process_id, true)?;
-            child
-                .wait()
-                .await
-                .context("failed while reaping cancelled Codex process")?
+            signal_process_group(Some(process_id), true)?;
+            observe_exit(process_id).await?;
         }
-    };
-    signal_process_group(process_id, true)?;
-    Ok(status)
+    }
+    cleanup_descendants(Some(process_id))?;
+    child
+        .wait()
+        .await
+        .context("failed while reaping cancelled Codex process")
 }
 
 #[cfg(not(unix))]
