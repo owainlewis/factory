@@ -308,6 +308,113 @@ async fn cancellation_stops_the_run() {
     assert_process_gone(pid).await;
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn durable_runs_use_a_verified_process_group_anchor() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex_pid_path = temp.path().join("codex.pid");
+    let executable = fake_codex(
+        temp.path(),
+        &format!(
+            "echo $$ > \"{}\"\ncat >/dev/null\nsleep 30",
+            codex_pid_path.display()
+        ),
+    );
+    let cancellation = CancellationToken::new();
+    let (observations, receiver) = observation_channel();
+    let runtime_cancellation = cancellation.clone();
+    let working_directory = temp.path().to_owned();
+    let run = tokio::spawn(async move {
+        CodexRuntime::new(executable)
+            .run_with_session(
+                "Stay anchored.",
+                &working_directory,
+                Duration::from_secs(5),
+                runtime_cancellation,
+                None,
+                observations,
+            )
+            .await
+    });
+
+    for _ in 0..500 {
+        if receiver.borrow().process_id.is_some() && codex_pid_path.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let observation = receiver.borrow().clone();
+    let anchor_pid = observation.process_id.unwrap();
+    let codex_pid: u32 = fs::read_to_string(&codex_pid_path)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_ne!(anchor_pid, codex_pid);
+    assert!(observation.process_identity.is_some());
+    assert!(matches!(
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(i32::try_from(anchor_pid).unwrap()),
+            None,
+        ),
+        Ok(()) | Err(nix::errno::Errno::EPERM)
+    ));
+
+    cancellation.cancel();
+    assert_eq!(
+        run.await.unwrap().unwrap().termination,
+        Termination::Cancelled
+    );
+    assert_process_gone(i32::try_from(anchor_pid).unwrap()).await;
+    assert_process_gone(i32::try_from(codex_pid).unwrap()).await;
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn aborting_a_run_reaps_its_process_group_anchor() {
+    let temp = tempfile::tempdir().unwrap();
+    let codex_pid_path = temp.path().join("aborted-codex.pid");
+    let executable = fake_codex(
+        temp.path(),
+        &format!(
+            "echo $$ > \"{}\"\ncat >/dev/null\nsleep 30",
+            codex_pid_path.display()
+        ),
+    );
+    let (observations, receiver) = observation_channel();
+    let working_directory = temp.path().to_owned();
+    let run = tokio::spawn(async move {
+        CodexRuntime::new(executable)
+            .run_with_session(
+                "Abort safely.",
+                &working_directory,
+                Duration::from_secs(30),
+                CancellationToken::new(),
+                None,
+                observations,
+            )
+            .await
+    });
+
+    for _ in 0..500 {
+        if receiver.borrow().process_id.is_some() && codex_pid_path.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let anchor_pid = receiver.borrow().process_id.unwrap();
+    let codex_pid: u32 = fs::read_to_string(&codex_pid_path)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+
+    run.abort();
+    let _ = run.await;
+    assert_process_gone(i32::try_from(anchor_pid).unwrap()).await;
+    assert_process_gone(i32::try_from(codex_pid).unwrap()).await;
+}
+
 #[tokio::test]
 async fn authentication_failure_is_actionable() {
     let temp = tempfile::tempdir().unwrap();

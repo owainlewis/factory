@@ -969,6 +969,9 @@ impl Ledger {
         pull_request: Option<&str>,
         activity: Option<&str>,
     ) -> Result<()> {
+        if process_id == Some(0) {
+            bail!("run process ID must be positive");
+        }
         let session_id = session_id.map(|value| truncate_utf8(value, MAX_SESSION_ID_BYTES));
         let pull_request = pull_request.map(|value| truncate_utf8(value, 2048));
         let activity = activity.map(|value| {
@@ -1059,6 +1062,7 @@ impl Ledger {
             }
             if let (Some(process_id), Some(recorded_identity)) =
                 (run.process_id, run.process_identity.as_deref())
+                && process_id > 0
                 && crate::runtime::process_identity(process_id).as_deref()
                     == Some(recorded_identity)
             {
@@ -1371,6 +1375,9 @@ fn process_is_alive(process_id: u32) -> bool {
 #[cfg(unix)]
 fn terminate_orphaned_process_group(process_id: u32) -> Result<()> {
     use nix::sys::signal::{Signal, killpg};
+    if process_id == 0 {
+        bail!("refusing to signal process group zero");
+    }
     let process_id = i32::try_from(process_id).context("process ID exceeds platform range")?;
     match killpg(nix::unistd::Pid::from_raw(process_id), Signal::SIGKILL) {
         Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),

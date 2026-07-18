@@ -4,8 +4,9 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -93,6 +94,104 @@ pub struct CodexRuntime {
     executable: PathBuf,
     health_timeout: Duration,
     stream_activity: bool,
+}
+
+struct RunProcessGroup {
+    #[cfg(unix)]
+    anchor: Child,
+    process_id: Option<u32>,
+    process_identity: Option<String>,
+}
+
+impl RunProcessGroup {
+    async fn start() -> Result<Self> {
+        #[cfg(unix)]
+        {
+            let anchor_token = process_group_anchor_token();
+            let mut command = Command::new("/bin/sh");
+            command
+                .args([
+                    "-c",
+                    "trap '' TERM; while :; do sleep 3600; done",
+                    &anchor_token,
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(true);
+            configure_process_group(&mut command);
+            let mut anchor = spawn_with_retry(&mut command)
+                .await
+                .context("failed to start Codex process-group anchor")?;
+            let process_id = anchor
+                .id()
+                .filter(|process_id| *process_id > 0)
+                .context("Codex process-group anchor has no positive process ID")?;
+            let Some(process_identity) = process_identity(process_id) else {
+                let _ = stop_process_group_anchor(&mut anchor, process_id).await;
+                bail!("could not establish Codex process-group anchor identity");
+            };
+            Ok(Self {
+                anchor,
+                process_id: Some(process_id),
+                process_identity: Some(process_identity),
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(Self {
+                process_id: None,
+                process_identity: None,
+            })
+        }
+    }
+
+    fn configure(&self, command: &mut Command) -> Result<()> {
+        #[cfg(unix)]
+        {
+            let process_id = self
+                .process_id
+                .context("Codex process-group anchor has no process ID")?;
+            let process_id = i32::try_from(process_id)
+                .context("Codex process-group anchor ID exceeds platform range")?;
+            command.process_group(process_id);
+        }
+        #[cfg(not(unix))]
+        let _ = command;
+        Ok(())
+    }
+
+    async fn stop(&mut self) -> Result<()> {
+        #[cfg(unix)]
+        if let Some(process_id) = self.process_id {
+            stop_process_group_anchor(&mut self.anchor, process_id).await?;
+            self.process_id = None;
+            self.process_identity = None;
+        }
+        Ok(())
+    }
+
+    async fn reap(&mut self) -> Result<()> {
+        #[cfg(unix)]
+        {
+            self.anchor
+                .wait()
+                .await
+                .context("failed to reap Codex process-group anchor")?;
+            self.process_id = None;
+            self.process_identity = None;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RunProcessGroup {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(process_id) = self.process_id {
+            let _ = signal_process_group(Some(process_id), true);
+        }
+    }
 }
 
 impl Default for CodexRuntime {
@@ -211,16 +310,33 @@ impl CodexRuntime {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        configure_process_group(&mut command);
+        let mut process_group = RunProcessGroup::start().await?;
+        process_group.configure(&mut command)?;
 
         let started = Instant::now();
         let deadline = TokioInstant::now() + run_timeout;
-        let mut child = spawn_with_retry(&mut command).await.with_context(|| {
-            format!("failed to start Codex CLI at {}", self.executable.display())
-        })?;
+        let mut child = match spawn_with_retry(&mut command).await {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = process_group.stop().await;
+                return Err(error).with_context(|| {
+                    format!("failed to start Codex CLI at {}", self.executable.display())
+                });
+            }
+        };
         let process_id = child.id();
-        let identity = process_id.and_then(process_identity);
-        update_observation(&observations, process_id, identity, None, None);
+        let observed_process_id = process_group.process_id.or(process_id);
+        let observed_process_identity = process_group
+            .process_identity
+            .clone()
+            .or_else(|| process_id.and_then(process_identity));
+        update_observation(
+            &observations,
+            observed_process_id,
+            observed_process_identity,
+            None,
+            None,
+        );
         let mut stdin = child
             .stdin
             .take()
@@ -262,6 +378,8 @@ impl CodexRuntime {
                     cleanup_failed_delivery(
                         &mut child,
                         process_id,
+                        process_group.process_id.or(process_id),
+                        &mut process_group,
                         stdout_task,
                         stderr_task,
                     )
@@ -273,21 +391,30 @@ impl CodexRuntime {
         };
 
         let (status, termination) = if let Some(termination) = early_termination {
-            (terminate(&mut child, process_id).await?, termination)
+            (
+                terminate(
+                    &mut child,
+                    process_id,
+                    process_group.process_id.or(process_id),
+                )
+                .await?,
+                termination,
+            )
         } else {
             tokio::select! {
                 biased;
                 () = cancellation.cancelled() => {
-                    (terminate(&mut child, process_id).await?, Termination::Cancelled)
+                    (terminate(&mut child, process_id, process_group.process_id.or(process_id)).await?, Termination::Cancelled)
                 }
                 () = sleep_until(deadline) => {
-                    (terminate(&mut child, process_id).await?, Termination::TimedOut)
+                    (terminate(&mut child, process_id, process_group.process_id.or(process_id)).await?, Termination::TimedOut)
                 }
-                status = wait_for_clean_exit(&mut child, process_id) => {
+                status = wait_for_clean_exit(&mut child, process_id, process_group.process_id.or(process_id)) => {
                     (status.context("failed while waiting for Codex")?, Termination::Exited)
                 }
             }
         };
+        process_group.reap().await?;
 
         let capture = join_reader(stdout_task, "stdout").await?;
         let stderr_tail = join_reader(stderr_task, "stderr").await?;
@@ -346,13 +473,13 @@ impl CodexRuntime {
         let status = tokio::select! {
             biased;
             () = cancellation.cancelled() => {
-                terminate(&mut child, process_id).await?;
+                terminate(&mut child, process_id, process_id).await?;
                 join_reader(stdout_task, "health-check stdout").await?;
                 join_reader(stderr_task, "health-check stderr").await?;
                 return Err(RuntimeCancelled.into());
             }
             () = sleep_until(deadline) => {
-                terminate(&mut child, process_id).await?;
+                terminate(&mut child, process_id, process_id).await?;
                 join_reader(stdout_task, "health-check stdout").await?;
                 join_reader(stderr_task, "health-check stderr").await?;
                 bail!(
@@ -360,7 +487,7 @@ impl CodexRuntime {
                     humantime::format_duration(self.health_timeout)
                 );
             }
-            status = wait_for_clean_exit(&mut child, process_id) => {
+            status = wait_for_clean_exit(&mut child, process_id, process_id) => {
                 status.context("failed while waiting for Codex health check")?
             }
         };
@@ -579,6 +706,20 @@ fn update_observation(
     });
 }
 
+#[cfg(unix)]
+fn process_group_anchor_token() -> String {
+    static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!(
+        "factory-anchor-{}-{timestamp}-{}",
+        std::process::id(),
+        NEXT_TOKEN.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn process_identity(process_id: u32) -> Option<String> {
     let process_id = i32::try_from(process_id).ok()?;
@@ -612,7 +753,31 @@ pub(crate) fn process_identity(process_id: u32) -> Option<String> {
     Some(format!("linux:{start_ticks}"))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+pub(crate) fn process_identity(process_id: u32) -> Option<String> {
+    let process_id = i32::try_from(process_id).ok().filter(|value| *value > 0)?;
+    let output = std::process::Command::new("ps")
+        .env("LC_ALL", "C")
+        .args([
+            "-ww",
+            "-o",
+            "lstart=",
+            "-o",
+            "command=",
+            "-p",
+            &process_id.to_string(),
+        ])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("unix:{value}"))
+}
+
+#[cfg(not(unix))]
 pub(crate) fn process_identity(_process_id: u32) -> Option<String> {
     None
 }
@@ -742,10 +907,13 @@ pub fn write_stderr_best_effort(bytes: &[u8]) {
 async fn cleanup_failed_delivery(
     child: &mut Child,
     process_id: Option<u32>,
+    process_group_id: Option<u32>,
+    process_group: &mut RunProcessGroup,
     stdout_task: JoinHandle<Result<ActivityCapture>>,
     stderr_task: JoinHandle<Result<String>>,
 ) {
-    let _ = terminate(child, process_id).await;
+    let _ = terminate(child, process_id, process_group_id).await;
+    let _ = process_group.stop().await;
     let _ = join_reader(stdout_task, "stdout").await;
     let _ = join_reader(stderr_task, "stderr").await;
 }
@@ -791,10 +959,14 @@ fn text_file_busy(_error: &std::io::Error) -> bool {
 }
 
 #[cfg(unix)]
-async fn wait_for_clean_exit(child: &mut Child, process_id: Option<u32>) -> Result<ExitStatus> {
+async fn wait_for_clean_exit(
+    child: &mut Child,
+    process_id: Option<u32>,
+    process_group_id: Option<u32>,
+) -> Result<ExitStatus> {
     let process_id = process_id.context("Codex process has no process ID")?;
     observe_exit(process_id).await?;
-    cleanup_descendants(Some(process_id))?;
+    cleanup_descendants(process_group_id)?;
     child
         .wait()
         .await
@@ -835,7 +1007,11 @@ fn wait_without_reaping(process_id: u32) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-async fn wait_for_clean_exit(child: &mut Child, _process_id: Option<u32>) -> Result<ExitStatus> {
+async fn wait_for_clean_exit(
+    child: &mut Child,
+    _process_id: Option<u32>,
+    _process_group_id: Option<u32>,
+) -> Result<ExitStatus> {
     child
         .wait()
         .await
@@ -843,17 +1019,21 @@ async fn wait_for_clean_exit(child: &mut Child, _process_id: Option<u32>) -> Res
 }
 
 #[cfg(unix)]
-async fn terminate(child: &mut Child, process_id: Option<u32>) -> Result<ExitStatus> {
+async fn terminate(
+    child: &mut Child,
+    process_id: Option<u32>,
+    process_group_id: Option<u32>,
+) -> Result<ExitStatus> {
     let process_id = process_id.context("Codex process has no process ID")?;
-    signal_process_group(Some(process_id), false)?;
+    signal_process_group(process_group_id, false)?;
     match timeout(TERMINATION_GRACE, observe_exit(process_id)).await {
         Ok(observed) => observed?,
         Err(_) => {
-            signal_process_group(Some(process_id), true)?;
+            signal_process_group(process_group_id, true)?;
             observe_exit(process_id).await?;
         }
     }
-    cleanup_descendants(Some(process_id))?;
+    cleanup_descendants(process_group_id)?;
     child
         .wait()
         .await
@@ -861,7 +1041,11 @@ async fn terminate(child: &mut Child, process_id: Option<u32>) -> Result<ExitSta
 }
 
 #[cfg(not(unix))]
-async fn terminate(child: &mut Child, _process_id: Option<u32>) -> Result<ExitStatus> {
+async fn terminate(
+    child: &mut Child,
+    _process_id: Option<u32>,
+    _process_group_id: Option<u32>,
+) -> Result<ExitStatus> {
     child
         .start_kill()
         .context("failed to cancel Codex process")?;
@@ -906,13 +1090,28 @@ fn signal_process_group(process_id: Option<u32>, force: bool) -> Result<()> {
     let Some(process_id) = process_id else {
         return Ok(());
     };
+    if process_id == 0 {
+        bail!("refusing to signal process group zero");
+    }
+    let process_id =
+        i32::try_from(process_id).context("process group ID exceeds platform range")?;
     let signal = if force {
         Signal::SIGKILL
     } else {
         Signal::SIGTERM
     };
-    match killpg(Pid::from_raw(process_id as i32), signal) {
+    match killpg(Pid::from_raw(process_id), signal) {
         Ok(()) | Err(Errno::ESRCH) => Ok(()),
         Err(error) => Err(error).context("failed to signal Codex process group"),
     }
+}
+
+#[cfg(unix)]
+async fn stop_process_group_anchor(anchor: &mut Child, process_id: u32) -> Result<()> {
+    signal_process_group(Some(process_id), true)?;
+    anchor
+        .wait()
+        .await
+        .context("failed to reap Codex process-group anchor")?;
+    Ok(())
 }

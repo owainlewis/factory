@@ -388,6 +388,13 @@ fn orphan_recovery_does_not_signal_a_reused_process_group() {
         .unwrap()
         .unwrap()
         .run;
+    assert!(
+        ledger
+            .observe_run(run.id, Some(0), Some("invalid"), None, None, None)
+            .unwrap_err()
+            .to_string()
+            .contains("must be positive")
+    );
     let mut unrelated = Command::new("sleep")
         .arg("30")
         .process_group(0)

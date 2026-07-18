@@ -20,6 +20,7 @@ struct Fixture {
     _temp: tempfile::TempDir,
     config: Config,
     catalog: WorkflowCatalog,
+    config_path: PathBuf,
     ledger_path: PathBuf,
     gh: PathBuf,
     codex: PathBuf,
@@ -155,6 +156,7 @@ exit 0
             ),
         );
         Self {
+            config_path,
             ledger_path: temp.path().join("data/factory.sqlite3"),
             _temp: temp,
             config,
@@ -226,6 +228,16 @@ where
     })
     .await
     .unwrap();
+}
+
+fn process_is_alive(process_id: u32) -> bool {
+    matches!(
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(i32::try_from(process_id).unwrap()),
+            None,
+        ),
+        Ok(()) | Err(nix::errno::Errno::EPERM)
+    )
 }
 
 #[tokio::test]
@@ -551,6 +563,110 @@ async fn restart_recovers_one_orphan_by_resuming_its_live_observed_session() {
 }
 
 #[tokio::test]
+async fn subprocess_restart_kills_the_surviving_anchored_process_tree() {
+    let fixture = Fixture::new(&[vec![issue(25)]], 1, 1);
+    let search_path = std::env::join_paths(
+        std::iter::once(fixture.gh.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .as_deref()
+                .map(std::env::split_paths)
+                .into_iter()
+                .flatten(),
+        ),
+    )
+    .unwrap();
+    let mut first = Command::new(env!("CARGO_BIN_EXE_factory"));
+    first
+        .args([
+            "run",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            fixture.ledger_path.parent().unwrap().to_str().unwrap(),
+        ])
+        .env("PATH", &search_path);
+    let mut first = first.spawn().unwrap();
+    wait_for(|| fixture.started_slots().len() == 1).await;
+    let first_run = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if let Ok(runs) =
+                Ledger::open(&fixture.ledger_path).and_then(|ledger| ledger.runs(None))
+                && let Some(run) = runs.first()
+                && run.process_id.is_some()
+                && run.process_identity.is_some()
+                && run.session_id.is_some()
+            {
+                break run.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let slot = &fixture.started_slots()[0];
+    let codex_pid: u32 = fs::read_to_string(slot.join("pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let child_pid: u32 = fs::read_to_string(slot.join("child-pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let anchor_pid = first_run.process_id.unwrap();
+
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(i32::try_from(first.id()).unwrap()),
+        nix::sys::signal::Signal::SIGKILL,
+    )
+    .unwrap();
+    first.wait().unwrap();
+    assert!(process_is_alive(anchor_pid));
+    assert!(process_is_alive(codex_pid));
+    assert!(process_is_alive(child_pid));
+
+    let mut second = Command::new(env!("CARGO_BIN_EXE_factory"));
+    second
+        .args([
+            "run",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            fixture.ledger_path.parent().unwrap().to_str().unwrap(),
+        ])
+        .env("PATH", &search_path);
+    let mut second = second.spawn().unwrap();
+    wait_for(|| fixture.started_slots().len() == 2).await;
+    wait_for(|| {
+        !process_is_alive(anchor_pid)
+            && !process_is_alive(codex_pid)
+            && !process_is_alive(child_pid)
+    })
+    .await;
+    assert_eq!(
+        fs::read_to_string(fixture.started_slots()[1].join("mode"))
+            .unwrap()
+            .trim(),
+        "resume"
+    );
+
+    fixture.open_gate();
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks[0].state == TaskState::Succeeded)
+    })
+    .await;
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(i32::try_from(second.id()).unwrap()),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .unwrap();
+    assert!(second.wait().unwrap().success());
+}
+
+#[tokio::test]
 async fn live_second_daemon_recovers_when_the_first_owner_disappears_later() {
     let fixture = Fixture::new(&[vec![issue(24)]], 1, 1);
     let first_daemon = Arc::new(fixture.daemon());
@@ -677,7 +793,8 @@ async fn missing_stored_session_gets_one_fresh_recovery_fallback() {
         .trim()
         .parse()
         .unwrap();
-    assert_eq!(runs[1].process_id, Some(fallback_pid));
+    assert_ne!(runs[1].process_id, Some(fallback_pid));
+    assert!(runs[1].process_identity.is_some());
     assert_eq!(runs[1].session_id.as_deref(), Some("thread-3"));
     shutdown.cancel();
     restarted.await.unwrap().unwrap();
