@@ -344,6 +344,74 @@ fn cancellation_rejects_a_reused_live_pid_when_the_owner_lease_is_stale() {
 }
 
 #[test]
+fn concurrent_completion_and_cancellation_always_leave_a_terminal_run() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let runtimes = HashMap::from([(
+        (
+            "owainlewis/factory".to_owned(),
+            "implement-ready-ticket".to_owned(),
+        ),
+        "codex".to_owned(),
+    )]);
+    let mut setup = Ledger::open(&path).unwrap();
+    setup
+        .register_daemon_owner("race-owner", std::process::id())
+        .unwrap();
+
+    for index in 0..25 {
+        setup.heartbeat_daemon_owner("race-owner").unwrap();
+        let task = setup
+            .enqueue(&ticket(&format!("race-revision-{index}")))
+            .unwrap()
+            .task;
+        let run = setup
+            .claim_ticket_and_start_run(
+                &["owainlewis/factory".to_owned()],
+                &runtimes,
+                "race-owner",
+                std::process::id(),
+            )
+            .unwrap()
+            .unwrap()
+            .run;
+        let run_id = run.id;
+        let barrier = Arc::new(Barrier::new(3));
+        let finish = {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                let mut ledger = Ledger::open(&path).unwrap();
+                barrier.wait();
+                ledger.finish_run_and_task(
+                    run_id,
+                    RunOutcome::Succeeded,
+                    Some("complete"),
+                    None,
+                    None,
+                )
+            })
+        };
+        let cancel = {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                let mut ledger = Ledger::open(&path).unwrap();
+                barrier.wait();
+                ledger.request_run_cancellation(run_id)
+            })
+        };
+        barrier.wait();
+
+        finish.join().unwrap().unwrap();
+        cancel.join().unwrap().unwrap();
+        let completed = setup.run(run_id).unwrap().unwrap();
+        assert_ne!(completed.outcome, "running");
+        assert!(setup.task(task.id).unwrap().unwrap().state.is_terminal());
+    }
+}
+
+#[test]
 fn failed_writes_do_not_damage_prior_state() {
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();

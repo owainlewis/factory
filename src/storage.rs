@@ -689,7 +689,7 @@ impl Ledger {
         let session_id = session_id.map(|value| truncate_utf8(value, MAX_SESSION_ID_BYTES));
         let transaction = self
             .connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("failed to begin run completion transaction")?;
         let (task_id, cancellation_requested) = transaction
             .query_row(
