@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use tokio_util::sync::CancellationToken;
 
 use factory::config::{Config, default_config_path};
+use factory::daemon::FactoryDaemon;
 use factory::execution::ResolvedWorkflow;
 use factory::github::{GitHubClient, PollReport};
 use factory::runtime::{
@@ -153,15 +154,8 @@ async fn run_poller(
             signal_token.cancel();
         }
     });
-    github
-        .poll_until_cancelled(
-            &config,
-            &catalog,
-            &mut ledger,
-            cancellation,
-            print_poll_report,
-        )
-        .await?;
+    let daemon = FactoryDaemon::new(config, catalog, ledger.path());
+    daemon.run(cancellation).await?;
     signal_task.abort();
     Ok(0)
 }

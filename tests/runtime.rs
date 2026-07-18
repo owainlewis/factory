@@ -255,6 +255,35 @@ exit 1
 }
 
 #[tokio::test]
+async fn api_key_authentication_is_rejected() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("codex");
+    fs::write(
+        &path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "codex-cli 1.2.3"
+  exit 0
+fi
+echo "Logged in using an API key"
+exit 0
+"#,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&path, permissions).unwrap();
+
+    let error = CodexRuntime::new(path).health_check().await.unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("ChatGPT subscription authentication")
+    );
+}
+
+#[tokio::test]
 async fn timeout_applies_while_prompt_delivery_is_blocked() {
     let temp = tempfile::tempdir().unwrap();
     let executable = fake_codex(temp.path(), "sleep 30");

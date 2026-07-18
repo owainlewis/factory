@@ -125,6 +125,11 @@ impl CodexRuntime {
             .context(
                 "Codex authentication check failed; run codex login and verify codex login status",
             )?;
+        if !authentication.to_ascii_lowercase().contains("chatgpt") {
+            bail!(
+                "Codex must use ChatGPT subscription authentication, not an API key; run codex logout followed by codex login"
+            );
+        }
         Ok(RuntimeHealth {
             version,
             authentication,

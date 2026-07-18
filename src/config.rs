@@ -15,6 +15,7 @@ pub struct Config {
     pub default_timeout: Duration,
     pub maximum_timeout: Duration,
     pub max_concurrent_runs: usize,
+    pub max_concurrent_runs_per_repository: usize,
     pub workspace_root: PathBuf,
 }
 
@@ -27,6 +28,8 @@ struct RawConfig {
     default_timeout: String,
     maximum_timeout: String,
     max_concurrent_runs: usize,
+    #[serde(default = "default_repository_concurrency")]
+    max_concurrent_runs_per_repository: usize,
     workspace_root: String,
 }
 
@@ -64,6 +67,12 @@ impl Config {
         if raw.max_concurrent_runs == 0 {
             bail!("max_concurrent_runs must be greater than zero");
         }
+        if raw.max_concurrent_runs_per_repository == 0 {
+            bail!("max_concurrent_runs_per_repository must be greater than zero");
+        }
+        if raw.max_concurrent_runs_per_repository > raw.max_concurrent_runs {
+            bail!("max_concurrent_runs_per_repository must not exceed max_concurrent_runs");
+        }
         let default_runtime = raw.default_runtime.trim();
         if default_runtime.is_empty() {
             bail!("default_runtime must not be empty");
@@ -94,6 +103,7 @@ impl Config {
             default_timeout,
             maximum_timeout,
             max_concurrent_runs: raw.max_concurrent_runs,
+            max_concurrent_runs_per_repository: raw.max_concurrent_runs_per_repository,
             workspace_root,
         })
     }
@@ -129,10 +139,19 @@ impl fmt::Display for Config {
         )?;
         writeln!(
             formatter,
+            "max_concurrent_runs_per_repository: {}",
+            self.max_concurrent_runs_per_repository
+        )?;
+        writeln!(
+            formatter,
             "workspace_root: {}",
             self.workspace_root.display()
         )
     }
+}
+
+fn default_repository_concurrency() -> usize {
+    1
 }
 
 pub fn default_config_path() -> PathBuf {
@@ -274,6 +293,7 @@ mod tests {
             default_timeout: "2h".into(),
             maximum_timeout: "8h".into(),
             max_concurrent_runs: 2,
+            max_concurrent_runs_per_repository: 1,
             workspace_root: workspace.display().to_string(),
         }
     }
@@ -342,6 +362,32 @@ mod tests {
             error
                 .to_string()
                 .contains("max_concurrent_runs must be greater than zero")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_repository_concurrency() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let workspace = temp.path().join("worktrees");
+        fs::create_dir(&repository).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        let mut config = raw(&repository, &workspace);
+        config.max_concurrent_runs_per_repository = 0;
+        assert!(
+            Config::resolve(config, temp.path())
+                .unwrap_err()
+                .to_string()
+                .contains("must be greater than zero")
+        );
+
+        let mut config = raw(&repository, &workspace);
+        config.max_concurrent_runs_per_repository = 3;
+        assert!(
+            Config::resolve(config, temp.path())
+                .unwrap_err()
+                .to_string()
+                .contains("must not exceed")
         );
     }
 
