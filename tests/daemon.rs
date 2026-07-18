@@ -126,6 +126,9 @@ sleep 1000 &
 echo $! > "{root}/slot-$slot/child-pid"
 cat > "{root}/slot-$slot/prompt"
 touch "{root}/slot-$slot/started"
+if [ "$mode" = "initial" ] && [ "$slot" != "1" ] && [ -f "{root}/fail-fallback-before-thread" ]; then
+  exit 66
+fi
 echo "{{\"type\":\"thread.started\",\"thread_id\":\"thread-$slot\"}}"
 echo "{{\"type\":\"item.completed\",\"item\":{{\"text\":\"active SECRET=hunter2\"}}}}"
 if [ -f "{root}/emit-pr-first" ] && [ "$slot" = "1" ]; then
@@ -660,15 +663,22 @@ async fn missing_stored_session_gets_one_fresh_recovery_fallback() {
             .is_ok_and(|tasks| tasks[0].state == TaskState::Succeeded)
     })
     .await;
+    let runs = Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .runs(None)
+        .unwrap();
     assert_eq!(
-        Ledger::open(&fixture.ledger_path)
-            .unwrap()
-            .runs(None)
-            .unwrap()
-            .len(),
+        runs.len(),
         2,
         "resume fallback stays within one durable recovery attempt"
     );
+    let fallback_pid: u32 = fs::read_to_string(slots[2].join("pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(runs[1].process_id, Some(fallback_pid));
+    assert_eq!(runs[1].session_id.as_deref(), Some("thread-3"));
     shutdown.cancel();
     restarted.await.unwrap().unwrap();
 }
@@ -746,6 +756,48 @@ async fn observed_session_survives_later_malformed_activity_and_is_resumed() {
             .is_ok_and(|tasks| tasks[0].state == TaskState::Succeeded)
     })
     .await;
+    shutdown.cancel();
+    running.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn failed_fallback_before_thread_cannot_restore_stale_resume_observation() {
+    let fixture = Fixture::new(&[vec![issue(26)]], 1, 1);
+    fs::write(fixture.runtime_dir.join("malformed-once"), "yes").unwrap();
+    fs::write(fixture.runtime_dir.join("fail-resume"), "yes").unwrap();
+    fs::write(
+        fixture.runtime_dir.join("fail-fallback-before-thread"),
+        "yes",
+    )
+    .unwrap();
+    let shutdown = CancellationToken::new();
+    let daemon = Arc::new(fixture.daemon());
+    let running = {
+        let daemon = Arc::clone(&daemon);
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move { daemon.run(shutdown).await })
+    };
+
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| {
+                tasks
+                    .first()
+                    .is_some_and(|task| task.state == TaskState::Failed)
+            })
+    })
+    .await;
+    let runs = Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .runs(None)
+        .unwrap();
+    assert_eq!(runs.len(), 3);
+    assert_eq!(fixture.started_slots().len(), 4);
+    for recovery in &runs[1..] {
+        assert_eq!(recovery.session_id, None);
+        assert_eq!(recovery.activity, None);
+    }
     shutdown.cancel();
     running.await.unwrap().unwrap();
 }

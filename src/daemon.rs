@@ -445,20 +445,13 @@ async fn execute_task(
     let execution_deadline = Instant::now() + workflow.timeout;
     let monitor_token = run_cancellation.clone();
     let ledger_path = ledger.path().to_owned();
-    let (observations, mut observation_receiver) = observation_channel();
-    let cancellation_monitor = tokio::spawn(async move {
-        if let Err(error) = monitor_run(
-            &ledger_path,
-            run_id,
-            &monitor_token,
-            &mut observation_receiver,
-        )
-        .await
-        {
-            eprintln!("Factory cancellation monitor failed for run {run_id}: {error:#}");
-            monitor_token.cancel();
-        }
-    });
+    let (mut observations, observation_receiver) = observation_channel();
+    let mut cancellation_monitor = spawn_run_monitor(
+        ledger_path.clone(),
+        run_id,
+        monitor_token.clone(),
+        observation_receiver,
+    );
     let execution = if let Some(session_id) = recovery_session.as_deref() {
         let resumed = codex
             .run_with_session(
@@ -490,6 +483,18 @@ async fn execute_task(
             if remaining.is_zero() {
                 resumed
             } else {
+                cancellation_monitor.abort();
+                let _ = (&mut cancellation_monitor).await;
+                ledger.reset_run_runtime_observation(run_id)?;
+                let (fallback_observations, fallback_receiver) = observation_channel();
+                observations = fallback_observations;
+                cancellation_monitor = spawn_run_monitor(
+                    ledger_path.clone(),
+                    run_id,
+                    monitor_token.clone(),
+                    fallback_receiver,
+                );
+                let remaining = execution_deadline.saturating_duration_since(Instant::now());
                 codex
                     .run_with_session(
                         &fallback_prompt,
@@ -516,6 +521,8 @@ async fn execute_task(
             )
             .await
     };
+    cancellation_monitor.abort();
+    let _ = cancellation_monitor.await;
     let observation = observations.borrow().clone();
     if observation.sequence > 0 {
         ledger.observe_run(
@@ -527,7 +534,6 @@ async fn execute_task(
             observation.activity.as_deref(),
         )?;
     }
-    cancellation_monitor.abort();
     match execution {
         Ok(result) => record_execution(&mut ledger, run_id, &result),
         Err(error) => {
@@ -541,6 +547,22 @@ async fn execute_task(
             Err(error)
         }
     }
+}
+
+fn spawn_run_monitor(
+    ledger_path: PathBuf,
+    run_id: i64,
+    cancellation: CancellationToken,
+    mut observations: tokio::sync::watch::Receiver<RuntimeObservation>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Err(error) =
+            monitor_run(&ledger_path, run_id, &cancellation, &mut observations).await
+        {
+            eprintln!("Factory cancellation monitor failed for run {run_id}: {error:#}");
+            cancellation.cancel();
+        }
+    })
 }
 
 async fn monitor_run(

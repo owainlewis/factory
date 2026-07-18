@@ -1005,6 +1005,22 @@ impl Ledger {
         Ok(())
     }
 
+    pub fn reset_run_runtime_observation(&mut self, id: i64) -> Result<()> {
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE runs SET process_id = NULL, process_identity = NULL,
+                 session_id = NULL, activity = NULL, last_activity_at = ?1
+                 WHERE id = ?2 AND outcome = 'running'",
+                params![now_millis()?, id],
+            )
+            .context("failed to reset failed session-resume observation")?;
+        if changed != 1 {
+            bail!("run {id} is missing or already terminal");
+        }
+        Ok(())
+    }
+
     pub fn recover_orphaned_runs(&mut self) -> Result<RecoveryReport> {
         let transaction = self
             .connection
