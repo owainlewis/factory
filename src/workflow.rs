@@ -443,23 +443,38 @@ fn missing_frontmatter_declares_only_schedule(contents: &str) -> bool {
         return false;
     };
     let mut frontmatter_prefix = String::new();
+    let mut multiline_delimiter = None;
     for line in after_opening.lines() {
         let trimmed = line.trim_start();
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.contains('=') {
+        if let Some(delimiter) = multiline_delimiter {
             frontmatter_prefix.push_str(line);
             frontmatter_prefix.push('\n');
-        } else {
+            if contains_multiline_closing(trimmed, delimiter) {
+                multiline_delimiter = None;
+            }
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            frontmatter_prefix.push_str(line);
+            frontmatter_prefix.push('\n');
+            continue;
+        }
+        let Some((_, value)) = trimmed.split_once('=') else {
             break;
+        };
+        frontmatter_prefix.push_str(line);
+        frontmatter_prefix.push('\n');
+        let value = value.trim_start();
+        for delimiter in ["\"\"\"", "'''"] {
+            if let Some(remainder) = value.strip_prefix(delimiter)
+                && !contains_multiline_closing(remainder, delimiter)
+            {
+                multiline_delimiter = Some(delimiter);
+                break;
+            }
         }
     }
-    toml::from_str::<toml::Value>(&frontmatter_prefix)
-        .ok()
-        .and_then(|value| {
-            value
-                .as_table()
-                .map(|table| table.contains_key("schedule") && !table.contains_key("label"))
-        })
-        .unwrap_or(false)
+    declares_only_schedule(&frontmatter_prefix)
 }
 
 fn declares_only_schedule(frontmatter: &str) -> bool {
@@ -809,6 +824,18 @@ schedule = "not-a-key"#
         ));
         assert!(missing_frontmatter_declares_only_schedule(
             "+++\nschedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\nImplement maintenance.\n"
+        ));
+        assert!(missing_frontmatter_declares_only_schedule(
+            "+++\nschedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\nCheck x = y before editing.\n"
+        ));
+        assert!(missing_frontmatter_declares_only_schedule(
+            "+++\nschedule = \"0 9 * * 1\"\ntimeout = O(n) before pruning.\n"
+        ));
+        assert!(missing_frontmatter_declares_only_schedule(
+            "+++\nschedule = \"0 9 * * 1\"\nruntime = \"\"\"\ncodex\n\"\"\"\nPrompt.\n"
+        ));
+        assert!(!missing_frontmatter_declares_only_schedule(
+            "+++\nschedule = \"0 9 * * 1\"\nsurprise = true\nlabel = \"factory:ready\"\nPrompt.\n"
         ));
         assert!(!missing_frontmatter_declares_only_schedule(
             "+++\nschedule = \"0 9 * * 1\"\nlabel = \"factory:ready\"\nImplement it.\n"

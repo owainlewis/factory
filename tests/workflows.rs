@@ -182,7 +182,7 @@ fn missing_schedule_frontmatter_delimiter_stays_isolated_from_tickets() {
     let fixture = Fixture::new();
     fixture.workflow(
         "broken-schedule.md",
-        "+++\nschedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\nRun maintenance.\n",
+        "+++\nschedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\ntimeout = O(n) before maintenance.\n",
     );
     fixture.workflow("valid-ticket.md", &label_workflow("Implement the ticket."));
 
