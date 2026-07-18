@@ -275,13 +275,9 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
     let report = ledger.recover_orphaned_runs().unwrap();
     assert_eq!(report.recovered_run_ids, [interrupted.id]);
     assert!(report.exhausted_run_ids.is_empty());
-    assert!(
-        ledger
-            .recover_orphaned_runs()
-            .unwrap()
-            .recovered_run_ids
-            .is_empty()
-    );
+    let report = ledger.recover_orphaned_runs().unwrap();
+    assert!(report.recovered_run_ids.is_empty());
+    assert!(report.exhausted_run_ids.is_empty());
     let closed = ledger.run(interrupted.id).unwrap().unwrap();
     assert_eq!(closed.outcome, "failed");
     assert_eq!(closed.process_id, None);
@@ -313,29 +309,20 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
         Some("/worktrees/factory-3")
     );
     ledger
-        .observe_run(
-            first_recovery.id,
-            Some(std::process::id()),
-            None,
-            None,
-            None,
-            None,
-        )
+        .observe_run(first_recovery.id, None, None, None, None, None)
         .unwrap();
-    ledger
-        .finish_run_and_task(
-            first_recovery.id,
-            RunOutcome::Failed,
-            None,
-            Some("first recovery failed"),
-            None,
-        )
-        .unwrap();
+    ledger.remove_daemon_owner("recovery-owner").unwrap();
+    let report = ledger.recover_orphaned_runs().unwrap();
+    assert_eq!(report.recovered_run_ids, [first_recovery.id]);
+    assert!(report.exhausted_run_ids.is_empty());
     assert_eq!(
         ledger.task(task.id).unwrap().unwrap().state,
         TaskState::Queued
     );
 
+    ledger
+        .register_daemon_owner("recovery-owner", std::process::id())
+        .unwrap();
     let final_recovery = ledger
         .claim_ticket_and_start_run_with_workdirs(
             &["owainlewis/factory".to_owned()],
@@ -350,43 +337,27 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
     assert_eq!(final_recovery.recovery_of, Some(first_recovery.id));
     assert_eq!(final_recovery.recovery_attempt, 2);
     ledger
-        .observe_run(
-            final_recovery.id,
-            Some(std::process::id()),
-            None,
-            None,
-            None,
-            None,
-        )
+        .observe_run(final_recovery.id, None, None, None, None, None)
         .unwrap();
-    ledger
-        .finish_run_and_task(
-            final_recovery.id,
-            RunOutcome::Failed,
-            None,
-            Some("second recovery failed TOKEN=secret"),
-            None,
-        )
-        .unwrap();
+    ledger.remove_daemon_owner("recovery-owner").unwrap();
+    let report = ledger.recover_orphaned_runs().unwrap();
+    assert!(report.recovered_run_ids.is_empty());
+    assert_eq!(report.exhausted_run_ids, [final_recovery.id]);
     assert_eq!(
         ledger.task(task.id).unwrap().unwrap().state,
         TaskState::Failed
     );
-    assert!(
+    let report = ledger.recover_orphaned_runs().unwrap();
+    assert!(report.recovered_run_ids.is_empty());
+    assert!(report.exhausted_run_ids.is_empty());
+    assert_eq!(
         ledger
-            .recover_orphaned_runs()
-            .unwrap()
-            .recovered_run_ids
-            .is_empty()
-    );
-    assert!(
-        !ledger
             .run(final_recovery.id)
             .unwrap()
             .unwrap()
             .error
-            .unwrap()
-            .contains("secret")
+            .as_deref(),
+        Some("Factory detected an interrupted run without a live owned process")
     );
 }
 
