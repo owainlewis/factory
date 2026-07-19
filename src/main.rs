@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
@@ -19,6 +19,7 @@ use factory::runtime::{
 };
 use factory::storage::{CancellationRequest, Ledger};
 use factory::workflow::WorkflowCatalog;
+use factory::workflow_create::{CreateWorkflowOptions, create_workflow};
 
 #[derive(Debug, Parser)]
 #[command(name = "factory", version, about)]
@@ -34,15 +35,9 @@ enum Command {
         /// Repository to initialize. Defaults to the current directory.
         #[arg(long)]
         repository: Option<PathBuf>,
-        /// Skip GitHub label discovery and creation.
-        #[arg(long)]
-        no_labels: bool,
         /// Report required changes without writing anything.
         #[arg(long)]
         check: bool,
-        /// Replace a customized implementation workflow with the bundled version.
-        #[arg(long)]
-        update_workflow: bool,
     },
     /// Poll configured repositories and persist eligible ticket tasks.
     Run {
@@ -129,6 +124,48 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum WorkflowCommand {
+    /// Create a workflow from explicit trigger and prompt input.
+    #[command(group(
+        ArgGroup::new("trigger")
+            .required(true)
+            .args(["schedule", "label"])
+    ))]
+    #[command(group(
+        ArgGroup::new("prompt_source")
+            .required(true)
+            .args(["prompt", "prompt_file"])
+    ))]
+    Create {
+        /// Lowercase kebab-case workflow ID.
+        workflow_id: String,
+        /// Five-field cron expression.
+        #[arg(long, requires = "timezone")]
+        schedule: Option<String>,
+        /// IANA timezone for a scheduled workflow.
+        #[arg(long, requires = "schedule")]
+        timezone: Option<String>,
+        /// GitHub label for a label-triggered workflow.
+        #[arg(long)]
+        label: Option<String>,
+        /// Runtime override. Inherits the configured default when omitted.
+        #[arg(long)]
+        runtime: Option<String>,
+        /// Timeout override. Inherits the configured default when omitted.
+        #[arg(long)]
+        timeout: Option<String>,
+        /// Workflow prompt text.
+        #[arg(long)]
+        prompt: Option<String>,
+        /// Read workflow prompt text from this file, or from stdin with `-`.
+        #[arg(long, value_name = "PATH")]
+        prompt_file: Option<PathBuf>,
+        /// Configured repository to create the workflow in. Defaults to the current directory.
+        #[arg(long)]
+        repository: Option<PathBuf>,
+        /// Path to the Factory configuration file.
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
     /// Run one validated workflow against a configured repository.
     Run {
         /// Workflow ID, derived from its Markdown filename.
@@ -167,25 +204,14 @@ async fn run_cli() -> Result<u8> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Init {
-            repository,
-            no_labels,
-            check,
-            update_workflow,
-        } => {
+        Command::Init { repository, check } => {
             let repository = repository
                 .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
-            let report = initialize(
-                InitOptions {
-                    repository,
-                    config_path: default_config_path(),
-                    no_labels,
-                    check,
-                    update_workflow,
-                },
-                &GitHubClient::default(),
-            )
-            .await?;
+            let report = initialize(InitOptions {
+                repository,
+                config_path: default_config_path(),
+                check,
+            })?;
             let exit_code = report.exit_code();
             print!("{report}");
             return Ok(exit_code);
@@ -211,6 +237,41 @@ async fn run_cli() -> Result<u8> {
             if invalid > 0 {
                 anyhow::bail!("workflow catalog contains {invalid} invalid workflow(s)");
             }
+        }
+        Command::Workflow {
+            command:
+                WorkflowCommand::Create {
+                    workflow_id,
+                    schedule,
+                    timezone,
+                    label,
+                    runtime,
+                    timeout,
+                    prompt,
+                    prompt_file,
+                    repository,
+                    config,
+                },
+        } => {
+            let report = create_workflow(
+                CreateWorkflowOptions {
+                    id: workflow_id,
+                    repository: repository.unwrap_or(
+                        std::env::current_dir().context("failed to resolve current directory")?,
+                    ),
+                    config_path: config.unwrap_or_else(default_config_path),
+                    schedule,
+                    timezone,
+                    label,
+                    runtime,
+                    timeout,
+                    prompt,
+                    prompt_file,
+                },
+                &GitHubClient::default(),
+            )
+            .await?;
+            print!("{report}");
         }
         Command::Workflow {
             command:
@@ -364,7 +425,7 @@ async fn run_poller(
     for repository in catalog.repositories_without_ready_workflow(&config) {
         write_stderr_best_effort(
             format!(
-                "No valid factory:ready implementation workflow found for {}; run factory init --repository {}\n",
+                "No valid factory:ready implementation workflow found for {}; create one with factory workflow create --repository {}\n",
                 repository.display(),
                 repository.display()
             )

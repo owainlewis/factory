@@ -6,34 +6,15 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use tempfile::NamedTempFile;
-use tokio_util::sync::CancellationToken;
 use toml_edit::{Array, DocumentMut, Item, Value, value};
 
 use crate::config::Config;
-use crate::github::GitHubClient;
-use crate::workflow::{Trigger, WorkflowCatalog};
-
-const WORKFLOW_RELATIVE_PATH: &str = ".factory/workflows/implement-ready-ticket.md";
-const DEFAULT_WORKFLOW: &str = include_str!("../examples/implement-ready-ticket.md");
-
-const READY_LABEL: Label = Label {
-    name: "factory:ready",
-    description: "Implementation is authorised and ready for Factory",
-    color: "0E8A16",
-};
-const NEEDS_REVIEW_LABEL: Label = Label {
-    name: "factory:needs-review",
-    description: "A human must inspect a question, decision, or green PR",
-    color: "FBCA04",
-};
 
 #[derive(Debug, Clone)]
 pub struct InitOptions {
     pub repository: PathBuf,
     pub config_path: PathBuf,
-    pub no_labels: bool,
     pub check: bool,
-    pub update_workflow: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +22,6 @@ enum PlannedAction {
     Create,
     Update,
     Unchanged,
-    Conflict,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +31,6 @@ enum ResourceStatus {
     Unchanged,
     WouldCreate,
     WouldUpdate,
-    Conflict,
     Failed,
     Skipped,
 }
@@ -64,7 +43,6 @@ impl ResourceStatus {
             Self::Unchanged => "unchanged",
             Self::WouldCreate => "would create",
             Self::WouldUpdate => "would update",
-            Self::Conflict => "conflict",
             Self::Failed => "failed",
             Self::Skipped => "skipped",
         }
@@ -81,10 +59,8 @@ struct ResourceResult {
 #[derive(Debug, Clone)]
 pub struct InitReport {
     repository: PathBuf,
-    name_with_owner: Option<String>,
     resources: Vec<ResourceResult>,
     check: bool,
-    workflow_to_stage: Option<PathBuf>,
 }
 
 impl InitReport {
@@ -92,10 +68,7 @@ impl InitReport {
         u8::from(self.resources.iter().any(|resource| {
             matches!(
                 resource.status,
-                ResourceStatus::WouldCreate
-                    | ResourceStatus::WouldUpdate
-                    | ResourceStatus::Conflict
-                    | ResourceStatus::Failed
+                ResourceStatus::WouldCreate | ResourceStatus::WouldUpdate | ResourceStatus::Failed
             )
         }))
     }
@@ -103,19 +76,11 @@ impl InitReport {
 
 impl fmt::Display for InitReport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(name) = &self.name_with_owner {
-            writeln!(
-                formatter,
-                "Factory initialization for {name} ({})",
-                self.repository.display()
-            )?;
-        } else {
-            writeln!(
-                formatter,
-                "Factory initialization for {}",
-                self.repository.display()
-            )?;
-        }
+        writeln!(
+            formatter,
+            "Factory initialization for {}",
+            self.repository.display()
+        )?;
         for resource in &self.resources {
             write!(
                 formatter,
@@ -143,25 +108,9 @@ impl fmt::Display for InitReport {
             }
         } else if self.exit_code() == 0 {
             writeln!(formatter, "Next:")?;
-            if let Some(workflow) = &self.workflow_to_stage {
-                writeln!(
-                    formatter,
-                    "  git -C {} add {}",
-                    shell_quote(&self.repository),
-                    shell_quote(workflow)
-                )?;
-            }
+            writeln!(formatter, "  factory workflow create <workflow-id> --help")?;
             writeln!(formatter, "  factory validate")?;
             writeln!(formatter, "  factory run")
-        } else if self
-            .resources
-            .iter()
-            .any(|resource| resource.status == ResourceStatus::Conflict)
-        {
-            writeln!(
-                formatter,
-                "Factory did not overwrite conflicting resources."
-            )
         } else {
             writeln!(
                 formatter,
@@ -171,11 +120,7 @@ impl fmt::Display for InitReport {
     }
 }
 
-fn shell_quote(path: &Path) -> String {
-    format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
-}
-
-struct WorkflowPlan {
+struct DirectoryPlan {
     path: PathBuf,
     action: PlannedAction,
 }
@@ -186,47 +131,27 @@ struct ConfigPlan {
     workspace_action: PlannedAction,
     action: PlannedAction,
     candidate: Option<String>,
-    effective: Config,
 }
 
-#[derive(Clone, Copy)]
-struct Label {
-    name: &'static str,
-    description: &'static str,
-    color: &'static str,
-}
-
-pub async fn initialize(options: InitOptions, github: &GitHubClient) -> Result<InitReport> {
+pub fn initialize(options: InitOptions) -> Result<InitReport> {
     let repository = discover_repository(&options.repository)?;
     let config = plan_config(&options.config_path, &repository)?;
-    let workflow = plan_workflow(&repository, options.update_workflow, &config.effective)?;
-    let cancellation = CancellationToken::new();
+    let workflows = plan_workflow_directory(&repository)?;
 
-    let (name_with_owner, missing_labels) = if options.no_labels {
-        (None, Vec::new())
-    } else {
-        github.validate_global(&cancellation).await?;
-        let name = github
-            .validate_repository(&repository, &cancellation)
-            .await?;
-        let existing = github.labels(&repository, &cancellation).await?;
-        let missing = [READY_LABEL, NEEDS_REVIEW_LABEL]
-            .into_iter()
-            .filter(|label| !existing.iter().any(|name| name == label.name))
-            .collect::<Vec<_>>();
-        (Some(name), missing)
-    };
-
-    let has_conflict = workflow.action == PlannedAction::Conflict;
-    if options.check || has_conflict {
-        return Ok(preflight_report(
-            &options,
+    if options.check {
+        return Ok(InitReport {
             repository,
-            name_with_owner,
-            &workflow,
-            &config,
-            &missing_labels,
-        ));
+            resources: vec![
+                planned_resource(config.action, &config.path, "global configuration"),
+                planned_resource(
+                    config.workspace_action,
+                    &config.workspace,
+                    "workspace directory",
+                ),
+                planned_resource(workflows.action, &workflows.path, "workflow directory"),
+            ],
+            check: true,
+        });
     }
 
     let mut resources = Vec::new();
@@ -249,19 +174,13 @@ pub async fn initialize(options: InitOptions, github: &GitHubClient) -> Result<I
             ));
         }
         resources.push(skipped_resource(
-            workflow.path.display().to_string(),
-            "configuration setup failed",
-        ));
-        resources.push(skipped_resource(
-            "GitHub labels".to_owned(),
+            workflows.path.display().to_string(),
             "configuration setup failed",
         ));
         return Ok(InitReport {
             repository,
-            name_with_owner,
             resources,
             check: false,
-            workflow_to_stage: None,
         });
     }
     resources.push(ResourceResult {
@@ -275,88 +194,22 @@ pub async fn initialize(options: InitOptions, github: &GitHubClient) -> Result<I
         detail: Some("workspace directory".to_owned()),
     });
 
-    if let Err(error) = apply_workflow(&workflow) {
-        resources.push(failed_resource(workflow.path.display().to_string(), error));
-        resources.push(skipped_resource(
-            "GitHub labels".to_owned(),
-            "workflow setup failed",
-        ));
+    if let Err(error) = apply_directory(&workflows) {
+        resources.push(failed_resource(workflows.path.display().to_string(), error));
         return Ok(InitReport {
             repository,
-            name_with_owner,
             resources,
             check: false,
-            workflow_to_stage: None,
         });
     }
     resources.push(ResourceResult {
-        status: applied_status(workflow.action),
-        resource: workflow.path.display().to_string(),
-        detail: Some("implementation workflow".to_owned()),
+        status: applied_status(workflows.action),
+        resource: workflows.path.display().to_string(),
+        detail: Some("workflow directory".to_owned()),
     });
 
-    if options.no_labels {
-        resources.push(ResourceResult {
-            status: ResourceStatus::Skipped,
-            resource: "GitHub labels".to_owned(),
-            detail: Some("--no-labels".to_owned()),
-        });
-    } else {
-        let labels = [READY_LABEL, NEEDS_REVIEW_LABEL];
-        for (index, label) in labels.iter().enumerate() {
-            if !missing_labels
-                .iter()
-                .any(|missing| missing.name == label.name)
-            {
-                resources.push(ResourceResult {
-                    status: ResourceStatus::Unchanged,
-                    resource: format!("GitHub label {}", label.name),
-                    detail: None,
-                });
-                continue;
-            }
-            match github
-                .create_label(
-                    &repository,
-                    label.name,
-                    label.description,
-                    label.color,
-                    &cancellation,
-                )
-                .await
-            {
-                Ok(()) => resources.push(ResourceResult {
-                    status: ResourceStatus::Created,
-                    resource: format!("GitHub label {}", label.name),
-                    detail: None,
-                }),
-                Err(error) => {
-                    resources.push(failed_resource(
-                        format!("GitHub label {}", label.name),
-                        error,
-                    ));
-                    for remaining in &labels[index + 1..] {
-                        resources.push(skipped_resource(
-                            format!("GitHub label {}", remaining.name),
-                            "earlier label setup failed",
-                        ));
-                    }
-                    return Ok(InitReport {
-                        workflow_to_stage: workflow_to_stage(&repository, &workflow),
-                        repository,
-                        name_with_owner,
-                        resources,
-                        check: false,
-                    });
-                }
-            }
-        }
-    }
-
     Ok(InitReport {
-        workflow_to_stage: workflow_to_stage(&repository, &workflow),
         repository,
-        name_with_owner,
         resources,
         check: false,
     })
@@ -378,7 +231,7 @@ fn skipped_resource(resource: String, reason: &str) -> ResourceResult {
     }
 }
 
-fn discover_repository(requested: &Path) -> Result<PathBuf> {
+pub(crate) fn discover_repository(requested: &Path) -> Result<PathBuf> {
     let requested = requested
         .canonicalize()
         .with_context(|| format!("repository path does not exist: {}", requested.display()))?;
@@ -480,58 +333,22 @@ fn git_output(repository: &Path, arguments: &[&str]) -> Result<String> {
     String::from_utf8(output.stdout).context("git output was not valid UTF-8")
 }
 
-fn plan_workflow(repository: &Path, update: bool, config: &Config) -> Result<WorkflowPlan> {
+fn plan_workflow_directory(repository: &Path) -> Result<DirectoryPlan> {
     let factory_directory = repository.join(".factory");
-    let workflow_directory = repository.join(".factory/workflows");
     validate_optional_directory(&factory_directory)?;
-    validate_optional_directory(&workflow_directory)?;
-
-    let path = repository.join(WORKFLOW_RELATIVE_PATH);
-    let action = match fs::symlink_metadata(&path) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                bail!("workflow path must be a regular file: {}", path.display());
-            }
-            let current = fs::read_to_string(&path)
-                .with_context(|| format!("failed to read workflow {}", path.display()))?;
-            if current == DEFAULT_WORKFLOW {
-                PlannedAction::Unchanged
-            } else if update {
-                PlannedAction::Update
-            } else {
-                PlannedAction::Conflict
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let catalog = WorkflowCatalog::load(config)?;
-            if let Some(entry) = catalog.entries.iter().find(|entry| {
-                entry.repository == repository
-                    && entry.errors.is_empty()
-                    && matches!(
-                        entry.trigger.as_ref(),
-                        Some(Trigger::Label(label)) if label == "factory:ready"
-                    )
-            }) {
-                return Ok(WorkflowPlan {
-                    path: entry.path.clone(),
-                    action: if update {
-                        PlannedAction::Update
-                    } else {
-                        PlannedAction::Unchanged
-                    },
-                });
-            }
+    let path = factory_directory.join("workflows");
+    validate_optional_directory(&path)?;
+    Ok(DirectoryPlan {
+        action: if path.exists() {
+            PlannedAction::Unchanged
+        } else {
             PlannedAction::Create
-        }
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("failed to inspect workflow {}", path.display()));
-        }
-    };
-    Ok(WorkflowPlan { path, action })
+        },
+        path,
+    })
 }
 
-fn validate_optional_directory(path: &Path) -> Result<()> {
+pub(crate) fn validate_optional_directory(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
             bail!("setup path must be a regular directory: {}", path.display())
@@ -540,20 +357,6 @@ fn validate_optional_directory(path: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
     }
-}
-
-fn workflow_to_stage(repository: &Path, workflow: &WorkflowPlan) -> Option<PathBuf> {
-    matches!(
-        workflow.action,
-        PlannedAction::Create | PlannedAction::Update
-    )
-    .then(|| {
-        workflow
-            .path
-            .strip_prefix(repository)
-            .unwrap_or(&workflow.path)
-            .to_path_buf()
-    })
 }
 
 fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
@@ -572,11 +375,10 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
             if config.repositories.iter().any(|item| item == repository) {
                 return Ok(ConfigPlan {
                     path,
-                    workspace: config.workspace_root.clone(),
+                    workspace: config.workspace_root,
                     workspace_action,
                     action: PlannedAction::Unchanged,
                     candidate: None,
-                    effective: config,
                 });
             }
             let contents = fs::read_to_string(&path)
@@ -596,11 +398,10 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
                 .context("generated configuration is invalid")?;
             Ok(ConfigPlan {
                 path,
-                workspace: config.workspace_root,
+                workspace: effective.workspace_root,
                 workspace_action,
                 action: PlannedAction::Update,
                 candidate: Some(candidate),
-                effective,
             })
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -611,7 +412,7 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
             let candidate = default_config(repository, &candidate_workspace);
             let validated = Config::validate_candidate(&candidate, config_directory)
                 .context("generated configuration is invalid")?;
-            let workspace = validated.workspace_root.clone();
+            let workspace = validated.workspace_root;
             Ok(ConfigPlan {
                 path,
                 workspace: workspace.clone(),
@@ -622,7 +423,6 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
                 },
                 action: PlannedAction::Create,
                 candidate: Some(candidate),
-                effective: validated,
             })
         }
         Err(error) => {
@@ -656,89 +456,16 @@ fn default_config(repository: &Path, workspace: &Path) -> String {
     document.to_string()
 }
 
-fn preflight_report(
-    options: &InitOptions,
-    repository: PathBuf,
-    name_with_owner: Option<String>,
-    workflow: &WorkflowPlan,
-    config: &ConfigPlan,
-    missing_labels: &[Label],
-) -> InitReport {
-    let mut resources = vec![
-        planned_resource(
-            config.action,
-            &config.path,
-            "global configuration",
-            options.check,
-        ),
-        ResourceResult {
-            status: match config.workspace_action {
-                PlannedAction::Create => ResourceStatus::WouldCreate,
-                PlannedAction::Update => ResourceStatus::WouldUpdate,
-                PlannedAction::Unchanged => ResourceStatus::Unchanged,
-                PlannedAction::Conflict => ResourceStatus::Conflict,
-            },
-            resource: config.workspace.display().to_string(),
-            detail: Some("workspace directory".to_owned()),
-        },
-        planned_resource(
-            workflow.action,
-            &workflow.path,
-            "implementation workflow",
-            options.check,
-        ),
-    ];
-    if options.no_labels {
-        resources.push(ResourceResult {
-            status: ResourceStatus::Skipped,
-            resource: "GitHub labels".to_owned(),
-            detail: Some("--no-labels".to_owned()),
-        });
-    } else {
-        for label in [READY_LABEL, NEEDS_REVIEW_LABEL] {
-            resources.push(ResourceResult {
-                status: if missing_labels
-                    .iter()
-                    .any(|missing| missing.name == label.name)
-                {
-                    ResourceStatus::WouldCreate
-                } else {
-                    ResourceStatus::Unchanged
-                },
-                resource: format!("GitHub label {}", label.name),
-                detail: None,
-            });
-        }
-    }
-    InitReport {
-        repository,
-        name_with_owner,
-        resources,
-        check: options.check,
-        workflow_to_stage: None,
-    }
-}
-
-fn planned_resource(
-    action: PlannedAction,
-    path: &Path,
-    detail: &str,
-    check: bool,
-) -> ResourceResult {
+fn planned_resource(action: PlannedAction, path: &Path, detail: &str) -> ResourceResult {
     let status = match action {
         PlannedAction::Create => ResourceStatus::WouldCreate,
         PlannedAction::Update => ResourceStatus::WouldUpdate,
         PlannedAction::Unchanged => ResourceStatus::Unchanged,
-        PlannedAction::Conflict => ResourceStatus::Conflict,
     };
     ResourceResult {
         status,
         resource: path.display().to_string(),
-        detail: Some(if action == PlannedAction::Conflict && !check {
-            "customized workflow; use --update-workflow".to_owned()
-        } else {
-            detail.to_owned()
-        }),
+        detail: Some(detail.to_owned()),
     }
 }
 
@@ -747,7 +474,6 @@ fn applied_status(action: PlannedAction) -> ResourceStatus {
         PlannedAction::Create => ResourceStatus::Created,
         PlannedAction::Update => ResourceStatus::Updated,
         PlannedAction::Unchanged => ResourceStatus::Unchanged,
-        PlannedAction::Conflict => ResourceStatus::Conflict,
     }
 }
 
@@ -804,35 +530,21 @@ fn validated_atomic_config_write(path: &Path, contents: &str) -> Result<()> {
     sync_parent(parent)
 }
 
-fn apply_workflow(plan: &WorkflowPlan) -> Result<()> {
-    if plan.action == PlannedAction::Unchanged {
-        return Ok(());
+fn apply_directory(plan: &DirectoryPlan) -> Result<()> {
+    if plan.action == PlannedAction::Create {
+        fs::create_dir_all(&plan.path).with_context(|| {
+            format!(
+                "failed to create workflow directory {}",
+                plan.path.display()
+            )
+        })?;
+        sync_parent(
+            plan.path
+                .parent()
+                .context("workflow directory has no parent")?,
+        )?;
     }
-    let parent = plan
-        .path
-        .parent()
-        .context("workflow path has no parent directory")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create workflow directory {}", parent.display()))?;
-    atomic_write(&plan.path, DEFAULT_WORKFLOW)
-}
-
-fn atomic_write(path: &Path, contents: &str) -> Result<()> {
-    let parent = path.parent().context("path has no parent directory")?;
-    let mut temporary = NamedTempFile::new_in(parent)
-        .with_context(|| format!("failed to create temporary file in {}", parent.display()))?;
-    temporary
-        .write_all(contents.as_bytes())
-        .with_context(|| format!("failed to write temporary file for {}", path.display()))?;
-    temporary
-        .as_file_mut()
-        .sync_all()
-        .with_context(|| format!("failed to sync temporary file for {}", path.display()))?;
-    temporary
-        .persist(path)
-        .map_err(|error| error.error)
-        .with_context(|| format!("failed to replace {}", path.display()))?;
-    sync_parent(parent)
+    Ok(())
 }
 
 #[cfg(unix)]

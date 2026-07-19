@@ -45,11 +45,10 @@ cd /absolute/path/to/trusted/repository
 factory init
 ```
 
-The command creates the implementation workflow, creates or updates
-`~/.factory/config.toml`, creates the default `~/.factory/workspaces` directory,
-and creates missing `factory:ready` and `factory:needs-review` labels. It does
-not change existing label definitions, commit files, start the daemon, launch
-Codex, or merge pull requests.
+The command creates or updates `~/.factory/config.toml`, creates the default
+`~/.factory/workspaces` directory, and creates `.factory/workflows/` in the
+repository. It does not install a workflow, inspect or mutate GitHub labels,
+commit files, start the daemon, launch Codex, or merge pull requests.
 
 Initialization is idempotent. Preview it without writes with:
 
@@ -57,19 +56,35 @@ Initialization is idempotent. Preview it without writes with:
 factory init --check
 ```
 
-Use `factory init --no-labels` for offline local setup. A customized workflow is
-never overwritten by default; `factory init --update-workflow` is the explicit
-replacement operation. To initialize a repository without changing directory,
-use `factory init --repository /absolute/path/to/repository`.
+To initialize a repository without changing directory, pass its path:
 
-Review and commit the installed policy in the target repository:
+```sh
+factory init --repository /absolute/path/to/repository
+```
+
+Create an implementation workflow from explicit prompt input. For a substantial
+policy, put only the Markdown prompt body in a file and pass its path:
+
+```sh
+factory workflow create implement-ready-ticket \
+  --label factory:ready \
+  --timeout 4h \
+  --prompt-file /absolute/path/to/implementation-policy.md
+```
+
+The command does not open `$EDITOR`. Use `--prompt` for short policies or
+`--prompt-file -` to read from standard input. A label-triggered workflow
+creates its missing trigger label. Create any additional labels referenced by
+the policy, such as `factory:needs-review`, separately.
+
+Review and commit the generated policy in the target repository:
 
 ```sh
 git add .factory/workflows/implement-ready-ticket.md
 git commit -m "chore: configure Factory"
 ```
 
-Validate the machine-specific configuration without network or runtime work:
+Validate the machine-specific configuration without runtime work:
 
 ```sh
 factory validate
