@@ -203,6 +203,45 @@ fn init_creates_complete_setup_and_is_idempotent() {
 }
 
 #[test]
+fn init_prints_a_shell_safe_workflow_staging_command() {
+    let mut fixture = Fixture::new();
+    let repository = fixture._temp.path().join("repository with ' quote");
+    fs::rename(&fixture.repository, &repository).unwrap();
+    fixture.repository = repository;
+
+    let output = fixture
+        .command()
+        .args(["init", "--no-labels"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let command = stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with("git -C "))
+        .unwrap()
+        .trim();
+    assert!(
+        ProcessCommand::new("sh")
+            .args(["-c", command])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let staged = ProcessCommand::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(&fixture.repository)
+        .output()
+        .unwrap();
+    assert!(staged.status.success());
+    assert_eq!(
+        String::from_utf8(staged.stdout).unwrap(),
+        ".factory/workflows/implement-ready-ticket.md\n"
+    );
+}
+
+#[test]
 fn init_accepts_credentialed_github_https_origin() {
     let fixture = Fixture::new();
     set_origin(
@@ -687,9 +726,9 @@ fn update_workflow_replaces_custom_ready_workflow_in_place() {
         .success()
         .stdout(predicate::str::contains("updated:"))
         .stdout(predicate::str::contains(
-            "git -C ".to_owned()
+            "git -C '".to_owned()
                 + fixture.repository.canonicalize().unwrap().to_str().unwrap()
-                + " add .factory/workflows/custom-ready-policy.md",
+                + "' add '.factory/workflows/custom-ready-policy.md'",
         ));
 
     assert_eq!(

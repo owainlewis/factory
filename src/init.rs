@@ -147,8 +147,8 @@ impl fmt::Display for InitReport {
                 writeln!(
                     formatter,
                     "  git -C {} add {}",
-                    self.repository.display(),
-                    workflow.display()
+                    shell_quote(&self.repository),
+                    shell_quote(workflow)
                 )?;
             }
             writeln!(formatter, "  factory validate")?;
@@ -169,6 +169,10 @@ impl fmt::Display for InitReport {
             )
         }
     }
+}
+
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
 }
 
 struct WorkflowPlan {
