@@ -84,7 +84,7 @@ pub struct InitReport {
     name_with_owner: Option<String>,
     resources: Vec<ResourceResult>,
     check: bool,
-    workflow_changed: bool,
+    workflow_to_stage: Option<PathBuf>,
 }
 
 impl InitReport {
@@ -143,12 +143,12 @@ impl fmt::Display for InitReport {
             }
         } else if self.exit_code() == 0 {
             writeln!(formatter, "Next:")?;
-            if self.workflow_changed {
+            if let Some(workflow) = &self.workflow_to_stage {
                 writeln!(
                     formatter,
                     "  git -C {} add {}",
                     self.repository.display(),
-                    WORKFLOW_RELATIVE_PATH
+                    workflow.display()
                 )?;
             }
             writeln!(formatter, "  factory validate")?;
@@ -257,7 +257,7 @@ pub async fn initialize(options: InitOptions, github: &GitHubClient) -> Result<I
             name_with_owner,
             resources,
             check: false,
-            workflow_changed: false,
+            workflow_to_stage: None,
         });
     }
     resources.push(ResourceResult {
@@ -282,7 +282,7 @@ pub async fn initialize(options: InitOptions, github: &GitHubClient) -> Result<I
             name_with_owner,
             resources,
             check: false,
-            workflow_changed: false,
+            workflow_to_stage: None,
         });
     }
     resources.push(ResourceResult {
@@ -338,14 +338,11 @@ pub async fn initialize(options: InitOptions, github: &GitHubClient) -> Result<I
                         ));
                     }
                     return Ok(InitReport {
+                        workflow_to_stage: workflow_to_stage(&repository, &workflow),
                         repository,
                         name_with_owner,
                         resources,
                         check: false,
-                        workflow_changed: matches!(
-                            workflow.action,
-                            PlannedAction::Create | PlannedAction::Update
-                        ),
                     });
                 }
             }
@@ -353,14 +350,11 @@ pub async fn initialize(options: InitOptions, github: &GitHubClient) -> Result<I
     }
 
     Ok(InitReport {
+        workflow_to_stage: workflow_to_stage(&repository, &workflow),
         repository,
         name_with_owner,
         resources,
         check: false,
-        workflow_changed: matches!(
-            workflow.action,
-            PlannedAction::Create | PlannedAction::Update
-        ),
     })
 }
 
@@ -516,7 +510,11 @@ fn plan_workflow(repository: &Path, update: bool, config: &Config) -> Result<Wor
             }) {
                 return Ok(WorkflowPlan {
                     path: entry.path.clone(),
-                    action: PlannedAction::Unchanged,
+                    action: if update {
+                        PlannedAction::Update
+                    } else {
+                        PlannedAction::Unchanged
+                    },
                 });
             }
             PlannedAction::Create
@@ -538,6 +536,20 @@ fn validate_optional_directory(path: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
     }
+}
+
+fn workflow_to_stage(repository: &Path, workflow: &WorkflowPlan) -> Option<PathBuf> {
+    matches!(
+        workflow.action,
+        PlannedAction::Create | PlannedAction::Update
+    )
+    .then(|| {
+        workflow
+            .path
+            .strip_prefix(repository)
+            .unwrap_or(&workflow.path)
+            .to_path_buf()
+    })
 }
 
 fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
@@ -699,7 +711,7 @@ fn preflight_report(
         name_with_owner,
         resources,
         check: options.check,
-        workflow_changed: false,
+        workflow_to_stage: None,
     }
 }
 

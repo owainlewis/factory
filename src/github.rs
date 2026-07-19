@@ -352,7 +352,7 @@ impl GitHubClient {
         cancellation: &CancellationToken,
     ) -> Result<String> {
         let mut command = Command::new(&self.executable);
-        command.args(arguments);
+        command.args(arguments).env_remove("GH_REPO");
         if let Some(repository) = repository {
             command.current_dir(repository);
         }

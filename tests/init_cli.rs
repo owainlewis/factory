@@ -30,6 +30,7 @@ impl Fixture {
             &gh,
             r#"#!/bin/sh
 printf '%s\n' "$*" >> .gh-calls
+if [ -n "${GH_REPO:-}" ]; then echo "GH_REPO leaked into gh" >&2; exit 65; fi
 if [ "$1" = "--version" ]; then echo "gh version 2.80.0"; exit 0; fi
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then echo "logged in"; exit 0; fi
 if [ "$1" = "repo" ] && [ "$2" = "view" ]; then echo "example/repository"; exit 0; fi
@@ -246,6 +247,25 @@ fn label_discovery_uses_uncapped_paginated_api() {
     let calls = fs::read_to_string(fixture.repository.join(".gh-calls")).unwrap();
     assert!(calls.contains("api repos/{owner}/{repo}/labels --paginate --jq .[].name"));
     assert!(!calls.contains("--limit"));
+}
+
+#[test]
+fn init_ignores_gh_repo_environment_override() {
+    let fixture = Fixture::new();
+
+    fixture
+        .command()
+        .env("GH_REPO", "wrong/repository")
+        .args(["init", "--repository"])
+        .arg(&fixture.repository)
+        .assert()
+        .success();
+
+    assert!(fixture.workflow().is_file());
+    assert_eq!(
+        fs::read_to_string(fixture.repository.join(".factory-test-labels")).unwrap(),
+        "factory:ready\nfactory:needs-review\n"
+    );
 }
 
 #[test]
@@ -646,4 +666,35 @@ fn init_does_not_install_duplicate_beside_custom_ready_workflow() {
     assert!(!fixture.workflow().exists());
     assert!(custom.is_file());
     assert!(fixture.config_path().is_file());
+}
+
+#[test]
+fn update_workflow_replaces_custom_ready_workflow_in_place() {
+    let fixture = Fixture::new();
+    let workflows = fixture.repository.join(".factory/workflows");
+    let custom = workflows.join("custom-ready-policy.md");
+    fs::create_dir_all(&workflows).unwrap();
+    fs::write(
+        &custom,
+        "+++\nlabel = \"factory:ready\"\n+++\n\nUse the repository-specific delivery policy.\n",
+    )
+    .unwrap();
+
+    fixture
+        .command()
+        .args(["init", "--no-labels", "--update-workflow"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("updated:"))
+        .stdout(predicate::str::contains(
+            "git -C ".to_owned()
+                + fixture.repository.canonicalize().unwrap().to_str().unwrap()
+                + " add .factory/workflows/custom-ready-policy.md",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(&custom).unwrap(),
+        include_str!("../examples/implement-ready-ticket.md")
+    );
+    assert!(!fixture.workflow().exists());
 }
