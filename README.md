@@ -13,10 +13,31 @@ and Codex CLIs. It does not use model API keys.
 
 1. Install Rust, `git`, `gh`, and Codex CLI.
 2. Authenticate with `gh auth login` and `codex login`.
-3. Clone Factory and run `cargo install --path .`.
+3. Clone Factory and install it globally with `cargo install --path . --locked`.
 4. In a trusted target repository, run `factory init`.
 5. Review and commit `.factory/workflows/implement-ready-ticket.md`.
 6. Run `factory validate`, `factory workflows`, then `factory run`.
+
+For local development, run the install command from the Factory repository:
+
+```sh
+cargo install --path . --locked
+factory --help
+```
+
+Cargo normally installs the binary at `~/.cargo/bin/factory`. If your shell
+cannot find it, add Cargo's binary directory to your zsh path:
+
+```sh
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+Reinstall the development build after local code changes:
+
+```sh
+cargo install --path . --locked --force
+```
 
 `factory init --check` previews setup without writes. Use `--no-labels` for
 offline local setup and `--update-workflow` only when you intend to replace a
