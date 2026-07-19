@@ -15,12 +15,29 @@ and Codex CLIs. It does not use model API keys.
 2. Authenticate with `gh auth login` and `codex login`.
 3. Clone Factory and run `cargo install --path .`.
 4. In a trusted target repository, run `factory init`.
-5. Review and commit `.factory/workflows/implement-ready-ticket.md`.
-6. Run `factory validate`, `factory workflows`, then `factory run`.
+5. Create a workflow with `factory workflow create`.
+6. Review and commit the new file under `.factory/workflows/`.
+7. Run `factory validate`, `factory workflows`, then `factory run`.
 
-`factory init --check` previews setup without writes. Use `--no-labels` for
-offline local setup and `--update-workflow` only when you intend to replace a
-customized implementation workflow with the bundled version.
+`factory init --check` previews setup without writes. Initialization only
+registers the repository, creates machine configuration and workspace storage,
+and creates the repository's workflow directory. It does not install an
+opinionated workflow or create GitHub labels.
+
+Create a scheduled pull-request triage workflow without opening an editor:
+
+```sh
+factory workflow create triage-pull-requests \
+  --schedule "*/30 * * * *" \
+  --timezone Europe/London \
+  --timeout 1h \
+  --prompt "Review open pull requests with no labels. Process at most five per run. Read each diff, checks, and existing reviews; add appropriate repository labels and leave a review only for actionable findings. Never merge or close a pull request."
+```
+
+Use `--prompt-file PATH` for longer policies, or `--prompt-file -` to read the
+prompt from standard input. Label-triggered workflows create their missing
+trigger label explicitly; scheduled workflows do not mutate labels during
+creation.
 
 See [`docs/local-v1.md`](docs/local-v1.md) for complete installation, setup,
 operation, recovery, and acceptance instructions. The architecture and product

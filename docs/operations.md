@@ -14,11 +14,11 @@ ready-ticket workflow requires Codex to create or reuse an isolated
 ticket-numbered worktree; Factory does not create that worktree before starting
 Codex.
 
-Factory requires the conventional `factory:ready` and
-`factory:needs-review` labels. The explicit `factory init` setup command creates
-missing label definitions without changing existing ones. The daemon does not
-create, remove, or otherwise mutate labels itself. The delegated workflow owns
-ticket and pull-request updates.
+Label-triggered workflows require their configured GitHub label. `factory
+workflow create --label LABEL` creates that label when it is missing without
+changing an existing definition. `factory init` does not inspect or mutate
+GitHub labels. The daemon does not create, remove, or otherwise mutate labels
+itself. The delegated workflow owns ticket and pull-request updates.
 
 Five-field cron schedules are evaluated in the IANA timezone declared by the
 workflow. Factory stores the next occurrence and atomically advances that
