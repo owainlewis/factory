@@ -171,7 +171,12 @@ fn factory_run_once_persists_a_task_without_launching_codex() {
         .env("PATH", path)
         .assert()
         .success()
-        .stdout(predicates::str::contains("tasks_created=1"));
+        .stdout(predicates::str::contains("tasks_created=1"))
+        .stderr(predicates::str::contains("Factory starting: mode=once"))
+        .stderr(predicates::str::contains(
+            "Factory loaded: repositories=1 workflows=1",
+        ))
+        .stderr(predicates::str::contains("Factory polling GitHub once..."));
 
     assert!(!codex_marker.exists());
     let mut ledger = Ledger::open_in(&data).unwrap();
@@ -179,6 +184,41 @@ fn factory_run_once_persists_a_task_without_launching_codex() {
         ledger.claim_next().unwrap().unwrap().source_item.as_deref(),
         Some("9")
     );
+}
+
+#[test]
+fn factory_run_once_reports_progress_before_authentication_failure() {
+    let fixture = Fixture::new(1);
+    fs::write(format!("{}.auth-fail", fixture.gh.display()), "").unwrap();
+    let data = fixture._temp.path().join("data");
+    let path = format!(
+        "{}:{}",
+        fixture._temp.path().display(),
+        std::env::var("PATH").unwrap()
+    );
+
+    let output = AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .args([
+            "run",
+            "--once",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            data.to_str().unwrap(),
+        ])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let starting = stderr.find("Factory starting: mode=once").unwrap();
+    let polling = stderr.find("Factory polling GitHub once...").unwrap();
+    let failure = stderr.find("Error:").unwrap();
+    assert!(starting < polling);
+    assert!(polling < failure);
+    assert!(stderr.contains("run gh auth login"));
 }
 
 #[test]

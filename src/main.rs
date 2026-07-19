@@ -355,6 +355,10 @@ async fn run_poller(
     once: bool,
 ) -> Result<u8> {
     let path = config_path.unwrap_or_else(default_config_path);
+    let mode = if once { "once" } else { "continuous" };
+    write_stderr_best_effort(
+        format!("Factory starting: mode={mode} config={}\n", path.display()).as_bytes(),
+    );
     let config = Config::load(&path)?;
     let catalog = WorkflowCatalog::load(&config)?;
     for repository in catalog.repositories_without_ready_workflow(&config) {
@@ -383,9 +387,20 @@ async fn run_poller(
             .unwrap_or_else(|| std::path::Path::new("."))
             .to_path_buf()
     });
+    write_stderr_best_effort(
+        format!(
+            "Factory loaded: repositories={} workflows={} data={} poll_every={}\n",
+            config.repositories.len(),
+            catalog.entries.len(),
+            data_directory.display(),
+            humantime::format_duration(config.poll_every)
+        )
+        .as_bytes(),
+    );
     let mut ledger = Ledger::open_in(&data_directory)?;
     let github = GitHubClient::default();
     if once {
+        write_stderr_best_effort(b"Factory polling GitHub once...\n");
         let report = github.poll_once(&config, &catalog, &mut ledger).await?;
         print_poll_report(&report);
         return Ok(u8::from(report.failures() > 0));
@@ -401,6 +416,7 @@ async fn run_poller(
     let daemon = FactoryDaemon::new(config, catalog, ledger.path());
     daemon.run(cancellation).await?;
     signal_task.abort();
+    write_stderr_best_effort(b"Factory stopped.\n");
     Ok(0)
 }
 
