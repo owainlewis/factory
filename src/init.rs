@@ -463,11 +463,16 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
                 bail!("config path must be a regular file: {}", path.display());
             }
             let config = Config::load_without_workspace_probe(&path)?;
+            let workspace_action = if config.workspace_root.exists() {
+                PlannedAction::Unchanged
+            } else {
+                PlannedAction::Create
+            };
             if config.repositories.iter().any(|item| item == repository) {
                 return Ok(ConfigPlan {
                     path,
                     workspace: config.workspace_root,
-                    workspace_action: PlannedAction::Unchanged,
+                    workspace_action,
                     action: PlannedAction::Unchanged,
                     candidate: None,
                 });
@@ -490,7 +495,7 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
             Ok(ConfigPlan {
                 path,
                 workspace: config.workspace_root,
-                workspace_action: PlannedAction::Unchanged,
+                workspace_action,
                 action: PlannedAction::Update,
                 candidate: Some(candidate),
             })
@@ -653,6 +658,14 @@ fn applied_status(action: PlannedAction) -> ResourceStatus {
 }
 
 fn apply_config(plan: &ConfigPlan) -> Result<()> {
+    if plan.workspace_action == PlannedAction::Create {
+        fs::create_dir_all(&plan.workspace).with_context(|| {
+            format!(
+                "failed to create workspace directory {}",
+                plan.workspace.display()
+            )
+        })?;
+    }
     if plan.action == PlannedAction::Unchanged {
         Config::load(&plan.path)?;
         return Ok(());
@@ -663,12 +676,6 @@ fn apply_config(plan: &ConfigPlan) -> Result<()> {
         .context("configuration path has no parent directory")?;
     fs::create_dir_all(parent)
         .with_context(|| format!("failed to create config directory {}", parent.display()))?;
-    fs::create_dir_all(&plan.workspace).with_context(|| {
-        format!(
-            "failed to create workspace directory {}",
-            plan.workspace.display()
-        )
-    })?;
     let candidate = plan
         .candidate
         .as_deref()

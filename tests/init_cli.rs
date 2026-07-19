@@ -256,6 +256,38 @@ fn check_does_not_probe_existing_workspace_writability() {
 }
 
 #[test]
+fn init_recreates_workspace_missing_from_existing_config() {
+    let fixture = Fixture::new();
+    let original = write_config(
+        &fixture.config_path(),
+        &[&fixture.repository],
+        &fixture.workspace(),
+        "# keep this comment\n",
+    );
+    fs::remove_dir(fixture.workspace()).unwrap();
+
+    fixture
+        .command()
+        .args(["init", "--no-labels", "--check"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("would create:"))
+        .stdout(predicate::str::contains("workspace directory"));
+    assert!(!fixture.workspace().exists());
+
+    fixture
+        .command()
+        .args(["init", "--no-labels"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("created:"))
+        .stdout(predicate::str::contains("workspace directory"));
+
+    assert!(fixture.workspace().is_dir());
+    assert_eq!(fs::read_to_string(fixture.config_path()).unwrap(), original);
+}
+
+#[test]
 fn no_labels_never_invokes_github_cli() {
     let fixture = Fixture::new();
 

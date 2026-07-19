@@ -35,14 +35,18 @@ struct RawConfig {
 
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
-        Self::load_with_workspace_probe(path, ensure_workspace_writable)
+        Self::load_with_workspace_probe(path, ensure_workspace_writable, false)
     }
 
     pub(crate) fn load_without_workspace_probe(path: &Path) -> Result<Self> {
-        Self::load_with_workspace_probe(path, |_| Ok(()))
+        Self::load_with_workspace_probe(path, |_| Ok(()), true)
     }
 
-    fn load_with_workspace_probe<F>(path: &Path, workspace_probe: F) -> Result<Self>
+    fn load_with_workspace_probe<F>(
+        path: &Path,
+        workspace_probe: F,
+        allow_missing_workspace: bool,
+    ) -> Result<Self>
     where
         F: FnOnce(&Path) -> Result<()>,
     {
@@ -56,26 +60,32 @@ impl Config {
             .parent()
             .context("configuration path has no parent directory")?;
 
-        Self::resolve_with_workspace_probe(raw, config_dir, workspace_probe)
-            .with_context(|| format!("invalid Factory configuration in {}", path.display()))
+        Self::resolve_with_workspace_probe(
+            raw,
+            config_dir,
+            workspace_probe,
+            allow_missing_workspace,
+        )
+        .with_context(|| format!("invalid Factory configuration in {}", path.display()))
     }
 
     pub(crate) fn validate_candidate(contents: &str, config_dir: &Path) -> Result<Self> {
         let raw: RawConfig =
             toml::from_str(contents).context("failed to parse candidate config")?;
-        Self::resolve_with_workspace_probe(raw, config_dir, |_| Ok(()))
+        Self::resolve_with_workspace_probe(raw, config_dir, |_| Ok(()), true)
             .context("invalid candidate Factory configuration")
     }
 
     #[cfg(test)]
     fn resolve(raw: RawConfig, config_dir: &Path) -> Result<Self> {
-        Self::resolve_with_workspace_probe(raw, config_dir, ensure_workspace_writable)
+        Self::resolve_with_workspace_probe(raw, config_dir, ensure_workspace_writable, false)
     }
 
     fn resolve_with_workspace_probe<F>(
         raw: RawConfig,
         config_dir: &Path,
         workspace_probe: F,
+        allow_missing_workspace: bool,
     ) -> Result<Self>
     where
         F: FnOnce(&Path) -> Result<()>,
@@ -109,8 +119,15 @@ impl Config {
             .iter()
             .map(|path| canonical_directory("repository", Path::new(path), config_dir))
             .collect::<Result<Vec<_>>>()?;
-        let workspace_root =
-            canonical_directory("workspace_root", Path::new(&raw.workspace_root), config_dir)?;
+        let workspace_root = if allow_missing_workspace {
+            canonical_directory_or_missing(
+                "workspace_root",
+                Path::new(&raw.workspace_root),
+                config_dir,
+            )?
+        } else {
+            canonical_directory("workspace_root", Path::new(&raw.workspace_root), config_dir)?
+        };
         let home = canonical_home_dir()?;
         validate_workspace(&workspace_root, &repositories, home.as_deref())?;
         workspace_probe(&workspace_root)?;
@@ -197,6 +214,49 @@ fn canonical_directory(name: &str, path: &Path, base: &Path) -> Result<PathBuf> 
         bail!("{name} path is not a directory: {}", canonical.display());
     }
     Ok(canonical)
+}
+
+fn canonical_directory_or_missing(name: &str, path: &Path, base: &Path) -> Result<PathBuf> {
+    let expanded = expand_path(path, base)?;
+    let mut ancestor = expanded.as_path();
+    let mut missing = Vec::new();
+
+    loop {
+        match fs::symlink_metadata(ancestor) {
+            Ok(_) => {
+                let mut resolved = ancestor.canonicalize().with_context(|| {
+                    format!("failed to resolve {name} path: {}", ancestor.display())
+                })?;
+                if !resolved.is_dir() {
+                    bail!("{name} ancestor is not a directory: {}", resolved.display());
+                }
+                for component in missing.iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let component = ancestor.file_name().with_context(|| {
+                    format!(
+                        "{name} path has no existing ancestor: {}",
+                        expanded.display()
+                    )
+                })?;
+                missing.push(component.to_os_string());
+                ancestor = ancestor.parent().with_context(|| {
+                    format!(
+                        "{name} path has no existing ancestor: {}",
+                        expanded.display()
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to inspect {name} path: {}", ancestor.display())
+                });
+            }
+        }
+    }
 }
 
 fn expand_path(path: &Path, base: &Path) -> Result<PathBuf> {
@@ -475,6 +535,7 @@ mod tests {
             raw(&repository, &workspace),
             temp.path(),
             |path| bail!("workspace_root is not writable: {}", path.display()),
+            false,
         )
         .unwrap_err();
 
