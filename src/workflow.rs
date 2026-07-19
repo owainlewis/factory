@@ -121,7 +121,6 @@ impl WorkflowCatalog {
         config.repositories.iter().filter(|repository| {
             !self.entries.iter().any(|entry| {
                 &entry.repository == *repository
-                    && entry.id == "implement-ready-ticket"
                     && entry.errors.is_empty()
                     && matches!(
                         entry.trigger.as_ref(),

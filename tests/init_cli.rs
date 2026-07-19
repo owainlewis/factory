@@ -585,3 +585,34 @@ fn run_hints_at_init_when_ready_workflow_is_missing() {
         ))
         .stderr(predicate::str::contains("run factory init --repository"));
 }
+
+#[test]
+fn run_accepts_valid_custom_ready_workflow_as_initialized() {
+    let fixture = Fixture::new();
+    let workspace = fixture._temp.path().join("workspaces");
+    write_config(
+        &fixture.config_path(),
+        &[&fixture.repository],
+        &workspace,
+        "",
+    );
+    let workflows = fixture.repository.join(".factory/workflows");
+    fs::create_dir_all(&workflows).unwrap();
+    fs::write(
+        workflows.join("custom-ready-policy.md"),
+        "+++\nlabel = \"factory:ready\"\n+++\n\nUse the repository-specific delivery policy.\n",
+    )
+    .unwrap();
+
+    fixture
+        .command()
+        .args(["run", "--once", "--config"])
+        .arg(fixture.config_path())
+        .arg("--data-directory")
+        .arg(fixture._temp.path().join("data"))
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains("No valid factory:ready implementation workflow found").not(),
+        );
+}
