@@ -1,5 +1,5 @@
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -558,8 +558,11 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
             let config_directory = path
                 .parent()
                 .context("configuration path has no parent directory")?;
-            let workspace = config_directory.join("workspaces");
-            validate_non_overlapping_workspace(&workspace, repository)?;
+            let candidate_workspace = config_directory.join("workspaces");
+            let candidate = default_config(repository, &candidate_workspace);
+            let validated = Config::validate_candidate(&candidate, config_directory)
+                .context("generated configuration is invalid")?;
+            let workspace = validated.workspace_root;
             Ok(ConfigPlan {
                 path,
                 workspace: workspace.clone(),
@@ -569,7 +572,7 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
                     PlannedAction::Create
                 },
                 action: PlannedAction::Create,
-                candidate: Some(default_config(repository, &workspace)),
+                candidate: Some(candidate),
             })
         }
         Err(error) => {
@@ -586,20 +589,6 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
             .context("failed to resolve current directory")?
             .join(path))
     }
-}
-
-fn validate_non_overlapping_workspace(workspace: &Path, repository: &Path) -> Result<()> {
-    if workspace == repository
-        || workspace.starts_with(repository)
-        || repository.starts_with(workspace)
-    {
-        bail!(
-            "default workspace {} overlaps repository {}; use an existing custom config",
-            workspace.display(),
-            repository.display()
-        );
-    }
-    Ok(())
 }
 
 fn default_config(repository: &Path, workspace: &Path) -> String {
@@ -795,10 +784,16 @@ fn atomic_write(path: &Path, contents: &str) -> Result<()> {
     sync_parent(parent)
 }
 
+#[cfg(unix)]
 fn sync_parent(parent: &Path) -> Result<()> {
-    OpenOptions::new()
+    fs::OpenOptions::new()
         .read(true)
         .open(parent)
         .and_then(|directory| directory.sync_all())
         .with_context(|| format!("failed to sync directory {}", parent.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_parent(_parent: &Path) -> Result<()> {
+    Ok(())
 }

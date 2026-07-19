@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
@@ -409,6 +410,28 @@ fn init_rejects_parent_traversal_in_missing_workspace_without_writes() {
 
     assert!(!fixture.repository.join("workspaces").exists());
     assert!(!fixture.workflow().exists());
+}
+
+#[test]
+fn init_resolves_symlinked_config_ancestors_before_workspace_writes() {
+    let fixture = Fixture::new();
+    let state = fixture.repository.join(".factory-state");
+    fs::create_dir(&state).unwrap();
+    symlink(&state, fixture.home.join(".factory")).unwrap();
+
+    fixture
+        .command()
+        .args(["init", "--no-labels"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "generated configuration is invalid",
+        ))
+        .stderr(predicate::str::contains("must not overlap"));
+
+    assert!(!state.join("workspaces").exists());
+    assert!(!fixture.workflow().exists());
+    assert!(!fixture.config_path().exists());
 }
 
 #[test]
