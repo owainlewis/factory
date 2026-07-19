@@ -11,6 +11,7 @@ use toml_edit::{Array, DocumentMut, Item, Value, value};
 
 use crate::config::Config;
 use crate::github::GitHubClient;
+use crate::workflow::{Trigger, WorkflowCatalog};
 
 const WORKFLOW_RELATIVE_PATH: &str = ".factory/workflows/implement-ready-ticket.md";
 const DEFAULT_WORKFLOW: &str = include_str!("../examples/implement-ready-ticket.md");
@@ -83,6 +84,7 @@ pub struct InitReport {
     name_with_owner: Option<String>,
     resources: Vec<ResourceResult>,
     check: bool,
+    workflow_changed: bool,
 }
 
 impl InitReport {
@@ -141,12 +143,14 @@ impl fmt::Display for InitReport {
             }
         } else if self.exit_code() == 0 {
             writeln!(formatter, "Next:")?;
-            writeln!(
-                formatter,
-                "  git -C {} add {}",
-                self.repository.display(),
-                WORKFLOW_RELATIVE_PATH
-            )?;
+            if self.workflow_changed {
+                writeln!(
+                    formatter,
+                    "  git -C {} add {}",
+                    self.repository.display(),
+                    WORKFLOW_RELATIVE_PATH
+                )?;
+            }
             writeln!(formatter, "  factory validate")?;
             writeln!(formatter, "  factory run")
         } else if self
@@ -178,6 +182,7 @@ struct ConfigPlan {
     workspace_action: PlannedAction,
     action: PlannedAction,
     candidate: Option<String>,
+    effective: Config,
 }
 
 #[derive(Clone, Copy)]
@@ -189,8 +194,8 @@ struct Label {
 
 pub async fn initialize(options: InitOptions, github: &GitHubClient) -> Result<InitReport> {
     let repository = discover_repository(&options.repository)?;
-    let workflow = plan_workflow(&repository, options.update_workflow)?;
     let config = plan_config(&options.config_path, &repository)?;
+    let workflow = plan_workflow(&repository, options.update_workflow, &config.effective)?;
     let cancellation = CancellationToken::new();
 
     let (name_with_owner, missing_labels) = if options.no_labels {
@@ -252,6 +257,7 @@ pub async fn initialize(options: InitOptions, github: &GitHubClient) -> Result<I
             name_with_owner,
             resources,
             check: false,
+            workflow_changed: false,
         });
     }
     resources.push(ResourceResult {
@@ -276,6 +282,7 @@ pub async fn initialize(options: InitOptions, github: &GitHubClient) -> Result<I
             name_with_owner,
             resources,
             check: false,
+            workflow_changed: false,
         });
     }
     resources.push(ResourceResult {
@@ -335,6 +342,10 @@ pub async fn initialize(options: InitOptions, github: &GitHubClient) -> Result<I
                         name_with_owner,
                         resources,
                         check: false,
+                        workflow_changed: matches!(
+                            workflow.action,
+                            PlannedAction::Create | PlannedAction::Update
+                        ),
                     });
                 }
             }
@@ -346,6 +357,10 @@ pub async fn initialize(options: InitOptions, github: &GitHubClient) -> Result<I
         name_with_owner,
         resources,
         check: false,
+        workflow_changed: matches!(
+            workflow.action,
+            PlannedAction::Create | PlannedAction::Update
+        ),
     })
 }
 
@@ -467,7 +482,7 @@ fn git_output(repository: &Path, arguments: &[&str]) -> Result<String> {
     String::from_utf8(output.stdout).context("git output was not valid UTF-8")
 }
 
-fn plan_workflow(repository: &Path, update: bool) -> Result<WorkflowPlan> {
+fn plan_workflow(repository: &Path, update: bool, config: &Config) -> Result<WorkflowPlan> {
     let factory_directory = repository.join(".factory");
     let workflow_directory = repository.join(".factory/workflows");
     validate_optional_directory(&factory_directory)?;
@@ -489,7 +504,23 @@ fn plan_workflow(repository: &Path, update: bool) -> Result<WorkflowPlan> {
                 PlannedAction::Conflict
             }
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => PlannedAction::Create,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let catalog = WorkflowCatalog::load(config)?;
+            if let Some(entry) = catalog.entries.iter().find(|entry| {
+                entry.repository == repository
+                    && entry.errors.is_empty()
+                    && matches!(
+                        entry.trigger.as_ref(),
+                        Some(Trigger::Label(label)) if label == "factory:ready"
+                    )
+            }) {
+                return Ok(WorkflowPlan {
+                    path: entry.path.clone(),
+                    action: PlannedAction::Unchanged,
+                });
+            }
+            PlannedAction::Create
+        }
         Err(error) => {
             return Err(error)
                 .with_context(|| format!("failed to inspect workflow {}", path.display()));
@@ -525,10 +556,11 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
             if config.repositories.iter().any(|item| item == repository) {
                 return Ok(ConfigPlan {
                     path,
-                    workspace: config.workspace_root,
+                    workspace: config.workspace_root.clone(),
                     workspace_action,
                     action: PlannedAction::Unchanged,
                     candidate: None,
+                    effective: config,
                 });
             }
             let contents = fs::read_to_string(&path)
@@ -544,7 +576,7 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
             let config_directory = path
                 .parent()
                 .context("configuration path has no parent directory")?;
-            Config::validate_candidate(&candidate, config_directory)
+            let effective = Config::validate_candidate(&candidate, config_directory)
                 .context("generated configuration is invalid")?;
             Ok(ConfigPlan {
                 path,
@@ -552,6 +584,7 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
                 workspace_action,
                 action: PlannedAction::Update,
                 candidate: Some(candidate),
+                effective,
             })
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -562,7 +595,7 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
             let candidate = default_config(repository, &candidate_workspace);
             let validated = Config::validate_candidate(&candidate, config_directory)
                 .context("generated configuration is invalid")?;
-            let workspace = validated.workspace_root;
+            let workspace = validated.workspace_root.clone();
             Ok(ConfigPlan {
                 path,
                 workspace: workspace.clone(),
@@ -573,6 +606,7 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
                 },
                 action: PlannedAction::Create,
                 candidate: Some(candidate),
+                effective: validated,
             })
         }
         Err(error) => {
@@ -665,6 +699,7 @@ fn preflight_report(
         name_with_owner,
         resources,
         check: options.check,
+        workflow_changed: false,
     }
 }
 

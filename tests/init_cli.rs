@@ -156,6 +156,10 @@ fn init_creates_complete_setup_and_is_idempotent() {
         .success()
         .stdout(predicate::str::contains("created: "))
         .stdout(predicate::str::contains("GitHub label factory:ready"))
+        .stdout(predicate::str::contains("git -C "))
+        .stdout(predicate::str::contains(
+            ".factory/workflows/implement-ready-ticket.md",
+        ))
         .stdout(predicate::str::contains("factory validate"));
 
     assert_eq!(
@@ -615,4 +619,31 @@ fn run_accepts_valid_custom_ready_workflow_as_initialized() {
         .stderr(
             predicate::str::contains("No valid factory:ready implementation workflow found").not(),
         );
+}
+
+#[test]
+fn init_does_not_install_duplicate_beside_custom_ready_workflow() {
+    let fixture = Fixture::new();
+    let workflows = fixture.repository.join(".factory/workflows");
+    let custom = workflows.join("custom-ready-policy.md");
+    fs::create_dir_all(&workflows).unwrap();
+    fs::write(
+        &custom,
+        "+++\nlabel = \"factory:ready\"\n+++\n\nUse the repository-specific delivery policy.\n",
+    )
+    .unwrap();
+
+    fixture
+        .command()
+        .args(["init", "--no-labels"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(custom.to_str().unwrap()))
+        .stdout(predicate::str::contains("unchanged:"))
+        .stdout(predicate::str::contains("git -C").not())
+        .stdout(predicate::str::contains("implement-ready-ticket.md").not());
+
+    assert!(!fixture.workflow().exists());
+    assert!(custom.is_file());
+    assert!(fixture.config_path().is_file());
 }
