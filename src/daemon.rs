@@ -14,7 +14,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
-use crate::github::{GitHubClient, TicketContext};
+use crate::github::{GitHubClient, PollReport, TicketContext};
 use crate::runtime::{
     CodexRuntime, ExecutionResult, RuntimeCancelled, RuntimeObservation, Termination,
     observation_channel,
@@ -159,13 +159,14 @@ impl FactoryDaemon {
             let poll_cancellation = cancellation.clone();
             github_polls.spawn(async move {
                 let mut poll_ledger = Ledger::open(&ledger_path)?;
+                let activity_cancellation = poll_cancellation.clone();
                 github
                     .poll_until_cancelled(
                         &config,
                         &catalog,
                         &mut poll_ledger,
                         poll_cancellation,
-                        |_| {},
+                        move |report| report_poll_activity(report, &activity_cancellation),
                     )
                     .await
                     .context("GitHub polling failed")
@@ -491,6 +492,20 @@ fn dispatch_available(
             eprintln!("Factory rejected claimed task {}: {error}", task.id);
             continue;
         }
+        let source = match (task.kind.as_str(), task.source_item.as_deref()) {
+            ("ticket", Some(issue)) => format!("issue=#{issue}"),
+            (kind, Some(source)) => format!("{kind}={source}"),
+            (kind, None) => kind.to_owned(),
+        };
+        eprintln!(
+            "Factory task claimed: task={} {source} repository={} workflow={} run={run_id}",
+            task.id, task.repository, task.workflow
+        );
+        eprintln!(
+            "Factory runtime delegated: run={run_id} runtime={} cwd={} worktree=workflow-managed",
+            workflow.runtime,
+            target.path.display()
+        );
         *active.entry(repository.clone()).or_default() += 1;
         let codex = codex.clone();
         let cancellation = cancellation.clone();
@@ -514,7 +529,7 @@ fn dispatch_available(
 
 #[allow(clippy::too_many_arguments)]
 async fn execute_task(
-    mut ledger: Ledger,
+    ledger: Ledger,
     repository: &RepositoryTarget,
     workflow: &WorkflowTarget,
     codex: &CodexRuntime,
@@ -523,6 +538,37 @@ async fn execute_task(
     cancellation: CancellationToken,
     recovery_session: Option<String>,
 ) -> Result<()> {
+    let started = Instant::now();
+    let execution = execute_task_inner(
+        ledger,
+        repository,
+        workflow,
+        codex,
+        run_id,
+        prompt,
+        cancellation,
+        recovery_session,
+    )
+    .await;
+    let outcome = execution.as_deref().unwrap_or("failed");
+    eprintln!(
+        "Factory run finished: run={run_id} outcome={outcome} duration={}",
+        humantime::format_duration(started.elapsed())
+    );
+    execution.map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_task_inner(
+    mut ledger: Ledger,
+    repository: &RepositoryTarget,
+    workflow: &WorkflowTarget,
+    codex: &CodexRuntime,
+    run_id: i64,
+    prompt: String,
+    cancellation: CancellationToken,
+    recovery_session: Option<String>,
+) -> Result<&'static str> {
     let run_cancellation = cancellation.child_token();
     let execution_deadline = Instant::now() + workflow.timeout;
     let monitor_token = run_cancellation.clone();
@@ -631,7 +677,16 @@ async fn execute_task(
         )?;
     }
     match execution {
-        Ok(result) => record_execution(&mut ledger, run_id, &result),
+        Ok(result) => {
+            let outcome = match result.termination {
+                Termination::Cancelled => "cancelled",
+                Termination::TimedOut => "failed",
+                Termination::Exited if result.status.success() => "succeeded",
+                Termination::Exited => "failed",
+            };
+            record_execution(&mut ledger, run_id, &result)?;
+            Ok(outcome)
+        }
         Err(error) => {
             ledger.finish_run_and_task(
                 run_id,
@@ -641,6 +696,27 @@ async fn execute_task(
                 None,
             )?;
             Err(error)
+        }
+    }
+}
+
+fn report_poll_activity(report: &PollReport, cancellation: &CancellationToken) {
+    if cancellation.is_cancelled() {
+        return;
+    }
+    for repository in &report.repositories {
+        if let Some(error) = &repository.error {
+            eprintln!(
+                "Factory poll failed: repository={} error={error}",
+                repository.repository.display()
+            );
+        } else if repository.tasks_created > 0 {
+            eprintln!(
+                "Factory poll: repository={} issues_seen={} tasks_queued={}",
+                repository.name_with_owner.as_deref().unwrap_or("-"),
+                repository.issues_seen,
+                repository.tasks_created
+            );
         }
     }
 }
