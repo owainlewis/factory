@@ -3,7 +3,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -88,6 +88,9 @@ impl Fixture {
             r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "gh version 2.80.0"; exit 0; fi
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  if [ -f "$0.auth-block" ]; then
+    while [ ! -f "$0.auth-release" ]; do sleep 0.02; done
+  fi
   if [ -f "$0.auth-fail" ]; then echo "authentication expired" >&2; exit 1; fi
   echo "logged in"; exit 0
 fi
@@ -279,6 +282,67 @@ where
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn cli_reports_live_startup_ready_and_shutdown_progress() {
+    let fixture = Fixture::new(&[vec![]], 1, 1);
+    fs::write(format!("{}.auth-block", fixture.gh.display()), "").unwrap();
+    let stderr_path = fixture._temp.path().join("factory.stderr");
+    let stderr = fs::File::create(&stderr_path).unwrap();
+    let search_path = std::env::join_paths(
+        std::iter::once(fixture.gh.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .as_deref()
+                .map(std::env::split_paths)
+                .into_iter()
+                .flatten(),
+        ),
+    )
+    .unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_factory"));
+    command
+        .args([
+            "run",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            fixture.ledger_path.parent().unwrap().to_str().unwrap(),
+        ])
+        .env("PATH", search_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(stderr));
+    let mut child = command.spawn().unwrap();
+
+    wait_for(|| {
+        fs::read_to_string(&stderr_path).is_ok_and(|contents| {
+            contents.contains("Factory checking authenticated GitHub and Codex CLIs...")
+        })
+    })
+    .await;
+    assert!(child.try_wait().unwrap().is_none());
+    let blocked_output = fs::read_to_string(&stderr_path).unwrap();
+    assert!(blocked_output.contains("Factory starting: mode=continuous"));
+    assert!(blocked_output.contains("Factory loaded: repositories=1 workflows=1"));
+    assert!(!blocked_output.contains("Factory ready:"));
+
+    fs::write(format!("{}.auth-release", fixture.gh.display()), "").unwrap();
+    wait_for(|| {
+        fs::read_to_string(&stderr_path)
+            .is_ok_and(|contents| contents.contains("Factory ready: watching 1 repositories"))
+    })
+    .await;
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(i32::try_from(child.id()).unwrap()),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .unwrap();
+    assert!(child.wait().unwrap().success());
+    assert!(
+        fs::read_to_string(&stderr_path)
+            .unwrap()
+            .contains("Factory stopped.")
+    );
 }
 
 fn process_is_alive(process_id: u32) -> bool {

@@ -106,6 +106,7 @@ impl FactoryDaemon {
     }
 
     pub async fn run(&self, cancellation: CancellationToken) -> Result<()> {
+        eprintln!("Factory checking authenticated GitHub and Codex CLIs...");
         if let Err(error) = self.validate(&cancellation).await {
             if cancellation.is_cancelled() {
                 return Ok(());
@@ -140,6 +141,16 @@ impl FactoryDaemon {
         let mut active = HashMap::<String, usize>::new();
         let mut runs = JoinSet::<(String, Result<()>)>::new();
         let mut github_polls = JoinSet::<Result<()>>::new();
+        let workflow_count = targets
+            .values()
+            .map(|target| target.workflows.len())
+            .sum::<usize>();
+        eprintln!(
+            "Factory ready: watching {} repositories and {} workflows; polling every {}; press Ctrl-C to stop.",
+            targets.len(),
+            workflow_count,
+            humantime::format_duration(self.config.poll_every)
+        );
         {
             let config = self.config.clone();
             let catalog = self.catalog.clone();
