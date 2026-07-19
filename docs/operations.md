@@ -6,6 +6,14 @@ scheduled and ready-ticket tasks. Global and
 per-repository concurrency are controlled by `max_concurrent_runs` and
 `max_concurrent_runs_per_repository`. The per-repository value defaults to 1.
 
+In continuous mode, Factory writes concise lifecycle events to standard error.
+It reports startup validation, polls that queue work, claimed tasks, runtime
+delegation, and terminal run outcomes. Runtime delegation includes the initial
+working directory and marks worktree creation as workflow-managed. The bundled
+ready-ticket workflow requires Codex to create or reuse an isolated
+ticket-numbered worktree; Factory does not create that worktree before starting
+Codex.
+
 Factory requires the conventional `factory:ready` and
 `factory:needs-review` labels. The explicit `factory init` setup command creates
 missing label definitions without changing existing ones. The daemon does not

@@ -284,12 +284,8 @@ where
     .unwrap();
 }
 
-#[tokio::test]
-async fn cli_reports_live_startup_ready_and_shutdown_progress() {
-    let fixture = Fixture::new(&[vec![]], 1, 1);
-    fs::write(format!("{}.auth-block", fixture.gh.display()), "").unwrap();
-    let stderr_path = fixture._temp.path().join("factory.stderr");
-    let stderr = fs::File::create(&stderr_path).unwrap();
+fn spawn_daemon_cli(fixture: &Fixture, stderr_path: &Path) -> std::process::Child {
+    let stderr = fs::File::create(stderr_path).unwrap();
     let search_path = std::env::join_paths(
         std::iter::once(fixture.gh.parent().unwrap().to_path_buf()).chain(
             std::env::var_os("PATH")
@@ -312,7 +308,23 @@ async fn cli_reports_live_startup_ready_and_shutdown_progress() {
         .env("PATH", search_path)
         .stdout(Stdio::null())
         .stderr(Stdio::from(stderr));
-    let mut child = command.spawn().unwrap();
+    command.spawn().unwrap()
+}
+
+fn interrupt(child: &std::process::Child) {
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(i32::try_from(child.id()).unwrap()),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn cli_reports_live_startup_ready_and_shutdown_progress() {
+    let fixture = Fixture::new(&[vec![]], 1, 1);
+    fs::write(format!("{}.auth-block", fixture.gh.display()), "").unwrap();
+    let stderr_path = fixture._temp.path().join("factory.stderr");
+    let mut child = spawn_daemon_cli(&fixture, &stderr_path);
 
     wait_for(|| {
         fs::read_to_string(&stderr_path).is_ok_and(|contents| {
@@ -332,17 +344,79 @@ async fn cli_reports_live_startup_ready_and_shutdown_progress() {
             .is_ok_and(|contents| contents.contains("Factory ready: watching 1 repositories"))
     })
     .await;
-    nix::sys::signal::kill(
-        nix::unistd::Pid::from_raw(i32::try_from(child.id()).unwrap()),
-        nix::sys::signal::Signal::SIGINT,
-    )
-    .unwrap();
+    interrupt(&child);
     assert!(child.wait().unwrap().success());
     assert!(
         fs::read_to_string(&stderr_path)
             .unwrap()
             .contains("Factory stopped.")
     );
+}
+
+#[tokio::test]
+async fn cli_reports_ticket_and_runtime_lifecycle() {
+    let fixture = Fixture::new(&[vec![issue(42)]], 1, 1);
+    fixture.open_gate();
+    let stderr_path = fixture._temp.path().join("factory.stderr");
+    let mut child = spawn_daemon_cli(&fixture, &stderr_path);
+
+    wait_for(|| {
+        fs::read_to_string(&stderr_path)
+            .is_ok_and(|contents| contents.contains("Factory run finished: run=1"))
+    })
+    .await;
+    interrupt(&child);
+    assert!(child.wait().unwrap().success());
+
+    let output = fs::read_to_string(&stderr_path).unwrap();
+    assert!(
+        output.contains("Factory poll: repository=example/repo-0 issues_seen=1 tasks_queued=1")
+    );
+    assert!(output.contains(
+        "Factory task claimed: task=1 issue=#42 repository=example/repo-0 workflow=implement-ready-ticket run=1"
+    ));
+    assert!(output.contains(&format!(
+        "Factory runtime delegated: run=1 runtime=codex cwd={} worktree=workflow-managed",
+        fixture.config.repositories[0].display()
+    )));
+    assert!(output.contains("Factory run finished: run=1 outcome=succeeded duration="));
+    assert!(!output.contains("Factory poll failed"));
+}
+
+#[tokio::test]
+async fn cli_reports_failed_runtime_with_duration() {
+    let fixture = Fixture::new(&[vec![issue(43)]], 1, 1);
+    fs::write(fixture.runtime_dir.join("fail-all"), "").unwrap();
+    let stderr_path = fixture._temp.path().join("factory.stderr");
+    let mut child = spawn_daemon_cli(&fixture, &stderr_path);
+
+    wait_for(|| {
+        fs::read_to_string(&stderr_path).is_ok_and(|contents| {
+            contents.contains("Factory run finished: run=1 outcome=failed duration=")
+        })
+    })
+    .await;
+    interrupt(&child);
+    assert!(child.wait().unwrap().success());
+}
+
+#[tokio::test]
+async fn cli_reports_cancelled_runtime_with_duration() {
+    let fixture = Fixture::new(&[vec![issue(44)]], 1, 1);
+    let stderr_path = fixture._temp.path().join("factory.stderr");
+    let mut child = spawn_daemon_cli(&fixture, &stderr_path);
+
+    wait_for(|| {
+        fs::read_to_string(&stderr_path)
+            .is_ok_and(|contents| contents.contains("Factory runtime delegated: run=1"))
+    })
+    .await;
+    interrupt(&child);
+    assert!(child.wait().unwrap().success());
+
+    let output = fs::read_to_string(&stderr_path).unwrap();
+    assert!(output.contains("Factory run finished: run=1 outcome=cancelled duration="));
+    assert!(!output.contains("Factory poll failed"));
 }
 
 fn process_is_alive(process_id: u32) -> bool {
