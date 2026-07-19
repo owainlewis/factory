@@ -255,6 +255,7 @@ V1 implements Codex completely and Claude Code second to prove portability. Runt
 The daemon runs as `factory run`, initially in a terminal and later under `launchd` or `systemd`. A small CLI exposes operational state:
 
 ```text
+factory init [--repository <path>] [--check] [--no-labels]
 factory validate
 factory workflows
 factory workflow run <workflow-id> --repository <path>
@@ -265,6 +266,12 @@ factory cancel <run-id>
 ```
 
 SQLite lives under the Factory data directory. Workflows run against trusted repositories. An implementation agent may create its own worktree under the configured workspace root; Factory records the path reported by the agent or discovered from Git after the run.
+
+`factory init` is an explicit, idempotent setup mutation. It may install the
+bundled workflow, register the repository in local configuration, create the
+workspace directory, and create missing conventional GitHub labels. Daemon
+startup never performs these mutations, and initialization never commits,
+pushes, launches an agent, or enables pull-request merge.
 
 The manual workflow command validates the selected repository and workflow,
 checks the configured runtime and authentication, streams runtime activity, and

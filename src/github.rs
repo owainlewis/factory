@@ -132,6 +132,52 @@ impl GitHubClient {
         Ok(name.to_owned())
     }
 
+    pub async fn labels(
+        &self,
+        repository: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<String>> {
+        let output = self
+            .run(
+                Some(repository),
+                &[
+                    "label", "list", "--limit", "1000", "--json", "name", "--jq", ".[].name",
+                ],
+                cancellation,
+            )
+            .await
+            .with_context(|| {
+                format!("GitHub CLI cannot list labels for {}", repository.display())
+            })?;
+        Ok(output.lines().map(str::to_owned).collect())
+    }
+
+    pub async fn create_label(
+        &self,
+        repository: &Path,
+        name: &str,
+        description: &str,
+        color: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.run(
+            Some(repository),
+            &[
+                "label",
+                "create",
+                name,
+                "--description",
+                description,
+                "--color",
+                color,
+            ],
+            cancellation,
+        )
+        .await
+        .with_context(|| format!("failed to create GitHub label {name:?}"))?;
+        Ok(())
+    }
+
     pub async fn poll_once(
         &self,
         config: &Config,

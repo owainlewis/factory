@@ -35,6 +35,17 @@ struct RawConfig {
 
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
+        Self::load_with_workspace_probe(path, ensure_workspace_writable)
+    }
+
+    pub(crate) fn load_without_workspace_probe(path: &Path) -> Result<Self> {
+        Self::load_with_workspace_probe(path, |_| Ok(()))
+    }
+
+    fn load_with_workspace_probe<F>(path: &Path, workspace_probe: F) -> Result<Self>
+    where
+        F: FnOnce(&Path) -> Result<()>,
+    {
         let current_dir = env::current_dir().context("failed to resolve current directory")?;
         let path = expand_path(path, &current_dir)?;
         let contents = fs::read_to_string(&path)
@@ -45,10 +56,18 @@ impl Config {
             .parent()
             .context("configuration path has no parent directory")?;
 
-        Self::resolve(raw, config_dir)
+        Self::resolve_with_workspace_probe(raw, config_dir, workspace_probe)
             .with_context(|| format!("invalid Factory configuration in {}", path.display()))
     }
 
+    pub(crate) fn validate_candidate(contents: &str, config_dir: &Path) -> Result<Self> {
+        let raw: RawConfig =
+            toml::from_str(contents).context("failed to parse candidate config")?;
+        Self::resolve_with_workspace_probe(raw, config_dir, |_| Ok(()))
+            .context("invalid candidate Factory configuration")
+    }
+
+    #[cfg(test)]
     fn resolve(raw: RawConfig, config_dir: &Path) -> Result<Self> {
         Self::resolve_with_workspace_probe(raw, config_dir, ensure_workspace_writable)
     }

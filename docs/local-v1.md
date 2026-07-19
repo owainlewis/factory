@@ -36,20 +36,38 @@ factory --version
 
 Re-run `cargo install --path . --force` after updating the checkout.
 
-## Configure Factory
+## Initialize a trusted repository
 
-Create the data and workspace directories, then copy the checked-in example:
+Run the explicit initializer from the repository Factory should manage:
 
 ```sh
-mkdir -p ~/.factory
-mkdir -p /absolute/path/to/factory-worktrees
-cp examples/config.toml ~/.factory/config.toml
+cd /absolute/path/to/trusted/repository
+factory init
 ```
 
-Edit only the repository and workspace paths to start. Each repository must be
-a trusted local Git checkout with an authenticated GitHub remote. The workspace
-must exist, be writable, and sit outside the repository and home-directory
-root.
+The command creates the implementation workflow, creates or updates
+`~/.factory/config.toml`, creates the default `~/.factory/workspaces` directory,
+and creates missing `factory:ready` and `factory:needs-review` labels. It does
+not change existing label definitions, commit files, start the daemon, launch
+Codex, or merge pull requests.
+
+Initialization is idempotent. Preview it without writes with:
+
+```sh
+factory init --check
+```
+
+Use `factory init --no-labels` for offline local setup. A customized workflow is
+never overwritten by default; `factory init --update-workflow` is the explicit
+replacement operation. To initialize a repository without changing directory,
+use `factory init --repository /absolute/path/to/repository`.
+
+Review and commit the installed policy in the target repository:
+
+```sh
+git add .factory/workflows/implement-ready-ticket.md
+git commit -m "chore: configure Factory"
+```
 
 Validate the machine-specific configuration without network or runtime work:
 
@@ -57,17 +75,7 @@ Validate the machine-specific configuration without network or runtime work:
 factory validate
 ```
 
-## Install the implementation workflow
-
-In each target repository:
-
-```sh
-mkdir -p .factory/workflows
-cp /path/to/factory/examples/implement-ready-ticket.md \
-  .factory/workflows/implement-ready-ticket.md
-```
-
-Commit the workflow in a normal repository. It is versioned policy: Codex owns
+The workflow is versioned policy: Codex owns
 ticket updates, worktree and branch creation, implementation, tests, diff
 review, draft pull-request creation, CI repair, and handoff. Factory owns the
 durable task, one claim, concurrency, supervision, cancellation, inspection,
@@ -78,23 +86,6 @@ Check the resolved workflow catalog:
 ```sh
 factory workflows
 ```
-
-## Create the labels
-
-Factory does not create or mutate label definitions. Create the two labels once
-per repository:
-
-```sh
-gh label create factory:ready \
-  --description "Implementation is authorised and sufficiently defined" \
-  --color 0E8A16
-gh label create factory:needs-review \
-  --description "A human must review a question, decision, or green PR" \
-  --color FBCA04
-```
-
-If a label already exists, inspect it with `gh label list` instead of replacing
-it.
 
 ## Start and prove one ticket
 
@@ -163,6 +154,8 @@ Factory never merges as part of recovery.
 - Authentication errors: rerun `gh auth status` and `codex login status`.
 - Invalid configuration: run `factory validate` and correct the reported path
   or concurrency constraint.
+- Missing setup: run `factory init --check`, then `factory init` to create only
+  the missing resources.
 - Invalid workflows: run `factory workflows`; ticket workflow errors fail fast,
   while invalid scheduled workflows are reported and isolated.
 - No task: confirm the issue is open, has `factory:ready`, belongs to the
