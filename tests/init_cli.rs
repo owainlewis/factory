@@ -288,6 +288,43 @@ fn init_recreates_workspace_missing_from_existing_config() {
 }
 
 #[test]
+fn init_rejects_parent_traversal_in_missing_workspace_without_writes() {
+    let fixture = Fixture::new();
+    let safe_workspace = fixture._temp.path().join("safe-workspace");
+    let original = write_config(
+        &fixture.config_path(),
+        &[&fixture.repository],
+        &safe_workspace,
+        "",
+    );
+    let dangerous_workspace = fixture
+        ._temp
+        .path()
+        .join("missing/../repository/workspaces");
+    fs::remove_dir(&safe_workspace).unwrap();
+    fs::write(
+        fixture.config_path(),
+        original.replace(
+            safe_workspace.to_str().unwrap(),
+            dangerous_workspace.to_str().unwrap(),
+        ),
+    )
+    .unwrap();
+
+    fixture
+        .command()
+        .args(["init", "--no-labels"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "must not contain parent traversal in a missing suffix",
+        ));
+
+    assert!(!fixture.repository.join("workspaces").exists());
+    assert!(!fixture.workflow().exists());
+}
+
+#[test]
 fn no_labels_never_invokes_github_cli() {
     let fixture = Fixture::new();
 

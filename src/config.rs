@@ -236,6 +236,15 @@ fn canonical_directory_or_missing(name: &str, path: &Path, base: &Path) -> Resul
                 return Ok(resolved);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if matches!(
+                    ancestor.components().next_back(),
+                    Some(Component::ParentDir)
+                ) {
+                    bail!(
+                        "{name} path must not contain parent traversal in a missing suffix: {}",
+                        expanded.display()
+                    );
+                }
                 let component = ancestor.file_name().with_context(|| {
                     format!(
                         "{name} path has no existing ancestor: {}",
