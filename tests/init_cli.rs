@@ -44,7 +44,14 @@ if [ "$1" = "label" ] && [ "$2" = "create" ]; then
   printf '%s\n' "$3" >> .factory-test-labels
   exit 0
 fi
-if [ "$1" = "api" ]; then printf '[[]]'; exit 0; fi
+if [ "$1" = "api" ]; then
+  if [ "$2" = 'repos/{owner}/{repo}/labels' ]; then
+    if [ -f .factory-test-labels ]; then cat .factory-test-labels; fi
+  else
+    printf '[[]]'
+  fi
+  exit 0
+fi
 echo "unexpected fake gh arguments: $*" >&2
 exit 64
 "#,
@@ -205,6 +212,35 @@ fn init_accepts_credentialed_github_https_origin() {
 
     assert!(fixture.workflow().is_file());
     assert!(fixture.config_path().is_file());
+}
+
+#[test]
+fn init_accepts_github_ssh_over_port_443_origin() {
+    let fixture = Fixture::new();
+    set_origin(
+        &fixture.repository,
+        "ssh://git@ssh.github.com:443/example/repository.git",
+    );
+
+    fixture
+        .command()
+        .args(["init", "--no-labels"])
+        .assert()
+        .success();
+
+    assert!(fixture.workflow().is_file());
+    assert!(fixture.config_path().is_file());
+}
+
+#[test]
+fn label_discovery_uses_uncapped_paginated_api() {
+    let fixture = Fixture::new();
+
+    fixture.command().arg("init").assert().success();
+
+    let calls = fs::read_to_string(fixture.repository.join(".gh-calls")).unwrap();
+    assert!(calls.contains("api repos/{owner}/{repo}/labels --paginate --jq .[].name"));
+    assert!(!calls.contains("--limit"));
 }
 
 #[test]

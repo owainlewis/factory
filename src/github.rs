@@ -141,13 +141,20 @@ impl GitHubClient {
             .run(
                 Some(repository),
                 &[
-                    "label", "list", "--limit", "1000", "--json", "name", "--jq", ".[].name",
+                    "api",
+                    "repos/{owner}/{repo}/labels",
+                    "--paginate",
+                    "--jq",
+                    ".[].name",
                 ],
                 cancellation,
             )
             .await
             .with_context(|| {
-                format!("GitHub CLI cannot list labels for {}", repository.display())
+                format!(
+                    "GitHub CLI cannot list all labels for {}",
+                    repository.display()
+                )
             })?;
         Ok(output.lines().map(str::to_owned).collect())
     }

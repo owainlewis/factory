@@ -391,7 +391,7 @@ fn discover_repository(requested: &Path) -> Result<PathBuf> {
 fn is_github_origin(origin: &str) -> bool {
     origin.starts_with("git@github.com:")
         || https_origin_has_github_host(origin)
-        || origin.starts_with("ssh://git@github.com/")
+        || ssh_origin_has_github_host(origin)
 }
 
 fn https_origin_has_github_host(origin: &str) -> bool {
@@ -417,6 +417,35 @@ fn https_origin_has_github_host(origin: &str) -> bool {
         None => host_and_port,
     };
     host.eq_ignore_ascii_case("github.com")
+}
+
+fn ssh_origin_has_github_host(origin: &str) -> bool {
+    let Some(remainder) = origin.strip_prefix("ssh://") else {
+        return false;
+    };
+    let Some((authority, path)) = remainder.split_once('/') else {
+        return false;
+    };
+    if path.is_empty() {
+        return false;
+    }
+    let Some((user, host_and_port)) = authority.rsplit_once('@') else {
+        return false;
+    };
+    if user != "git" {
+        return false;
+    }
+    match host_and_port.rsplit_once(':') {
+        Some((host, "443")) => {
+            host.eq_ignore_ascii_case("github.com") || host.eq_ignore_ascii_case("ssh.github.com")
+        }
+        Some((host, port)) => {
+            host.eq_ignore_ascii_case("github.com")
+                && !port.is_empty()
+                && port.chars().all(|item| item.is_ascii_digit())
+        }
+        None => host_and_port.eq_ignore_ascii_case("github.com"),
+    }
 }
 
 fn git_output(repository: &Path, arguments: &[&str]) -> Result<String> {
