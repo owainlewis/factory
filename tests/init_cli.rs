@@ -109,6 +109,17 @@ fn init_git_repository(path: &Path, origin: &str) {
     );
 }
 
+fn set_origin(path: &Path, origin: &str) {
+    assert!(
+        ProcessCommand::new("git")
+            .args(["remote", "set-url", "origin", origin])
+            .current_dir(path)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
 fn write_config(path: &Path, repositories: &[&Path], workspace: &Path, prefix: &str) -> String {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::create_dir_all(workspace).unwrap();
@@ -176,6 +187,46 @@ fn init_creates_complete_setup_and_is_idempotent() {
         fs::read_to_string(fixture.repository.join(".factory-test-labels")).unwrap(),
         "factory:ready\nfactory:needs-review\n"
     );
+}
+
+#[test]
+fn init_accepts_credentialed_github_https_origin() {
+    let fixture = Fixture::new();
+    set_origin(
+        &fixture.repository,
+        "https://user:secret@github.com/example/repository.git",
+    );
+
+    fixture
+        .command()
+        .args(["init", "--no-labels"])
+        .assert()
+        .success();
+
+    assert!(fixture.workflow().is_file());
+    assert!(fixture.config_path().is_file());
+}
+
+#[test]
+fn init_rejects_github_lookalike_origin_without_leaking_credentials() {
+    let fixture = Fixture::new();
+    set_origin(
+        &fixture.repository,
+        "https://user:secret@github.com.example.test/example/repository.git",
+    );
+
+    fixture
+        .command()
+        .args(["init", "--no-labels"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "origin is not a supported GitHub remote",
+        ))
+        .stderr(predicate::str::contains("secret").not());
+
+    assert!(!fixture.workflow().exists());
+    assert!(!fixture.config_path().exists());
 }
 
 #[test]

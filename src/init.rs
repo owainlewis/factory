@@ -383,15 +383,40 @@ fn discover_repository(requested: &Path) -> Result<PathBuf> {
     let origin = git_output(&repository, &["remote", "get-url", "origin"])
         .context("target repository has no origin remote")?;
     if !is_github_origin(origin.trim()) {
-        bail!("origin is not a GitHub remote: {}", origin.trim());
+        bail!("origin is not a supported GitHub remote");
     }
     Ok(repository)
 }
 
 fn is_github_origin(origin: &str) -> bool {
     origin.starts_with("git@github.com:")
-        || origin.starts_with("https://github.com/")
+        || https_origin_has_github_host(origin)
         || origin.starts_with("ssh://git@github.com/")
+}
+
+fn https_origin_has_github_host(origin: &str) -> bool {
+    let Some(remainder) = origin.strip_prefix("https://") else {
+        return false;
+    };
+    let Some((authority, path)) = remainder.split_once('/') else {
+        return false;
+    };
+    if path.is_empty() {
+        return false;
+    }
+    let host_and_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = match host_and_port.rsplit_once(':') {
+        Some((host, port))
+            if !port.is_empty() && port.chars().all(|item| item.is_ascii_digit()) =>
+        {
+            host
+        }
+        Some(_) => return false,
+        None => host_and_port,
+    };
+    host.eq_ignore_ascii_case("github.com")
 }
 
 fn git_output(repository: &Path, arguments: &[&str]) -> Result<String> {
