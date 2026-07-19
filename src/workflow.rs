@@ -113,6 +113,22 @@ impl WorkflowCatalog {
         }
         Ok(())
     }
+
+    pub fn repositories_without_ready_workflow<'a>(
+        &'a self,
+        config: &'a Config,
+    ) -> impl Iterator<Item = &'a PathBuf> {
+        config.repositories.iter().filter(|repository| {
+            !self.entries.iter().any(|entry| {
+                &entry.repository == *repository
+                    && entry.errors.is_empty()
+                    && matches!(
+                        entry.trigger.as_ref(),
+                        Some(Trigger::Label(label)) if label == "factory:ready"
+                    )
+            })
+        })
+    }
 }
 
 impl fmt::Display for WorkflowCatalog {

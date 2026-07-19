@@ -7,9 +7,10 @@ per-repository concurrency are controlled by `max_concurrent_runs` and
 `max_concurrent_runs_per_repository`. The per-repository value defaults to 1.
 
 Factory requires the conventional `factory:ready` and
-`factory:needs-review` labels to be created by repository maintainers. Factory
-does not create, remove, or otherwise mutate labels itself. The delegated
-workflow owns ticket and pull-request updates.
+`factory:needs-review` labels. The explicit `factory init` setup command creates
+missing label definitions without changing existing ones. The daemon does not
+create, remove, or otherwise mutate labels itself. The delegated workflow owns
+ticket and pull-request updates.
 
 Five-field cron schedules are evaluated in the IANA timezone declared by the
 workflow. Factory stores the next occurrence and atomically advances that

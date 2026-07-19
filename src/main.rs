@@ -10,6 +10,7 @@ use factory::config::{Config, default_config_path};
 use factory::daemon::FactoryDaemon;
 use factory::execution::ResolvedWorkflow;
 use factory::github::{GitHubClient, PollReport};
+use factory::init::{InitOptions, initialize};
 use factory::inspection::{
     RunInspection, RunView, TaskView, print_inspection, print_runs, print_tasks,
 };
@@ -28,6 +29,21 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Prepare a trusted GitHub repository for Factory.
+    Init {
+        /// Repository to initialize. Defaults to the current directory.
+        #[arg(long)]
+        repository: Option<PathBuf>,
+        /// Skip GitHub label discovery and creation.
+        #[arg(long)]
+        no_labels: bool,
+        /// Report required changes without writing anything.
+        #[arg(long)]
+        check: bool,
+        /// Replace a customized implementation workflow with the bundled version.
+        #[arg(long)]
+        update_workflow: bool,
+    },
     /// Poll configured repositories and persist eligible ticket tasks.
     Run {
         /// Poll once and exit without waiting for the next interval.
@@ -151,6 +167,29 @@ async fn run_cli() -> Result<u8> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Init {
+            repository,
+            no_labels,
+            check,
+            update_workflow,
+        } => {
+            let repository = repository
+                .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
+            let report = initialize(
+                InitOptions {
+                    repository,
+                    config_path: default_config_path(),
+                    no_labels,
+                    check,
+                    update_workflow,
+                },
+                &GitHubClient::default(),
+            )
+            .await?;
+            let exit_code = report.exit_code();
+            print!("{report}");
+            return Ok(exit_code);
+        }
         Command::Run {
             once,
             config,
@@ -318,6 +357,16 @@ async fn run_poller(
     let path = config_path.unwrap_or_else(default_config_path);
     let config = Config::load(&path)?;
     let catalog = WorkflowCatalog::load(&config)?;
+    for repository in catalog.repositories_without_ready_workflow(&config) {
+        write_stderr_best_effort(
+            format!(
+                "No valid factory:ready implementation workflow found for {}; run factory init --repository {}\n",
+                repository.display(),
+                repository.display()
+            )
+            .as_bytes(),
+        );
+    }
     let ticket_validation = catalog.validate_ticket_workflows();
     if once || ticket_validation.is_err() {
         for entry in catalog.invalid_scheduled_entries() {
