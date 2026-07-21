@@ -148,20 +148,35 @@ fn cleanup_previews_then_removes_a_retained_worktree_and_preserves_its_branch() 
         "cleaned"
     );
 
-    let mut absent_preview =
-        cleanup_command(&repository, &data_home, &config, &ledger_directory, &run_id);
-    absent_preview.assert().success().stdout(
-        predicate::str::contains("workspace exists: false").and(predicate::str::contains(
-            "release the workspace reservation",
-        )),
+    git(
+        &repository,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "factory/7-new-revision",
+            prepared.path.to_str().unwrap(),
+            &base_sha,
+        ],
     );
-    let mut absent_confirm =
+    let mut old_run_preview =
         cleanup_command(&repository, &data_home, &config, &ledger_directory, &run_id);
-    absent_confirm
+    old_run_preview
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already cleaned; no changes made"));
+    let mut old_run_confirm =
+        cleanup_command(&repository, &data_home, &config, &ledger_directory, &run_id);
+    old_run_confirm
         .arg("--confirm")
         .assert()
         .success()
-        .stdout(predicate::str::contains("released workspace reservation"));
+        .stdout(predicate::str::contains("already cleaned; no changes made"));
+    assert!(prepared.path.exists());
+    assert_eq!(
+        run_git(&prepared.path, &["branch", "--show-current"]),
+        "factory/7-new-revision"
+    );
 }
 
 fn cleanup_command(
@@ -198,4 +213,14 @@ fn git(directory: &Path, arguments: &[&str]) {
         arguments.join(" "),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn run_git(directory: &Path, arguments: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(arguments)
+        .current_dir(directory)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }

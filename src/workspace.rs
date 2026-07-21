@@ -191,6 +191,7 @@ impl WorkspaceManager {
         run_id: i64,
         base_branch: &str,
         base_sha: &str,
+        reuse: DeliveryReuse,
     ) -> Result<Workspace> {
         if run_id <= 0 {
             bail!("run id must be greater than zero");
@@ -200,9 +201,18 @@ impl WorkspaceManager {
         self.prune()?;
         let path = self.workspace_root.join(format!("proposal-{run_id}"));
         if let Some(existing) = self.registered_worktree(&path)? {
+            if reuse == DeliveryReuse::Reject {
+                bail!(
+                    "proposal workspace {} already exists; a new task cannot adopt prior or unowned Git state",
+                    path.display()
+                );
+            }
             self.ensure_managed_path(&existing.path)?;
             if existing.branch.is_some() {
                 bail!("proposal workspace {} is not detached", path.display());
+            }
+            if reuse == DeliveryReuse::ExactBase {
+                self.require_clean_exact_base(&existing.path, &base_sha)?;
             }
             return Ok(Workspace {
                 kind: WorkspaceKind::Proposal,
@@ -851,7 +861,9 @@ mod tests {
                 .path,
             existing.path
         );
-        let proposal = manager.prepare_proposal(99, "main", &fixture.head).unwrap();
+        let proposal = manager
+            .prepare_proposal(99, "main", &fixture.head, DeliveryReuse::Reject)
+            .unwrap();
         assert_eq!(proposal.kind, WorkspaceKind::Proposal);
         manager.cleanup_disposable(&proposal.path).unwrap();
     }
@@ -860,13 +872,38 @@ mod tests {
     fn proposal_is_detached_and_removable() {
         let fixture = Fixture::new();
         let manager = fixture.manager();
-        let workspace = manager.prepare_proposal(91, "main", &fixture.head).unwrap();
+        let workspace = manager
+            .prepare_proposal(91, "main", &fixture.head, DeliveryReuse::Reject)
+            .unwrap();
         assert_eq!(
             run(&workspace.path, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
             "HEAD"
         );
         manager.cleanup(&workspace.path, true).unwrap();
         assert!(!workspace.path.exists());
+    }
+
+    #[test]
+    fn preparing_proposal_recovery_requires_a_clean_exact_base() {
+        let fixture = Fixture::new();
+        let manager = fixture.manager();
+        let workspace = manager
+            .prepare_proposal(92, "main", &fixture.head, DeliveryReuse::Reject)
+            .unwrap();
+        fs::write(workspace.path.join("unexpected.txt"), "stale state\n").unwrap();
+
+        let error = manager
+            .prepare_proposal(92, "main", &fixture.head, DeliveryReuse::ExactBase)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("not a clean checkout"));
+        assert_eq!(
+            manager
+                .prepare_proposal(92, "main", &fixture.head, DeliveryReuse::Owned)
+                .unwrap()
+                .path,
+            workspace.path
+        );
     }
 
     fn run<const N: usize>(directory: &Path, args: [&str; N]) -> String {

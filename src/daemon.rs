@@ -909,7 +909,7 @@ async fn prepare_task_workspace(
             reuse,
         )?
     } else {
-        manager.prepare_proposal(task.id, &workspace.base_branch, &workspace.base_sha)?
+        manager.prepare_proposal(task.id, &workspace.base_branch, &workspace.base_sha, reuse)?
     };
     if prepared.path != workspace.path
         || prepared.branch != workspace.factory_branch
@@ -2176,7 +2176,7 @@ mod tests {
         ledger.claim_next().unwrap().unwrap();
         let proposal_run = ledger.start_run(proposal_task.id, "codex").unwrap();
         let proposal = manager
-            .prepare_proposal(proposal_task.id, "main", &base_sha)
+            .prepare_proposal(proposal_task.id, "main", &base_sha, DeliveryReuse::Reject)
             .unwrap();
         ledger
             .reserve_task_workspace(&TaskWorkspace {

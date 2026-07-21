@@ -471,6 +471,13 @@ async fn run_cli() -> Result<u8> {
             let workspace = ledger
                 .task_workspace(task.id)?
                 .with_context(|| format!("run {run_id} has no Factory-owned workspace"))?;
+            if workspace.state == "cleaned" {
+                println!("run: {run_id}");
+                println!("workspace: {}", workspace.path.display());
+                println!("branch preserved: true");
+                println!("action: workspace reservation is already cleaned; no changes made");
+                return Ok(0);
+            }
             let manager = WorkspaceManager::new(&config.repositories[0], &config.workspace_root)?;
             if !workspace.path.exists() {
                 println!("run: {run_id}");
