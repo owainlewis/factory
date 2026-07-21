@@ -154,6 +154,27 @@ fn checked_in_implementation_workflow_is_valid_and_requires_human_merge() {
     assert!(prompt.contains("ensure `factory:ready` is removed"));
     assert!(prompt.contains("labels mutually exclusive"));
     assert!(prompt.contains("fresh subagent"));
+    let step_headings: Vec<_> = prompt
+        .lines()
+        .filter(|line| line.starts_with("## Step "))
+        .collect();
+    assert_eq!(
+        step_headings,
+        [
+            "## Step 1: Establish scope and safety",
+            "## Step 2: Inspect the issue and existing work",
+            "## Step 3: Claim the ticket or report a blocker",
+            "## Step 4: Implement the ticket",
+            "## Step 5: Verify the implementation",
+            "## Step 6: Review and publish the change",
+            "## Step 7: Resolve CI and review feedback",
+            "## Step 8: Hand off for human review",
+        ]
+    );
+    assert_eq!(
+        include_str!("../examples/implement-ready-ticket.md"),
+        include_str!("../.factory/workflows/implement-ready-ticket.md")
+    );
 }
 
 #[test]
