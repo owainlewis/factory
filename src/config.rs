@@ -235,13 +235,29 @@ fn resolve_github(raw: RawGitHubConfig) -> Result<GitHubConfig> {
         if value.is_empty() {
             bail!("github.{name} must not be empty");
         }
+        if value.chars().count() > 50
+            || value
+                .chars()
+                .any(|character| matches!(character, '\0' | '\n' | '\r'))
+        {
+            bail!("github.{name} must be a valid GitHub label of at most 50 characters");
+        }
         Ok(value.to_owned())
     };
+    let ready_label = label("ready_label", raw.ready_label)?;
+    let proposed_label = label("proposed_label", raw.proposed_label)?;
+    let needs_review_label = label("needs_review_label", raw.needs_review_label)?;
+    if ready_label.eq_ignore_ascii_case(&proposed_label)
+        || ready_label.eq_ignore_ascii_case(&needs_review_label)
+        || proposed_label.eq_ignore_ascii_case(&needs_review_label)
+    {
+        bail!("github ready, proposed, and needs-review labels must be distinct");
+    }
     Ok(GitHubConfig {
         trusted_approvers,
-        ready_label: label("ready_label", raw.ready_label)?,
-        proposed_label: label("proposed_label", raw.proposed_label)?,
-        needs_review_label: label("needs_review_label", raw.needs_review_label)?,
+        ready_label,
+        proposed_label,
+        needs_review_label,
     })
 }
 
@@ -645,6 +661,19 @@ mod tests {
                 .to_string()
                 .contains("max_concurrent_runs must be greater than zero")
         );
+    }
+
+    #[test]
+    fn rejects_overlapping_effect_labels() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let workspace = temp.path().join("worktrees");
+        let mut config = raw(&repository, &workspace);
+        config.github.proposed_label = "Factory:Ready".into();
+
+        let error = Config::resolve(config, &repository).unwrap_err();
+
+        assert!(error.to_string().contains("labels must be distinct"));
     }
 
     #[test]

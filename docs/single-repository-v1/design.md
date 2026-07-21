@@ -141,15 +141,17 @@ active task terminates. A distinct approval generation is therefore never
 silently consumed by an older run.
 
 GitHub pull requests are not a first-class source in v1. A scheduled workflow
-can query and triage open pull requests today. A typed pull-request trigger is
-added only when a use case needs edge-triggered PR behaviour.
+can inspect open pull requests and create proposal issues for findings today,
+but it cannot label or review those pull requests through Factory. A typed
+pull-request trigger and scoped triage effects are added only when a concrete
+use case needs them.
 
 ### Workflows and effect profiles
 
 Each `.factory/workflows/<id>.md` file contains one prompt and a small TOML
-frontmatter block. The filename is the stable workflow ID. Trigger and effect
-profile are independent: a schedule may propose work, and a source event may
-review or deliver work.
+frontmatter block. The filename is the stable workflow ID. V1 uses schedules
+for proposal work and the configured ready-label source for delivery work.
+Issue #41 adds deterministic triage for unready source items.
 
 V1 supports two fixed effect profiles:
 
@@ -203,6 +205,8 @@ V1 permits exactly one delivery workflow. Its frontmatter label must equal
 `github.ready_label`; any mismatch is a validation error. Proposal commands
 reject that configured label. This gives the ready label one definition and
 prevents an alternate delivery label from bypassing the approval rule.
+Proposal workflows must use a schedule trigger in v1 because the current issue
+poller implements only the authorised ready-label protocol.
 
 ### Repository-local configuration
 

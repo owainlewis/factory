@@ -315,6 +315,42 @@ impl WorkspaceManager {
         Ok(remote == Some(local.as_str()))
     }
 
+    pub fn push_recorded_branch(&self, path: &Path, branch: &str) -> Result<()> {
+        self.validate_branch(branch)?;
+        self.ensure_managed_path(path)?;
+        let registered = self
+            .registered_worktree(path)?
+            .with_context(|| format!("{} is not a registered Git worktree", path.display()))?;
+        if registered.branch.as_deref() != Some(branch) {
+            bail!(
+                "workspace {} is not on recorded Factory branch {branch:?}",
+                path.display()
+            );
+        }
+        for operation in [
+            "MERGE_HEAD",
+            "rebase-merge",
+            "rebase-apply",
+            "CHERRY_PICK_HEAD",
+        ] {
+            let git_path = self.git_in(path, ["rev-parse", "--git-path", operation])?;
+            let git_path = PathBuf::from(git_path.trim());
+            let git_path = if git_path.is_absolute() {
+                git_path
+            } else {
+                path.join(git_path)
+            };
+            if git_path.exists() {
+                bail!("refusing publication while Git operation {operation} is in progress");
+            }
+        }
+        let source = format!("refs/heads/{branch}");
+        let destination = format!("refs/heads/{branch}");
+        let refspec = format!("{source}:{destination}");
+        self.git_in(path, ["push", "origin", &refspec])?;
+        Ok(())
+    }
+
     pub fn retained_count(&self) -> Result<usize> {
         let entries = fs::read_dir(&self.workspace_root)
             .with_context(|| format!("failed to read {}", self.workspace_root.display()))?;

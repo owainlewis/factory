@@ -68,6 +68,7 @@ policy, put only the Markdown prompt body in a file and pass its path:
 
 ```sh
 factory workflow create implement-ready-ticket \
+  --effect delivery \
   --label factory:ready \
   --timeout 4h \
   --prompt-file /absolute/path/to/implementation-policy.md
