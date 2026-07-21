@@ -1,5 +1,9 @@
 # Factory v1
 
+> **Superseded:** The active design is
+> [`single-repository-v1/design.md`](single-repository-v1/design.md). This
+> document is retained as the record of the earlier multi-repository design.
+
 **Status:** Draft
 **Author:** Owain Lewis  **Date:** 2026-07-18
 
