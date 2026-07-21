@@ -113,8 +113,6 @@ fn creates_scheduled_workflow_from_inline_prompt_without_editor() {
             "workflow",
             "create",
             "triage-pull-requests",
-            "--effect",
-            "proposal",
             "--schedule",
             "*/30 * * * *",
             "--timezone",
@@ -134,7 +132,7 @@ fn creates_scheduled_workflow_from_inline_prompt_without_editor() {
 
     assert_eq!(
         fs::read_to_string(fixture.workflow("triage-pull-requests")).unwrap(),
-        "+++\neffect = \"proposal\"\nschedule = \"*/30 * * * *\"\ntimezone = \"Europe/London\"\nruntime = \"codex\"\ntimeout = \"1h\"\n+++\n\nReview and triage open pull requests without labels.\n"
+        "+++\nschedule = \"*/30 * * * *\"\ntimezone = \"Europe/London\"\nruntime = \"codex\"\ntimeout = \"1h\"\n+++\n\nReview and triage open pull requests without labels.\n"
     );
     assert!(!fixture.repository.join(".gh-calls").exists());
 }
@@ -151,29 +149,19 @@ fn creates_label_workflow_from_prompt_file() {
 
     fixture
         .command()
-        .args([
-            "workflow",
-            "create",
-            "triage-ticket",
-            "--effect",
-            "delivery",
-            "--label",
-            "factory:ready",
-        ])
+        .args(["workflow", "create", "triage-ticket", "--label", "triage"])
         .arg("--prompt-file")
         .arg(&prompt)
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "Created GitHub label factory:ready",
-        ));
+        .stdout(predicate::str::contains("Created GitHub label triage"));
 
     let contents = fs::read_to_string(fixture.workflow("triage-ticket")).unwrap();
-    assert!(contents.contains("label = \"factory:ready\""));
+    assert!(contents.contains("label = \"triage\""));
     assert!(contents.contains("# Review a ticket"));
     assert_eq!(
         fs::read_to_string(fixture.repository.join(".factory-test-labels")).unwrap(),
-        "factory:ready\n"
+        "triage\n"
     );
 }
 
@@ -187,10 +175,8 @@ fn creates_workflow_from_standard_input() {
             "workflow",
             "create",
             "stdin-policy",
-            "--effect",
-            "delivery",
             "--label",
-            "factory:ready",
+            "triage",
             "--prompt-file",
             "-",
         ])
@@ -208,11 +194,7 @@ fn creates_workflow_from_standard_input() {
 #[test]
 fn existing_trigger_label_is_not_recreated() {
     let fixture = Fixture::new();
-    fs::write(
-        fixture.repository.join(".factory-test-labels"),
-        "factory:ready\n",
-    )
-    .unwrap();
+    fs::write(fixture.repository.join(".factory-test-labels"), "triage\n").unwrap();
 
     fixture
         .command()
@@ -220,10 +202,8 @@ fn existing_trigger_label_is_not_recreated() {
             "workflow",
             "create",
             "existing-label",
-            "--effect",
-            "delivery",
             "--label",
-            "factory:ready",
+            "triage",
             "--prompt",
             "Do work.",
         ])
@@ -246,10 +226,8 @@ fn label_creation_failure_rolls_back_new_workflow() {
             "workflow",
             "create",
             "failed-label",
-            "--effect",
-            "delivery",
             "--label",
-            "factory:ready",
+            "triage",
             "--prompt",
             "Do work.",
         ])
@@ -269,24 +247,7 @@ fn requires_explicit_trigger_and_prompt_source() {
         .args([
             "workflow",
             "create",
-            "missing-effect",
-            "--label",
-            "triage",
-            "--prompt",
-            "Do work.",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("--effect <EFFECT>"));
-
-    fixture
-        .command()
-        .args([
-            "workflow",
-            "create",
             "missing-trigger",
-            "--effect",
-            "proposal",
             "--prompt",
             "Do work.",
         ])
@@ -298,67 +259,12 @@ fn requires_explicit_trigger_and_prompt_source() {
 
     fixture
         .command()
-        .args([
-            "workflow",
-            "create",
-            "missing-prompt",
-            "--effect",
-            "proposal",
-            "--label",
-            "triage",
-        ])
+        .args(["workflow", "create", "missing-prompt", "--label", "triage"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
             "--prompt <PROMPT>|--prompt-file <PATH>",
         ));
-}
-
-#[test]
-fn rejects_effects_that_conflict_with_the_trigger_policy() {
-    let fixture = Fixture::new();
-
-    fixture
-        .command()
-        .args([
-            "workflow",
-            "create",
-            "scheduled-delivery",
-            "--effect",
-            "delivery",
-            "--schedule",
-            "0 9 * * 1",
-            "--timezone",
-            "UTC",
-            "--prompt",
-            "Do work.",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "delivery workflow must use a label trigger",
-        ));
-    assert!(!fixture.workflow("scheduled-delivery").exists());
-
-    fixture
-        .command()
-        .args([
-            "workflow",
-            "create",
-            "label-proposal",
-            "--effect",
-            "proposal",
-            "--label",
-            "triage",
-            "--prompt",
-            "Do work.",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "proposal workflows must use a schedule trigger in v1",
-        ));
-    assert!(!fixture.workflow("label-proposal").exists());
 }
 
 #[test]
@@ -371,8 +277,6 @@ fn schedule_requires_timezone() {
             "workflow",
             "create",
             "scheduled",
-            "--effect",
-            "proposal",
             "--schedule",
             "0 9 * * 1",
             "--prompt",
@@ -393,8 +297,6 @@ fn invalid_workflow_is_not_left_behind() {
             "workflow",
             "create",
             "bad-schedule",
-            "--effect",
-            "proposal",
             "--schedule",
             "eventually",
             "--timezone",
@@ -421,8 +323,6 @@ fn refuses_to_overwrite_existing_workflow() {
             "workflow",
             "create",
             "existing",
-            "--effect",
-            "proposal",
             "--label",
             "triage",
             "--prompt",
@@ -445,8 +345,6 @@ fn rejects_invalid_workflow_id_before_writing() {
             "workflow",
             "create",
             "../escape",
-            "--effect",
-            "proposal",
             "--label",
             "triage",
             "--prompt",
@@ -467,8 +365,7 @@ fn requires_repository_initialization() {
     fixture
         .command()
         .args([
-            "workflow", "create", "triage", "--effect", "proposal", "--label", "triage",
-            "--prompt", "Do work.",
+            "workflow", "create", "triage", "--label", "triage", "--prompt", "Do work.",
         ])
         .assert()
         .failure()
@@ -486,17 +383,7 @@ fn staging_command_is_shell_safe() {
     let output = fixture
         .command()
         .args([
-            "workflow",
-            "create",
-            "safe",
-            "--effect",
-            "proposal",
-            "--schedule",
-            "0 9 * * 1",
-            "--timezone",
-            "UTC",
-            "--prompt",
-            "Do work.",
+            "workflow", "create", "safe", "--label", "triage", "--prompt", "Do work.",
         ])
         .output()
         .unwrap();

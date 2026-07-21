@@ -3,11 +3,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use assert_cmd::Command;
-use chrono_tz::UTC;
 use factory::config::{Config, GitHubConfig};
-use factory::workflow::{
-    Trigger, WorkflowCatalog, WorkflowEffect, scheduled_workflow_fingerprint, workflow_content_hash,
-};
+use factory::workflow::{Trigger, WorkflowCatalog};
 use predicates::prelude::*;
 
 struct Fixture {
@@ -106,7 +103,6 @@ fn scheduled_workflow(prompt: &str) -> String {
         r#"+++
 schedule = "0 9 * * 1"
 timezone = "Europe/London"
-effect = "proposal"
 +++
 
 {prompt}
@@ -118,7 +114,6 @@ fn label_workflow(prompt: &str) -> String {
     format!(
         r#"+++
 label = "factory:ready"
-effect = "delivery"
 +++
 
 {prompt}
@@ -134,7 +129,6 @@ fn loads_valid_schedule_and_label_workflows_with_resolved_defaults() {
         r#"+++
 schedule = "0 9 * * 1"
 timezone = "Europe/London"
-effect = "proposal"
 runtime = "claude"
 timeout = "45m"
 +++
@@ -150,11 +144,9 @@ Review the code for verified bugs.
     let catalog = fixture.catalog();
 
     assert_eq!(catalog.invalid_count(), 0);
-    assert!(catalog.validate_delivery_workflows(&fixture.config).is_ok());
     assert_eq!(catalog.entries.len(), 2);
     let scheduled = &catalog.entries[0];
     assert_eq!(scheduled.id, "find-bugs");
-    assert_eq!(scheduled.effect, Some(WorkflowEffect::Proposal));
     assert_eq!(scheduled.runtime.as_deref(), Some("claude"));
     assert_eq!(scheduled.timeout, Some(Duration::from_secs(45 * 60)));
     assert!(matches!(
@@ -164,7 +156,6 @@ Review the code for verified bugs.
     ));
     let labelled = &catalog.entries[1];
     assert_eq!(labelled.runtime.as_deref(), Some("codex"));
-    assert_eq!(labelled.effect, Some(WorkflowEffect::Delivery));
     assert_eq!(labelled.timeout, Some(Duration::from_secs(2 * 60 * 60)));
     assert_eq!(
         labelled.trigger,
@@ -188,13 +179,11 @@ fn checked_in_implementation_workflow_is_valid_and_requires_human_merge() {
         workflow.trigger,
         Some(Trigger::Label("factory:ready".to_owned()))
     );
-    assert_eq!(workflow.effect, Some(WorkflowEffect::Delivery));
     assert_eq!(workflow.runtime.as_deref(), Some("codex"));
     assert_eq!(workflow.timeout, Some(Duration::from_secs(4 * 60 * 60)));
     let prompt = workflow.prompt.as_deref().unwrap();
-    assert!(prompt.contains("Never merge"));
-    assert!(prompt.contains("`factory task block --file PATH`"));
-    assert!(prompt.contains("`factory change publish --file PATH`"));
+    assert!(prompt.contains("Never merge the pull request"));
+    assert!(prompt.contains("factory:needs-review"));
     assert!(prompt.contains("already consumed the exact approval"));
     assert!(prompt.contains("`factory approve ISSUE_NUMBER` again"));
     assert!(prompt.contains("fresh subagent"));
@@ -222,129 +211,13 @@ fn checked_in_implementation_workflow_is_valid_and_requires_human_merge() {
 }
 
 #[test]
-fn requires_a_known_effect_and_enforces_effect_trigger_policy() {
-    let fixture = Fixture::new();
-    fixture.workflow(
-        "missing-effect.md",
-        "+++\nlabel = \"triage\"\n+++\nPrompt.\n",
-    );
-    fixture.workflow(
-        "unknown-effect.md",
-        "+++\nlabel = \"triage\"\neffect = \"mutation\"\n+++\nPrompt.\n",
-    );
-    fixture.workflow(
-        "proposal-label.md",
-        "+++\nlabel = \"triage\"\neffect = \"proposal\"\n+++\nPrompt.\n",
-    );
-    fixture.workflow(
-        "scheduled-delivery.md",
-        "+++\nschedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\neffect = \"delivery\"\n+++\nPrompt.\n",
-    );
-
-    let output = fixture.catalog().to_string();
-
-    assert!(output.contains("must declare effect"));
-    assert!(output.contains("unknown variant `mutation`"));
-    assert!(output.contains("proposal workflows must use a schedule trigger in v1"));
-    assert!(output.contains("delivery workflow must use configured ready label"));
-}
-
-#[test]
-fn rejects_more_than_one_valid_delivery_workflow_per_repository() {
-    let fixture = Fixture::new();
-    fixture.workflow("deliver-one.md", &label_workflow("First."));
-    fixture.workflow("deliver-two.md", &label_workflow("Second."));
-
-    let catalog = fixture.catalog();
-
-    assert_eq!(catalog.invalid_count(), 2);
-    assert!(catalog.entries.iter().all(|entry| {
-        entry
-            .errors
-            .iter()
-            .any(|error| error.contains("exactly one valid delivery workflow"))
-    }));
-    assert_eq!(
-        catalog
-            .repositories_without_ready_workflow(&fixture.config)
-            .count(),
-        1
-    );
-    assert!(
-        catalog
-            .validate_delivery_workflows(&fixture.config)
-            .is_err()
-    );
-}
-
-#[test]
-fn repository_without_delivery_workflow_fails_delivery_validation() {
-    let fixture = Fixture::new();
-    fixture.workflow("triage.md", &scheduled_workflow("Review the code."));
-
-    let error = fixture
-        .catalog()
-        .validate_delivery_workflows(&fixture.config)
-        .unwrap_err();
-
-    assert!(
-        error
-            .to_string()
-            .contains("exactly one valid delivery workflow")
-    );
-    assert!(
-        error
-            .to_string()
-            .contains(&fixture.repository.display().to_string())
-    );
-}
-
-#[test]
-fn workflow_hashes_and_schedule_fingerprints_bind_the_effect() {
-    let fixture = Fixture::new();
-    fixture.workflow("triage.md", &scheduled_workflow("Review the code."));
-    let catalog = fixture.catalog();
-    let proposal = &catalog.entries[0];
-    let mut delivery = proposal.clone();
-    delivery.effect = Some(WorkflowEffect::Delivery);
-
-    assert_ne!(
-        workflow_content_hash(proposal).unwrap(),
-        workflow_content_hash(&delivery).unwrap()
-    );
-    assert_ne!(
-        scheduled_workflow_fingerprint(
-            "0 9 * * 1",
-            UTC,
-            WorkflowEffect::Proposal,
-            "codex",
-            Duration::from_secs(60),
-            "Review the code.",
-        )
-        .unwrap(),
-        scheduled_workflow_fingerprint(
-            "0 9 * * 1",
-            UTC,
-            WorkflowEffect::Delivery,
-            "codex",
-            Duration::from_secs(60),
-            "Review the code.",
-        )
-        .unwrap()
-    );
-}
-
-#[test]
 fn reports_all_invalid_workflows_without_hiding_valid_entries() {
     let fixture = Fixture::new();
     fixture.workflow("valid.md", &label_workflow("A useful prompt."));
-    fixture.workflow(
-        "missing-prompt.md",
-        "+++\nlabel = \"factory:ready\"\neffect = \"delivery\"\n+++\n",
-    );
+    fixture.workflow("missing-prompt.md", "+++\nlabel = \"factory:ready\"\n+++\n");
     fixture.workflow(
         "unknown-field.md",
-        "+++\nlabel = \"factory:ready\"\neffect = \"delivery\"\nsurprise = true\n+++\nPrompt.\n",
+        "+++\nlabel = \"factory:ready\"\nsurprise = true\n+++\nPrompt.\n",
     );
     fixture.workflow(
         "invalid-cron.md",
@@ -356,11 +229,11 @@ fn reports_all_invalid_workflows_without_hiding_valid_entries() {
     );
     fixture.workflow(
         "invalid-label.md",
-        "+++\nlabel = \" factory:ready \"\neffect = \"proposal\"\n+++\nPrompt.\n",
+        "+++\nlabel = \" factory:ready \"\n+++\nPrompt.\n",
     );
     fixture.workflow(
         "two-triggers.md",
-        "+++\nschedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\nlabel = \"factory:ready\"\neffect = \"proposal\"\n+++\nPrompt.\n",
+        "+++\nschedule = \"0 9 * * 1\"\ntimezone = \"UTC\"\nlabel = \"factory:ready\"\n+++\nPrompt.\n",
     );
 
     let catalog = fixture.catalog();
@@ -439,21 +312,18 @@ fn malformed_same_line_mixed_triggers_remain_fail_fast() {
 #[test]
 fn rejects_missing_trigger_timezone_and_invalid_timeout() {
     let fixture = Fixture::new();
-    fixture.workflow(
-        "no-trigger.md",
-        "+++\neffect = \"proposal\"\n+++\nPrompt.\n",
-    );
+    fixture.workflow("no-trigger.md", "+++\n+++\nPrompt.\n");
     fixture.workflow(
         "no-timezone.md",
-        "+++\nschedule = \"0 9 * * 1\"\neffect = \"proposal\"\n+++\nPrompt.\n",
+        "+++\nschedule = \"0 9 * * 1\"\n+++\nPrompt.\n",
     );
     fixture.workflow(
         "bad-timeout.md",
-        "+++\nlabel = \"factory:ready\"\neffect = \"delivery\"\ntimeout = \"forever\"\n+++\nPrompt.\n",
+        "+++\nlabel = \"factory:ready\"\ntimeout = \"forever\"\n+++\nPrompt.\n",
     );
     fixture.workflow(
         "long-timeout.md",
-        "+++\nlabel = \"factory:ready\"\neffect = \"delivery\"\ntimeout = \"9h\"\n+++\nPrompt.\n",
+        "+++\nlabel = \"factory:ready\"\ntimeout = \"9h\"\n+++\nPrompt.\n",
     );
 
     let output = fixture.catalog().to_string();
@@ -584,10 +454,7 @@ fn rejects_workflows_reached_through_symlinked_factory_ancestor() {
 fn workflows_command_lists_resolved_catalog_and_fails_for_invalid_entries() {
     let fixture = Fixture::new();
     fixture.workflow("find-bugs.md", &scheduled_workflow("Review the code."));
-    fixture.workflow(
-        "broken.md",
-        "+++\nlabel = \"factory:ready\"\neffect = \"delivery\"\n+++\n",
-    );
+    fixture.workflow("broken.md", "+++\nlabel = \"factory:ready\"\n+++\n");
 
     Command::cargo_bin("factory")
         .unwrap()
@@ -640,7 +507,7 @@ fn catalog_output_escapes_control_characters_in_every_dynamic_cell() {
     fs::create_dir(&workspace).unwrap();
     fs::write(
         workflows.join("bad\u{1b}[31m.md"),
-        "+++\nlabel = \"factory:ready\"\neffect = \"delivery\"\nruntime = \"\\u001b[32m\"\n+++\nPrompt.\n",
+        "+++\nlabel = \"factory:ready\"\nruntime = \"\\u001b[32m\"\n+++\nPrompt.\n",
     )
     .unwrap();
     let config = Config {

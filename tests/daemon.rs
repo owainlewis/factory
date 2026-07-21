@@ -90,7 +90,7 @@ impl Fixture {
             git(&repository, &["push", "-u", "origin", "main"]);
             fs::write(
                 repository.join(".factory/workflows/implement-ready-ticket.md"),
-                "+++\neffect = \"delivery\"\nlabel = \"factory:ready\"\nruntime = \"codex\"\ntimeout = \"10s\"\n+++\n\nCUSTOM WORKFLOW: deliver a green draft PR and never merge it.\n",
+                "+++\nlabel = \"factory:ready\"\nruntime = \"codex\"\ntimeout = \"10s\"\n+++\n\nCUSTOM WORKFLOW: deliver a green draft PR and never merge it.\n",
             )
             .unwrap();
             fs::write(
@@ -399,7 +399,7 @@ exit 0
     fn add_scheduled_workflow(&mut self) {
         fs::write(
             self.config.repositories[0].join(".factory/workflows/scheduled-maintenance.md"),
-            "+++\neffect = \"proposal\"\nschedule = \"0 0 1 1 *\"\ntimezone = \"UTC\"\nruntime = \"codex\"\ntimeout = \"10s\"\n+++\n\nSCHEDULED MAINTENANCE WORKFLOW\n",
+            "+++\nschedule = \"0 0 1 1 *\"\ntimezone = \"UTC\"\nruntime = \"codex\"\ntimeout = \"10s\"\n+++\n\nSCHEDULED MAINTENANCE WORKFLOW\n",
         )
         .unwrap();
         self.catalog = WorkflowCatalog::load(&self.config).unwrap();
@@ -422,7 +422,6 @@ exit 0
         scheduled_workflow_fingerprint(
             expression,
             *timezone,
-            workflow.effect.unwrap(),
             workflow.runtime.as_deref().unwrap(),
             workflow.timeout.unwrap(),
             workflow.prompt.as_deref().unwrap(),
@@ -748,13 +747,16 @@ async fn discovers_claims_and_records_a_complete_codex_run() {
     for expected in [
         "Factory-created software pull requests must remain for human merge",
         "Repository: example/repo-0",
-        "Ticket 6",
-        "Body 6",
+        "You are working on GitHub issue #6",
+        "Fetch the live issue, comments, labels, and linked pull requests with gh",
+        "Source issue: #6",
         "CUSTOM WORKFLOW",
         "Never merge",
     ] {
         assert!(prompt.contains(expected), "missing {expected:?} in prompt");
     }
+    assert!(!prompt.contains("Ticket 6"));
+    assert!(!prompt.contains("Body 6"));
     assert!(!prompt.contains("Discussion"));
     assert!(!prompt.contains("factory:ready"));
 }
@@ -764,7 +766,7 @@ async fn workflow_deadline_is_terminal_and_does_not_queue_recovery() {
     let mut fixture = Fixture::new(&[vec![issue(28)]], 1, 1);
     fs::write(
         fixture.config.repositories[0].join(".factory/workflows/implement-ready-ticket.md"),
-        "+++\neffect = \"delivery\"\nlabel = \"factory:ready\"\nruntime = \"codex\"\ntimeout = \"100ms\"\n+++\n\nTIME-BOUNDED WORKFLOW\n",
+        "+++\nlabel = \"factory:ready\"\nruntime = \"codex\"\ntimeout = \"100ms\"\n+++\n\nTIME-BOUNDED WORKFLOW\n",
     )
     .unwrap();
     fixture.catalog = WorkflowCatalog::load(&fixture.config).unwrap();
@@ -1647,8 +1649,8 @@ async fn scheduled_tasks_use_the_same_worker_and_run_history() {
     assert!(!workspace.path.exists());
     let prompt = fs::read_to_string(fixture.started_slots()[0].join("prompt")).unwrap();
     assert!(prompt.contains("Scheduled occurrence: 2026-07-18T12:00:00Z"));
-    assert!(prompt.contains("Use the run-scoped Factory commands"));
-    assert!(prompt.contains("Do not use gh or git push directly for mutations"));
+    assert!(prompt.contains("You may use the authenticated gh CLI"));
+    assert!(prompt.contains("Factory does not create tickets for you"));
     assert!(prompt.contains(&format!("Inspected repository commit: {inspected_commit}")));
 }
 
@@ -1997,7 +1999,7 @@ async fn scheduled_and_ticket_tasks_share_concurrency_capacity() {
     assert!(
         prompts
             .iter()
-            .any(|prompt| prompt.contains("# Approved ticket revision"))
+            .any(|prompt| prompt.contains("You are working on GitHub issue #30"))
     );
     fixture.open_gate();
     wait_for(|| {

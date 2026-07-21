@@ -19,7 +19,6 @@ const WORKFLOW_DIRECTORY: &str = ".factory/workflows";
 pub fn scheduled_workflow_fingerprint(
     expression: &str,
     timezone: Tz,
-    effect: WorkflowEffect,
     runtime: &str,
     timeout: Duration,
     prompt: &str,
@@ -27,27 +26,25 @@ pub fn scheduled_workflow_fingerprint(
     let definition = serde_json::to_vec(&(
         expression,
         timezone.name(),
-        effect.as_str(),
         runtime,
         timeout.as_secs(),
         timeout.subsec_nanos(),
         prompt,
     ))?;
-    Ok(format!("v3:{:x}", Sha256::digest(definition)))
+    Ok(format!("v2:{:x}", Sha256::digest(definition)))
 }
 
 pub fn workflow_content_hash(entry: &WorkflowEntry) -> Result<String> {
     let definition = serde_json::to_vec(&(
         &entry.id,
         entry.trigger.as_ref().map(ToString::to_string),
-        entry.effect.map(WorkflowEffect::as_str),
         entry.runtime.as_deref(),
         entry
             .timeout
             .map(|timeout| (timeout.as_secs(), timeout.subsec_nanos())),
         entry.prompt.as_deref(),
     ))?;
-    Ok(format!("v2:{:x}", Sha256::digest(definition)))
+    Ok(format!("v1:{:x}", Sha256::digest(definition)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,48 +58,11 @@ pub struct WorkflowEntry {
     pub path: PathBuf,
     pub id: String,
     pub trigger: Option<Trigger>,
-    pub effect: Option<WorkflowEffect>,
     pub runtime: Option<String>,
     pub timeout: Option<Duration>,
     pub prompt: Option<String>,
     pub errors: Vec<String>,
     pub(crate) is_schedule_workflow: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum WorkflowEffect {
-    Proposal,
-    Delivery,
-}
-
-impl WorkflowEffect {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Proposal => "proposal",
-            Self::Delivery => "delivery",
-        }
-    }
-}
-
-impl fmt::Display for WorkflowEffect {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl FromStr for WorkflowEffect {
-    type Err = String;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        match value {
-            "proposal" => Ok(Self::Proposal),
-            "delivery" => Ok(Self::Delivery),
-            _ => Err(format!(
-                "workflow effect must be `proposal` or `delivery`, got {value:?}"
-            )),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +77,6 @@ struct Frontmatter {
     schedule: Option<String>,
     timezone: Option<String>,
     label: Option<String>,
-    effect: Option<WorkflowEffect>,
     runtime: Option<String>,
     timeout: Option<String>,
 }
@@ -129,7 +88,6 @@ impl WorkflowCatalog {
             entries.extend(load_repository(repository, config));
         }
         mark_duplicate_ids(&mut entries);
-        validate_effect_constraints(&mut entries, config);
         entries.sort_by(|left, right| {
             (&left.repository, &left.id, &left.path).cmp(&(
                 &right.repository,
@@ -177,28 +135,12 @@ impl WorkflowCatalog {
             !self.entries.iter().any(|entry| {
                 &entry.repository == *repository
                     && entry.errors.is_empty()
-                    && entry.effect == Some(WorkflowEffect::Delivery)
                     && matches!(
                         entry.trigger.as_ref(),
                         Some(Trigger::Label(label)) if label == &config.github.ready_label
                     )
             })
         })
-    }
-
-    pub fn validate_delivery_workflows(&self, config: &Config) -> Result<()> {
-        let repositories = self
-            .repositories_without_ready_workflow(config)
-            .map(|repository| repository.display().to_string())
-            .collect::<Vec<_>>();
-        if !repositories.is_empty() {
-            anyhow::bail!(
-                "Factory requires exactly one valid delivery workflow using configured ready label {:?} in each repository; missing from:\n{}",
-                config.github.ready_label,
-                repositories.join("\n")
-            );
-        }
-        Ok(())
     }
 }
 
@@ -208,7 +150,6 @@ impl fmt::Display for WorkflowCatalog {
             "REPOSITORY",
             "WORKFLOW",
             "TRIGGER",
-            "EFFECT",
             "RUNTIME",
             "TIMEOUT",
             "VALIDITY",
@@ -222,7 +163,6 @@ impl fmt::Display for WorkflowCatalog {
                 .map(ToString::to_string)
                 .unwrap_or_else(|| "-".to_owned());
             let runtime = entry.runtime.as_deref().unwrap_or("-");
-            let effect = entry.effect.map(|effect| effect.as_str()).unwrap_or("-");
             let timeout = entry
                 .timeout
                 .map(humantime::format_duration)
@@ -237,7 +177,6 @@ impl fmt::Display for WorkflowCatalog {
                 entry.repository.display().to_string(),
                 entry.id.clone(),
                 trigger,
-                effect.to_owned(),
                 runtime.to_owned(),
                 timeout,
                 validity,
@@ -372,7 +311,6 @@ fn load_file(repository: &Path, path: &Path, config: &Config) -> WorkflowEntry {
         path: path.to_path_buf(),
         id,
         trigger: None,
-        effect: None,
         runtime: None,
         timeout: None,
         prompt: None,
@@ -486,16 +424,9 @@ fn load_file(repository: &Path, path: &Path, config: &Config) -> WorkflowEntry {
         schedule,
         timezone,
         label,
-        effect,
         runtime,
         timeout,
     } = raw;
-    entry.effect = effect;
-    if entry.effect.is_none() {
-        entry.errors.push(
-            "workflow must declare effect = \"proposal\" or effect = \"delivery\"".to_owned(),
-        );
-    }
     entry.runtime = resolve_runtime(runtime, &config.default_runtime, &mut entry.errors);
     entry.timeout = resolve_timeout(
         timeout,
@@ -984,60 +915,12 @@ fn mark_duplicate_ids(entries: &mut [WorkflowEntry]) {
     }
 }
 
-fn validate_effect_constraints(entries: &mut [WorkflowEntry], config: &Config) {
-    for entry in entries.iter_mut().filter(|entry| entry.errors.is_empty()) {
-        match entry.effect {
-            Some(WorkflowEffect::Proposal)
-                if matches!(entry.trigger.as_ref(), Some(Trigger::Label(_))) =>
-            {
-                entry
-                    .errors
-                    .push("proposal workflows must use a schedule trigger in v1".to_owned());
-            }
-            Some(WorkflowEffect::Delivery)
-                if !matches!(
-                    entry.trigger.as_ref(),
-                    Some(Trigger::Label(label)) if label == &config.github.ready_label
-                ) =>
-            {
-                entry.errors.push(format!(
-                    "delivery workflow must use configured ready label {:?}",
-                    config.github.ready_label
-                ));
-            }
-            _ => {}
-        }
-    }
-
-    let mut deliveries_by_repository: HashMap<PathBuf, Vec<usize>> = HashMap::new();
-    for (index, entry) in entries.iter().enumerate() {
-        if entry.errors.is_empty() && entry.effect == Some(WorkflowEffect::Delivery) {
-            deliveries_by_repository
-                .entry(entry.repository.clone())
-                .or_default()
-                .push(index);
-        }
-    }
-    for indices in deliveries_by_repository.into_values() {
-        if indices.len() <= 1 {
-            continue;
-        }
-        for index in indices {
-            entries[index].errors.push(format!(
-                "repository must define exactly one valid delivery workflow using configured ready label {:?}",
-                config.github.ready_label
-            ));
-        }
-    }
-}
-
 fn invalid_entry(repository: &Path, path: &Path, id: &str, error: &str) -> WorkflowEntry {
     WorkflowEntry {
         repository: repository.to_path_buf(),
         path: path.to_path_buf(),
         id: id.to_owned(),
         trigger: None,
-        effect: None,
         runtime: None,
         timeout: None,
         prompt: None,
@@ -1201,7 +1084,6 @@ schedule = "not-a-key"#
             path: PathBuf::from("same.md"),
             id: "same".to_owned(),
             trigger: Some(Trigger::Label("factory:ready".to_owned())),
-            effect: Some(WorkflowEffect::Delivery),
             runtime: Some("codex".to_owned()),
             timeout: Some(Duration::from_secs(60)),
             prompt: Some("implement".to_owned()),
