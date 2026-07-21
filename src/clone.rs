@@ -443,10 +443,7 @@ esac
             )
             .unwrap();
         assert_eq!(implementation.path, root.join("issue-42"));
-        assert_eq!(
-            implementation.branch.as_deref(),
-            Some("factory/42-fix-login-timeout")
-        );
+        assert_eq!(implementation.branch.as_deref(), Some("factory/42"));
         assert!(implementation.path.join(".git").is_dir());
 
         fs::write(implementation.path.join("local-work"), "preserve me").unwrap();
@@ -470,14 +467,97 @@ esac
         let commands = fs::read_to_string(log).unwrap();
         assert!(commands.contains("gh|repo clone https://github.com/acme/widgets.git"));
         assert!(commands.contains("checkout --detach"));
-        assert_eq!(
-            commands
-                .matches("checkout -B factory/42-fix-login-timeout")
-                .count(),
-            1
-        );
-        assert!(commands.contains("checkout factory/42-fix-login-timeout"));
+        assert_eq!(commands.matches("checkout -B factory/42").count(), 1);
+        assert!(commands.contains("checkout factory/42"));
         assert!(!commands.contains("clone-test-token"));
+    }
+
+    #[test]
+    fn fresh_clone_checks_out_existing_remote_branch_after_title_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("clones");
+        fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let log = temp.path().join("commands.log");
+        let remote_branch = temp.path().join("remote-branch");
+        let gh = temp.path().join("gh");
+        let git = temp.path().join("git");
+        executable(
+            &gh,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf 'gh|%s\n' "$*" >> '{}'
+test "$GH_TOKEN" = 'clone-test-token'
+mkdir -p "$4/.git"
+"#,
+                log.display()
+            ),
+        );
+        executable(
+            &git,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s|%s\n' "$PWD" "$*" >> '{}'
+case "$1 ${{2:-}}" in
+  'remote get-url') printf '%s\n' 'https://github.com/acme/widgets.git' ;;
+  'rev-parse --verify') printf '%s\n' '{}' ;;
+  'show-ref --verify') exit 1 ;;
+  'ls-remote --exit-code') if test -f '{}'; then exit 0; else exit 2; fi ;;
+  'checkout -B') printf '%s' "$3" > .fake-local-branch ;;
+esac
+"#,
+                log.display(),
+                BASE_SHA,
+                remote_branch.display()
+            ),
+        );
+        unsafe { std::env::set_var(TOKEN_ENV, "clone-test-token") };
+        let manager = CloneManager {
+            root: root.clone(),
+            gh_executable: gh,
+            git_executable: git,
+        };
+
+        let first = manager
+            .prepare(
+                "acme/widgets",
+                8,
+                42,
+                "Original title",
+                "main",
+                BASE_SHA,
+                true,
+                TOKEN_ENV,
+            )
+            .unwrap();
+        assert_eq!(first.branch.as_deref(), Some("factory/42"));
+
+        fs::write(&remote_branch, "factory/42").unwrap();
+        manager.remove(&first.path).unwrap();
+        let continued = manager
+            .prepare(
+                "acme/widgets",
+                9,
+                42,
+                "A renamed issue title",
+                "main",
+                BASE_SHA,
+                true,
+                TOKEN_ENV,
+            )
+            .unwrap();
+
+        assert_eq!(continued.path, root.join("issue-42"));
+        assert_eq!(continued.branch.as_deref(), Some("factory/42"));
+        let commands = fs::read_to_string(log).unwrap();
+        assert_eq!(commands.matches("gh|repo clone").count(), 2);
+        assert!(commands.contains("ls-remote --exit-code --heads origin refs/heads/factory/42"));
+        assert!(commands.contains(
+            "fetch --no-tags origin +refs/heads/factory/42:refs/remotes/origin/factory/42"
+        ));
+        assert!(commands.contains("checkout -B factory/42 refs/remotes/origin/factory/42"));
     }
 
     #[test]
