@@ -39,9 +39,10 @@ prompt from standard input. Label-triggered workflows create their missing
 trigger label explicitly; scheduled workflows do not mutate labels during
 creation.
 
-See [`docs/local-v1.md`](docs/local-v1.md) for complete installation, setup,
-operation, recovery, and acceptance instructions. The architecture and product
-boundary are documented in [`docs/design.md`](docs/design.md).
+See [`docs/local-v1.md`](docs/local-v1.md) for the current implementation's
+installation, setup, operation, recovery, and acceptance instructions. The next
+repo-local architecture and product boundary are documented in
+[`docs/single-repository-v1/design.md`](docs/single-repository-v1/design.md).
 
 ## Development checks
 
