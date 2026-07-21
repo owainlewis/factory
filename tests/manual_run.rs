@@ -54,7 +54,7 @@ fn manual_workflow_run_resolves_context_and_invokes_codex() {
     fs::create_dir(&binaries).unwrap();
     fs::write(
         workflows.join("read-only.md"),
-        "+++\nlabel = \"factory:ready\"\ntimeout = \"30s\"\n+++\n\nInspect without changing files.\n",
+        "+++\nschedule = \"0 9 * * *\"\ntimezone = \"UTC\"\ntimeout = \"30s\"\n+++\n\nInspect without changing files.\n",
     )
     .unwrap();
     initialize_repository(&repository, &data_home);
@@ -129,7 +129,7 @@ fn concurrent_manual_runs_exit_when_shared_output_is_full_and_unread() {
     fs::create_dir(&binaries).unwrap();
     fs::write(
         workflows.join("verbose.md"),
-        "+++\nlabel = \"factory:ready\"\ntimeout = \"30s\"\n+++\n\nBe verbose.\n",
+        "+++\nschedule = \"0 9 * * *\"\ntimezone = \"UTC\"\ntimeout = \"30s\"\n+++\n\nBe verbose.\n",
     )
     .unwrap();
     initialize_repository(&repository, &data_home);

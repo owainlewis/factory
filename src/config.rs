@@ -6,7 +6,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,7 +20,73 @@ pub struct Config {
     pub max_concurrent_runs_per_repository: usize,
     pub workspace_root: PathBuf,
     pub data_directory: PathBuf,
+    pub source: Option<SourceConfig>,
     pub github: GitHubConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceConfig {
+    pub owner: String,
+    pub project_number: u64,
+    pub status_field: String,
+    pub trusted_users: Vec<String>,
+    pub states: SourceStates,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceStates {
+    pub ready_for_spec: String,
+    pub creating_spec: String,
+    pub ready_to_implement: String,
+    pub implementing: String,
+    pub ready_to_review: String,
+    pub done: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineState {
+    ReadyForSpec,
+    CreatingSpec,
+    ReadyToImplement,
+    Implementing,
+    ReadyToReview,
+    Done,
+}
+
+impl PipelineState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadyForSpec => "ready_for_spec",
+            Self::CreatingSpec => "creating_spec",
+            Self::ReadyToImplement => "ready_to_implement",
+            Self::Implementing => "implementing",
+            Self::ReadyToReview => "ready_to_review",
+            Self::Done => "done",
+        }
+    }
+}
+
+impl fmt::Display for PipelineState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for PipelineState {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "ready_for_spec" => Ok(Self::ReadyForSpec),
+            "creating_spec" => Ok(Self::CreatingSpec),
+            "ready_to_implement" => Ok(Self::ReadyToImplement),
+            "implementing" => Ok(Self::Implementing),
+            "ready_to_review" => Ok(Self::ReadyToReview),
+            "done" => Ok(Self::Done),
+            _ => bail!("unknown pipeline state {value:?}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,10 +106,33 @@ struct RawConfig {
     default_timeout: String,
     maximum_timeout: String,
     max_concurrent_runs: usize,
-    github: RawGitHubConfig,
+    source: Option<RawSourceConfig>,
+    github: Option<RawGitHubConfig>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSourceConfig {
+    kind: String,
+    owner: String,
+    project_number: u64,
+    status_field: String,
+    trusted_users: Vec<String>,
+    states: RawSourceStates,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSourceStates {
+    ready_for_spec: String,
+    creating_spec: String,
+    ready_to_implement: String,
+    implementing: String,
+    ready_to_review: String,
+    done: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawGitHubConfig {
     trusted_approvers: Vec<String>,
@@ -131,7 +220,24 @@ impl Config {
         if raw.max_concurrent_runs == 0 {
             bail!("max_concurrent_runs must be greater than zero");
         }
-        let github = resolve_github(raw.github)?;
+        if raw.source.is_some() && raw.github.is_some() {
+            bail!("configure [source] or legacy [github], not both");
+        }
+        let source = raw.source.map(resolve_source).transpose()?;
+        let github = match raw.github {
+            Some(github) => resolve_github(github)?,
+            None => {
+                let source = source
+                    .as_ref()
+                    .context("configuration must contain [source] or legacy [github]")?;
+                GitHubConfig {
+                    trusted_approvers: source.trusted_users.clone(),
+                    ready_label: "factory:ready".to_owned(),
+                    proposed_label: "factory:proposed".to_owned(),
+                    needs_review_label: "factory:needs-review".to_owned(),
+                }
+            }
+        };
         let default_runtime = raw.default_runtime.trim();
         if default_runtime.is_empty() {
             bail!("default_runtime must not be empty");
@@ -170,8 +276,22 @@ impl Config {
             max_concurrent_runs_per_repository: raw.max_concurrent_runs,
             workspace_root,
             data_directory,
+            source,
             github,
         })
+    }
+}
+
+impl SourceConfig {
+    pub fn state_name(&self, state: PipelineState) -> &str {
+        match state {
+            PipelineState::ReadyForSpec => &self.states.ready_for_spec,
+            PipelineState::CreatingSpec => &self.states.creating_spec,
+            PipelineState::ReadyToImplement => &self.states.ready_to_implement,
+            PipelineState::Implementing => &self.states.implementing,
+            PipelineState::ReadyToReview => &self.states.ready_to_review,
+            PipelineState::Done => &self.states.done,
+        }
     }
 }
 
@@ -200,6 +320,24 @@ impl fmt::Display for Config {
             "max_concurrent_runs: {}",
             self.max_concurrent_runs
         )?;
+        if let Some(source) = &self.source {
+            writeln!(
+                formatter,
+                "source: github_project {}/{}",
+                source.owner, source.project_number
+            )?;
+            writeln!(formatter, "status_field: {}", source.status_field)?;
+            for state in [
+                PipelineState::ReadyForSpec,
+                PipelineState::CreatingSpec,
+                PipelineState::ReadyToImplement,
+                PipelineState::Implementing,
+                PipelineState::ReadyToReview,
+                PipelineState::Done,
+            ] {
+                writeln!(formatter, "state.{state}: {}", source.state_name(state))?;
+            }
+        }
         writeln!(
             formatter,
             "state_directory: {}",
@@ -259,6 +397,93 @@ fn resolve_github(raw: RawGitHubConfig) -> Result<GitHubConfig> {
         proposed_label,
         needs_review_label,
     })
+}
+
+fn resolve_source(raw: RawSourceConfig) -> Result<SourceConfig> {
+    if raw.kind != "github_project" {
+        bail!("source.kind must be \"github_project\"");
+    }
+    let owner = validate_github_login("source.owner", raw.owner)?;
+    if raw.project_number == 0 {
+        bail!("source.project_number must be greater than zero");
+    }
+    let status_field = validate_display_name("source.status_field", raw.status_field)?;
+    if raw.trusted_users.is_empty() {
+        bail!("source.trusted_users must contain at least one login");
+    }
+    let mut trusted_users = Vec::with_capacity(raw.trusted_users.len());
+    for user in raw.trusted_users {
+        let user = validate_github_login("source.trusted_users", user)?;
+        if !trusted_users
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&user))
+        {
+            trusted_users.push(user);
+        }
+    }
+    let states = SourceStates {
+        ready_for_spec: validate_display_name(
+            "source.states.ready_for_spec",
+            raw.states.ready_for_spec,
+        )?,
+        creating_spec: validate_display_name(
+            "source.states.creating_spec",
+            raw.states.creating_spec,
+        )?,
+        ready_to_implement: validate_display_name(
+            "source.states.ready_to_implement",
+            raw.states.ready_to_implement,
+        )?,
+        implementing: validate_display_name("source.states.implementing", raw.states.implementing)?,
+        ready_to_review: validate_display_name(
+            "source.states.ready_to_review",
+            raw.states.ready_to_review,
+        )?,
+        done: validate_display_name("source.states.done", raw.states.done)?,
+    };
+    let names = [
+        &states.ready_for_spec,
+        &states.creating_spec,
+        &states.ready_to_implement,
+        &states.implementing,
+        &states.ready_to_review,
+        &states.done,
+    ];
+    for (index, name) in names.iter().enumerate() {
+        if names[..index]
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(name))
+        {
+            bail!("source state display names must be distinct");
+        }
+    }
+    Ok(SourceConfig {
+        owner,
+        project_number: raw.project_number,
+        status_field,
+        trusted_users,
+        states,
+    })
+}
+
+fn validate_github_login(name: &str, value: String) -> Result<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        bail!("{name} contains invalid login {value:?}");
+    }
+    Ok(value.to_owned())
+}
+
+fn validate_display_name(name: &str, value: String) -> Result<String> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().count() > 100 || value.chars().any(char::is_control) {
+        bail!("{name} must be 1-100 characters without control characters");
+    }
+    Ok(value.to_owned())
 }
 
 pub fn repository_config_path(repository: &Path) -> PathBuf {
@@ -594,12 +819,13 @@ mod tests {
             default_timeout: "2h".into(),
             maximum_timeout: "8h".into(),
             max_concurrent_runs: 2,
-            github: RawGitHubConfig {
+            source: None,
+            github: Some(RawGitHubConfig {
                 trusted_approvers: vec!["owainlewis".into()],
                 ready_label: "factory:ready".into(),
                 proposed_label: "factory:proposed".into(),
                 needs_review_label: "factory:needs-review".into(),
-            },
+            }),
         }
     }
 
@@ -616,6 +842,39 @@ mod tests {
         );
         assert!(config.workspace_root.ends_with("worktrees"));
         assert_eq!(config.poll_every, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn resolves_github_project_source_and_synthesizes_legacy_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let workspace = temp.path().join("worktrees");
+        let mut input = raw(&repository, &workspace);
+        input.github = None;
+        input.source = Some(RawSourceConfig {
+            kind: "github_project".into(),
+            owner: "owainlewis".into(),
+            project_number: 16,
+            status_field: "Workflow".into(),
+            trusted_users: vec!["OwainLewis".into(), "owainlewis".into()],
+            states: RawSourceStates {
+                ready_for_spec: "Needs triage".into(),
+                creating_spec: "Writing spec".into(),
+                ready_to_implement: "Ready".into(),
+                implementing: "Building".into(),
+                ready_to_review: "Review".into(),
+                done: "Shipped".into(),
+            },
+        });
+
+        let config = Config::resolve(input, &repository).unwrap();
+
+        let source = config.source.unwrap();
+        assert_eq!(source.status_field, "Workflow");
+        assert_eq!(source.state_name(PipelineState::ReadyToImplement), "Ready");
+        assert_eq!(source.trusted_users, ["OwainLewis"]);
+        assert_eq!(config.github.trusted_approvers, ["OwainLewis"]);
+        assert_eq!(config.github.ready_label, "factory:ready");
     }
 
     #[test]
@@ -669,7 +928,7 @@ mod tests {
         let repository = temp.path().join("repo");
         let workspace = temp.path().join("worktrees");
         let mut config = raw(&repository, &workspace);
-        config.github.proposed_label = "Factory:Ready".into();
+        config.github.as_mut().unwrap().proposed_label = "Factory:Ready".into();
 
         let error = Config::resolve(config, &repository).unwrap_err();
 
@@ -703,12 +962,13 @@ mod tests {
             default_timeout: "2h".into(),
             maximum_timeout: "8h".into(),
             max_concurrent_runs: 1,
-            github: RawGitHubConfig {
+            source: None,
+            github: Some(RawGitHubConfig {
                 trusted_approvers: vec!["owainlewis".into()],
                 ready_label: "factory:ready".into(),
                 proposed_label: "factory:proposed".into(),
                 needs_review_label: "factory:needs-review".into(),
-            },
+            }),
         };
 
         let error = Config::resolve(config, &temp.path().join("missing")).unwrap_err();
@@ -769,6 +1029,7 @@ mod tests {
         let repository = temp.path().join("repo");
         let workspace = temp.path().join("worktrees");
         let valid = raw(&repository, &workspace);
+        let github = valid.github.as_ref().unwrap().clone();
         let valid = toml::to_string(&serde_json::json!({
             "version": valid.version,
             "poll_every": valid.poll_every,
@@ -777,10 +1038,10 @@ mod tests {
             "maximum_timeout": valid.maximum_timeout,
             "max_concurrent_runs": valid.max_concurrent_runs,
             "github": {
-                "trusted_approvers": valid.github.trusted_approvers,
-                "ready_label": valid.github.ready_label,
-                "proposed_label": valid.github.proposed_label,
-                "needs_review_label": valid.github.needs_review_label,
+                "trusted_approvers": github.trusted_approvers,
+                "ready_label": github.ready_label,
+                "proposed_label": github.proposed_label,
+                "needs_review_label": github.needs_review_label,
             },
         }))
         .unwrap();

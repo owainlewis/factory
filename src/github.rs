@@ -11,8 +11,8 @@ use tokio_util::sync::CancellationToken;
 use crate::approval::{
     ClaimArtifact, approved_content_hash, parse as parse_approval, parse_claim, render_claim,
 };
-use crate::config::{Config, GitHubConfig};
-use crate::storage::{ApprovalEvidence, Ledger, ObservedTicket, Task};
+use crate::config::{Config, GitHubConfig, PipelineState, SourceConfig, SourceStates};
+use crate::storage::{ApprovalEvidence, Ledger, ObservedTicket, ProjectClaimEvidence, Task};
 use crate::workflow::{Trigger, WorkflowCatalog, WorkflowEntry, workflow_content_hash};
 
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -37,10 +37,38 @@ pub struct TicketApproval {
     pub nonce: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectTicketContext {
+    pub project_id: String,
+    pub project_item_id: String,
+    pub status_field_id: String,
+    pub issue_node_id: String,
+    pub number: u64,
+    pub url: String,
+    pub title: String,
+    pub author_id: String,
+    pub author_login: String,
+    pub repository: String,
+    pub expected_state: PipelineState,
+    pub expected_option_id: String,
+    pub active_state: PipelineState,
+    pub active_option_id: String,
+    pub status_updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedProjectSource {
+    pub project_id: String,
+    pub status_field_id: String,
+    pub options: HashMap<PipelineState, String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct GitHubUser {
     pub id: u64,
     pub login: String,
+    #[serde(default)]
+    pub node_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -582,6 +610,358 @@ impl GitHubClient {
         Ok(())
     }
 
+    pub async fn validate_project_source(
+        &self,
+        repository: &Path,
+        source: &SourceConfig,
+        cancellation: &CancellationToken,
+    ) -> Result<ResolvedProjectSource> {
+        self.validate_repository(repository, cancellation).await?;
+        self.trusted_source_user_ids(repository, source, cancellation)
+            .await?;
+        self.resolve_project_source(repository, source, cancellation)
+            .await
+    }
+
+    pub async fn authorize_project_claim(
+        &self,
+        repository: &Path,
+        source: &SourceConfig,
+        task: &Task,
+        ledger: &mut Ledger,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        let payload = task
+            .payload
+            .as_deref()
+            .context("project task has no source payload")?;
+        let expected: ProjectTicketContext =
+            serde_json::from_str(payload).context("project task source payload is invalid")?;
+        let source_item = task
+            .source_item
+            .as_deref()
+            .context("project task has no issue number")?;
+        if source_item != expected.number.to_string() || task.repository != expected.repository {
+            bail!("project task payload does not match its durable identity");
+        }
+        let repository_name = self.validate_repository(repository, cancellation).await?;
+        if repository_name != task.repository {
+            bail!("project task repository no longer matches the configured checkout");
+        }
+        let resolved = self
+            .resolve_project_source(repository, source, cancellation)
+            .await?;
+        let trusted = self
+            .trusted_source_user_ids(repository, source, cancellation)
+            .await?;
+        if !trusted.contains_key(&expected.author_id) {
+            bail!("project issue author is no longer trusted");
+        }
+        let current_expected_option = resolved
+            .options
+            .get(&expected.expected_state)
+            .context("queued expected state is no longer configured")?;
+        let current_active_option = resolved
+            .options
+            .get(&expected.active_state)
+            .context("queued active state is no longer configured")?;
+        if resolved.project_id != expected.project_id
+            || resolved.status_field_id != expected.status_field_id
+            || current_expected_option != &expected.expected_option_id
+            || current_active_option != &expected.active_option_id
+        {
+            bail!("project source configuration changed after this task was queued");
+        }
+        let evidence = ProjectClaimEvidence {
+            project_id: &expected.project_id,
+            project_item_id: &expected.project_item_id,
+            status_field_id: &expected.status_field_id,
+            expected_option_id: &expected.expected_option_id,
+            active_option_id: &expected.active_option_id,
+        };
+        let current = self
+            .project_item(
+                repository,
+                &expected.project_item_id,
+                &expected.status_field_id,
+                cancellation,
+            )
+            .await?
+            .context("project item no longer exists or is not an issue")?;
+        if current
+            .field_value
+            .as_ref()
+            .is_some_and(|status| status.option_id == expected.active_option_id)
+        {
+            if !ledger.project_claim_matches(task.id, &evidence)? {
+                bail!("project item is active without a durable claim for this task");
+            }
+            validate_project_item(&current, &expected, &expected.active_option_id)?;
+            return Ok(());
+        }
+        validate_project_item(&current, &expected, &expected.expected_option_id)?;
+        ledger.record_project_claim(task.id, &evidence)?;
+        self.set_project_status(
+            repository,
+            &expected.project_id,
+            &expected.project_item_id,
+            &expected.status_field_id,
+            &expected.active_option_id,
+            cancellation,
+        )
+        .await?;
+        let claimed = self
+            .project_item(
+                repository,
+                &expected.project_item_id,
+                &expected.status_field_id,
+                cancellation,
+            )
+            .await?
+            .context("project item disappeared after status transition")?;
+        validate_project_item(&claimed, &expected, &expected.active_option_id)
+            .context("project item changed concurrently while Factory claimed it")?;
+        Ok(())
+    }
+
+    async fn resolve_project_source(
+        &self,
+        repository: &Path,
+        source: &SourceConfig,
+        cancellation: &CancellationToken,
+    ) -> Result<ResolvedProjectSource> {
+        let project_number = source.project_number.to_string();
+        let project_output = self
+            .run(
+                Some(repository),
+                &[
+                    "project",
+                    "view",
+                    &project_number,
+                    "--owner",
+                    &source.owner,
+                    "--format",
+                    "json",
+                ],
+                cancellation,
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to read GitHub Project {} for owner {:?}",
+                    source.project_number, source.owner
+                )
+            })?;
+        let project: ProjectView = serde_json::from_str(&project_output)
+            .context("gh project view returned malformed JSON")?;
+        if project.id.trim().is_empty() {
+            bail!("GitHub Project returned an empty node ID");
+        }
+        let fields_output = self
+            .run(
+                Some(repository),
+                &[
+                    "project",
+                    "field-list",
+                    &project_number,
+                    "--owner",
+                    &source.owner,
+                    "--limit",
+                    "1000",
+                    "--format",
+                    "json",
+                ],
+                cancellation,
+            )
+            .await
+            .context("failed to list GitHub Project fields")?;
+        let fields: ProjectFieldList = serde_json::from_str(&fields_output)
+            .context("gh project field-list returned malformed JSON")?;
+        let mut matching_fields = fields
+            .fields
+            .into_iter()
+            .filter(|field| field.name == source.status_field);
+        let field = matching_fields.next().with_context(|| {
+            format!(
+                "GitHub Project does not contain status field {:?}",
+                source.status_field
+            )
+        })?;
+        if matching_fields.next().is_some() {
+            bail!(
+                "GitHub Project contains more than one field named {:?}",
+                source.status_field
+            );
+        }
+        if field.kind != "ProjectV2SingleSelectField" {
+            bail!(
+                "GitHub Project field {:?} must be a single-select field",
+                source.status_field
+            );
+        }
+        let mut options = HashMap::new();
+        for (state, name) in configured_states(&source.states) {
+            let mut matching_options = field.options.iter().filter(|option| option.name == name);
+            let option = matching_options.next().with_context(|| {
+                format!(
+                    "GitHub Project field {:?} has no option {:?} for {}",
+                    source.status_field, name, state
+                )
+            })?;
+            if matching_options.next().is_some() {
+                bail!(
+                    "GitHub Project field {:?} contains more than one option named {:?}",
+                    source.status_field,
+                    name
+                );
+            }
+            if options.insert(state, option.id.clone()).is_some() {
+                bail!("pipeline state {state} is configured more than once");
+            }
+        }
+        let distinct = options.values().collect::<std::collections::HashSet<_>>();
+        if distinct.len() != options.len() {
+            bail!("every configured pipeline state must map to a distinct project option");
+        }
+        Ok(ResolvedProjectSource {
+            project_id: project.id,
+            status_field_id: field.id,
+            options,
+        })
+    }
+
+    async fn trusted_source_user_ids(
+        &self,
+        repository: &Path,
+        source: &SourceConfig,
+        cancellation: &CancellationToken,
+    ) -> Result<HashMap<String, String>> {
+        let mut users = HashMap::new();
+        for login in &source.trusted_users {
+            let user = self.user(repository, login, cancellation).await?;
+            let node_id = user
+                .node_id
+                .with_context(|| format!("GitHub user {:?} has no stable node ID", user.login))?;
+            users.insert(node_id, user.login);
+        }
+        Ok(users)
+    }
+
+    async fn project_items(
+        &self,
+        repository: &Path,
+        project_id: &str,
+        status_field: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<ProjectItem>> {
+        const QUERY: &str = "query($project:ID!,$endCursor:String,$statusField:String!){node(id:$project){... on ProjectV2{items(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id updatedAt content{... on Issue{id number title url state updatedAt author{login ... on User{id}} repository{nameWithOwner}}} fieldValueByName(name:$statusField){... on ProjectV2ItemFieldSingleSelectValue{optionId name updatedAt}}}}}}}";
+        let mut cursor: Option<String> = None;
+        let mut items = Vec::new();
+        loop {
+            let mut arguments = vec![
+                "api".to_owned(),
+                "graphql".to_owned(),
+                "-f".to_owned(),
+                format!("query={QUERY}"),
+                "-F".to_owned(),
+                format!("project={project_id}"),
+                "-f".to_owned(),
+                format!("statusField={status_field}"),
+            ];
+            if let Some(cursor) = &cursor {
+                arguments.extend(["-f".to_owned(), format!("endCursor={cursor}")]);
+            }
+            let refs = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+            let output = self.run(Some(repository), &refs, cancellation).await?;
+            let response: ProjectItemsResponse = serde_json::from_str(&output)
+                .context("gh api graphql returned malformed Project items JSON")?;
+            let page = response
+                .data
+                .node
+                .context("GitHub Project node was not found")?
+                .items;
+            items.extend(page.nodes);
+            if !page.page_info.has_next_page {
+                break;
+            }
+            cursor = Some(
+                page.page_info
+                    .end_cursor
+                    .context("GitHub Project page has no end cursor")?,
+            );
+        }
+        Ok(items)
+    }
+
+    async fn project_item(
+        &self,
+        repository: &Path,
+        item_id: &str,
+        status_field_id: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<ProjectItem>> {
+        const QUERY: &str = "query($item:ID!){node(id:$item){... on ProjectV2Item{id updatedAt content{... on Issue{id number title url state updatedAt author{login ... on User{id}} repository{nameWithOwner}}} fieldValues(first:100){nodes{... on ProjectV2ItemFieldSingleSelectValue{optionId name updatedAt field{... on ProjectV2SingleSelectField{id}}}}}}}}";
+        let query = format!("query={QUERY}");
+        let item = format!("item={item_id}");
+        let output = self
+            .run(
+                Some(repository),
+                &["api", "graphql", "-f", &query, "-F", &item],
+                cancellation,
+            )
+            .await?;
+        let response: ProjectItemResponse = serde_json::from_str(&output)
+            .context("gh api graphql returned malformed Project item JSON")?;
+        Ok(response.data.node.map(|item| {
+            let field_value = item
+                .field_values
+                .nodes
+                .into_iter()
+                .filter_map(|value| serde_json::from_value(value).ok())
+                .find(|value: &ProjectStatusValueWithField| value.field.id == status_field_id)
+                .map(|value| ProjectStatusValue {
+                    option_id: value.option_id,
+                    name: value.name,
+                    updated_at: value.updated_at,
+                });
+            ProjectItem {
+                id: item.id,
+                updated_at: item.updated_at,
+                content: item.content,
+                field_value,
+            }
+        }))
+    }
+
+    async fn set_project_status(
+        &self,
+        repository: &Path,
+        project_id: &str,
+        item_id: &str,
+        field_id: &str,
+        option_id: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.run(
+            Some(repository),
+            &[
+                "project",
+                "item-edit",
+                "--id",
+                item_id,
+                "--project-id",
+                project_id,
+                "--field-id",
+                field_id,
+                "--single-select-option-id",
+                option_id,
+            ],
+            cancellation,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn poll_once(
         &self,
         config: &Config,
@@ -600,18 +980,29 @@ impl GitHubClient {
         cancellation: CancellationToken,
     ) -> Result<PollReport> {
         self.validate_global(&cancellation).await?;
-        let workflows = label_workflows(catalog, &config.github.ready_label);
+        let label_workflows = label_workflows(catalog, &config.github.ready_label);
+        let state_workflows = state_workflows(catalog);
         let mut repositories = Vec::with_capacity(config.repositories.len());
         for repository in &config.repositories {
-            let result = self
-                .poll_repository(
+            let result = if let Some(source) = &config.source {
+                self.poll_project_repository(
                     repository,
-                    workflows.get(repository),
+                    state_workflows.get(repository),
+                    source,
+                    ledger,
+                    &cancellation,
+                )
+                .await
+            } else {
+                self.poll_repository(
+                    repository,
+                    label_workflows.get(repository),
                     &config.github,
                     ledger,
                     &cancellation,
                 )
-                .await;
+                .await
+            };
             repositories.push(match result {
                 Ok(report) => report,
                 Err(error) => RepositoryPoll {
@@ -624,6 +1015,114 @@ impl GitHubClient {
             });
         }
         Ok(PollReport { repositories })
+    }
+
+    async fn poll_project_repository(
+        &self,
+        repository: &Path,
+        workflows: Option<&Vec<&WorkflowEntry>>,
+        source: &SourceConfig,
+        ledger: &mut Ledger,
+        cancellation: &CancellationToken,
+    ) -> Result<RepositoryPoll> {
+        let name = self.validate_repository(repository, cancellation).await?;
+        let resolved = self
+            .resolve_project_source(repository, source, cancellation)
+            .await?;
+        let trusted = self
+            .trusted_source_user_ids(repository, source, cancellation)
+            .await?;
+        let items = self
+            .project_items(
+                repository,
+                &resolved.project_id,
+                &source.status_field,
+                cancellation,
+            )
+            .await?;
+        let issues_seen = items
+            .iter()
+            .filter(|item| {
+                item.content
+                    .as_ref()
+                    .is_some_and(|issue| issue.repository.name_with_owner == name)
+            })
+            .count();
+        let mut tasks_created = 0;
+        for workflow in workflows.into_iter().flatten() {
+            let Trigger::State(expected_state) =
+                workflow.trigger.as_ref().expect("filtered workflow")
+            else {
+                unreachable!();
+            };
+            let active_state = active_state_for(*expected_state)?;
+            let expected_option_id = resolved
+                .options
+                .get(expected_state)
+                .context("expected state was not resolved")?;
+            let active_option_id = resolved
+                .options
+                .get(&active_state)
+                .context("active state was not resolved")?;
+            let mut observations = Vec::new();
+            for item in &items {
+                let Some(issue) = &item.content else {
+                    continue;
+                };
+                if issue.repository.name_with_owner != name || issue.state != "OPEN" {
+                    continue;
+                }
+                let Some(author) = &issue.author else {
+                    continue;
+                };
+                let Some(author_id) = author.id.as_deref() else {
+                    continue;
+                };
+                let Some(status) = &item.field_value else {
+                    continue;
+                };
+                let eligible =
+                    status.option_id == *expected_option_id && trusted.contains_key(author_id);
+                let revision =
+                    project_source_revision(&item.id, expected_option_id, &status.updated_at);
+                let payload = ProjectTicketContext {
+                    project_id: resolved.project_id.clone(),
+                    project_item_id: item.id.clone(),
+                    status_field_id: resolved.status_field_id.clone(),
+                    issue_node_id: issue.id.clone(),
+                    number: issue.number,
+                    url: issue.url.clone(),
+                    title: issue.title.clone(),
+                    author_id: author_id.to_owned(),
+                    author_login: author.login.clone(),
+                    repository: name.clone(),
+                    expected_state: *expected_state,
+                    expected_option_id: expected_option_id.clone(),
+                    active_state,
+                    active_option_id: active_option_id.clone(),
+                    status_updated_at: status.updated_at.clone(),
+                };
+                observations.push(ObservedTicket {
+                    source_item: issue.number.to_string(),
+                    revision,
+                    eligible,
+                    payload: serde_json::to_string(&payload)
+                        .context("failed to serialize GitHub Project ticket context")?,
+                });
+            }
+            tasks_created += ledger
+                .reconcile_ticket_poll(&name, &workflow.id, &observations)?
+                .into_iter()
+                .filter(|task| task.created)
+                .count();
+        }
+        Ok(RepositoryPoll {
+            repository: repository.to_owned(),
+            name_with_owner: Some(name),
+            issues_seen,
+            tasks_created,
+            error: None,
+        })
     }
 
     pub async fn poll_until_cancelled<F>(
@@ -847,6 +1346,226 @@ fn label_workflows<'a>(
         }
     }
     workflows
+}
+
+fn state_workflows(catalog: &WorkflowCatalog) -> HashMap<PathBuf, Vec<&WorkflowEntry>> {
+    let mut workflows = HashMap::<PathBuf, Vec<&WorkflowEntry>>::new();
+    for workflow in &catalog.entries {
+        if workflow.errors.is_empty()
+            && matches!(
+                workflow.trigger.as_ref(),
+                Some(Trigger::State(
+                    PipelineState::ReadyForSpec | PipelineState::ReadyToImplement
+                ))
+            )
+        {
+            workflows
+                .entry(workflow.repository.clone())
+                .or_default()
+                .push(workflow);
+        }
+    }
+    workflows
+}
+
+fn active_state_for(state: PipelineState) -> Result<PipelineState> {
+    match state {
+        PipelineState::ReadyForSpec => Ok(PipelineState::CreatingSpec),
+        PipelineState::ReadyToImplement => Ok(PipelineState::Implementing),
+        _ => bail!("pipeline state {state} cannot trigger a v1 workflow"),
+    }
+}
+
+fn configured_states(states: &SourceStates) -> [(PipelineState, &str); 6] {
+    [
+        (PipelineState::ReadyForSpec, &states.ready_for_spec),
+        (PipelineState::CreatingSpec, &states.creating_spec),
+        (PipelineState::ReadyToImplement, &states.ready_to_implement),
+        (PipelineState::Implementing, &states.implementing),
+        (PipelineState::ReadyToReview, &states.ready_to_review),
+        (PipelineState::Done, &states.done),
+    ]
+}
+
+fn project_source_revision(item_id: &str, option_id: &str, status_updated_at: &str) -> String {
+    format!("project-item:{item_id}:option:{option_id}:at:{status_updated_at}")
+}
+
+fn validate_project_item(
+    current: &ProjectItem,
+    expected: &ProjectTicketContext,
+    required_option_id: &str,
+) -> Result<()> {
+    let issue = current
+        .content
+        .as_ref()
+        .context("project item is no longer an issue")?;
+    let status = current
+        .field_value
+        .as_ref()
+        .context("project item no longer has the configured status")?;
+    if current.id != expected.project_item_id
+        || issue.id != expected.issue_node_id
+        || issue.number != expected.number
+        || issue.url != expected.url
+        || issue.repository.name_with_owner != expected.repository
+        || issue.state != "OPEN"
+    {
+        bail!("project item no longer matches the queued issue");
+    }
+    let author = issue
+        .author
+        .as_ref()
+        .context("project issue no longer has an author")?;
+    if author.id.as_deref() != Some(expected.author_id.as_str())
+        || status.option_id != required_option_id
+    {
+        bail!("project issue author or status changed before claim");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectView {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectFieldList {
+    fields: Vec<ProjectField>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectField {
+    id: String,
+    name: String,
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    options: Vec<ProjectOption>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectOption {
+    id: String,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectItemsResponse {
+    data: ProjectItemsData,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectItemsData {
+    node: Option<ProjectNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectNode {
+    items: ProjectItemsConnection,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectItemsConnection {
+    #[serde(rename = "pageInfo")]
+    page_info: PageInfo,
+    nodes: Vec<ProjectItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PageInfo {
+    #[serde(rename = "hasNextPage")]
+    has_next_page: bool,
+    #[serde(rename = "endCursor")]
+    end_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ProjectItem {
+    id: String,
+    #[allow(dead_code)]
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+    content: Option<ProjectIssue>,
+    #[serde(rename = "fieldValueByName", alias = "fieldValue")]
+    field_value: Option<ProjectStatusValue>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ProjectIssue {
+    id: String,
+    number: u64,
+    title: String,
+    url: String,
+    state: String,
+    #[allow(dead_code)]
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+    author: Option<ProjectAuthor>,
+    repository: ProjectRepository,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ProjectAuthor {
+    id: Option<String>,
+    login: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ProjectRepository {
+    #[serde(rename = "nameWithOwner")]
+    name_with_owner: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ProjectStatusValue {
+    #[serde(rename = "optionId")]
+    option_id: String,
+    #[allow(dead_code)]
+    name: String,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectItemResponse {
+    data: ProjectItemData,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectItemData {
+    node: Option<ProjectItemWithValues>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectItemWithValues {
+    id: String,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+    content: Option<ProjectIssue>,
+    #[serde(rename = "fieldValues")]
+    field_values: ProjectFieldValues,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectFieldValues {
+    nodes: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectStatusValueWithField {
+    #[serde(rename = "optionId")]
+    option_id: String,
+    name: String,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+    field: ProjectValueField,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectValueField {
+    id: String,
 }
 
 fn approved_ticket(

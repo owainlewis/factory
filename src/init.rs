@@ -6,7 +6,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use tempfile::NamedTempFile;
-use toml_edit::{DocumentMut, value};
+use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::config::Config;
 
@@ -424,11 +424,20 @@ fn default_config() -> String {
     document["default_timeout"] = value("2h");
     document["maximum_timeout"] = value("8h");
     document["max_concurrent_runs"] = value(1);
-    document["github"]["trusted_approvers"] =
+    document["source"] = Item::Table(Table::new());
+    document["source"]["kind"] = value("github_project");
+    document["source"]["owner"] = value("owainlewis");
+    document["source"]["project_number"] = value(16);
+    document["source"]["status_field"] = value("Status");
+    document["source"]["trusted_users"] =
         toml_edit::value(toml_edit::Array::from_iter(["owainlewis"]));
-    document["github"]["ready_label"] = value("factory:ready");
-    document["github"]["proposed_label"] = value("factory:proposed");
-    document["github"]["needs_review_label"] = value("factory:needs-review");
+    document["source"]["states"] = Item::Table(Table::new());
+    document["source"]["states"]["ready_for_spec"] = value("Ready For Spec");
+    document["source"]["states"]["creating_spec"] = value("Creating Spec");
+    document["source"]["states"]["ready_to_implement"] = value("Ready To Implement");
+    document["source"]["states"]["implementing"] = value("Implementing");
+    document["source"]["states"]["ready_to_review"] = value("Reviewing");
+    document["source"]["states"]["done"] = value("Done");
     document.to_string()
 }
 

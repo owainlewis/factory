@@ -122,6 +122,14 @@ Codex decides how to perform GitHub and engineering work. V1 has no effect
 profiles, provider command surface, workflow DAG, or deterministic pull-request
 publisher.
 
+V1 has one canonical checkout and one derived SQLite ledger. Multiple daemon
+processes using that same configuration are safe because task claims and the
+ready-to-active transition intent are recorded atomically in the shared ledger.
+Running the same repository from another clone or data directory creates a
+second authority and is unsupported. GitHub Projects does not provide a
+compare-and-set status mutation, so separate ledgers could both claim the same
+ready item.
+
 ### The complete loop and the v1 slice
 
 A mature factory is an automation loop around the software development

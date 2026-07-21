@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use assert_cmd::Command;
-use factory::config::{Config, GitHubConfig};
+use factory::config::{Config, GitHubConfig, PipelineState, SourceConfig, SourceStates};
 use factory::workflow::{Trigger, WorkflowCatalog};
 use predicates::prelude::*;
 
@@ -89,6 +89,7 @@ fn test_config(repositories: Vec<PathBuf>, workspace: PathBuf, data: PathBuf) ->
         max_concurrent_runs_per_repository: 2,
         workspace_root: workspace,
         data_directory: data,
+        source: None,
         github: GitHubConfig {
             trusted_approvers: vec!["owainlewis".into()],
             ready_label: "factory:ready".into(),
@@ -119,6 +120,27 @@ label = "factory:ready"
 {prompt}
 "#
     )
+}
+
+fn state_workflow(state: &str, prompt: &str) -> String {
+    format!("+++\nstate = {state:?}\n+++\n\n{prompt}\n")
+}
+
+fn source_config() -> SourceConfig {
+    SourceConfig {
+        owner: "owainlewis".into(),
+        project_number: 16,
+        status_field: "Status".into(),
+        trusted_users: vec!["owainlewis".into()],
+        states: SourceStates {
+            ready_for_spec: "Ready for spec".into(),
+            creating_spec: "Creating spec".into(),
+            ready_to_implement: "Ready to implement".into(),
+            implementing: "Implementing".into(),
+            ready_to_review: "Ready to review".into(),
+            done: "Done".into(),
+        },
+    }
 }
 
 #[test]
@@ -165,7 +187,12 @@ Review the code for verified bugs.
 
 #[test]
 fn checked_in_implementation_workflow_is_valid_and_requires_human_merge() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
+    fixture.config.source = Some(source_config());
+    fixture.workflow(
+        "triage-ticket.md",
+        include_str!("../examples/triage-ticket.md"),
+    );
     fixture.workflow(
         "implement-ready-ticket.md",
         include_str!("../examples/implement-ready-ticket.md"),
@@ -174,40 +201,81 @@ fn checked_in_implementation_workflow_is_valid_and_requires_human_merge() {
     let catalog = fixture.catalog();
 
     assert_eq!(catalog.invalid_count(), 0);
-    let workflow = &catalog.entries[0];
+    let workflow = catalog
+        .entries
+        .iter()
+        .find(|entry| entry.id == "implement-ready-ticket")
+        .unwrap();
     assert_eq!(
         workflow.trigger,
-        Some(Trigger::Label("factory:ready".to_owned()))
+        Some(Trigger::State(PipelineState::ReadyToImplement))
     );
     assert_eq!(workflow.runtime.as_deref(), Some("codex"));
     assert_eq!(workflow.timeout, Some(Duration::from_secs(4 * 60 * 60)));
     let prompt = workflow.prompt.as_deref().unwrap();
-    assert!(prompt.contains("Never merge the pull request"));
-    assert!(prompt.contains("factory:needs-review"));
-    assert!(prompt.contains("already consumed the exact approval"));
-    assert!(prompt.contains("`factory approve ISSUE_NUMBER` again"));
-    assert!(prompt.contains("fresh subagent"));
-    let step_headings: Vec<_> = prompt
-        .lines()
-        .filter(|line| line.starts_with("## Step "))
-        .collect();
+    assert!(prompt.contains("Use the authenticated\n`gh` and `git` commands directly"));
+    assert!(prompt.contains("supplied working directory"));
+    assert!(prompt.contains("Do not merge or enable auto-merge"));
+    assert!(prompt.contains("`ready_to_review`"));
+    let triage = catalog
+        .entries
+        .iter()
+        .find(|entry| entry.id == "triage-ticket")
+        .unwrap();
     assert_eq!(
-        step_headings,
-        [
-            "## Step 1: Establish scope and safety",
-            "## Step 2: Inspect the issue and existing work",
-            "## Step 3: Confirm the claim or report a blocker",
-            "## Step 4: Implement the ticket",
-            "## Step 5: Verify the implementation",
-            "## Step 6: Review and publish the change",
-            "## Step 7: Resolve CI and review feedback",
-            "## Step 8: Hand off for human review",
-        ]
+        triage.trigger,
+        Some(Trigger::State(PipelineState::ReadyForSpec))
+    );
+    assert!(
+        triage
+            .prompt
+            .as_deref()
+            .unwrap()
+            .contains("Do not invent requirements")
     );
     assert_eq!(
         include_str!("../examples/implement-ready-ticket.md"),
         include_str!("../.factory/workflows/implement-ready-ticket.md")
     );
+    assert_eq!(
+        include_str!("../examples/triage-ticket.md"),
+        include_str!("../.factory/workflows/triage-ticket.md")
+    );
+}
+
+#[test]
+fn source_mode_requires_one_workflow_for_each_ready_state() {
+    let mut fixture = Fixture::new();
+    fixture.config.source = Some(source_config());
+    fixture.workflow(
+        "triage.md",
+        &state_workflow("ready_for_spec", "Clarify the task."),
+    );
+    fixture.workflow(
+        "implement.md",
+        &state_workflow("ready_to_implement", "Implement the task."),
+    );
+
+    let catalog = fixture.catalog();
+
+    assert_eq!(catalog.invalid_count(), 0);
+    assert!(catalog.validate_ticket_workflows().is_ok());
+}
+
+#[test]
+fn source_mode_rejects_label_and_output_state_triggers() {
+    let mut fixture = Fixture::new();
+    fixture.config.source = Some(source_config());
+    fixture.workflow("label.md", &label_workflow("Do work."));
+    fixture.workflow("active.md", &state_workflow("implementing", "Do work."));
+
+    let catalog = fixture.catalog();
+    let rendered = catalog.to_string();
+
+    assert!(rendered.contains("label triggers are not supported"));
+    assert!(rendered.contains("is an output state"));
+    assert!(rendered.contains("missing-ready_for_spec-workflow"));
+    assert!(rendered.contains("missing-ready_to_implement-workflow"));
 }
 
 #[test]
@@ -248,7 +316,7 @@ fn reports_all_invalid_workflows_without_hiding_valid_entries() {
         "valid five-field cron expression",
         "timezone is invalid",
         "label must be 1-50 characters",
-        "not schedule and label",
+        "exactly one trigger: schedule, label, or state",
     ] {
         assert!(
             output.contains(expected),
@@ -454,7 +522,18 @@ fn rejects_workflows_reached_through_symlinked_factory_ancestor() {
 fn workflows_command_lists_resolved_catalog_and_fails_for_invalid_entries() {
     let fixture = Fixture::new();
     fixture.workflow("find-bugs.md", &scheduled_workflow("Review the code."));
-    fixture.workflow("broken.md", "+++\nlabel = \"factory:ready\"\n+++\n");
+    fixture.workflow(
+        "triage-ticket.md",
+        &state_workflow("ready_for_spec", "Triage the issue."),
+    );
+    fixture.workflow(
+        "implement-ready-ticket.md",
+        &state_workflow("ready_to_implement", "Implement the issue."),
+    );
+    fixture.workflow(
+        "broken.md",
+        "+++\nschedule = \"0 8 * * *\"\ntimezone = \"UTC\"\n+++\n",
+    );
 
     Command::cargo_bin("factory")
         .unwrap()
@@ -520,6 +599,7 @@ fn catalog_output_escapes_control_characters_in_every_dynamic_cell() {
         max_concurrent_runs_per_repository: 1,
         workspace_root: workspace,
         data_directory: temp.path().join("data"),
+        source: None,
         github: GitHubConfig {
             trusted_approvers: vec!["owainlewis".into()],
             ready_label: "factory:ready".into(),

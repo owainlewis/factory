@@ -83,6 +83,23 @@ exit 64
             executable_path,
         };
         fixture.command().arg("init").assert().success();
+        fs::write(
+            fixture.repository.join(".factory/config.toml"),
+            r#"version = 1
+poll_every = "30s"
+default_runtime = "codex"
+default_timeout = "2h"
+maximum_timeout = "8h"
+max_concurrent_runs = 1
+
+[github]
+trusted_approvers = ["owainlewis"]
+ready_label = "factory:ready"
+proposed_label = "factory:proposed"
+needs_review_label = "factory:needs-review"
+"#,
+        )
+        .unwrap();
         fixture
     }
 
@@ -101,6 +118,34 @@ exit 64
             .join(".factory/workflows")
             .join(format!("{id}.md"))
     }
+}
+
+#[test]
+fn creates_state_workflow_without_creating_a_label() {
+    let fixture = Fixture::new();
+    fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/examples/config.toml"),
+        fixture.repository.join(".factory/config.toml"),
+    )
+    .unwrap();
+
+    fixture
+        .command()
+        .args([
+            "workflow",
+            "create",
+            "triage-ticket",
+            "--state",
+            "ready_for_spec",
+            "--prompt",
+            "Clarify the ticket.",
+        ])
+        .assert()
+        .success();
+
+    let contents = fs::read_to_string(fixture.workflow("triage-ticket")).unwrap();
+    assert!(contents.contains("state = \"ready_for_spec\""));
+    assert!(!fixture.repository.join(".gh-calls").exists());
 }
 
 #[test]
