@@ -727,10 +727,7 @@ async fn discovers_claims_and_records_a_complete_codex_run() {
     assert_eq!(runs[0].session_id.as_deref(), Some("thread-1"));
     assert!(runs[0].result.as_deref().unwrap().contains("Draft PR"));
     assert_eq!(runs[0].base_branch.as_deref(), Some("main"));
-    assert_eq!(
-        runs[0].factory_branch.as_deref(),
-        Some("factory/6-ticket-6")
-    );
+    assert_eq!(runs[0].factory_branch.as_deref(), Some("factory/6"));
     assert_eq!(runs[0].workspace_kind.as_deref(), Some("delivery"));
     assert_ne!(
         runs[0].working_directory.as_deref(),

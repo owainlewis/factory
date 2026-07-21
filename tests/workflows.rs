@@ -216,6 +216,9 @@ fn checked_in_implementation_workflow_is_valid_and_requires_human_merge() {
     let prompt = workflow.prompt.as_deref().unwrap();
     assert!(prompt.contains("Use the authenticated\n`gh` and `git` commands directly"));
     assert!(prompt.contains("supplied working directory"));
+    assert!(prompt.contains("reviews and review threads"));
+    assert!(prompt.contains("update the existing\npull request"));
+    assert!(prompt.contains("trusted maintainers"));
     assert!(prompt.contains("Do not merge or enable auto-merge"));
     assert!(prompt.contains("`ready_to_review`"));
     let triage = catalog

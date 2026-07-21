@@ -86,8 +86,10 @@ impl WorkspaceManager {
         Ok(manager)
     }
 
-    pub fn delivery_branch(issue: u64, title: &str) -> String {
-        format!("factory/{issue}-{}", slug(title))
+    pub fn delivery_branch(issue: u64, _title: &str) -> String {
+        // The issue number is the durable delivery identity. Titles can change
+        // during review and must not redirect continuation work to a new branch.
+        format!("factory/{issue}")
     }
 
     pub fn reconcile_startup(&self) -> Result<()> {
@@ -530,32 +532,6 @@ fn absolute_lexical(path: &Path) -> Result<PathBuf> {
     Ok(path.to_owned())
 }
 
-fn slug(title: &str) -> String {
-    let mut result = String::new();
-    let mut separator = false;
-    for character in title.chars() {
-        if character.is_ascii_alphanumeric() {
-            if separator && !result.is_empty() && result.len() < 48 {
-                result.push('-');
-            }
-            separator = false;
-            if result.len() < 48 {
-                result.push(character.to_ascii_lowercase());
-            }
-        } else {
-            separator = true;
-        }
-    }
-    while result.ends_with('-') {
-        result.pop();
-    }
-    if result.is_empty() {
-        "task".to_owned()
-    } else {
-        result
-    }
-}
-
 fn git_output<I, S>(directory: &Path, args: I) -> Result<String>
 where
     I: IntoIterator<Item = S>,
@@ -649,10 +625,7 @@ mod tests {
                 DeliveryReuse::Reject,
             )
             .unwrap();
-        assert_eq!(
-            created.branch.as_deref(),
-            Some("factory/39-own-worktrees-safely")
-        );
+        assert_eq!(created.branch.as_deref(), Some("factory/39"));
         assert_eq!(
             run(&created.path, ["rev-parse", "HEAD"]).trim(),
             fixture.head

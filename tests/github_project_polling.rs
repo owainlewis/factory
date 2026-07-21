@@ -315,6 +315,69 @@ async fn deduplicates_restarts_and_rearms_after_leaving_the_ready_state() {
 }
 
 #[tokio::test]
+async fn review_reentry_creates_one_new_implementation_generation() {
+    let fixture = Fixture::new();
+    fixture.set_state("rti", "2026-07-21T14:00:00Z");
+    let (first_report, mut ledger) = fixture.poll().await;
+    assert_eq!(first_report.tasks_created(), 1);
+    ledger
+        .register_daemon_owner("implementation-owner", std::process::id())
+        .unwrap();
+    let runtimes = HashMap::from([(
+        (
+            "example/repo".to_owned(),
+            "implement-ready-ticket".to_owned(),
+            "ticket".to_owned(),
+        ),
+        "codex".to_owned(),
+    )]);
+    let first = ledger
+        .claim_and_start_run(
+            &["example/repo".to_owned()],
+            &runtimes,
+            "implementation-owner",
+            std::process::id(),
+        )
+        .unwrap()
+        .unwrap();
+    GitHubClient::new(&fixture.gh)
+        .authorize_project_claim(
+            &fixture.repository,
+            fixture.config.source.as_ref().unwrap(),
+            &first.task,
+            &mut ledger,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    ledger
+        .finish_run_and_task(
+            first.run.id,
+            RunOutcome::Succeeded,
+            Some("existing pull request ready for review"),
+            None,
+            None,
+        )
+        .unwrap();
+
+    fixture.set_state("review", "2026-07-21T15:00:00Z");
+    assert_eq!(fixture.poll().await.0.tasks_created(), 0);
+    fixture.set_state("rti", "2026-07-21T16:00:00Z");
+    let (reentry_report, ledger) = fixture.poll().await;
+    assert_eq!(reentry_report.tasks_created(), 1);
+    let tasks = ledger.tasks().unwrap();
+    assert_eq!(tasks.len(), 2);
+    assert!(tasks.iter().all(|task| {
+        task.workflow == "implement-ready-ticket" && task.source_item.as_deref() == Some("41")
+    }));
+    assert_ne!(tasks[0].identity_key, tasks[1].identity_key);
+
+    assert_eq!(fixture.poll().await.0.tasks_created(), 0);
+    drop(ledger);
+    assert_eq!(fixture.poll().await.0.tasks_created(), 0);
+}
+
+#[tokio::test]
 async fn ignores_untrusted_closed_and_non_ready_issues() {
     let fixture = Fixture::new();
     fs::write(fixture.repository.join(".author-id"), "U_OTHER").unwrap();
