@@ -120,3 +120,53 @@ poll to confirm the task, branch, and pull-request counts remain unchanged.
 
 See [operations.md](operations.md) for cancellation, recovery, cleanup, trust,
 and Docker limitations.
+
+## Project 16 self-hosting evidence
+
+Factory v1 was exercised against the public
+[Factory Project](https://github.com/users/owainlewis/projects/16) on 22 July
+2026 from a clean standalone clone of commit `f15a919`. `factory init` created
+the missing repository config without changing the checked-in workflows or
+Dockerfile. The image built as `factory-codex:dev` with digest
+`sha256:af5b2c31afc1e06d809a96d8c675bd7470532a4f1e30b0de118cab046fd3a52e`.
+`factory validate` resolved all six Project states, the trusted user, live
+worker token, Docker daemon and image, and dedicated writable Codex auth.
+
+Before adding ready work, `factory run --once` saw seven repository issues and
+created zero tasks. `factory tasks --json` returned `[]`, and Docker listed no
+container for the Factory instance. This is the no-work, no-model path.
+
+The implementation proof used [issue #54](https://github.com/owainlewis/factory/issues/54).
+Factory moved it from Ready To Implement to Implementing, created task 1 and
+run 1, cloned commit `eeb3858`, checked out `factory/54`, and launched container
+`1bb173253992` with a read-only root, 4 CPUs, 8 GB memory, and 512 PIDs. The
+agent used `gh` and `git`, changed only `docs/operations.md`, recorded review
+and verification limitations, pushed commit `5733d47`, and opened
+[PR #55](https://github.com/owainlewis/factory/pull/55). GitHub CI passed in
+1m37s. The agent marked the PR ready, moved the issue to Reviewing, posted the
+[handoff comment](https://github.com/owainlewis/factory/issues/54#issuecomment-5040193067),
+and left merge and auto-merge untouched. Run 1 succeeded in 463,624 ms, stored
+the PR link and exact image evidence, then removed its container and clean
+clone.
+
+After stopping and restarting the daemon, the ledger still contained one
+succeeded task and one succeeded run for issue #54. GitHub still contained one
+open `factory/54` branch and one PR, and Docker contained no Factory container.
+The restart created no duplicate work.
+
+The triage proof used [issue #56](https://github.com/owainlewis/factory/issues/56).
+Factory moved it from Ready For Spec to Creating Spec, created task 2 and run 2,
+and launched the same image against a separate read-only `triage-2` clone. The
+agent inspected the startup path and rewrote the vague issue into a bounded
+goal, scope, acceptance criteria, verification plan, and explicit exclusions,
+then moved it to Ready To Implement. Run 2 succeeded in 112,535 ms and produced
+no branch or pull request.
+
+Two limitations were recorded. The proof used the operator's broad GitHub token,
+so it demonstrated the warning and human workflow but not least-privilege bot
+enforcement. Also, the daemon observed issue #56 become ready immediately after
+triage and queued its implementation generation before shutdown. Shutdown
+cancelled authorization before any implementation container launched. This is
+expected pipeline behavior, and it shows why a demo operator should stop or
+park a triaged ticket before the next poll when only the triage phase is being
+demonstrated.
