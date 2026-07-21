@@ -21,6 +21,7 @@ pub struct CreateWorkflowOptions {
     pub schedule: Option<String>,
     pub timezone: Option<String>,
     pub label: Option<String>,
+    pub state: Option<String>,
     pub runtime: Option<String>,
     pub timeout: Option<String>,
     pub prompt: Option<String>,
@@ -159,13 +160,17 @@ async fn ensure_label(
 }
 
 fn validate_options(options: &CreateWorkflowOptions) -> Result<()> {
-    match (&options.schedule, &options.label) {
-        (Some(_), Some(_)) => bail!("workflow must declare exactly one trigger"),
-        (None, None) => bail!("workflow must declare exactly one trigger: schedule or label"),
-        (Some(_), None) if options.timezone.is_none() => {
+    let trigger_count = usize::from(options.schedule.is_some())
+        + usize::from(options.label.is_some())
+        + usize::from(options.state.is_some());
+    if trigger_count != 1 {
+        bail!("workflow must declare exactly one trigger: schedule, label, or state");
+    }
+    match (&options.schedule, &options.label, &options.state) {
+        (Some(_), None, None) if options.timezone.is_none() => {
             bail!("scheduled workflow must declare a timezone")
         }
-        (None, Some(_)) if options.timezone.is_some() => {
+        (None, Some(_), None) | (None, None, Some(_)) if options.timezone.is_some() => {
             bail!("timezone is only valid with a schedule trigger")
         }
         _ => {}
@@ -226,6 +231,9 @@ fn render_workflow(options: &CreateWorkflowOptions, prompt: &str) -> String {
     }
     if let Some(label) = &options.label {
         frontmatter["label"] = value(label);
+    }
+    if let Some(state) = &options.state {
+        frontmatter["state"] = value(state);
     }
     if let Some(runtime) = &options.runtime {
         frontmatter["runtime"] = value(runtime);

@@ -107,6 +107,11 @@ fn init_creates_only_configuration_and_workflow_directory() {
 
     let config = fs::read_to_string(fixture.config_path()).unwrap();
     assert!(config.contains("version = 1"));
+    assert!(config.contains("[source]"));
+    assert!(config.contains("kind = \"github_project\""));
+    assert!(config.contains("project_number = 16"));
+    assert!(config.contains("[source.states]"));
+    assert!(!config.contains("[github]"));
     assert!(!config.contains("repositories"));
     assert!(!config.contains("workspace_root"));
     assert!(fixture.workspace().is_dir());

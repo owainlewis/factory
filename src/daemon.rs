@@ -13,8 +13,8 @@ use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::Config;
-use crate::github::{GitHubClient, PollReport, TicketContext};
+use crate::config::{Config, PipelineState, SourceConfig};
+use crate::github::{GitHubClient, PollReport, ProjectTicketContext, TicketContext};
 use crate::runtime::{
     CodexRuntime, ExecutionResult, RuntimeCancelled, RuntimeObservation, Termination,
     observation_channel,
@@ -215,6 +215,7 @@ impl FactoryDaemon {
                     &self.codex,
                     &self.github,
                     &self.config.github,
+                    self.config.source.as_ref(),
                     &self.config.workspace_root,
                     &mut retention_warning_shown,
                     &cancellation,
@@ -379,6 +380,11 @@ impl FactoryDaemon {
                 .github
                 .validate_repository(repository, cancellation)
                 .await?;
+            if let Some(source) = &self.config.source {
+                self.github
+                    .validate_project_source(repository, source, cancellation)
+                    .await?;
+            }
             let workflows = self
                 .catalog
                 .entries
@@ -597,6 +603,7 @@ fn dispatch_available(
     codex: &CodexRuntime,
     github: &GitHubClient,
     github_config: &crate::config::GitHubConfig,
+    source_config: Option<&SourceConfig>,
     workspace_root: &Path,
     retention_warning_shown: &mut bool,
     cancellation: &CancellationToken,
@@ -614,7 +621,7 @@ fn dispatch_available(
                 target.workflows.iter().map(|(workflow, target)| {
                     let task_kind = match target.trigger {
                         Trigger::Schedule { .. } => "scheduled",
-                        Trigger::Label(_) => "ticket",
+                        Trigger::Label(_) | Trigger::State(_) => "ticket",
                     };
                     (
                         (repository.clone(), workflow.clone(), task_kind.to_owned()),
@@ -716,32 +723,63 @@ fn dispatch_available(
         let codex = codex.clone();
         let github = github.clone();
         let github_config = github_config.clone();
+        let source_config = source_config.cloned();
         let workspace_root = workspace_root.to_owned();
         let finalization_ledger_path = ledger_path.to_owned();
         let cancellation = cancellation.clone();
         runs.spawn(async move {
-            if task.kind == "ticket"
-                && let Err(error) = github
-                    .authorize_claim(
-                        &target.path,
-                        &github_config,
-                        &task,
-                        &workflow.content_hash,
-                        &mut worker_ledger,
-                        &cancellation,
-                    )
-                    .await
-            {
-                if let Err(finish_error) = worker_ledger.finish_run_and_task(
-                    run_id,
-                    RunOutcome::Failed,
-                    None,
-                    Some(&format!("ticket authorization failed: {error:#}")),
-                    None,
-                ) {
+            let authorization = match &workflow.trigger {
+                Trigger::State(_) => {
+                    let source = source_config
+                        .as_ref()
+                        .context("project workflow has no configured source");
+                    match source {
+                        Ok(source) => {
+                            github
+                                .authorize_project_claim(
+                                    &target.path,
+                                    source,
+                                    &task,
+                                    &mut worker_ledger,
+                                    &cancellation,
+                                )
+                                .await
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                Trigger::Label(_) => {
+                    github
+                        .authorize_claim(
+                            &target.path,
+                            &github_config,
+                            &task,
+                            &workflow.content_hash,
+                            &mut worker_ledger,
+                            &cancellation,
+                        )
+                        .await
+                }
+                Trigger::Schedule { .. } => Ok(()),
+            };
+            if let Err(error) = authorization {
+                let detail = format!("ticket authorization failed: {error:#}");
+                let finish = if matches!(workflow.trigger, Trigger::State(_)) {
+                    worker_ledger
+                        .fail_prelaunch_and_requeue(run_id, &detail)
+                        .map(|_| ())
+                } else {
+                    worker_ledger
+                        .finish_run_and_task(run_id, RunOutcome::Failed, None, Some(&detail), None)
+                        .map(|_| ())
+                };
+                if let Err(finish_error) = finish {
                     return (repository, Err(finish_error));
                 }
-                eprintln!("Factory authorization rejected task {}: {error:#}", task.id);
+                eprintln!(
+                    "Factory authorization failed before launch for task {}: {error:#}",
+                    task.id
+                );
                 return (repository, Ok(()));
             }
             let execution_target = match prepare_task_workspace(
@@ -863,8 +901,8 @@ async fn prepare_task_workspace(
             );
         }
         let now = 0;
-        let candidate = if task.kind == "ticket" {
-            let ticket = ticket_context(task)?;
+        let candidate = if is_delivery_task(task, canonical_target)? {
+            let ticket = ticket_summary(task)?;
             TaskWorkspace {
                 task_id: task.id,
                 kind: "delivery".to_owned(),
@@ -901,7 +939,7 @@ async fn prepare_task_workspace(
         ledger.reserve_task_workspace(&candidate)?
     };
     let prepared = if workspace.kind == "delivery" {
-        let ticket = ticket_context(task)?;
+        let ticket = ticket_summary(task)?;
         manager.prepare_delivery(
             ticket.number,
             &ticket.title,
@@ -940,12 +978,42 @@ async fn prepare_task_workspace(
     })
 }
 
-fn ticket_context(task: &Task) -> Result<TicketContext> {
+struct TicketSummary {
+    number: u64,
+    title: String,
+}
+
+fn ticket_summary(task: &Task) -> Result<TicketSummary> {
     let payload = task
         .payload
         .as_deref()
         .context("ticket task has no source payload")?;
-    serde_json::from_str(payload).context("ticket task contains invalid source context")
+    if let Ok(context) = serde_json::from_str::<ProjectTicketContext>(payload) {
+        return Ok(TicketSummary {
+            number: context.number,
+            title: context.title,
+        });
+    }
+    let context: TicketContext =
+        serde_json::from_str(payload).context("ticket task contains invalid source context")?;
+    Ok(TicketSummary {
+        number: context.number,
+        title: context.title,
+    })
+}
+
+fn is_delivery_task(task: &Task, target: &RepositoryTarget) -> Result<bool> {
+    if task.kind != "ticket" {
+        return Ok(false);
+    }
+    let workflow = target
+        .workflows
+        .get(&task.workflow)
+        .context("ticket task workflow is not configured")?;
+    Ok(matches!(
+        workflow.trigger,
+        Trigger::Label(_) | Trigger::State(PipelineState::ReadyToImplement)
+    ))
 }
 
 fn finalize_task_workspace(

@@ -8,8 +8,17 @@ default_timeout = "2h"
 maximum_timeout = "8h"
 max_concurrent_runs = 2
 
-[github]
-trusted_approvers = ["owainlewis"]
-ready_label = "factory:ready"
-proposed_label = "factory:proposed"
-needs_review_label = "factory:needs-review"
+[source]
+kind = "github_project"
+owner = "owainlewis"
+project_number = 16
+status_field = "Status"
+trusted_users = ["owainlewis"]
+
+[source.states]
+ready_for_spec = "Ready For Spec"
+creating_spec = "Creating Spec"
+ready_to_implement = "Ready To Implement"
+implementing = "Implementing"
+ready_to_review = "Reviewing"
+done = "Done"

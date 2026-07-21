@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 pub const DATABASE_NAME: &str = "factory.sqlite3";
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION_ID_BYTES: usize = 1024;
@@ -239,6 +239,15 @@ pub struct ApprovalEvidence<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectClaimEvidence<'a> {
+    pub project_id: &'a str,
+    pub project_item_id: &'a str,
+    pub status_field_id: &'a str,
+    pub expected_option_id: &'a str,
+    pub active_option_id: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskWorkspace {
     pub task_id: i64,
     pub kind: String,
@@ -331,6 +340,88 @@ pub struct Ledger {
 }
 
 impl Ledger {
+    pub fn project_claim_matches(
+        &self,
+        task_id: i64,
+        evidence: &ProjectClaimEvidence<'_>,
+    ) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM project_claims
+                    WHERE task_id = ?1 AND project_id = ?2 AND project_item_id = ?3
+                      AND status_field_id = ?4 AND expected_option_id = ?5
+                      AND active_option_id = ?6
+                 )",
+                params![
+                    task_id,
+                    evidence.project_id,
+                    evidence.project_item_id,
+                    evidence.status_field_id,
+                    evidence.expected_option_id,
+                    evidence.active_option_id,
+                ],
+                |row| row.get(0),
+            )
+            .context("failed to verify durable project claim")
+    }
+
+    pub fn record_project_claim(
+        &mut self,
+        task_id: i64,
+        evidence: &ProjectClaimEvidence<'_>,
+    ) -> Result<()> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin project claim transaction")?;
+        let running = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?1 AND state = 'running')",
+            [task_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !running {
+            bail!("task {task_id} must be running before its project claim is recorded");
+        }
+        transaction.execute(
+            "INSERT OR IGNORE INTO project_claims
+             (task_id, project_id, project_item_id, status_field_id, expected_option_id,
+              active_option_id, claimed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                task_id,
+                evidence.project_id,
+                evidence.project_item_id,
+                evidence.status_field_id,
+                evidence.expected_option_id,
+                evidence.active_option_id,
+                now_millis()?,
+            ],
+        )?;
+        let exact = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM project_claims
+                WHERE task_id = ?1 AND project_id = ?2 AND project_item_id = ?3
+                  AND status_field_id = ?4 AND expected_option_id = ?5
+                  AND active_option_id = ?6
+             )",
+            params![
+                task_id,
+                evidence.project_id,
+                evidence.project_item_id,
+                evidence.status_field_id,
+                evidence.expected_option_id,
+                evidence.active_option_id,
+            ],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !exact {
+            bail!("task {task_id} already has a different project claim");
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn approval_is_consumed(&self, artifact_id: u64) -> Result<bool> {
         self.connection
             .query_row(
@@ -1287,6 +1378,21 @@ impl Ledger {
                 .collect::<rusqlite::Result<std::collections::HashSet<_>>>()
                 .context("failed to read workspace ownership")?
         };
+        let running_ticket_sources = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT repository, source_item FROM tasks
+                     WHERE kind = 'ticket' AND state = 'running' AND source_item IS NOT NULL",
+                )
+                .context("failed to prepare running ticket source query")?;
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .context("failed to query running ticket sources")?
+                .collect::<rusqlite::Result<std::collections::HashSet<_>>>()
+                .context("failed to read running ticket sources")?
+        };
         let candidates = {
             let mut statement = transaction
                 .prepare(
@@ -1302,6 +1408,13 @@ impl Ledger {
                 .context("failed to read queued tasks")?
         };
         let Some(task) = candidates.into_iter().find(|task| {
+            if task.kind == "ticket"
+                && task.source_item.as_ref().is_some_and(|source_item| {
+                    running_ticket_sources.contains(&(task.repository.clone(), source_item.clone()))
+                })
+            {
+                return false;
+            }
             if task.kind == "ticket"
                 && !allow_new_ticket_tasks
                 && !tasks_with_workspaces.contains(&task.id)
@@ -2117,6 +2230,9 @@ fn migrate(connection: &Connection) -> Result<()> {
         if version < 8 {
             migrate_v8(connection)?;
         }
+        if version < 9 {
+            migrate_v9(connection)?;
+        }
         Ok(())
     })();
     match result {
@@ -2360,6 +2476,26 @@ fn migrate_v8(connection: &Connection) -> Result<()> {
              PRAGMA user_version = 8;",
         )
         .context("failed to migrate SQLite ledger to version 8")?;
+    Ok(())
+}
+
+fn migrate_v9(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "CREATE TABLE project_claims (
+                 task_id INTEGER PRIMARY KEY REFERENCES tasks(id),
+                 project_id TEXT NOT NULL,
+                 project_item_id TEXT NOT NULL,
+                 status_field_id TEXT NOT NULL,
+                 expected_option_id TEXT NOT NULL,
+                 active_option_id TEXT NOT NULL,
+                 claimed_at INTEGER NOT NULL
+             );
+             INSERT INTO schema_migrations(version, applied_at)
+                 VALUES (9, unixepoch('subsec') * 1000);
+             PRAGMA user_version = 9;",
+        )
+        .context("failed to migrate SQLite ledger to version 9")?;
     Ok(())
 }
 

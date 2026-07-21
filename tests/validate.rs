@@ -1,4 +1,6 @@
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command as ProcessCommand;
 
 use assert_cmd::Command;
@@ -75,6 +77,86 @@ fn validates_explicit_config() {
         .success()
         .stdout(predicate::str::contains("Configuration is valid."))
         .stdout(predicate::str::contains("default_runtime: codex"));
+}
+
+#[test]
+fn validates_configurable_github_project_states() {
+    let (temp, path, repository, data_home) = valid_config();
+    let contents =
+        fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/config.toml")).unwrap();
+    fs::write(
+        &path,
+        contents.replace("Ready To Implement", "Queued for engineering"),
+    )
+    .unwrap();
+    fs::write(
+        repository.join(".factory/workflows/triage-ticket.md"),
+        "+++\nstate = \"ready_for_spec\"\n+++\nTriage.\n",
+    )
+    .unwrap();
+    fs::write(
+        repository.join(".factory/workflows/implement-ready-ticket.md"),
+        "+++\nstate = \"ready_to_implement\"\n+++\nImplement.\n",
+    )
+    .unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let gh = bin.join("gh");
+    fs::write(
+        &gh,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then echo "gh version 2.80.0"; exit 0; fi
+if [ "$1" = "auth" ]; then exit 0; fi
+if [ "$1" = "repo" ]; then echo "example/repository"; exit 0; fi
+if [ "$1" = "api" ] && [ "$2" = "users/owainlewis" ]; then echo '{"id":1,"login":"owainlewis","node_id":"U_1"}'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "view" ]; then echo '{"id":"PVT_16"}'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "field-list" ]; then
+  echo '{"fields":[{"id":"STATUS","name":"Status","type":"ProjectV2SingleSelectField","options":[{"id":"1","name":"Ready For Spec"},{"id":"2","name":"Creating Spec"},{"id":"3","name":"Queued for engineering"},{"id":"4","name":"Implementing"},{"id":"5","name":"Reviewing"},{"id":"6","name":"Done"}]}]}'
+  exit 0
+fi
+exit 64
+"#,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&gh).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&gh, permissions).unwrap();
+    let path_value = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    Command::cargo_bin("factory")
+        .unwrap()
+        .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", data_home)
+        .env("PATH", path_value)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Configuration is valid."));
+}
+
+#[test]
+fn rejects_invalid_github_project_source() {
+    let (_temp, path, _repository, data_home) = valid_config();
+    let contents =
+        fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/config.toml")).unwrap();
+    fs::write(
+        &path,
+        contents.replace("project_number = 16", "project_number = 0"),
+    )
+    .unwrap();
+
+    Command::cargo_bin("factory")
+        .unwrap()
+        .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", data_home)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "source.project_number must be greater than zero",
+        ));
 }
 
 #[test]

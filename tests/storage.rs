@@ -36,6 +36,97 @@ fn ticket_runtimes() -> HashMap<(String, String, String), String> {
 }
 
 #[test]
+fn one_issue_cannot_run_two_pipeline_workflows_at_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    ledger
+        .register_daemon_owner("owner", std::process::id())
+        .unwrap();
+    ledger
+        .enqueue(
+            &TaskIdentity::ticket(
+                "owainlewis/factory",
+                "triage-ticket",
+                "41",
+                "ready-for-spec-1",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    ledger
+        .enqueue(
+            &TaskIdentity::ticket(
+                "owainlewis/factory",
+                "implement-ready-ticket",
+                "41",
+                "ready-to-implement-1",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let runtimes = HashMap::from([
+        (
+            (
+                "owainlewis/factory".to_owned(),
+                "triage-ticket".to_owned(),
+                "ticket".to_owned(),
+            ),
+            "codex".to_owned(),
+        ),
+        (
+            (
+                "owainlewis/factory".to_owned(),
+                "implement-ready-ticket".to_owned(),
+                "ticket".to_owned(),
+            ),
+            "codex".to_owned(),
+        ),
+    ]);
+
+    let first = ledger
+        .claim_and_start_run(
+            &["owainlewis/factory".to_owned()],
+            &runtimes,
+            "owner",
+            std::process::id(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.task.workflow, "triage-ticket");
+    assert!(
+        ledger
+            .claim_and_start_run(
+                &["owainlewis/factory".to_owned()],
+                &runtimes,
+                "owner",
+                std::process::id(),
+            )
+            .unwrap()
+            .is_none()
+    );
+
+    ledger
+        .finish_run_and_task(
+            first.run.id,
+            RunOutcome::Succeeded,
+            Some("done"),
+            None,
+            None,
+        )
+        .unwrap();
+    let second = ledger
+        .claim_and_start_run(
+            &["owainlewis/factory".to_owned()],
+            &runtimes,
+            "owner",
+            std::process::id(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.task.workflow, "implement-ready-ticket");
+}
+
+#[test]
 fn initializes_in_data_directory_and_persists_across_reopen() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("nested/data");
@@ -77,7 +168,7 @@ fn concurrent_first_open_converges_on_one_complete_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
     let schedule_tables: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_schema
@@ -982,7 +1073,7 @@ fn migrates_a_version_one_ledger_without_losing_tasks() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
 }
 
 #[test]
@@ -992,13 +1083,25 @@ fn opens_an_existing_version_eight_ledger() {
     drop(Ledger::open(&path).unwrap());
 
     let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "DROP TABLE project_claims;
+             DELETE FROM schema_migrations WHERE version = 9;
+             PRAGMA user_version = 8;",
+        )
+        .unwrap();
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(version, 8);
     drop(connection);
 
-    Ledger::open(&path).unwrap();
+    drop(Ledger::open(&path).unwrap());
+    let connection = Connection::open(&path).unwrap();
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 9);
 }
 
 #[test]

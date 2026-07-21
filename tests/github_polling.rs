@@ -95,6 +95,7 @@ impl Fixture {
             max_concurrent_runs_per_repository: 2,
             workspace_root: workspace,
             data_directory: temp.path().join("data"),
+            source: None,
             github: GitHubConfig {
                 trusted_approvers: vec!["owainlewis".into()],
                 ready_label: "factory:ready".into(),

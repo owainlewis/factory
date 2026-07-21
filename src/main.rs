@@ -75,7 +75,7 @@ enum Command {
         #[arg(long)]
         data_directory: Option<PathBuf>,
     },
-    /// Validate configuration without starting workers or network activity.
+    /// Validate configuration, workflows, and configured GitHub Project IDs.
     Validate {
         /// Path to the Factory configuration file.
         #[arg(long)]
@@ -165,7 +165,7 @@ enum WorkflowCommand {
     #[command(group(
         ArgGroup::new("trigger")
             .required(true)
-            .args(["schedule", "label"])
+            .args(["schedule", "label", "state"])
     ))]
     #[command(group(
         ArgGroup::new("prompt_source")
@@ -184,6 +184,9 @@ enum WorkflowCommand {
         /// GitHub label for a label-triggered workflow.
         #[arg(long)]
         label: Option<String>,
+        /// Semantic GitHub Project state for a state-triggered workflow.
+        #[arg(long)]
+        state: Option<String>,
         /// Runtime override. Inherits the configured default when omitted.
         #[arg(long)]
         runtime: Option<String>,
@@ -292,6 +295,18 @@ async fn run_cli() -> Result<u8> {
         Command::Validate { config } => {
             let path = resolve_config_path(config)?;
             let config = Config::load(&path)?;
+            let catalog = WorkflowCatalog::load(&config)?;
+            catalog.validate_ticket_workflows()?;
+            if let Some(source) = &config.source {
+                let github = GitHubClient::default();
+                let cancellation = CancellationToken::new();
+                github.validate_global(&cancellation).await?;
+                for repository in &config.repositories {
+                    github
+                        .validate_project_source(repository, source, &cancellation)
+                        .await?;
+                }
+            }
             print!("{config}");
         }
         Command::Workflows { config } => {
@@ -311,6 +326,7 @@ async fn run_cli() -> Result<u8> {
                     schedule,
                     timezone,
                     label,
+                    state,
                     runtime,
                     timeout,
                     prompt,
@@ -329,6 +345,7 @@ async fn run_cli() -> Result<u8> {
                     schedule,
                     timezone,
                     label,
+                    state,
                     runtime,
                     timeout,
                     prompt,
