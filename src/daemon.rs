@@ -9,19 +9,22 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, SecondsFormat, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
+use sha2::{Digest, Sha256};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
+use crate::clone::CloneManager;
 use crate::config::{Config, PipelineState, SourceConfig};
+use crate::docker::{CloneMount, DockerRunFailure, DockerWorker};
 use crate::github::{GitHubClient, PollReport, ProjectTicketContext, TicketContext};
 use crate::runtime::{
     CodexRuntime, ExecutionResult, RuntimeCancelled, RuntimeObservation, Termination,
     observation_channel,
 };
 use crate::storage::{
-    AUTOMATIC_DELIVERY_CLEANUP, Ledger, OPERATOR_CONFIRMED_CLEANUP, Run, RunOutcome, Task,
-    TaskIdentity, TaskState, TaskWorkspace,
+    AUTOMATIC_DELIVERY_CLEANUP, Ledger, OPERATOR_CONFIRMED_CLEANUP, Run, RunContainer, RunOutcome,
+    Task, TaskIdentity, TaskState, TaskWorkspace,
 };
 use crate::workflow::{
     Trigger, WorkflowCatalog, WorkflowEntry, scheduled_workflow_fingerprint, workflow_content_hash,
@@ -83,6 +86,7 @@ pub struct FactoryDaemon {
     ledger_path: PathBuf,
     github: GitHubClient,
     codex: CodexRuntime,
+    docker: Option<DockerWorker>,
 }
 
 pub struct OneShotReport {
@@ -108,12 +112,17 @@ impl FactoryDaemon {
         github: GitHubClient,
         codex: CodexRuntime,
     ) -> Self {
+        let docker = config.worker.clone().map(|worker| {
+            DockerWorker::new(worker, docker_instance_id(&config.data_directory))
+                .with_activity_streaming(false)
+        });
         Self {
             config,
             catalog,
             ledger_path: ledger_path.into(),
             github,
             codex: codex.with_activity_streaming(false),
+            docker,
         }
     }
 
@@ -131,11 +140,15 @@ impl FactoryDaemon {
             Err(error) => return Err(error),
         };
         let mut ledger = Ledger::open(&self.ledger_path)?;
+        if let Some(docker) = &self.docker {
+            reconcile_docker_workers(docker, &mut ledger, &cancellation).await?;
+        }
         if let Err(error) = reconcile_recovery_state(
             &mut ledger,
             &self.ledger_path,
             &self.config.repositories[0],
             &self.config.workspace_root,
+            self.docker.as_ref().map(DockerWorker::github_token_env),
         ) {
             eprintln!("Factory workspace startup reconciliation failed: {error:#}");
             return Err(error);
@@ -213,6 +226,7 @@ impl FactoryDaemon {
                     self.config.max_concurrent_runs_per_repository,
                     &self.ledger_path,
                     &self.codex,
+                    self.docker.as_ref(),
                     &self.github,
                     &self.config.github,
                     self.config.source.as_ref(),
@@ -231,6 +245,7 @@ impl FactoryDaemon {
                             &self.ledger_path,
                             &self.config.repositories[0],
                             &self.config.workspace_root,
+                            self.docker.as_ref().map(DockerWorker::github_token_env),
                         )?;
                     }
                     _ = schedule_interval.tick() => {
@@ -357,6 +372,20 @@ impl FactoryDaemon {
         }
         self.catalog.validate_ticket_workflows()?;
         self.github.validate_global(cancellation).await?;
+        if let Some(docker) = &self.docker {
+            docker.validate(cancellation).await?;
+        }
+        let needs_host_codex = self.docker.is_none()
+            || self.catalog.entries.iter().any(|entry| {
+                entry.errors.is_empty()
+                    && entry
+                        .trigger
+                        .as_ref()
+                        .is_some_and(|trigger| !matches!(trigger, Trigger::State(_)))
+            });
+        if !needs_host_codex {
+            return Ok(());
+        }
         match self
             .codex
             .health_check_with_cancellation(cancellation.clone())
@@ -409,18 +438,91 @@ fn reconcile_recovery_state(
     ledger_path: &Path,
     canonical_repository: &Path,
     workspace_root: &Path,
+    clone_token_env: Option<&str>,
 ) -> Result<()> {
     report_recovery(ledger.recover_orphaned_runs()?);
-    reconcile_pending_cleanup(ledger, canonical_repository, workspace_root)?;
-    reconcile_terminal_workspaces(ledger, ledger_path, canonical_repository, workspace_root)
+    reconcile_pending_cleanup(
+        ledger,
+        canonical_repository,
+        workspace_root,
+        clone_token_env,
+    )?;
+    reconcile_terminal_workspaces(
+        ledger,
+        ledger_path,
+        canonical_repository,
+        workspace_root,
+        clone_token_env,
+    )
+}
+
+async fn reconcile_docker_workers(
+    docker: &DockerWorker,
+    ledger: &mut Ledger,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    for identity in docker.owned_containers(cancellation).await? {
+        let Some(recorded) = ledger.run_container(identity.run_id)? else {
+            bail!(
+                "owned container {} has no durable Factory record",
+                identity.id
+            );
+        };
+        if recorded.container_id != identity.id
+            || recorded.instance_id != identity.instance_id
+            || recorded.image_id != identity.image_id
+        {
+            bail!("owned Docker container does not match its durable record");
+        }
+        let recovered = docker.recover_container(&identity, cancellation).await?;
+        if ledger
+            .run(recovered.identity.run_id)?
+            .is_some_and(|run| run.outcome == "running")
+        {
+            ledger.observe_run(
+                recovered.identity.run_id,
+                None,
+                None,
+                None,
+                None,
+                Some(&format!(
+                    "Recovered Docker container state={}: {}",
+                    recovered.state, recovered.logs
+                )),
+            )?;
+        }
+        ledger.finish_run_container(
+            recovered.identity.run_id,
+            "recovered",
+            recovered.exit_code,
+            Some(&recovered.logs),
+            false,
+        )?;
+        docker.remove_container(&recovered.identity.id).await?;
+        ledger.finish_run_container(
+            recovered.identity.run_id,
+            "recovered",
+            recovered.exit_code,
+            Some(&recovered.logs),
+            true,
+        )?;
+    }
+    Ok(())
+}
+
+fn docker_instance_id(data_directory: &Path) -> String {
+    let digest = Sha256::digest(data_directory.as_os_str().as_encoded_bytes());
+    format!("{:x}", digest)[..20].to_owned()
 }
 
 fn reconcile_pending_cleanup(
     ledger: &Ledger,
     canonical_repository: &Path,
     workspace_root: &Path,
+    clone_token_env: Option<&str>,
 ) -> Result<()> {
     let manager = WorkspaceManager::new(canonical_repository, workspace_root)?;
+    let clone_manager = CloneManager::new(workspace_root)?;
     manager.reconcile_startup()?;
     for workspace in ledger.task_workspaces_in_state("cleanup_pending")? {
         if !workspace.path.exists() {
@@ -432,11 +534,20 @@ fn reconcile_pending_cleanup(
             continue;
         }
         let cleanup = if workspace.kind == "proposal" {
-            manager.cleanup_disposable(&workspace.path).map(|_| ())
+            if workspace.backend == "clone" {
+                clone_manager.remove(&workspace.path)
+            } else {
+                manager.cleanup_disposable(&workspace.path).map(|_| ())
+            }
         } else if workspace.status_summary.as_deref() == Some(OPERATOR_CONFIRMED_CLEANUP) {
-            manager.cleanup(&workspace.path, true).map(|_| ())
+            if workspace.backend == "clone" {
+                clone_manager.remove(&workspace.path)
+            } else {
+                manager.cleanup(&workspace.path, true).map(|_| ())
+            }
         } else if workspace.status_summary.as_deref() == Some(AUTOMATIC_DELIVERY_CLEANUP) {
-            match automatic_cleanup_is_still_safe(ledger, &manager, &workspace) {
+            match automatic_cleanup_is_still_safe(ledger, &manager, &workspace, clone_token_env) {
+                Ok(true) if workspace.backend == "clone" => clone_manager.remove(&workspace.path),
                 Ok(true) => manager.cleanup_clean(&workspace.path).map(|_| ()),
                 Ok(false) => {
                     ledger.update_task_workspace_state(
@@ -486,6 +597,7 @@ fn automatic_cleanup_is_still_safe(
     ledger: &Ledger,
     manager: &WorkspaceManager,
     workspace: &TaskWorkspace,
+    clone_token_env: Option<&str>,
 ) -> Result<bool> {
     let task = ledger
         .task(workspace.task_id)?
@@ -503,8 +615,23 @@ fn automatic_cleanup_is_still_safe(
         .as_deref()
         .is_some_and(|result| !result.trim().is_empty())
         && run.pull_request.is_some();
-    let clean = !manager.preview_cleanup(&workspace.path)?.dirty;
+    let clone_manager = CloneManager::new(
+        workspace
+            .path
+            .parent()
+            .context("workspace clone has no managed root")?,
+    )?;
+    let clean = if workspace.backend == "clone" {
+        !clone_manager.preview_cleanup(&workspace.path)?.dirty
+    } else {
+        !manager.preview_cleanup(&workspace.path)?.dirty
+    };
     let published = match workspace.factory_branch.as_deref() {
+        Some(branch) if workspace.backend == "clone" => clone_manager.branch_is_pushed(
+            &workspace.path,
+            branch,
+            clone_token_env.context("clone cleanup has no GitHub token source")?,
+        )?,
         Some(branch) => manager.branch_is_pushed(branch)?,
         None => false,
     };
@@ -516,6 +643,7 @@ fn reconcile_terminal_workspaces(
     ledger_path: &Path,
     canonical_repository: &Path,
     workspace_root: &Path,
+    clone_token_env: Option<&str>,
 ) -> Result<()> {
     for workspace in ledger.active_task_workspaces()? {
         if matches!(workspace.state.as_str(), "cleanup_pending" | "retained") {
@@ -541,6 +669,7 @@ fn reconcile_terminal_workspaces(
             workspace_root,
             task.id,
             run.id,
+            clone_token_env,
         ) {
             eprintln!(
                 "Factory retained terminal workspace for task {} during startup reconciliation: {error:#}",
@@ -601,6 +730,7 @@ fn dispatch_available(
     repository_limit: usize,
     ledger_path: &Path,
     codex: &CodexRuntime,
+    docker: Option<&DockerWorker>,
     github: &GitHubClient,
     github_config: &crate::config::GitHubConfig,
     source_config: Option<&SourceConfig>,
@@ -721,6 +851,7 @@ fn dispatch_available(
         );
         *active.entry(repository.clone()).or_default() += 1;
         let codex = codex.clone();
+        let docker = docker.cloned();
         let github = github.clone();
         let github_config = github_config.clone();
         let source_config = source_config.cloned();
@@ -782,6 +913,7 @@ fn dispatch_available(
                 );
                 return (repository, Ok(()));
             }
+            let sandboxed = docker.is_some() && matches!(workflow.trigger, Trigger::State(_));
             let execution_target = match prepare_task_workspace(
                 &mut worker_ledger,
                 &github,
@@ -789,6 +921,8 @@ fn dispatch_available(
                 &workspace_root,
                 &task,
                 run_id,
+                sandboxed,
+                docker.as_ref().map(|worker| worker.github_token_env()),
                 &cancellation,
             )
             .await
@@ -813,7 +947,11 @@ fn dispatch_available(
                 run_id,
                 &execution_target,
                 &workflow,
-                prior_session.as_deref(),
+                if sandboxed {
+                    None
+                } else {
+                    prior_session.as_deref()
+                },
                 prior_successful_run_at,
             )
             .map(|prompt| {
@@ -832,28 +970,60 @@ fn dispatch_available(
                     return (repository, Ok(()));
                 }
             };
-            eprintln!(
-                "Factory runtime delegated: run={run_id} runtime={} cwd={} worktree=factory-owned",
-                workflow.runtime,
-                execution_target.path.display()
-            );
-            let result = execute_task(
-                worker_ledger,
-                &execution_target,
-                &workflow,
-                &codex,
-                run_id,
-                prompt,
-                cancellation,
-                recovery_source.and_then(|previous| previous.session_id),
-            )
-            .await;
+            if sandboxed {
+                eprintln!(
+                    "Factory runtime delegated: run={run_id} runtime={} cwd={} backend=docker-clone",
+                    workflow.runtime,
+                    execution_target.path.display(),
+                );
+            } else {
+                eprintln!(
+                    "Factory runtime delegated: run={run_id} runtime={} cwd={} worktree=factory-owned",
+                    workflow.runtime,
+                    execution_target.path.display(),
+                );
+            }
+            let result = if sandboxed {
+                let docker = docker.as_ref().expect("sandboxed tasks have Docker worker");
+                let mount = if matches!(
+                    workflow.trigger,
+                    Trigger::State(PipelineState::ReadyForSpec)
+                ) {
+                    CloneMount::ReadOnly
+                } else {
+                    CloneMount::ReadWrite
+                };
+                execute_docker_task(
+                    worker_ledger,
+                    &execution_target,
+                    &workflow,
+                    docker,
+                    mount,
+                    run_id,
+                    prompt,
+                    cancellation,
+                )
+                .await
+            } else {
+                execute_task(
+                    worker_ledger,
+                    &execution_target,
+                    &workflow,
+                    &codex,
+                    run_id,
+                    prompt,
+                    cancellation,
+                    recovery_source.and_then(|previous| previous.session_id),
+                )
+                .await
+            };
             if let Err(error) = finalize_task_workspace(
                 &finalization_ledger_path,
                 &target.path,
                 &workspace_root,
                 task.id,
                 run_id,
+                docker.as_ref().map(DockerWorker::github_token_env),
             ) {
                 eprintln!("Factory workspace finalization failed for run {run_id}: {error:#}");
             }
@@ -863,6 +1033,7 @@ fn dispatch_available(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn prepare_task_workspace(
     ledger: &mut Ledger,
     github: &GitHubClient,
@@ -870,6 +1041,8 @@ async fn prepare_task_workspace(
     workspace_root: &Path,
     task: &Task,
     run_id: i64,
+    sandboxed: bool,
+    github_token_env: Option<&str>,
     cancellation: &CancellationToken,
 ) -> Result<RepositoryTarget> {
     let workspace_root = workspace_root
@@ -906,6 +1079,7 @@ async fn prepare_task_workspace(
             TaskWorkspace {
                 task_id: task.id,
                 kind: "delivery".to_owned(),
+                backend: if sandboxed { "clone" } else { "worktree" }.to_owned(),
                 repository: task.repository.clone(),
                 base_branch,
                 base_sha,
@@ -924,11 +1098,16 @@ async fn prepare_task_workspace(
             TaskWorkspace {
                 task_id: task.id,
                 kind: "proposal".to_owned(),
+                backend: if sandboxed { "clone" } else { "worktree" }.to_owned(),
                 repository: task.repository.clone(),
                 base_branch,
                 base_sha,
                 factory_branch: None,
-                path: workspace_root.join(format!("proposal-{}", task.id)),
+                path: workspace_root.join(if sandboxed {
+                    format!("triage-{}", task.id)
+                } else {
+                    format!("proposal-{}", task.id)
+                }),
                 state: "preparing".to_owned(),
                 status_summary: None,
                 created_at: now,
@@ -938,6 +1117,49 @@ async fn prepare_task_workspace(
         };
         ledger.reserve_task_workspace(&candidate)?
     };
+    if sandboxed {
+        if workspace.backend != "clone" {
+            bail!("sandboxed task {} owns a non-clone workspace", task.id);
+        }
+        let ticket = ticket_summary(task)?;
+        let clone = CloneManager::new(&workspace_root)?.prepare(
+            &task.repository,
+            task.id,
+            ticket.number,
+            &ticket.title,
+            &workspace.base_branch,
+            &workspace.base_sha,
+            workspace.kind == "delivery",
+            github_token_env.context("sandboxed clone has no GitHub token source")?,
+        )?;
+        if clone.path != workspace.path
+            || clone.branch != workspace.factory_branch
+            || clone.base_branch != workspace.base_branch
+            || clone.base_sha != workspace.base_sha
+        {
+            bail!(
+                "standalone clone does not match task {} durable reservation",
+                task.id
+            );
+        }
+        ledger.update_task_workspace_state(task.id, "ready", None)?;
+        ledger.record_run_workspace(
+            run_id,
+            &clone.path,
+            &clone.base_branch,
+            &clone.base_sha,
+            clone.branch.as_deref(),
+            if workspace.kind == "delivery" {
+                "delivery"
+            } else {
+                "proposal"
+            },
+        )?;
+        return Ok(RepositoryTarget {
+            path: clone.path,
+            workflows: canonical_target.workflows.clone(),
+        });
+    }
     let prepared = if workspace.kind == "delivery" {
         let ticket = ticket_summary(task)?;
         manager.prepare_delivery(
@@ -1022,6 +1244,7 @@ fn finalize_task_workspace(
     workspace_root: &Path,
     task_id: i64,
     run_id: i64,
+    clone_token_env: Option<&str>,
 ) -> Result<()> {
     let ledger = Ledger::open(ledger_path)?;
     let task = ledger
@@ -1034,6 +1257,7 @@ fn finalize_task_workspace(
         return Ok(());
     }
     let manager = WorkspaceManager::new(canonical_repository, workspace_root)?;
+    let clone_manager = CloneManager::new(workspace_root)?;
     if workspace.kind == "proposal" {
         ledger.update_task_workspace_state(
             task_id,
@@ -1048,7 +1272,13 @@ fn finalize_task_workspace(
             )?;
             return Ok(());
         }
-        let preview = manager.cleanup_disposable(&workspace.path)?;
+        let preview = if workspace.backend == "clone" {
+            let preview = clone_manager.preview_cleanup(&workspace.path)?;
+            clone_manager.remove(&workspace.path)?;
+            preview
+        } else {
+            manager.cleanup_disposable(&workspace.path)?
+        };
         let summary = if preview.dirty {
             "discarded terminal proposal workspace with uncommitted changes"
         } else {
@@ -1068,7 +1298,11 @@ fn finalize_task_workspace(
     let run = ledger
         .run(run_id)?
         .with_context(|| format!("run {run_id} disappeared during workspace finalization"))?;
-    let preview = match manager.preview_cleanup(&workspace.path) {
+    let preview = match if workspace.backend == "clone" {
+        clone_manager.preview_cleanup(&workspace.path)
+    } else {
+        manager.preview_cleanup(&workspace.path)
+    } {
         Ok(preview) => preview,
         Err(error) => {
             ledger.update_task_workspace_state(
@@ -1080,7 +1314,15 @@ fn finalize_task_workspace(
         }
     };
     let published = match workspace.factory_branch.as_deref() {
-        Some(branch) => match manager.branch_is_pushed(branch) {
+        Some(branch) => match if workspace.backend == "clone" {
+            clone_manager.branch_is_pushed(
+                &workspace.path,
+                branch,
+                clone_token_env.context("clone cleanup has no GitHub token source")?,
+            )
+        } else {
+            manager.branch_is_pushed(branch)
+        } {
             Ok(published) => published,
             Err(error) => {
                 ledger.update_task_workspace_state(
@@ -1104,11 +1346,15 @@ fn finalize_task_workspace(
             "cleanup_pending",
             Some(AUTOMATIC_DELIVERY_CLEANUP),
         )?;
-        manager.cleanup_clean(&workspace.path)?;
+        if workspace.backend == "clone" {
+            clone_manager.remove(&workspace.path)?;
+        } else {
+            manager.cleanup_clean(&workspace.path)?;
+        }
         ledger.update_task_workspace_state(
             task_id,
             "cleaned",
-            Some("delivery worktree removed"),
+            Some("delivery workspace removed"),
         )?;
     } else {
         let summary = format!(
@@ -1149,6 +1395,163 @@ async fn execute_task(
         humantime::format_duration(started.elapsed())
     );
     execution.map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_docker_task(
+    mut ledger: Ledger,
+    repository: &RepositoryTarget,
+    workflow: &WorkflowTarget,
+    docker: &DockerWorker,
+    mount: CloneMount,
+    run_id: i64,
+    prompt: String,
+    cancellation: CancellationToken,
+) -> Result<()> {
+    let started = Instant::now();
+    let run_cancellation = cancellation.child_token();
+    let ledger_path = ledger.path().to_owned();
+    let (observations, observation_receiver) = observation_channel();
+    let cancellation_monitor = spawn_run_monitor(
+        ledger_path.clone(),
+        run_id,
+        run_cancellation.clone(),
+        observation_receiver,
+    );
+    let image_ref = docker.image().to_owned();
+    let limits_json = docker.limits_json(&repository.path)?;
+    let execution = docker
+        .run(
+            run_id,
+            &repository.path,
+            mount,
+            &prompt,
+            workflow.timeout,
+            run_cancellation,
+            observations.clone(),
+            move |identity| {
+                let ledger = Ledger::open(&ledger_path)?;
+                ledger.record_run_container(&RunContainer {
+                    run_id,
+                    container_id: identity.id.clone(),
+                    instance_id: identity.instance_id.clone(),
+                    image_ref,
+                    image_id: identity.image_id.clone(),
+                    limits_json,
+                    state: "created".to_owned(),
+                    exit_code: None,
+                    logs: None,
+                    created_at: Utc::now().timestamp_millis(),
+                    updated_at: Utc::now().timestamp_millis(),
+                    removed_at: None,
+                })
+            },
+        )
+        .await;
+    cancellation_monitor.abort();
+    let _ = cancellation_monitor.await;
+    let observation = observations.borrow().clone();
+    if observation.sequence > 0 {
+        ledger.observe_run(
+            run_id,
+            None,
+            None,
+            None,
+            observation.pull_request.as_deref(),
+            observation.activity.as_deref(),
+        )?;
+    }
+    match execution {
+        Ok((result, identity)) => {
+            let container_state = match result.termination {
+                Termination::Exited => "exited",
+                Termination::TimedOut => "timed_out",
+                Termination::Cancelled => "cancelled",
+            };
+            let container_logs = docker
+                .container_logs(&identity.id)
+                .await
+                .unwrap_or_default();
+            ledger.finish_run_container(
+                run_id,
+                container_state,
+                result.status.code(),
+                Some(&container_logs),
+                false,
+            )?;
+            record_execution(&mut ledger, run_id, &result)?;
+            docker
+                .remove_container(&identity.id)
+                .await
+                .context("completed Docker worker could not be removed")?;
+            ledger.finish_run_container(
+                run_id,
+                container_state,
+                result.status.code(),
+                Some(&container_logs),
+                true,
+            )?;
+            eprintln!(
+                "Factory run finished: run={run_id} outcome={} duration={}",
+                if result.succeeded() {
+                    "succeeded"
+                } else {
+                    "failed"
+                },
+                humantime::format_duration(started.elapsed())
+            );
+            Ok(())
+        }
+        Err(error) => {
+            let identity = error
+                .downcast_ref::<DockerRunFailure>()
+                .map(|failure| failure.identity.clone());
+            let mut cleanup_error = None;
+            if ledger.run_container(run_id)?.is_some() {
+                let logs = if let Some(identity) = &identity {
+                    docker
+                        .container_logs(&identity.id)
+                        .await
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let container_evidence = if logs.is_empty() {
+                    format!("{error:#}")
+                } else {
+                    logs
+                };
+                ledger.finish_run_container(
+                    run_id,
+                    "error",
+                    None,
+                    Some(&container_evidence),
+                    false,
+                )?;
+                if let Some(identity) = &identity {
+                    match docker.remove_container(&identity.id).await {
+                        Ok(()) => ledger.finish_run_container(
+                            run_id,
+                            "error",
+                            None,
+                            Some(&container_evidence),
+                            true,
+                        )?,
+                        Err(remove_error) => cleanup_error = Some(remove_error),
+                    }
+                }
+            }
+            let detail = cleanup_error.as_ref().map_or_else(
+                || format!("{error:#}"),
+                |cleanup| format!("{error:#}; container cleanup failed: {cleanup:#}"),
+            );
+            ledger.finish_run_and_task(run_id, RunOutcome::Failed, None, Some(&detail), None)?;
+            match cleanup_error {
+                Some(cleanup) => Err(cleanup.context(detail)),
+                None => Err(error),
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1738,6 +2141,13 @@ fn record_execution(ledger: &mut Ledger, run_id: i64, result: &ExecutionResult) 
             RunOutcome::Failed,
             Some("Codex execution timed out".to_owned()),
         ),
+        Termination::Exited if result.status.success() && result.activity_error.is_some() => (
+            RunOutcome::Failed,
+            Some(format!(
+                "Codex emitted malformed JSON activity: {}",
+                result.activity_error.as_deref().unwrap_or("unknown error")
+            )),
+        ),
         Termination::Exited if result.status.success() => (RunOutcome::Succeeded, None),
         Termination::Exited => (
             RunOutcome::Failed,
@@ -2165,6 +2575,7 @@ mod tests {
             .reserve_task_workspace(&TaskWorkspace {
                 task_id: task.id,
                 kind: "delivery".into(),
+                backend: "worktree".into(),
                 repository: task.repository,
                 base_branch: "main".into(),
                 base_sha: base_sha.clone(),
@@ -2215,7 +2626,7 @@ mod tests {
             .unwrap();
         std::fs::write(prepared.path.join("late-change.txt"), "keep me\n").unwrap();
 
-        reconcile_pending_cleanup(&ledger, &repository, &workspace_root).unwrap();
+        reconcile_pending_cleanup(&ledger, &repository, &workspace_root, None).unwrap();
 
         assert!(prepared.path.join("late-change.txt").exists());
         assert_eq!(
@@ -2223,7 +2634,7 @@ mod tests {
             "retained"
         );
         std::fs::rename(&remote, temp.path().join("origin-unavailable.git")).unwrap();
-        reconcile_terminal_workspaces(&ledger, ledger.path(), &repository, &workspace_root)
+        reconcile_terminal_workspaces(&ledger, ledger.path(), &repository, &workspace_root, None)
             .unwrap();
         assert_eq!(
             ledger.task_workspace(task.id).unwrap().unwrap().state,
@@ -2245,6 +2656,7 @@ mod tests {
             .reserve_task_workspace(&TaskWorkspace {
                 task_id: proposal_task.id,
                 kind: "proposal".into(),
+                backend: "worktree".into(),
                 repository: proposal_task.repository,
                 base_branch: "main".into(),
                 base_sha: base_sha.clone(),
@@ -2280,7 +2692,7 @@ mod tests {
             )
             .unwrap();
 
-        reconcile_terminal_workspaces(&ledger, ledger.path(), &repository, &workspace_root)
+        reconcile_terminal_workspaces(&ledger, ledger.path(), &repository, &workspace_root, None)
             .unwrap();
 
         assert!(!proposal.path.exists());
@@ -2304,6 +2716,7 @@ mod tests {
             .reserve_task_workspace(&TaskWorkspace {
                 task_id: absent_task.id,
                 kind: "delivery".into(),
+                backend: "worktree".into(),
                 repository: absent_task.repository,
                 base_branch: "main".into(),
                 base_sha: base_sha.clone(),
@@ -2336,7 +2749,7 @@ mod tests {
             )
             .unwrap();
 
-        reconcile_terminal_workspaces(&ledger, ledger.path(), &repository, &workspace_root)
+        reconcile_terminal_workspaces(&ledger, ledger.path(), &repository, &workspace_root, None)
             .unwrap();
 
         assert!(!absent_path.exists());

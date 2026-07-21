@@ -76,6 +76,7 @@ impl Fixture {
             max_concurrent_runs_per_repository: 1,
             workspace_root,
             data_directory: temp.path().join("data"),
+            worker: None,
             source: Some(source),
             github: GitHubConfig {
                 trusted_approvers: vec!["owainlewis".to_owned()],

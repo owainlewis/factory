@@ -81,6 +81,7 @@ fn cleanup_previews_then_removes_a_retained_worktree_and_preserves_its_branch() 
         .reserve_task_workspace(&TaskWorkspace {
             task_id: task.id,
             kind: "delivery".into(),
+            backend: "worktree".into(),
             repository: task.repository.clone(),
             base_branch: "main".into(),
             base_sha: base_sha.clone(),

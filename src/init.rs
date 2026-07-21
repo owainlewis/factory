@@ -424,6 +424,12 @@ fn default_config() -> String {
     document["default_timeout"] = value("2h");
     document["maximum_timeout"] = value("8h");
     document["max_concurrent_runs"] = value(1);
+    document["worker"] = Item::Table(Table::new());
+    document["worker"]["kind"] = value("docker");
+    document["worker"]["image"] = value("factory-codex:dev");
+    document["worker"]["memory"] = value("8g");
+    document["worker"]["cpus"] = value(4);
+    document["worker"]["pids"] = value(512);
     document["source"] = Item::Table(Table::new());
     document["source"]["kind"] = value("github_project");
     document["source"]["owner"] = value("owainlewis");

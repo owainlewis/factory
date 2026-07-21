@@ -10,7 +10,7 @@ use std::process::Command;
 
 use factory::storage::{
     ApprovalEvidence, CancellationRequest, Ledger, MAX_ERROR_BYTES, MAX_RESULT_BYTES,
-    ObservedTicket, RunOutcome, TaskIdentity, TaskState, TaskWorkspace,
+    ObservedTicket, RunContainer, RunOutcome, TaskIdentity, TaskState, TaskWorkspace,
 };
 use rusqlite::Connection;
 
@@ -168,7 +168,7 @@ fn concurrent_first_open_converges_on_one_complete_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
     let schedule_tables: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_schema
@@ -220,6 +220,7 @@ fn workspace_reservation_is_task_stable_and_rejects_reassignment() {
     let workspace = TaskWorkspace {
         task_id: task.id,
         kind: "delivery".into(),
+        backend: "worktree".into(),
         repository: task.repository.clone(),
         base_branch: "main".into(),
         base_sha: "0123456789012345678901234567890123456789".into(),
@@ -247,6 +248,62 @@ fn workspace_reservation_is_task_stable_and_rejects_reassignment() {
 }
 
 #[test]
+fn container_identity_and_terminal_evidence_are_durable() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    ledger
+        .register_daemon_owner("container-owner", std::process::id())
+        .unwrap();
+    ledger.enqueue(&ticket("container-run")).unwrap();
+    let claimed = ledger
+        .claim_and_start_run(
+            &["owainlewis/factory".to_owned()],
+            &ticket_runtimes(),
+            "container-owner",
+            std::process::id(),
+        )
+        .unwrap()
+        .unwrap();
+    let container = RunContainer {
+        run_id: claimed.run.id,
+        container_id: "0123456789abcdef".into(),
+        instance_id: "factory-instance".into(),
+        image_ref: "factory-codex:dev".into(),
+        image_id: format!("sha256:{}", "a".repeat(64)),
+        limits_json: r#"{"memory":"8g"}"#.into(),
+        state: "created".into(),
+        exit_code: None,
+        logs: None,
+        created_at: 100,
+        updated_at: 100,
+        removed_at: None,
+    };
+
+    ledger.record_run_container(&container).unwrap();
+    ledger
+        .finish_run_container(claimed.run.id, "exited", Some(0), Some("finished"), false)
+        .unwrap();
+    let persisted = ledger.run_container(claimed.run.id).unwrap().unwrap();
+    assert_eq!(persisted.container_id, container.container_id);
+    assert_eq!(persisted.state, "exited");
+    assert_eq!(persisted.exit_code, Some(0));
+    assert_eq!(persisted.logs.as_deref(), Some("finished"));
+    assert!(persisted.removed_at.is_none());
+
+    ledger
+        .finish_run_container(claimed.run.id, "exited", Some(0), None, true)
+        .unwrap();
+    assert!(
+        ledger
+            .run_container(claimed.run.id)
+            .unwrap()
+            .unwrap()
+            .removed_at
+            .is_some()
+    );
+}
+
+#[test]
 fn delivery_workspace_reservations_are_bounded_to_ten_active_slots() {
     let temp = tempfile::tempdir().unwrap();
     let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
@@ -268,6 +325,7 @@ fn delivery_workspace_reservations_are_bounded_to_ten_active_slots() {
         let workspace = TaskWorkspace {
             task_id: task.id,
             kind: "delivery".into(),
+            backend: "worktree".into(),
             repository: task.repository,
             base_branch: "main".into(),
             base_sha: "0123456789012345678901234567890123456789".into(),
@@ -1073,7 +1131,7 @@ fn migrates_a_version_one_ledger_without_losing_tasks() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
 }
 
 #[test]
@@ -1085,7 +1143,10 @@ fn opens_an_existing_version_eight_ledger() {
     let connection = Connection::open(&path).unwrap();
     connection
         .execute_batch(
-            "DROP TABLE project_claims;
+            "DROP TABLE run_containers;
+             ALTER TABLE task_workspaces DROP COLUMN backend;
+             DROP TABLE project_claims;
+             DELETE FROM schema_migrations WHERE version = 10;
              DELETE FROM schema_migrations WHERE version = 9;
              PRAGMA user_version = 8;",
         )
@@ -1101,7 +1162,7 @@ fn opens_an_existing_version_eight_ledger() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
 }
 
 #[test]

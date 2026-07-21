@@ -736,7 +736,7 @@ fn capture_activity_line(
     }
 }
 
-fn find_pull_request_url(value: &Value) -> Option<String> {
+pub(crate) fn find_pull_request_url(value: &Value) -> Option<String> {
     match value {
         Value::String(value) => value.split_whitespace().find_map(|word| {
             let candidate = word.trim_matches(|character: char| {

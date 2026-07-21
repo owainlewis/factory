@@ -110,6 +110,13 @@ fn init_creates_only_configuration_and_workflow_directory() {
     assert!(config.contains("[source]"));
     assert!(config.contains("kind = \"github_project\""));
     assert!(config.contains("project_number = 16"));
+    assert!(config.contains("[worker]"));
+    assert!(config.contains("kind = \"docker\""));
+    assert!(config.contains("image = \"factory-codex:dev\""));
+    assert!(config.contains("memory = \"8g\""));
+    assert!(config.contains("cpus = 4"));
+    assert!(config.contains("pids = 512"));
+    assert!(config.contains("max_concurrent_runs = 1"));
     assert!(config.contains("[source.states]"));
     assert!(!config.contains("[github]"));
     assert!(!config.contains("repositories"));
