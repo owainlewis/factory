@@ -4,7 +4,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
@@ -1524,6 +1524,7 @@ struct ProjectItem {
     #[allow(dead_code)]
     #[serde(rename = "updatedAt")]
     updated_at: String,
+    #[serde(default, deserialize_with = "deserialize_project_issue")]
     content: Option<ProjectIssue>,
     #[serde(rename = "fieldValueByName", alias = "fieldValue")]
     field_value: Option<ProjectStatusValue>,
@@ -1553,6 +1554,21 @@ struct ProjectAuthor {
 struct ProjectRepository {
     #[serde(rename = "nameWithOwner")]
     name_with_owner: String,
+}
+
+fn deserialize_project_issue<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<ProjectIssue>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        Some(value) if value.get("id").is_some() => serde_json::from_value(value)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+        _ => Ok(None),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1888,5 +1904,27 @@ mod tests {
         assert!(message.contains("is not valid"));
         assert!(message.contains("[REDACTED]"));
         assert!(!message.contains("worker-secret-value"));
+    }
+
+    #[test]
+    fn project_poll_ignores_non_issue_content() {
+        let response: ProjectItemsResponse = serde_json::from_value(serde_json::json!({
+            "data": {
+                "node": {
+                    "items": {
+                        "pageInfo": {"hasNextPage": false, "endCursor": null},
+                        "nodes": [{
+                            "id": "PVTI_pull_request",
+                            "updatedAt": "2026-07-21T00:00:00Z",
+                            "content": {},
+                            "fieldValueByName": null
+                        }]
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        assert!(response.data.node.unwrap().items.nodes[0].content.is_none());
     }
 }
