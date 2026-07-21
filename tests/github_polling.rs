@@ -9,10 +9,13 @@ use std::time::Duration;
 
 use assert_cmd::Command as AssertCommand;
 use chrono::Utc;
-use factory::config::Config;
+use factory::approval::{ApprovalArtifact, approved_content_hash, render};
+use factory::config::{Config, GitHubConfig};
 use factory::github::{GitHubClient, TicketContext};
 use factory::storage::{Ledger, RunOutcome, TaskIdentity};
-use factory::workflow::{Trigger, WorkflowCatalog, scheduled_workflow_fingerprint};
+use factory::workflow::{
+    Trigger, WorkflowCatalog, scheduled_workflow_fingerprint, workflow_content_hash,
+};
 use tokio_util::sync::CancellationToken;
 
 struct Fixture {
@@ -79,7 +82,7 @@ impl Fixture {
             .success();
         fs::write(
             &config_path,
-            "version = 1\npoll_every = \"20ms\"\ndefault_runtime = \"codex\"\ndefault_timeout = \"2h\"\nmaximum_timeout = \"8h\"\nmax_concurrent_runs = 2\n",
+            "version = 1\npoll_every = \"20ms\"\ndefault_runtime = \"codex\"\ndefault_timeout = \"2h\"\nmaximum_timeout = \"8h\"\nmax_concurrent_runs = 2\n\n[github]\ntrusted_approvers = [\"owainlewis\"]\nready_label = \"factory:ready\"\nproposed_label = \"factory:proposed\"\nneeds_review_label = \"factory:needs-review\"\n",
         )
         .unwrap();
         let config = Config {
@@ -92,11 +95,17 @@ impl Fixture {
             max_concurrent_runs_per_repository: 2,
             workspace_root: workspace,
             data_directory: temp.path().join("data"),
+            github: GitHubConfig {
+                trusted_approvers: vec!["owainlewis".into()],
+                ready_label: "factory:ready".into(),
+                proposed_label: "factory:proposed".into(),
+                needs_review_label: "factory:needs-review".into(),
+            },
         };
         let gh = temp.path().join("gh");
         fs::write(
             &gh,
-            r#"#!/bin/sh
+            r##"#!/bin/sh
 if [ -f "$0.hang" ]; then echo $$ > "$0.hang.pid"; exec sleep 30; fi
 if [ "$1" = "--version" ]; then echo "gh version 2.80.0"; exit 0; fi
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
@@ -107,14 +116,35 @@ if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
   if [ -f ".gh-fail" ]; then echo "repository denied" >&2; exit 1; fi
   cat .gh-name; exit 0
 fi
+printf '%s\n' "$*" >> "$0.log"
+if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then
+  if [ "$4" = "--add-label" ]; then touch ".ready-$3"; else rm -f ".ready-$3"; fi
+  exit 0
+fi
 if [ "$1" = "api" ]; then
   if [ -f ".api-fail" ]; then echo "API rate limit exceeded" >&2; exit 1; fi
-  endpoint="$4"
+  if [ "$2" = "--paginate" ] || [ "$2" = "--method" ]; then endpoint="$4"; else endpoint="$2"; fi
   case "$endpoint" in
+    user|users/*) printf '{"id":42,"login":"owainlewis"}' ;;
+    */timeline*)
+      number=$(printf '%s' "$endpoint" | sed -E 's#^.*/issues/([0-9]+)/timeline.*#\1#')
+      file=".timeline-$number.json"
+      if [ -f "$file" ]; then cat "$file"; else printf '[[]]'; fi
+      ;;
     */comments*)
       number=$(printf '%s' "$endpoint" | sed -E 's#^.*/issues/([0-9]+)/comments.*#\1#')
       file=".comments-$number.json"
-      if [ -f "$file" ]; then cat "$file"; else printf '[[]]'; fi
+      if [ "$2" = "--method" ]; then
+        printf '%s' "${6#body=}" > ".posted-body-$number"
+        printf '314\n'
+      elif [ -f ".posted-body-$number" ]; then
+        escaped=$(sed 's#\\#\\\\#g; s#"#\\"#g' ".posted-body-$number")
+        printf '[[{"id":314,"html_url":"https://example/comment/314","user":{"id":42,"login":"owainlewis"},"body":"%s","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}]]' "$escaped"
+      elif [ -f "$file" ]; then cat "$file"; else printf '[[]]'; fi
+      ;;
+    */issues/[0-9]*)
+      number=$(printf '%s' "$endpoint" | sed -E 's#^.*/issues/([0-9]+).*#\1#')
+      if [ -f ".ready-$number" ]; then cat ".issue-$number-ready.json"; else cat ".issue-$number.json"; fi
       ;;
     *) cat .issues.json ;;
   esac
@@ -122,7 +152,7 @@ if [ "$1" = "api" ]; then
 fi
 echo "unexpected fake gh arguments: $*" >&2
 exit 64
-"#,
+"##,
         )
         .unwrap();
         let mut permissions = fs::metadata(&gh).unwrap().permissions();
@@ -148,6 +178,59 @@ exit 64
             .poll_once(&config, &catalog, &mut ledger)
             .await?;
         Ok((report, ledger))
+    }
+
+    fn approve(&self, repository_index: usize, issue: u64, artifact_id: u64, event_id: u64) {
+        let catalog = WorkflowCatalog::load(&self.config).unwrap();
+        let workflow = catalog
+            .entries
+            .iter()
+            .find(|entry| entry.id == "implement-ready-ticket")
+            .unwrap();
+        let workflow_hash = workflow_content_hash(workflow).unwrap();
+        let content_hash = approved_content_hash(
+            issue,
+            &format!("Ticket {issue}"),
+            &format!("Body {issue}"),
+            &workflow.id,
+            &workflow_hash,
+        )
+        .unwrap();
+        let artifact = ApprovalArtifact {
+            version: 1,
+            issue,
+            workflow_id: workflow.id.clone(),
+            workflow_hash,
+            approved_content_hash: content_hash,
+            approver_id: 42,
+            nonce: format!("nonce-{artifact_id}"),
+        };
+        let body = render(&artifact).unwrap();
+        fs::write(
+            self.repositories[repository_index].join(format!(".comments-{issue}.json")),
+            serde_json::json!([[{
+                "id": artifact_id,
+                "html_url": format!("https://example/comment/{artifact_id}"),
+                "user": {"id": 42, "login": "owainlewis"},
+                "body": body,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z"
+            }]])
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            self.repositories[repository_index].join(format!(".timeline-{issue}.json")),
+            serde_json::json!([[{
+                "id": event_id,
+                "event": "labeled",
+                "actor": {"id": 42, "login": "owainlewis"},
+                "label": {"name": "factory:ready"},
+                "created_at": "2026-01-01T00:00:01Z"
+            }]])
+            .to_string(),
+        )
+        .unwrap();
     }
 }
 
@@ -178,6 +261,7 @@ fn factory_run_once_persists_a_task_without_launching_codex() {
         &fixture.repositories[0],
         &[vec![issue(9, "revision-1", &["factory:ready"])]],
     );
+    fixture.approve(0, 9, 109, 209);
     let data = fixture._temp.path().join("data");
     let codex_marker = fixture._temp.path().join("codex-launched");
     let codex = fixture._temp.path().join("codex");
@@ -224,6 +308,76 @@ fn factory_run_once_persists_a_task_without_launching_codex() {
         ledger.claim_next().unwrap().unwrap().source_item.as_deref(),
         Some("9")
     );
+}
+
+#[test]
+fn factory_approve_posts_an_artifact_then_applies_and_verifies_ready() {
+    let fixture = Fixture::new(1);
+    let repository = &fixture.repositories[0];
+    let unready = issue(14, "revision-1", &[]);
+    let ready = issue(14, "revision-2", &["factory:ready"]);
+    fs::write(repository.join(".issue-14.json"), unready).unwrap();
+    fs::write(repository.join(".issue-14-ready.json"), ready).unwrap();
+    fs::write(repository.join(".ready-14"), "").unwrap();
+    fs::write(
+        repository.join(".comments-14.json"),
+        serde_json::json!([[{
+            "id": 314,
+            "html_url": "https://example/comment/314",
+            "user": {"id": 42, "login": "owainlewis"},
+            "body": "artifact is recorded by the fake gh argument log",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        }]])
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        repository.join(".timeline-14.json"),
+        serde_json::json!([[{
+            "id": 414,
+            "event": "labeled",
+            "actor": {"id": 42, "login": "owainlewis"},
+            "label": {"name": "factory:ready"},
+            "created_at": "2026-01-01T00:00:01Z"
+        }]])
+        .to_string(),
+    )
+    .unwrap();
+    let path = format!(
+        "{}:{}",
+        fixture._temp.path().display(),
+        std::env::var("PATH").unwrap()
+    );
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .current_dir(repository)
+        .args([
+            "approve",
+            "14",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            fixture.config.data_directory.to_str().unwrap(),
+        ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
+        .env("PATH", path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Approved issue #14"))
+        .stdout(predicates::str::contains("approval_artifact: 314"))
+        .stdout(predicates::str::contains("ready_label_event: 414"));
+
+    let calls = fs::read_to_string(format!("{}.log", fixture.gh.display())).unwrap();
+    assert!(calls.contains("factory-approval:v1"));
+    let remove = calls
+        .find("issue edit 14 --remove-label factory:ready")
+        .unwrap();
+    let add = calls
+        .find("issue edit 14 --add-label factory:ready")
+        .unwrap();
+    assert!(remove < add);
 }
 
 #[test]
@@ -314,6 +468,7 @@ fn factory_run_once_skips_invalid_schedule_and_polls_tickets() {
         &fixture.repositories[0],
         &[vec![issue(10, "revision-1", &["factory:ready"])]],
     );
+    fixture.approve(0, 10, 110, 210);
     let data = fixture._temp.path().join("data");
     let path = format!(
         "{}:{}",
@@ -357,6 +512,113 @@ async fn no_matches_creates_no_tasks() {
 }
 
 #[tokio::test]
+async fn ready_label_without_exact_approval_never_creates_a_task() {
+    let fixture = Fixture::new(1);
+    write_issues(
+        &fixture.repositories[0],
+        &[vec![issue(12, "revision-1", &["factory:ready"])]],
+    );
+
+    let (report, mut ledger) = fixture.poll().await.unwrap();
+
+    assert_eq!(report.tasks_created(), 0);
+    assert!(ledger.claim_next().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn changing_approved_ticket_content_invalidates_authorization() {
+    let fixture = Fixture::new(1);
+    write_issues(
+        &fixture.repositories[0],
+        &[vec![issue(13, "revision-1", &["factory:ready"])]],
+    );
+    fixture.approve(0, 13, 113, 213);
+    let changed = issue(13, "revision-2", &["factory:ready"]).replace("Ticket 13", "Changed title");
+    write_issues(&fixture.repositories[0], &[vec![changed]]);
+
+    let (report, mut ledger) = fixture.poll().await.unwrap();
+
+    assert_eq!(report.tasks_created(), 0);
+    assert!(ledger.claim_next().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn untrusted_stable_actor_id_invalidates_authorization() {
+    let fixture = Fixture::new(1);
+    write_issues(
+        &fixture.repositories[0],
+        &[vec![issue(17, "revision-1", &["factory:ready"])]],
+    );
+    fixture.approve(0, 17, 117, 217);
+    for name in [".comments-17.json", ".timeline-17.json"] {
+        let path = fixture.repositories[0].join(name);
+        let untrusted = fs::read_to_string(&path)
+            .unwrap()
+            .replace("\"id\":42", "\"id\":99");
+        fs::write(path, untrusted).unwrap();
+    }
+
+    let (report, mut ledger) = fixture.poll().await.unwrap();
+
+    assert_eq!(report.tasks_created(), 0);
+    assert!(ledger.claim_next().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_later_malformed_approval_fails_closed() {
+    let fixture = Fixture::new(1);
+    write_issues(
+        &fixture.repositories[0],
+        &[vec![issue(15, "revision-1", &["factory:ready"])]],
+    );
+    fixture.approve(0, 15, 115, 215);
+    let comments_path = fixture.repositories[0].join(".comments-15.json");
+    let mut pages: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&comments_path).unwrap()).unwrap();
+    pages.as_array_mut().unwrap().push(serde_json::json!([{
+        "id": 116,
+        "html_url": "https://example/comment/116",
+        "user": {"id": 42, "login": "owainlewis"},
+        "body": "<!-- factory-approval:v2 malformed -->",
+        "created_at": "2026-01-01T00:00:02Z",
+        "updated_at": "2026-01-01T00:00:02Z"
+    }]));
+    fs::write(comments_path, pages.to_string()).unwrap();
+
+    let (report, mut ledger) = fixture.poll().await.unwrap();
+
+    assert_eq!(report.tasks_created(), 0);
+    assert!(ledger.claim_next().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn github_claim_record_prevents_replay_with_a_fresh_ledger() {
+    let fixture = Fixture::new(1);
+    write_issues(
+        &fixture.repositories[0],
+        &[vec![issue(16, "revision-1", &["factory:ready"])]],
+    );
+    fixture.approve(0, 16, 116, 216);
+    let comments_path = fixture.repositories[0].join(".comments-16.json");
+    let mut pages: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&comments_path).unwrap()).unwrap();
+    pages.as_array_mut().unwrap().push(serde_json::json!([{
+        "id": 316,
+        "html_url": "https://example/comment/316",
+        "user": {"id": 42, "login": "owainlewis"},
+        "body": "<!-- factory-claim:v1 {\"version\":1,\"task_id\":99,\"approval_artifact_id\":116,\"label_event_id\":216} -->",
+        "created_at": "2026-01-01T00:00:02Z",
+        "updated_at": "2026-01-01T00:00:02Z"
+    }]));
+    fs::write(comments_path, pages.to_string()).unwrap();
+
+    let (report, mut ledger) = fixture.poll().await.unwrap();
+
+    assert_eq!(report.tasks_created(), 0);
+    assert!(ledger.claim_next().unwrap().is_none());
+}
+
+#[tokio::test]
 async fn pagination_and_comments_create_one_complete_durable_task() {
     let fixture = Fixture::new(1);
     write_issues(
@@ -366,22 +628,21 @@ async fn pagination_and_comments_create_one_complete_durable_task() {
             vec![issue(2, "revision-2", &["factory:ready", "enhancement"])],
         ],
     );
-    fs::write(
-        fixture.repositories[0].join(".comments-2.json"),
-        r#"[[{"id":10,"html_url":"https://example/comment/10","user":{"login":"alice"},"body":"First","created_at":"a","updated_at":"a"}],[{"id":11,"html_url":"https://example/comment/11","user":{"login":"bob"},"body":"Second","created_at":"b","updated_at":"c"}]]"#,
-    )
-    .unwrap();
+    fixture.approve(0, 2, 102, 202);
 
     let (report, mut ledger) = fixture.poll().await.unwrap();
     let task = ledger.claim_next().unwrap().unwrap();
-    let context: TicketContext = serde_json::from_str(task.payload.as_deref().unwrap()).unwrap();
+    let payload = task.payload.as_deref().unwrap();
+    let context: TicketContext = serde_json::from_str(payload).unwrap();
 
     assert_eq!(report.tasks_created(), 1);
     assert_eq!(report.repositories[0].issues_seen, 2);
     assert_eq!(context.number, 2);
-    assert_eq!(context.labels, vec!["factory:ready", "enhancement"]);
-    assert_eq!(context.comments.len(), 2);
-    assert_eq!(context.comments[1].author, "bob");
+    assert_eq!(context.title, "Ticket 2");
+    assert_eq!(context.body, "Body 2");
+    assert_eq!(context.approval.artifact_id, 102);
+    assert!(!payload.contains("labels"));
+    assert!(!payload.contains("comments"));
 }
 
 #[tokio::test]
@@ -392,6 +653,7 @@ async fn unchanged_and_changed_eligible_tickets_do_not_duplicate_until_relabelle
         repository,
         &[vec![issue(4, "revision-1", &["factory:ready"])]],
     );
+    fixture.approve(0, 4, 104, 204);
     assert_eq!(fixture.poll().await.unwrap().0.tasks_created(), 1);
     assert_eq!(fixture.poll().await.unwrap().0.tasks_created(), 0);
 
@@ -440,6 +702,7 @@ async fn unchanged_and_changed_eligible_tickets_do_not_duplicate_until_relabelle
         repository,
         &[vec![issue(4, "revision-8", &["factory:ready"])]],
     );
+    fixture.approve(0, 4, 105, 205);
     assert_eq!(fixture.poll().await.unwrap().0.tasks_created(), 1);
 }
 
@@ -466,6 +729,7 @@ async fn malformed_output_and_rate_limiting_are_isolated_from_healthy_repositori
         &fixture.repositories[1],
         &[vec![issue(6, "revision-1", &["factory:ready"])]],
     );
+    fixture.approve(1, 6, 106, 206);
 
     let (report, _) = fixture.poll().await.unwrap();
 

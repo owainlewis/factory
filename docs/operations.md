@@ -15,11 +15,16 @@ ready-ticket workflow requires Codex to create or reuse an isolated
 ticket-numbered worktree; Factory does not create that worktree before starting
 Codex.
 
-Label-triggered workflows require their configured GitHub label. `factory
-workflow create --label LABEL` creates that label when it is missing without
+The ready label is a wake signal, not authority. `factory approve ISSUE_NUMBER`
+binds the current title, body, delivery workflow hash, stable trusted GitHub
+user ID, and a fresh ready-label event into a versioned approval artifact. The
+daemon re-fetches and validates that evidence immediately before runtime
+delegation, atomically consumes it, removes the label, and posts a claim record.
+Changed, malformed, untrusted, or replayed evidence fails closed without
+starting Codex. Comments and attachments are never copied into the execution
+prompt. `factory workflow create --label LABEL` creates a missing label without
 changing an existing definition. `factory init` does not inspect or mutate
-GitHub labels. The daemon does not create, remove, or otherwise mutate labels
-itself. The delegated workflow owns ticket and pull-request updates.
+GitHub labels.
 
 Five-field cron schedules are evaluated in the IANA timezone declared by the
 workflow. Factory stores the next occurrence and atomically advances that

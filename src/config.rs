@@ -20,6 +20,15 @@ pub struct Config {
     pub max_concurrent_runs_per_repository: usize,
     pub workspace_root: PathBuf,
     pub data_directory: PathBuf,
+    pub github: GitHubConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubConfig {
+    pub trusted_approvers: Vec<String>,
+    pub ready_label: String,
+    pub proposed_label: String,
+    pub needs_review_label: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,6 +40,16 @@ struct RawConfig {
     default_timeout: String,
     maximum_timeout: String,
     max_concurrent_runs: usize,
+    github: RawGitHubConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawGitHubConfig {
+    trusted_approvers: Vec<String>,
+    ready_label: String,
+    proposed_label: String,
+    needs_review_label: String,
 }
 
 impl Config {
@@ -112,6 +131,7 @@ impl Config {
         if raw.max_concurrent_runs == 0 {
             bail!("max_concurrent_runs must be greater than zero");
         }
+        let github = resolve_github(raw.github)?;
         let default_runtime = raw.default_runtime.trim();
         if default_runtime.is_empty() {
             bail!("default_runtime must not be empty");
@@ -150,6 +170,7 @@ impl Config {
             max_concurrent_runs_per_repository: raw.max_concurrent_runs,
             workspace_root,
             data_directory,
+            github,
         })
     }
 }
@@ -186,6 +207,42 @@ impl fmt::Display for Config {
         )?;
         writeln!(formatter, "worktrees: {}", self.workspace_root.display())
     }
+}
+
+fn resolve_github(raw: RawGitHubConfig) -> Result<GitHubConfig> {
+    if raw.trusted_approvers.is_empty() {
+        bail!("github.trusted_approvers must contain at least one login");
+    }
+    let mut trusted_approvers = Vec::with_capacity(raw.trusted_approvers.len());
+    for login in raw.trusted_approvers {
+        let login = login.trim();
+        if login.is_empty()
+            || !login
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        {
+            bail!("github.trusted_approvers contains invalid login {login:?}");
+        }
+        if !trusted_approvers
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(login))
+        {
+            trusted_approvers.push(login.to_owned());
+        }
+    }
+    let label = |name: &str, value: String| -> Result<String> {
+        let value = value.trim();
+        if value.is_empty() {
+            bail!("github.{name} must not be empty");
+        }
+        Ok(value.to_owned())
+    };
+    Ok(GitHubConfig {
+        trusted_approvers,
+        ready_label: label("ready_label", raw.ready_label)?,
+        proposed_label: label("proposed_label", raw.proposed_label)?,
+        needs_review_label: label("needs_review_label", raw.needs_review_label)?,
+    })
 }
 
 pub fn repository_config_path(repository: &Path) -> PathBuf {
@@ -521,6 +578,12 @@ mod tests {
             default_timeout: "2h".into(),
             maximum_timeout: "8h".into(),
             max_concurrent_runs: 2,
+            github: RawGitHubConfig {
+                trusted_approvers: vec!["owainlewis".into()],
+                ready_label: "factory:ready".into(),
+                proposed_label: "factory:proposed".into(),
+                needs_review_label: "factory:needs-review".into(),
+            },
         }
     }
 
@@ -611,6 +674,12 @@ mod tests {
             default_timeout: "2h".into(),
             maximum_timeout: "8h".into(),
             max_concurrent_runs: 1,
+            github: RawGitHubConfig {
+                trusted_approvers: vec!["owainlewis".into()],
+                ready_label: "factory:ready".into(),
+                proposed_label: "factory:proposed".into(),
+                needs_review_label: "factory:needs-review".into(),
+            },
         };
 
         let error = Config::resolve(config, &temp.path().join("missing")).unwrap_err();
@@ -678,6 +747,12 @@ mod tests {
             "default_timeout": valid.default_timeout,
             "maximum_timeout": valid.maximum_timeout,
             "max_concurrent_runs": valid.max_concurrent_runs,
+            "github": {
+                "trusted_approvers": valid.github.trusted_approvers,
+                "ready_label": valid.github.ready_label,
+                "proposed_label": valid.github.proposed_label,
+                "needs_review_label": valid.github.needs_review_label,
+            },
         }))
         .unwrap();
         let missing_version = valid

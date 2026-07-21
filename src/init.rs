@@ -424,6 +424,11 @@ fn default_config() -> String {
     document["default_timeout"] = value("2h");
     document["maximum_timeout"] = value("8h");
     document["max_concurrent_runs"] = value(1);
+    document["github"]["trusted_approvers"] =
+        toml_edit::value(toml_edit::Array::from_iter(["owainlewis"]));
+    document["github"]["ready_label"] = value("factory:ready");
+    document["github"]["proposed_label"] = value("factory:proposed");
+    document["github"]["needs_review_label"] = value("factory:needs-review");
     document.to_string()
 }
 

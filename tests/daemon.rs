@@ -8,12 +8,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use assert_cmd::Command as AssertCommand;
-use factory::config::Config;
+use factory::approval::{ApprovalArtifact, approved_content_hash, render};
+use factory::config::{Config, GitHubConfig};
 use factory::daemon::FactoryDaemon;
 use factory::github::GitHubClient;
 use factory::runtime::CodexRuntime;
 use factory::storage::{Ledger, TaskIdentity, TaskState};
-use factory::workflow::{Trigger, WorkflowCatalog, scheduled_workflow_fingerprint};
+use factory::workflow::{
+    Trigger, WorkflowCatalog, scheduled_workflow_fingerprint, workflow_content_hash,
+};
 use rusqlite::Connection;
 use tokio_util::sync::CancellationToken;
 
@@ -74,16 +77,6 @@ impl Fixture {
                 format!("[[{}]]", issues.join(",")),
             )
             .unwrap();
-            for issue in issues {
-                let number = issue_number(issue);
-                fs::write(
-                    repository.join(format!(".comments-{number}.json")),
-                    format!(
-                        r#"[[{{"id":{number},"html_url":"https://example/comments/{number}","user":{{"login":"reviewer"}},"body":"Discussion {number}","created_at":"a","updated_at":"b"}}]]"#
-                    ),
-                )
-                .unwrap();
-            }
             repositories.push(repository.canonicalize().unwrap());
         }
         let workspace = temp.path().join("worktrees");
@@ -100,7 +93,7 @@ impl Fixture {
         fs::write(
             &config_path,
             format!(
-                "version = 1\npoll_every = \"20ms\"\ndefault_runtime = \"codex\"\ndefault_timeout = \"2h\"\nmaximum_timeout = \"8h\"\nmax_concurrent_runs = {global_limit}\n"
+                "version = 1\npoll_every = \"20ms\"\ndefault_runtime = \"codex\"\ndefault_timeout = \"2h\"\nmaximum_timeout = \"8h\"\nmax_concurrent_runs = {global_limit}\n\n[github]\ntrusted_approvers = [\"owainlewis\"]\nready_label = \"factory:ready\"\nproposed_label = \"factory:proposed\"\nneeds_review_label = \"factory:needs-review\"\n"
             ),
         )
         .unwrap();
@@ -114,8 +107,80 @@ impl Fixture {
             max_concurrent_runs_per_repository: repository_limit,
             workspace_root: workspace,
             data_directory: temp.path().join("data"),
+            github: GitHubConfig {
+                trusted_approvers: vec!["owainlewis".into()],
+                ready_label: "factory:ready".into(),
+                proposed_label: "factory:proposed".into(),
+                needs_review_label: "factory:needs-review".into(),
+            },
         };
         let catalog = WorkflowCatalog::load(&config).unwrap();
+        for (repository_index, issues) in issue_pages.iter().enumerate() {
+            let workflow = catalog
+                .entries
+                .iter()
+                .find(|entry| {
+                    entry.repository == config.repositories[repository_index]
+                        && entry.id == "implement-ready-ticket"
+                })
+                .unwrap();
+            let workflow_hash = workflow_content_hash(workflow).unwrap();
+            for issue_json in issues {
+                let number = issue_number(issue_json);
+                let artifact_id = 10_000 + number;
+                let event_id = 20_000 + number;
+                let artifact = ApprovalArtifact {
+                    version: 1,
+                    issue: number,
+                    workflow_id: workflow.id.clone(),
+                    workflow_hash: workflow_hash.clone(),
+                    approved_content_hash: approved_content_hash(
+                        number,
+                        &format!("Ticket {number}"),
+                        &format!("Body {number}"),
+                        &workflow.id,
+                        &workflow_hash,
+                    )
+                    .unwrap(),
+                    approver_id: 42,
+                    nonce: format!("nonce-{repository_index}-{number}"),
+                };
+                let repository = &config.repositories[repository_index];
+                fs::write(
+                    repository.join(format!(".comments-{number}.json")),
+                    serde_json::json!([[{
+                        "id": artifact_id,
+                        "html_url": format!("https://example/comments/{artifact_id}"),
+                        "user": {"id": 42, "login": "owainlewis"},
+                        "body": render(&artifact).unwrap(),
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:00:00Z"
+                    }]])
+                    .to_string(),
+                )
+                .unwrap();
+                fs::write(
+                    repository.join(format!(".timeline-{number}.json")),
+                    serde_json::json!([[{
+                        "id": event_id,
+                        "event": "labeled",
+                        "actor": {"id": 42, "login": "owainlewis"},
+                        "label": {"name": "factory:ready"},
+                        "created_at": "2026-01-01T00:00:01Z"
+                    }]])
+                    .to_string(),
+                )
+                .unwrap();
+                fs::write(repository.join(format!(".issue-{number}.json")), issue_json).unwrap();
+                let unlabelled =
+                    issue_json.replace(r#""labels":[{"name":"factory:ready"}]"#, r#""labels":[]"#);
+                fs::write(
+                    repository.join(format!(".issue-{number}-unlabelled.json")),
+                    unlabelled,
+                )
+                .unwrap();
+            }
+        }
         let gh = temp.path().join("gh");
         write_executable(
             &gh,
@@ -129,17 +194,47 @@ if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
   echo "logged in"; exit 0
 fi
 if [ "$1" = "repo" ]; then cat .gh-name; exit 0; fi
+if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then
+  touch ".ready-removed-$3"
+  exit 0
+fi
 if [ "$1" = "api" ]; then
   if ! mkdir "$0.api-active" 2>/dev/null; then touch "$0.api-concurrent"; fi
   touch "$0.api-started"
   if [ -f "$0.api-block" ]; then
     while [ ! -f "$0.api-release" ]; do sleep 0.02; done
   fi
-  endpoint="$4"
+  if [ "$2" = "--paginate" ]; then endpoint="$4"
+  elif [ "$2" = "--method" ]; then endpoint="$4"
+  else endpoint="$2"
+  fi
   case "$endpoint" in
+    user|users/*) printf '{"id":42,"login":"owainlewis"}' ;;
+    */timeline*)
+      number=$(printf '%s' "$endpoint" | sed -E 's#^.*/issues/([0-9]+)/timeline.*#\1#')
+      cat ".timeline-$number.json"
+      ;;
     */comments*)
       number=$(printf '%s' "$endpoint" | sed -E 's#^.*/issues/([0-9]+)/comments.*#\1#')
-      cat ".comments-$number.json"
+      if [ "$2" = "--method" ]; then
+        printf '%s' "${6#body=}" > ".claim-$number"
+        printf '99999\n'
+      elif [ -f ".claim-$number" ]; then
+        base=$(cat ".comments-$number.json")
+        base=${base%]}
+        escaped=$(sed 's|\\|\\\\|g; s|"|\\"|g' ".claim-$number")
+        printf '%s,[{"id":99999,"html_url":"https://example/comments/99999","user":{"id":42,"login":"owainlewis"},"body":"%s","created_at":"2026-01-01T00:00:02Z","updated_at":"2026-01-01T00:00:02Z"}]]' "$base" "$escaped"
+      else
+        cat ".comments-$number.json"
+      fi
+      ;;
+    */issues/[0-9]*)
+      number=$(printf '%s' "$endpoint" | sed -E 's#^.*/issues/([0-9]+).*#\1#')
+      if [ -f ".ready-removed-$number" ]; then
+        cat ".issue-$number-unlabelled.json"
+      else
+        cat ".issue-$number.json"
+      fi
       ;;
     *) cat .issues.json ;;
   esac
@@ -229,6 +324,56 @@ exit 0
         fs::write(self.runtime_dir.join("gate"), "go").unwrap();
     }
 
+    fn refresh_approval(&self, issue: u64) {
+        let repository = self
+            .config
+            .repositories
+            .iter()
+            .find(|repository| repository.join(format!(".issue-{issue}.json")).exists())
+            .unwrap();
+        let workflow = self
+            .catalog
+            .entries
+            .iter()
+            .find(|entry| entry.repository == *repository && entry.id == "implement-ready-ticket")
+            .unwrap();
+        let workflow_hash = workflow_content_hash(workflow).unwrap();
+        let issue_json: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(repository.join(format!(".issue-{issue}.json"))).unwrap(),
+        )
+        .unwrap();
+        let artifact_id = 10_000 + issue;
+        let artifact = ApprovalArtifact {
+            version: 1,
+            issue,
+            workflow_id: workflow.id.clone(),
+            workflow_hash: workflow_hash.clone(),
+            approved_content_hash: approved_content_hash(
+                issue,
+                issue_json["title"].as_str().unwrap(),
+                issue_json["body"].as_str().unwrap(),
+                &workflow.id,
+                &workflow_hash,
+            )
+            .unwrap(),
+            approver_id: 42,
+            nonce: format!("refreshed-{issue}"),
+        };
+        fs::write(
+            repository.join(format!(".comments-{issue}.json")),
+            serde_json::json!([[{
+                "id": artifact_id,
+                "html_url": format!("https://example/comments/{artifact_id}"),
+                "user": {"id": 42, "login": "owainlewis"},
+                "body": render(&artifact).unwrap(),
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z"
+            }]])
+            .to_string(),
+        )
+        .unwrap();
+    }
+
     fn add_scheduled_workflow(&mut self) {
         fs::write(
             self.config.repositories[0].join(".factory/workflows/scheduled-maintenance.md"),
@@ -307,7 +452,7 @@ async fn wait_for<F>(mut condition: F)
 where
     F: FnMut() -> bool,
 {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             if condition() {
                 return;
@@ -548,12 +693,14 @@ async fn discovers_claims_and_records_a_complete_codex_run() {
         "Factory-created software pull requests must remain for human merge",
         "Repository: example/repo-0",
         "Ticket 6",
-        "Discussion 6",
+        "Body 6",
         "CUSTOM WORKFLOW",
         "Never merge",
     ] {
         assert!(prompt.contains(expected), "missing {expected:?} in prompt");
     }
+    assert!(!prompt.contains("Discussion"));
+    assert!(!prompt.contains("factory:ready"));
 }
 
 #[tokio::test]
@@ -565,6 +712,7 @@ async fn workflow_deadline_is_terminal_and_does_not_queue_recovery() {
     )
     .unwrap();
     fixture.catalog = WorkflowCatalog::load(&fixture.config).unwrap();
+    fixture.refresh_approval(28);
     let shutdown = CancellationToken::new();
     let daemon = Arc::new(fixture.daemon());
     let running = {
@@ -874,6 +1022,53 @@ async fn restart_recovers_one_orphan_by_resuming_its_live_observed_session() {
     assert_eq!(runs[1].recovery_of, Some(runs[0].id));
     assert_eq!(runs[1].recovery_attempt, 1);
     second_shutdown.cancel();
+    second.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn recovery_revalidates_approved_content_before_launching_codex() {
+    let fixture = Fixture::new(&[vec![issue(32)]], 1, 1);
+    let first_daemon = Arc::new(fixture.daemon());
+    let first = {
+        let daemon = Arc::clone(&first_daemon);
+        tokio::spawn(async move { daemon.run(CancellationToken::new()).await })
+    };
+    wait_for(|| fixture.started_slots().len() == 1).await;
+    let owner_id = Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .runs(None)
+        .unwrap()[0]
+        .owner_id
+        .clone()
+        .unwrap();
+    first.abort();
+    let _ = first.await;
+    Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .remove_daemon_owner(&owner_id)
+        .unwrap();
+    let issue_path = fixture.config.repositories[0].join(".issue-32-unlabelled.json");
+    let changed = fs::read_to_string(&issue_path)
+        .unwrap()
+        .replace("Ticket 32", "Changed after approval");
+    fs::write(issue_path, changed).unwrap();
+
+    let shutdown = CancellationToken::new();
+    let second_daemon = Arc::new(fixture.daemon());
+    let second = {
+        let daemon = Arc::clone(&second_daemon);
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move { daemon.run(shutdown).await })
+    };
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks[0].state == TaskState::Failed)
+    })
+    .await;
+
+    assert_eq!(fixture.started_slots().len(), 1);
+    shutdown.cancel();
     second.await.unwrap().unwrap();
 }
 
@@ -1740,7 +1935,7 @@ async fn scheduled_and_ticket_tasks_share_concurrency_capacity() {
     assert!(
         prompts
             .iter()
-            .any(|prompt| prompt.contains("Current ticket and discussion"))
+            .any(|prompt| prompt.contains("# Approved ticket revision"))
     );
     fixture.open_gate();
     wait_for(|| {

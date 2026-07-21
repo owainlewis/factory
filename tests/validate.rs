@@ -51,6 +51,12 @@ default_runtime = "codex"
 default_timeout = "2h"
 maximum_timeout = "8h"
 max_concurrent_runs = 2
+
+[github]
+trusted_approvers = ["owainlewis"]
+ready_label = "factory:ready"
+proposed_label = "factory:proposed"
+needs_review_label = "factory:needs-review"
 "#,
     )
     .unwrap();

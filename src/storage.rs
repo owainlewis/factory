@@ -8,13 +8,14 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 pub const DATABASE_NAME: &str = "factory.sqlite3";
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION_ID_BYTES: usize = 1024;
 pub const MAX_ACTIVITY_BYTES: usize = 64 * 1024;
 pub const MAX_RECOVERY_ATTEMPTS: u32 = 2;
 const DAEMON_OWNER_LEASE_MILLIS: i64 = 10_000;
+const APPROVAL_RESERVATION_TTL_MILLIS: i64 = 10 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
@@ -224,6 +225,16 @@ pub struct ObservedTicket {
     pub payload: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalEvidence<'a> {
+    pub artifact_id: u64,
+    pub label_event_id: u64,
+    pub approver_id: u64,
+    pub content_hash: &'a str,
+    pub workflow_hash: &'a str,
+    pub source_revision: &'a str,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunOutcome {
     Running,
@@ -297,6 +308,186 @@ pub struct Ledger {
 }
 
 impl Ledger {
+    pub fn approval_is_consumed(&self, artifact_id: u64) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM approval_consumptions WHERE artifact_id = ?1)",
+                [artifact_id],
+                |row| row.get(0),
+            )
+            .context("failed to check approval consumption")
+    }
+
+    pub fn task_has_consumed_approval(&self, task_id: i64) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM approval_consumptions WHERE task_id = ?1)",
+                [task_id],
+                |row| row.get(0),
+            )
+            .context("failed to check task approval consumption")
+    }
+
+    pub fn task_consumed_exact_approval(
+        &self,
+        task_id: i64,
+        evidence: &ApprovalEvidence<'_>,
+    ) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM approval_consumptions
+                    WHERE task_id = ?1 AND artifact_id = ?2 AND label_event_id = ?3
+                      AND approver_id = ?4 AND content_hash = ?5 AND workflow_hash = ?6
+                 )",
+                params![
+                    task_id,
+                    evidence.artifact_id,
+                    evidence.label_event_id,
+                    evidence.approver_id,
+                    evidence.content_hash,
+                    evidence.workflow_hash,
+                ],
+                |row| row.get(0),
+            )
+            .context("failed to verify consumed task approval")
+    }
+
+    pub fn has_active_ticket_task(&self, repository: &str, issue: u64) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM tasks
+                    WHERE repository = ?1 AND source_item = ?2
+                      AND kind = 'ticket' AND state IN ('queued', 'running')
+                 )",
+                params![repository, issue.to_string()],
+                |row| row.get(0),
+            )
+            .context("failed to check active ticket task")
+    }
+
+    pub fn reserve_issue_approval(
+        &mut self,
+        repository: &str,
+        issue: u64,
+        reservation_id: &str,
+    ) -> Result<()> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin issue approval reservation")?;
+        transaction.execute(
+            "DELETE FROM approval_reservations WHERE created_at < ?1",
+            [now_millis()? - APPROVAL_RESERVATION_TTL_MILLIS],
+        )?;
+        let active = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM tasks
+                WHERE repository = ?1 AND source_item = ?2
+                  AND kind = 'ticket' AND state IN ('queued', 'running')
+             )",
+            params![repository, issue.to_string()],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if active {
+            bail!("issue #{issue} has active Factory work; refusing to replace its approval");
+        }
+        transaction
+            .execute(
+                "INSERT INTO approval_reservations
+                 (repository, issue, reservation_id, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![repository, issue, reservation_id, now_millis()?],
+            )
+            .with_context(|| format!("issue #{issue} already has an approval operation"))?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn release_issue_approval(
+        &mut self,
+        repository: &str,
+        issue: u64,
+        reservation_id: &str,
+    ) -> Result<()> {
+        let deleted = self.connection.execute(
+            "DELETE FROM approval_reservations
+             WHERE repository = ?1 AND issue = ?2 AND reservation_id = ?3",
+            params![repository, issue, reservation_id],
+        )?;
+        if deleted != 1 {
+            bail!("issue #{issue} approval reservation was lost");
+        }
+        Ok(())
+    }
+
+    pub fn issue_approval_is_reserved(&self, repository: &str, issue: u64) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM approval_reservations
+                    WHERE repository = ?1 AND issue = ?2 AND created_at >= ?3
+                 )",
+                params![
+                    repository,
+                    issue,
+                    now_millis()? - APPROVAL_RESERVATION_TTL_MILLIS
+                ],
+                |row| row.get(0),
+            )
+            .context("failed to check issue approval reservation")
+    }
+
+    pub fn consume_task_approval(
+        &mut self,
+        task_id: i64,
+        evidence: &ApprovalEvidence<'_>,
+    ) -> Result<()> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin approval consumption transaction")?;
+        let running = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?1 AND state = 'running')",
+                [task_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .context("failed to validate approval task state")?;
+        if !running {
+            bail!("task {task_id} must be running before approval consumption");
+        }
+        let inserted = transaction
+            .execute(
+                "INSERT OR IGNORE INTO approval_consumptions
+                 (artifact_id, label_event_id, task_id, approver_id, content_hash,
+                  workflow_hash, source_revision, consumed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    evidence.artifact_id,
+                    evidence.label_event_id,
+                    task_id,
+                    evidence.approver_id,
+                    evidence.content_hash,
+                    evidence.workflow_hash,
+                    evidence.source_revision,
+                    now_millis()?,
+                ],
+            )
+            .context("failed to persist approval consumption")?
+            == 1;
+        if !inserted {
+            bail!(
+                "approval artifact {} or label event {} has already been consumed",
+                evidence.artifact_id,
+                evidence.label_event_id
+            );
+        }
+        transaction
+            .commit()
+            .context("failed to commit approval consumption")
+    }
+
     pub fn existing_non_terminal_tasks_for_repository(
         path: &Path,
         repository: &str,
@@ -411,13 +602,16 @@ impl Ledger {
         let previous = {
             let mut statement = transaction
                 .prepare(
-                    "SELECT source_item, eligible FROM trigger_observations
+                    "SELECT source_item, eligible, revision FROM trigger_observations
                      WHERE repository = ?1 AND workflow = ?2",
                 )
                 .context("failed to prepare prior ticket eligibility query")?;
             statement
                 .query_map(params![repository, workflow], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        (row.get::<_, bool>(1)?, row.get::<_, String>(2)?),
+                    ))
                 })
                 .context("failed to query prior ticket eligibility")?
                 .collect::<rusqlite::Result<HashMap<_, _>>>()
@@ -435,11 +629,12 @@ impl Ledger {
             if observation.source_item.trim().is_empty() || observation.revision.trim().is_empty() {
                 bail!("observed ticket source item and revision must not be empty");
             }
-            let was_eligible = previous
+            let (was_eligible, previous_revision) = previous
                 .get(&observation.source_item)
-                .copied()
-                .unwrap_or(false);
-            if observation.eligible && !was_eligible {
+                .map(|(eligible, revision)| (*eligible, Some(revision.as_str())))
+                .unwrap_or((false, None));
+            let approval_changed = previous_revision != Some(observation.revision.as_str());
+            if observation.eligible && (!was_eligible || approval_changed) {
                 let identity = TaskIdentity::ticket(
                     repository,
                     workflow,
@@ -1586,6 +1781,9 @@ fn migrate(connection: &Connection) -> Result<()> {
         if version < 5 {
             migrate_v5(connection)?;
         }
+        if version < 6 {
+            migrate_v6(connection)?;
+        }
         Ok(())
     })();
     match result {
@@ -1728,6 +1926,35 @@ fn migrate_v5(connection: &Connection) -> Result<()> {
              PRAGMA user_version = 5;",
         )
         .context("failed to migrate SQLite ledger to version 5")?;
+    Ok(())
+}
+
+fn migrate_v6(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "CREATE TABLE approval_consumptions (
+                 artifact_id INTEGER PRIMARY KEY,
+                 label_event_id INTEGER NOT NULL UNIQUE,
+                 task_id INTEGER NOT NULL UNIQUE REFERENCES tasks(id),
+                 approver_id INTEGER NOT NULL,
+                 content_hash TEXT NOT NULL,
+                 workflow_hash TEXT NOT NULL,
+                 source_revision TEXT NOT NULL,
+                 consumed_at INTEGER NOT NULL
+             );
+             CREATE TABLE approval_reservations (
+                 repository TEXT NOT NULL,
+                 issue INTEGER NOT NULL,
+                 reservation_id TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 PRIMARY KEY(repository, issue),
+                 UNIQUE(reservation_id)
+             );
+             INSERT INTO schema_migrations(version, applied_at)
+                 VALUES (6, unixepoch('subsec') * 1000);
+             PRAGMA user_version = 6;",
+        )
+        .context("failed to migrate SQLite ledger to version 6")?;
     Ok(())
 }
 
