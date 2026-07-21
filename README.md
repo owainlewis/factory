@@ -27,15 +27,14 @@ and Codex CLIs. It does not use model API keys.
 repository's workflow directory. It does not install an
 opinionated workflow or create GitHub labels.
 
-Create a scheduled code-review workflow without opening an editor:
+Create a scheduled pull-request triage workflow without opening an editor:
 
 ```sh
-factory workflow create find-improvements \
-  --effect proposal \
-  --schedule "0 9 * * *" \
+factory workflow create triage-pull-requests \
+  --schedule "*/30 * * * *" \
   --timezone Europe/London \
   --timeout 1h \
-  --prompt "Review recent changes for one evidenced improvement. Search existing issues first. If the finding is new, create one proposal with factory proposal create. Create nothing when no useful improvement can be proved."
+  --prompt "Review open pull requests with no labels. Process at most five per run. Read each diff, checks, and existing reviews; add appropriate repository labels and leave a review only for actionable findings. Never merge or close a pull request."
 ```
 
 Use `--prompt-file PATH` for longer policies, or `--prompt-file -` to read the

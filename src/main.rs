@@ -6,7 +6,6 @@ use clap::{ArgGroup, Parser, Subcommand};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
-use factory::agent::{AgentCommand, execute as execute_agent_command};
 use factory::approve::approve_issue;
 use factory::config::{Config, repository_config_path, repository_remote_identity};
 use factory::daemon::FactoryDaemon;
@@ -22,7 +21,7 @@ use factory::runtime::{
 use factory::storage::{
     CancellationRequest, DATABASE_NAME, Ledger, OPERATOR_CONFIRMED_CLEANUP, TaskState,
 };
-use factory::workflow::{WorkflowCatalog, WorkflowEffect};
+use factory::workflow::WorkflowCatalog;
 use factory::workflow_create::{CreateWorkflowOptions, create_workflow};
 use factory::workspace::WorkspaceManager;
 
@@ -46,10 +45,8 @@ enum Command {
     },
     /// Poll this repository once and persist eligible tasks without executing them.
     Run {
-        #[command(subcommand)]
-        command: Option<RunCommand>,
         /// Required safety flag confirming this is a non-executing single evaluation.
-        #[arg(long)]
+        #[arg(long, required = true)]
         once: bool,
         /// Path to the Factory configuration file.
         #[arg(long)]
@@ -57,21 +54,6 @@ enum Command {
         /// Directory containing the durable Factory database.
         #[arg(long)]
         data_directory: Option<PathBuf>,
-    },
-    /// Read or update the source task for the active Factory run.
-    Task {
-        #[command(subcommand)]
-        command: TaskCommand,
-    },
-    /// Create reviewable proposals from the active Factory run.
-    Proposal {
-        #[command(subcommand)]
-        command: ProposalCommand,
-    },
-    /// Publish a bounded draft change from the active Factory run.
-    Change {
-        #[command(subcommand)]
-        command: ChangeCommand,
     },
     /// Continuously evaluate schedules, poll for work, and execute eligible tasks.
     Daemon {
@@ -178,49 +160,6 @@ enum Command {
 }
 
 #[derive(Debug, Subcommand)]
-enum TaskCommand {
-    /// Show the active task and its durable effect history.
-    Show,
-    /// Post an idempotent comment to the active source issue.
-    Comment {
-        #[arg(long)]
-        file: PathBuf,
-    },
-    /// Mark the active source issue as blocked with a reason.
-    Block {
-        #[arg(long)]
-        file: PathBuf,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum ProposalCommand {
-    /// Create or reuse one marked proposal issue.
-    Create {
-        #[arg(long)]
-        file: PathBuf,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum ChangeCommand {
-    /// Push the recorded Factory branch and create or update one draft PR.
-    Publish {
-        #[arg(long)]
-        file: PathBuf,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum RunCommand {
-    /// Record the active run's structured handoff.
-    Complete {
-        #[arg(long)]
-        file: PathBuf,
-    },
-}
-
-#[derive(Debug, Subcommand)]
 enum WorkflowCommand {
     /// Create a workflow from explicit trigger and prompt input.
     #[command(group(
@@ -236,9 +175,6 @@ enum WorkflowCommand {
     Create {
         /// Lowercase kebab-case workflow ID.
         workflow_id: String,
-        /// Allowed external outcome for this workflow.
-        #[arg(long)]
-        effect: WorkflowEffect,
         /// Five-field cron expression.
         #[arg(long, requires = "timezone")]
         schedule: Option<String>,
@@ -319,41 +255,12 @@ async fn run_cli() -> Result<u8> {
             return Ok(exit_code);
         }
         Command::Run {
-            command,
             once,
             config,
             data_directory,
-        } => match command {
-            Some(RunCommand::Complete { file }) => {
-                if once || config.is_some() || data_directory.is_some() {
-                    bail!("factory run complete accepts only --file");
-                }
-                print_agent_result(execute_agent_command(AgentCommand::RunComplete(file)).await?)?;
-            }
-            None => {
-                if !once {
-                    bail!("factory run requires --once or the complete subcommand");
-                }
-                return run_poller(config, data_directory, true).await;
-            }
-        },
-        Command::Task { command } => {
-            let command = match command {
-                TaskCommand::Show => AgentCommand::TaskShow,
-                TaskCommand::Comment { file } => AgentCommand::TaskComment(file),
-                TaskCommand::Block { file } => AgentCommand::TaskBlock(file),
-            };
-            print_agent_result(execute_agent_command(command).await?)?;
-        }
-        Command::Proposal {
-            command: ProposalCommand::Create { file },
         } => {
-            print_agent_result(execute_agent_command(AgentCommand::ProposalCreate(file)).await?)?;
-        }
-        Command::Change {
-            command: ChangeCommand::Publish { file },
-        } => {
-            print_agent_result(execute_agent_command(AgentCommand::ChangePublish(file)).await?)?;
+            debug_assert!(once);
+            return run_poller(config, data_directory, true).await;
         }
         Command::Daemon {
             config,
@@ -370,7 +277,6 @@ async fn run_cli() -> Result<u8> {
             let config = Config::load(&path)?;
             let catalog = WorkflowCatalog::load(&config)?;
             catalog.validate_ticket_workflows()?;
-            catalog.validate_delivery_workflows(&config)?;
             let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
             let mut ledger = Ledger::open_in(&data_directory)?;
             let report = approve_issue(
@@ -402,7 +308,6 @@ async fn run_cli() -> Result<u8> {
             command:
                 WorkflowCommand::Create {
                     workflow_id,
-                    effect,
                     schedule,
                     timezone,
                     label,
@@ -417,7 +322,6 @@ async fn run_cli() -> Result<u8> {
             let report = create_workflow(
                 CreateWorkflowOptions {
                     id: workflow_id,
-                    effect,
                     repository: repository.unwrap_or(
                         std::env::current_dir().context("failed to resolve current directory")?,
                     ),
@@ -669,11 +573,6 @@ fn print_json(value: &impl serde::Serialize) -> Result<()> {
         "{}",
         serde_json::to_string_pretty(value).context("failed to encode JSON output")?
     );
-    Ok(())
-}
-
-fn print_agent_result(value: serde_json::Value) -> Result<()> {
-    println!("{}", serde_json::to_string(&value)?);
     Ok(())
 }
 

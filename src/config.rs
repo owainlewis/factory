@@ -664,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_overlapping_effect_labels() {
+    fn rejects_overlapping_github_labels() {
         let temp = tempfile::tempdir().unwrap();
         let repository = temp.path().join("repo");
         let workspace = temp.path().join("worktrees");
