@@ -257,7 +257,10 @@ unless a human explicitly retries under a new workflow revision.
 An issue body, title, comments, author, and attachments are untrusted input.
 Creating an issue or applying a label directly does not authorise execution.
 Approval applies to one issue content generation, not merely to an issue
-number.
+number. The delivery prompt receives only the approved title and body plus
+Factory-owned task metadata. Mutable issue comments and attachments are never
+added to the delivery prompt. Later pull-request feedback enters through a
+separate trusted event path with its own immutable identity and authorisation.
 
 The trusted operator approves through `factory approve <issue>`. Factory
 resolves the configured delivery workflow, fetches the current issue title and
@@ -287,8 +290,9 @@ For `factory:ready`, Factory validates the authorising action:
    existing durable task or posted claim record. Persist a task keyed by both
    immutable IDs.
 2. Atomically claim the task in SQLite.
-3. Re-fetch the issue, labels, task-defining content, approval artifact, and
-   label timeline from GitHub.
+3. Re-fetch the issue, labels, approved title and body, approval artifact, and
+   label timeline from GitHub. Comments and attachments remain outside the
+   agent-visible delivery context.
 4. Confirm the issue is still open and the label is still present.
 5. Resolve configured approver logins to stable GitHub user IDs. Confirm the
    approval artifact author and the actor who most recently applied the label
