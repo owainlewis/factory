@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use assert_cmd::Command;
@@ -10,7 +10,9 @@ use predicates::prelude::*;
 struct Fixture {
     _temp: tempfile::TempDir,
     repository: PathBuf,
-    config: PathBuf,
+    config_path: PathBuf,
+    config: Config,
+    data_home: PathBuf,
 }
 
 impl Fixture {
@@ -19,14 +21,49 @@ impl Fixture {
         let repository = temp.path().join("repository");
         let workflows = repository.join(".factory/workflows");
         let workspace = temp.path().join("worktrees");
+        let data_home = temp.path().join("factory-data");
         fs::create_dir_all(&workflows).unwrap();
         fs::create_dir(&workspace).unwrap();
-        let config = temp.path().join("config.toml");
-        write_config(&config, &[&repository], &workspace);
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(&repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args([
+                    "remote",
+                    "add",
+                    "origin",
+                    "git@github.com:example/repository.git"
+                ])
+                .current_dir(&repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        Command::cargo_bin("factory")
+            .unwrap()
+            .current_dir(&repository)
+            .env("FACTORY_DATA_HOME", &data_home)
+            .arg("init")
+            .assert()
+            .success();
+        let config_path = repository.join(".factory/config.toml");
+        let config = test_config(
+            vec![repository.canonicalize().unwrap()],
+            workspace,
+            temp.path().join("data"),
+        );
         Self {
             _temp: temp,
             repository,
+            config_path,
             config,
+            data_home,
         }
     }
 
@@ -37,32 +74,22 @@ impl Fixture {
     }
 
     fn catalog(&self) -> WorkflowCatalog {
-        let config = Config::load(&self.config).unwrap();
-        WorkflowCatalog::load(&config).unwrap()
+        WorkflowCatalog::load(&self.config).unwrap()
     }
 }
 
-fn write_config(path: &Path, repositories: &[&Path], workspace: &Path) {
-    let repositories = repositories
-        .iter()
-        .map(|repository| format!("\"{}\"", repository.display()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    fs::write(
-        path,
-        format!(
-            r#"repositories = [{repositories}]
-poll_every = "30s"
-default_runtime = "codex"
-default_timeout = "2h"
-maximum_timeout = "8h"
-max_concurrent_runs = 2
-workspace_root = "{}"
-"#,
-            workspace.display()
-        ),
-    )
-    .unwrap();
+fn test_config(repositories: Vec<PathBuf>, workspace: PathBuf, data: PathBuf) -> Config {
+    Config {
+        repositories,
+        poll_every: Duration::from_secs(30),
+        default_runtime: "codex".into(),
+        default_timeout: Duration::from_secs(2 * 60 * 60),
+        maximum_timeout: Duration::from_secs(8 * 60 * 60),
+        max_concurrent_runs: 2,
+        max_concurrent_runs_per_repository: 2,
+        workspace_root: workspace,
+        data_directory: data,
+    }
 }
 
 fn scheduled_workflow(prompt: &str) -> String {
@@ -303,14 +330,12 @@ fn rejects_missing_trigger_timezone_and_invalid_timeout() {
 
 #[test]
 fn duplicate_ids_are_reported_for_every_duplicate_entry() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
     fixture.workflow("same.md", &label_workflow("Prompt."));
-    let workspace = fixture._temp.path().join("worktrees");
-    write_config(
-        &fixture.config,
-        &[&fixture.repository, &fixture.repository],
-        &workspace,
-    );
+    fixture
+        .config
+        .repositories
+        .push(fixture.repository.canonicalize().unwrap());
 
     let catalog = fixture.catalog();
 
@@ -366,14 +391,14 @@ fn unsafe_workflow_directory_does_not_hide_other_repositories() {
 
     let workspace = temp.path().join("worktrees");
     fs::create_dir(&workspace).unwrap();
-    let config_path = temp.path().join("config.toml");
-    write_config(
-        &config_path,
-        &[&valid_repository, &unsafe_repository],
-        &workspace,
+    let config = test_config(
+        vec![
+            valid_repository.canonicalize().unwrap(),
+            unsafe_repository.canonicalize().unwrap(),
+        ],
+        workspace,
+        temp.path().join("data"),
     );
-
-    let config = Config::load(&config_path).unwrap();
     let catalog = WorkflowCatalog::load(&config).unwrap();
 
     assert_eq!(catalog.entries.len(), 2);
@@ -406,10 +431,11 @@ fn rejects_workflows_reached_through_symlinked_factory_ancestor() {
     )
     .unwrap();
     symlink(&outside_factory, repository.join(".factory")).unwrap();
-    let config_path = temp.path().join("config.toml");
-    write_config(&config_path, &[&repository], &workspace);
-
-    let config = Config::load(&config_path).unwrap();
+    let config = test_config(
+        vec![repository.canonicalize().unwrap()],
+        workspace,
+        temp.path().join("data"),
+    );
     let catalog = WorkflowCatalog::load(&config).unwrap();
 
     assert_eq!(catalog.invalid_count(), 1);
@@ -426,7 +452,12 @@ fn workflows_command_lists_resolved_catalog_and_fails_for_invalid_entries() {
 
     Command::cargo_bin("factory")
         .unwrap()
-        .args(["workflows", "--config", fixture.config.to_str().unwrap()])
+        .args([
+            "workflows",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+        ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .assert()
         .failure()
         .stdout(predicate::str::contains("REPOSITORY\tWORKFLOW"))
@@ -482,6 +513,7 @@ fn catalog_output_escapes_control_characters_in_every_dynamic_cell() {
         max_concurrent_runs: 1,
         max_concurrent_runs_per_repository: 1,
         workspace_root: workspace,
+        data_directory: temp.path().join("data"),
     };
 
     let output = WorkflowCatalog::load(&config).unwrap().to_string();

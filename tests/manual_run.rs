@@ -11,38 +11,53 @@ use std::time::{Duration, Instant};
 use assert_cmd::Command;
 use predicates::prelude::*;
 
+fn initialize_repository(repository: &std::path::Path, data_home: &std::path::Path) {
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:example/repository.git"
+            ])
+            .current_dir(repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    Command::cargo_bin("factory")
+        .unwrap()
+        .current_dir(repository)
+        .env("FACTORY_DATA_HOME", data_home)
+        .arg("init")
+        .assert()
+        .success();
+}
+
 #[test]
 fn manual_workflow_run_resolves_context_and_invokes_codex() {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repository");
     let workflows = repository.join(".factory/workflows");
     let workspace = temp.path().join("worktrees");
+    let data_home = temp.path().join("factory-data");
     let binaries = temp.path().join("bin");
     fs::create_dir_all(&workflows).unwrap();
-    fs::create_dir(&workspace).unwrap();
     fs::create_dir(&binaries).unwrap();
     fs::write(
         workflows.join("read-only.md"),
         "+++\nlabel = \"factory:ready\"\ntimeout = \"30s\"\n+++\n\nInspect without changing files.\n",
     )
     .unwrap();
-    let config = temp.path().join("config.toml");
-    fs::write(
-        &config,
-        format!(
-            r#"repositories = ["{}"]
-poll_every = "30s"
-default_runtime = "codex"
-default_timeout = "2h"
-maximum_timeout = "8h"
-max_concurrent_runs = 2
-workspace_root = "{}"
-"#,
-            repository.display(),
-            workspace.display()
-        ),
-    )
-    .unwrap();
+    initialize_repository(&repository, &data_home);
     let prompt_capture = temp.path().join("prompt.txt");
     let executable = binaries.join("codex");
     fs::write(
@@ -81,15 +96,9 @@ printf 'Read-only workflow complete.' > "$output"
 
     Command::cargo_bin("factory")
         .unwrap()
-        .args([
-            "workflow",
-            "run",
-            "read-only",
-            "--repository",
-            repository.to_str().unwrap(),
-            "--config",
-            config.to_str().unwrap(),
-        ])
+        .args(["workflow", "run", "read-only"])
+        .current_dir(&repository)
+        .env("FACTORY_DATA_HOME", &data_home)
         .env("PATH", path)
         .env("FACTORY_PROMPT_CAPTURE", &prompt_capture)
         .assert()
@@ -114,33 +123,16 @@ fn concurrent_manual_runs_exit_when_shared_output_is_full_and_unread() {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repository");
     let workflows = repository.join(".factory/workflows");
-    let workspace = temp.path().join("worktrees");
+    let data_home = temp.path().join("factory-data");
     let binaries = temp.path().join("bin");
     fs::create_dir_all(&workflows).unwrap();
-    fs::create_dir(&workspace).unwrap();
     fs::create_dir(&binaries).unwrap();
     fs::write(
         workflows.join("verbose.md"),
         "+++\nlabel = \"factory:ready\"\ntimeout = \"30s\"\n+++\n\nBe verbose.\n",
     )
     .unwrap();
-    let config = temp.path().join("config.toml");
-    fs::write(
-        &config,
-        format!(
-            r#"repositories = ["{}"]
-poll_every = "30s"
-default_runtime = "codex"
-default_timeout = "2h"
-maximum_timeout = "8h"
-max_concurrent_runs = 2
-workspace_root = "{}"
-"#,
-            repository.display(),
-            workspace.display()
-        ),
-    )
-    .unwrap();
+    initialize_repository(&repository, &data_home);
     let executable = binaries.join("codex");
     fs::write(
         &executable,
@@ -185,15 +177,9 @@ printf 'Verbose workflow complete.' > "$output"
     let mut children = (0..2)
         .map(|_| {
             std::process::Command::new(assert_cmd::cargo::cargo_bin!("factory"))
-                .args([
-                    "workflow",
-                    "run",
-                    "verbose",
-                    "--repository",
-                    repository.to_str().unwrap(),
-                    "--config",
-                    config.to_str().unwrap(),
-                ])
+                .args(["workflow", "run", "verbose"])
+                .current_dir(&repository)
+                .env("FACTORY_DATA_HOME", &data_home)
                 .env("PATH", &path)
                 .stdout(Stdio::from(std::os::fd::OwnedFd::from(
                     shared_output.try_clone().unwrap(),

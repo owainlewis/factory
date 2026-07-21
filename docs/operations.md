@@ -1,10 +1,11 @@
 # Factory operation
 
-`factory run` validates `gh` and Codex subscription authentication, evaluates
-scheduled workflows, polls all configured repositories, and dispatches durable
-scheduled and ready-ticket tasks. Global and
-per-repository concurrency are controlled by `max_concurrent_runs` and
-`max_concurrent_runs_per_repository`. The per-repository value defaults to 1.
+`factory daemon` discovers the enclosing Git root, loads
+`.factory/config.toml`, validates `gh` and Codex subscription authentication,
+evaluates scheduled workflows, polls that repository, and dispatches durable
+scheduled and ready-ticket tasks. `max_concurrent_runs` controls concurrency.
+Each clone has its own SQLite database and worktree directory outside the
+checkout.
 
 In continuous mode, Factory writes concise lifecycle events to standard error.
 It reports startup validation, polls that queue work, claimed tasks, runtime
@@ -62,5 +63,13 @@ Queued tasks remain durable for the next start. Failed and cancelled runs keep
 their bounded output, error, session, ticket, branch, and pull-request context
 for inspection. Factory never merges software pull requests.
 
-`factory run --once` performs one discovery poll and exits without claiming or
-launching tasks. It is intended for setup checks and safe polling smoke tests.
+`factory run --once` evaluates one schedule tick, performs one discovery poll,
+persists eligible tasks, and exits without claiming or launching them. It is
+intended for setup checks and safe polling smoke tests. An empty evaluation
+does not invoke Codex.
+
+Before first repository-local startup, Factory reads the old
+`~/.factory/factory.sqlite3` database without modifying it. If that database
+contains queued or running work for this repository, startup stops with
+instructions to stop the old daemon and finish or cancel the work. Terminal
+legacy history is not imported.

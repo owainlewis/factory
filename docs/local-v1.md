@@ -45,10 +45,11 @@ cd /absolute/path/to/trusted/repository
 factory init
 ```
 
-The command creates or updates `~/.factory/config.toml`, creates the default
-`~/.factory/workspaces` directory, and creates `.factory/workflows/` in the
-repository. It does not install a workflow, inspect or mutate GitHub labels,
-commit files, start the daemon, launch Codex, or merge pull requests.
+The command creates `.factory/config.toml` and `.factory/workflows/` in the
+repository. It derives a stable state directory for this clone under the user
+data directory and creates its external worktree directory there. It does not
+install a workflow, inspect or mutate GitHub labels, commit files, start the
+daemon, launch Codex, or merge pull requests.
 
 Initialization is idempotent. Preview it without writes with:
 
@@ -110,7 +111,7 @@ apply the ready label:
 
 ```sh
 gh issue edit ISSUE_NUMBER --add-label factory:ready
-factory run
+factory daemon
 ```
 
 Keep the terminal open. The daemon polls GitHub, persists one task, atomically
@@ -128,7 +129,7 @@ factory inspect RUN_ID
 Exactly one task and run should represent the triggering issue revision. A
 normal daemon restart must not create another implementation or pull request.
 To exercise restart deduplication after the run is terminal, stop Factory with
-Ctrl-C, start `factory run` again, wait through at least one poll, and confirm
+Ctrl-C, start `factory daemon` again, wait through at least one poll, and confirm
 the task/run counts and linked pull request remain unchanged.
 
 Success means:
@@ -164,11 +165,24 @@ falls back once to a fresh session with current issue, Git, worktree, pull
 request, CI, and bounded prior evidence. Repeated failure remains inspectable;
 Factory never merges as part of recovery.
 
+Use a non-executing smoke test before starting the daemon:
+
+```sh
+factory run --once
+```
+
+This evaluates one schedule tick, polls GitHub once, and persists matching
+tasks without claiming them or launching Codex. If nothing matches, it uses no
+model tokens.
+
 ## Troubleshooting
 
 - Authentication errors: rerun `gh auth status` and `codex login status`.
-- Invalid configuration: run `factory validate` and correct the reported path
-  or concurrency constraint.
+- Invalid configuration: run `factory validate` and correct the reported
+  repository-local policy or concurrency constraint.
+- Legacy cutover blocked: stop the old global daemon and finish or cancel its
+  queued or running work for this repository. Factory leaves the old database
+  untouched and does not import its history.
 - Missing setup: run `factory init --check`, then `factory init` to create only
   the missing resources.
 - Invalid workflows: run `factory workflows`; ticket workflow errors fail fast,

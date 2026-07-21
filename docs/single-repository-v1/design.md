@@ -22,7 +22,7 @@ state says useful, authorised work exists. Keeping agents busy is not a goal.
 
 ## Requirements
 
-- Running `factory run` anywhere inside a configured Git repository discovers
+- Running `factory daemon` anywhere inside a configured Git repository discovers
   its root and loads `.factory/config.toml`.
 - The repository contains shareable policy only: configuration and Markdown
   workflows. Credentials, SQLite state, logs, sockets, and worktrees stay in a
@@ -50,7 +50,7 @@ state says useful, authorised work exists. Keeping agents busy is not a goal.
 ## Acceptance criteria
 
 - From a clean repository, `factory init`, workflow creation, `factory
-  validate`, and `factory run` require no global repository registry or
+  validate`, and `factory daemon` require no global repository registry or
   repository arguments.
 - Repeated polls and daemon restarts create exactly one task while an issue
   continuously holds `factory:ready`.
@@ -436,7 +436,7 @@ flags:
 factory init
 factory init --check
 factory validate
-factory run
+factory daemon
 factory run --once
 factory workflows
 factory workflow create <id>

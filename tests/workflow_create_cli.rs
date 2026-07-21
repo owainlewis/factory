@@ -11,6 +11,7 @@ use predicates::prelude::*;
 struct Fixture {
     _temp: tempfile::TempDir,
     home: PathBuf,
+    data_home: PathBuf,
     repository: PathBuf,
     executable_path: String,
 }
@@ -20,6 +21,7 @@ impl Fixture {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("home");
         let repository = temp.path().join("repository");
+        let data_home = temp.path().join("factory-data");
         fs::create_dir(&home).unwrap();
         fs::create_dir(&repository).unwrap();
         let gh = temp.path().join("gh");
@@ -76,6 +78,7 @@ exit 64
         let fixture = Self {
             _temp: temp,
             home,
+            data_home,
             repository,
             executable_path,
         };
@@ -88,6 +91,7 @@ exit 64
         command
             .current_dir(&self.repository)
             .env("HOME", &self.home)
+            .env("FACTORY_DATA_HOME", &self.data_home)
             .env("PATH", &self.executable_path);
         command
     }
@@ -371,16 +375,10 @@ fn requires_repository_initialization() {
 #[test]
 fn staging_command_is_shell_safe() {
     let mut fixture = Fixture::new();
-    let old_repository = fixture.repository.canonicalize().unwrap();
     let repository = fixture._temp.path().join("repository with ' quote");
     fs::rename(&fixture.repository, &repository).unwrap();
     fixture.repository = repository;
-    let config = fixture.home.join(".factory/config.toml");
-    let contents = fs::read_to_string(&config).unwrap().replace(
-        old_repository.to_str().unwrap(),
-        fixture.repository.canonicalize().unwrap().to_str().unwrap(),
-    );
-    fs::write(config, contents).unwrap();
+    fixture.command().arg("init").assert().success();
 
     let output = fixture
         .command()

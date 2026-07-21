@@ -8,16 +8,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use assert_cmd::Command as AssertCommand;
+use chrono::Utc;
 use factory::config::Config;
 use factory::github::{GitHubClient, TicketContext};
-use factory::storage::{Ledger, RunOutcome};
-use factory::workflow::WorkflowCatalog;
+use factory::storage::{Ledger, RunOutcome, TaskIdentity};
+use factory::workflow::{Trigger, WorkflowCatalog, scheduled_workflow_fingerprint};
 use tokio_util::sync::CancellationToken;
 
 struct Fixture {
     _temp: tempfile::TempDir,
     repositories: Vec<PathBuf>,
     config_path: PathBuf,
+    config: Config,
+    data_home: PathBuf,
     ledger_path: PathBuf,
     gh: PathBuf,
 }
@@ -29,6 +32,27 @@ impl Fixture {
         for index in 0..repository_count {
             let repository = temp.path().join(format!("repo-{index}"));
             fs::create_dir_all(repository.join(".factory/workflows")).unwrap();
+            assert!(
+                Command::new("git")
+                    .args(["init", "--quiet"])
+                    .current_dir(&repository)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            assert!(
+                Command::new("git")
+                    .args([
+                        "remote",
+                        "add",
+                        "origin",
+                        &format!("git@github.com:example/repo-{index}.git")
+                    ])
+                    .current_dir(&repository)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
             fs::write(
                 repository.join(".factory/workflows/implement-ready-ticket.md"),
                 "+++\nlabel = \"factory:ready\"\n+++\n\nImplement the ticket.\n",
@@ -40,24 +64,35 @@ impl Fixture {
             )
             .unwrap();
             fs::write(repository.join(".issues.json"), "[[]]").unwrap();
-            repositories.push(repository);
+            repositories.push(repository.canonicalize().unwrap());
         }
         let workspace = temp.path().join("worktrees");
         fs::create_dir(&workspace).unwrap();
-        let config_path = temp.path().join("config.toml");
-        let repository_values = repositories
-            .iter()
-            .map(|path| format!("\"{}\"", path.display()))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let data_home = temp.path().join("factory-data");
+        let config_path = repositories[0].join(".factory/config.toml");
+        AssertCommand::cargo_bin("factory")
+            .unwrap()
+            .current_dir(&repositories[0])
+            .env("FACTORY_DATA_HOME", &data_home)
+            .arg("init")
+            .assert()
+            .success();
         fs::write(
             &config_path,
-            format!(
-                "repositories = [{repository_values}]\npoll_every = \"20ms\"\ndefault_runtime = \"codex\"\ndefault_timeout = \"2h\"\nmaximum_timeout = \"8h\"\nmax_concurrent_runs = 2\nworkspace_root = \"{}\"\n",
-                workspace.display()
-            ),
+            "version = 1\npoll_every = \"20ms\"\ndefault_runtime = \"codex\"\ndefault_timeout = \"2h\"\nmaximum_timeout = \"8h\"\nmax_concurrent_runs = 2\n",
         )
         .unwrap();
+        let config = Config {
+            repositories: repositories.clone(),
+            poll_every: Duration::from_millis(20),
+            default_runtime: "codex".into(),
+            default_timeout: Duration::from_secs(2 * 60 * 60),
+            maximum_timeout: Duration::from_secs(8 * 60 * 60),
+            max_concurrent_runs: 2,
+            max_concurrent_runs_per_repository: 2,
+            workspace_root: workspace,
+            data_directory: temp.path().join("data"),
+        };
         let gh = temp.path().join("gh");
         fs::write(
             &gh,
@@ -98,13 +133,15 @@ exit 64
             _temp: temp,
             repositories,
             config_path,
+            config,
+            data_home,
             ledger_path,
             gh,
         }
     }
 
     async fn poll(&self) -> anyhow::Result<(factory::github::PollReport, Ledger)> {
-        let config = Config::load(&self.config_path).unwrap();
+        let config = self.config.clone();
         let catalog = WorkflowCatalog::load(&config).unwrap();
         let mut ledger = Ledger::open(&self.ledger_path).unwrap();
         let report = GitHubClient::new(&self.gh)
@@ -168,6 +205,7 @@ fn factory_run_once_persists_a_task_without_launching_codex() {
             "--data-directory",
             data.to_str().unwrap(),
         ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .env("PATH", path)
         .assert()
         .success()
@@ -176,7 +214,9 @@ fn factory_run_once_persists_a_task_without_launching_codex() {
         .stderr(predicates::str::contains(
             "Factory loaded: repositories=1 workflows=1",
         ))
-        .stderr(predicates::str::contains("Factory polling GitHub once..."));
+        .stderr(predicates::str::contains(
+            "Factory evaluating schedules and polling GitHub once...",
+        ));
 
     assert!(!codex_marker.exists());
     let mut ledger = Ledger::open_in(&data).unwrap();
@@ -207,6 +247,7 @@ fn factory_run_once_reports_progress_before_authentication_failure() {
             "--data-directory",
             data.to_str().unwrap(),
         ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .env("PATH", path)
         .output()
         .unwrap();
@@ -214,7 +255,9 @@ fn factory_run_once_reports_progress_before_authentication_failure() {
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
     let starting = stderr.find("Factory starting: mode=once").unwrap();
-    let polling = stderr.find("Factory polling GitHub once...").unwrap();
+    let polling = stderr
+        .find("Factory evaluating schedules and polling GitHub once...")
+        .unwrap();
     let failure = stderr.find("Error:").unwrap();
     assert!(starting < polling);
     assert!(polling < failure);
@@ -246,6 +289,7 @@ fn factory_run_once_fails_for_invalid_ticket_workflow() {
             "--data-directory",
             data.to_str().unwrap(),
         ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .env("PATH", path)
         .assert()
         .failure()
@@ -287,6 +331,7 @@ fn factory_run_once_skips_invalid_schedule_and_polls_tickets() {
             "--data-directory",
             data.to_str().unwrap(),
         ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .env("PATH", path)
         .assert()
         .success()
@@ -451,7 +496,7 @@ async fn malformed_output_and_rate_limiting_are_isolated_from_healthy_repositori
 #[tokio::test]
 async fn polling_repeats_at_the_configured_interval_and_stops_on_cancellation() {
     let fixture = Fixture::new(1);
-    let config = Config::load(&fixture.config_path).unwrap();
+    let config = fixture.config.clone();
     let catalog = WorkflowCatalog::load(&config).unwrap();
     let mut ledger = Ledger::open(&fixture.ledger_path).unwrap();
     let cancellation = CancellationToken::new();
@@ -483,7 +528,7 @@ async fn cancellation_terminates_a_hung_gh_process() {
     let fixture = Fixture::new(1);
     fs::write(format!("{}.hang", fixture.gh.display()), "").unwrap();
     let pid_path = PathBuf::from(format!("{}.hang.pid", fixture.gh.display()));
-    let config = Config::load(&fixture.config_path).unwrap();
+    let config = fixture.config.clone();
     let catalog = WorkflowCatalog::load(&config).unwrap();
     let mut ledger = Ledger::open(&fixture.ledger_path).unwrap();
     let cancellation = CancellationToken::new();
@@ -521,4 +566,220 @@ async fn cancellation_terminates_a_hung_gh_process() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(gone, "hung gh process {pid:?} survived cancellation");
+}
+
+#[test]
+fn factory_run_once_evaluates_due_schedules_without_launching_codex() {
+    let fixture = Fixture::new(1);
+    fs::write(
+        fixture.repositories[0].join(".factory/workflows/scheduled.md"),
+        "+++\nschedule = \"* * * * *\"\ntimezone = \"UTC\"\n+++\n\nReview the repository.\n",
+    )
+    .unwrap();
+    let catalog = WorkflowCatalog::load(&fixture.config).unwrap();
+    let workflow = catalog
+        .entries
+        .iter()
+        .find(|entry| entry.id == "scheduled")
+        .unwrap();
+    let Trigger::Schedule {
+        expression,
+        timezone,
+    } = workflow.trigger.as_ref().unwrap()
+    else {
+        panic!("scheduled workflow has the wrong trigger");
+    };
+    let fingerprint = scheduled_workflow_fingerprint(
+        expression,
+        *timezone,
+        workflow.runtime.as_deref().unwrap(),
+        workflow.timeout.unwrap(),
+        workflow.prompt.as_deref().unwrap(),
+    )
+    .unwrap();
+    let data = fixture._temp.path().join("schedule-data");
+    let mut ledger = Ledger::open_in(&data).unwrap();
+    ledger
+        .register_daemon_owner("schedule-seed", std::process::id())
+        .unwrap();
+    let now = Utc::now().timestamp_millis();
+    let due = now.div_euclid(60_000) * 60_000;
+    ledger
+        .initialize_schedule_cursor(
+            "example/repo-0",
+            "scheduled",
+            &fingerprint,
+            due,
+            due - 1,
+            "schedule-seed",
+        )
+        .unwrap();
+    ledger.remove_daemon_owner("schedule-seed").unwrap();
+    drop(ledger);
+    let path = format!(
+        "{}:{}",
+        fixture._temp.path().display(),
+        std::env::var("PATH").unwrap()
+    );
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .args([
+            "run",
+            "--once",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            data.to_str().unwrap(),
+        ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
+        .env("PATH", path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("scheduled_tasks_created=1"));
+
+    let ledger = Ledger::open_in(&data).unwrap();
+    assert_eq!(
+        ledger
+            .tasks()
+            .unwrap()
+            .iter()
+            .filter(|task| task.kind == "scheduled")
+            .count(),
+        1
+    );
+    assert!(ledger.runs(None).unwrap().is_empty());
+}
+
+#[test]
+fn repository_local_startup_blocks_active_legacy_work_without_mutating_it() {
+    let fixture = Fixture::new(1);
+    let legacy = fixture._temp.path().join("legacy");
+    let mut ledger = Ledger::open_in(&legacy).unwrap();
+    ledger
+        .enqueue(
+            &TaskIdentity::ticket(
+                "example/repo-0",
+                "implement-ready-ticket",
+                "77",
+                "legacy-revision",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    drop(ledger);
+    let database = legacy.join(factory::storage::DATABASE_NAME);
+    let before = fs::read(&database).unwrap();
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .args([
+            "run",
+            "--once",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            fixture._temp.path().join("new-data").to_str().unwrap(),
+        ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
+        .env("FACTORY_LEGACY_DATA_DIRECTORY", &legacy)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("stop the old daemon"))
+        .stderr(predicates::str::contains("left unchanged"));
+
+    assert_eq!(fs::read(database).unwrap(), before);
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .args([
+            "run",
+            "--once",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            legacy.to_str().unwrap(),
+        ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
+        .env("FACTORY_LEGACY_DATA_DIRECTORY", &legacy)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "cannot use the legacy data directory",
+        ));
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .args([
+            "run",
+            "--once",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            legacy.join("missing/..").to_str().unwrap(),
+        ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
+        .env("FACTORY_LEGACY_DATA_DIRECTORY", &legacy)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "must not contain parent traversal",
+        ));
+}
+
+#[test]
+fn terminal_or_unrelated_legacy_work_does_not_block_repository_local_startup() {
+    let fixture = Fixture::new(1);
+    let legacy = fixture._temp.path().join("legacy");
+    let mut ledger = Ledger::open_in(&legacy).unwrap();
+    let terminal = ledger
+        .enqueue(
+            &TaskIdentity::ticket(
+                "example/repo-0",
+                "implement-ready-ticket",
+                "78",
+                "legacy-terminal",
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .task;
+    ledger.claim_next().unwrap().unwrap();
+    let run = ledger.start_run(terminal.id, "codex").unwrap();
+    ledger
+        .finish_run_and_task(run.id, RunOutcome::Succeeded, Some("done"), None, None)
+        .unwrap();
+    ledger
+        .enqueue(
+            &TaskIdentity::ticket(
+                "example/other",
+                "implement-ready-ticket",
+                "79",
+                "legacy-other",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    drop(ledger);
+    let path = format!(
+        "{}:{}",
+        fixture._temp.path().display(),
+        std::env::var("PATH").unwrap()
+    );
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .args([
+            "run",
+            "--once",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            fixture._temp.path().join("new-data").to_str().unwrap(),
+        ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
+        .env("FACTORY_LEGACY_DATA_DIRECTORY", &legacy)
+        .env("PATH", path)
+        .assert()
+        .success();
 }

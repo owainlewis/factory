@@ -17,11 +17,11 @@ and Codex CLIs. It does not use model API keys.
 4. In a trusted target repository, run `factory init`.
 5. Create a workflow with `factory workflow create`.
 6. Review and commit the new file under `.factory/workflows/`.
-7. Run `factory validate`, `factory workflows`, then `factory run`.
+7. Run `factory validate`, `factory workflows`, then `factory daemon`.
 
-`factory init --check` previews setup without writes. Initialization only
-registers the repository, creates machine configuration and workspace storage,
-and creates the repository's workflow directory. It does not install an
+`factory init --check` previews setup without writes. Initialization creates
+`.factory/config.toml`, external machine state and worktree storage, and the
+repository's workflow directory. It does not install an
 opinionated workflow or create GitHub labels.
 
 Create a scheduled pull-request triage workflow without opening an editor:
@@ -39,8 +39,13 @@ prompt from standard input. Label-triggered workflows create their missing
 trigger label explicitly; scheduled workflows do not mutate labels during
 creation.
 
+`factory daemon` runs until Ctrl-C. `factory run --once` evaluates schedules
+and polls once, persists eligible tasks, and exits without launching Codex.
+If no schedule or issue matches, Factory launches no agent and uses no model
+tokens.
+
 See [`docs/local-v1.md`](docs/local-v1.md) for the current implementation's
-installation, setup, operation, recovery, and acceptance instructions. The next
+installation, setup, operation, recovery, and acceptance instructions. The
 repo-local architecture and product boundary are documented in
 [`docs/single-repository-v1/design.md`](docs/single-repository-v1/design.md).
 

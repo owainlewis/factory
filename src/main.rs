@@ -6,7 +6,7 @@ use clap::{ArgGroup, Parser, Subcommand};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
-use factory::config::{Config, default_config_path};
+use factory::config::{Config, repository_config_path, repository_remote_identity};
 use factory::daemon::FactoryDaemon;
 use factory::execution::ResolvedWorkflow;
 use factory::github::{GitHubClient, PollReport};
@@ -17,7 +17,7 @@ use factory::inspection::{
 use factory::runtime::{
     CodexRuntime, RuntimeCancelled, Termination, write_stderr_best_effort, write_stdout_best_effort,
 };
-use factory::storage::{CancellationRequest, Ledger};
+use factory::storage::{CancellationRequest, DATABASE_NAME, Ledger};
 use factory::workflow::WorkflowCatalog;
 use factory::workflow_create::{CreateWorkflowOptions, create_workflow};
 
@@ -39,12 +39,21 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
-    /// Poll configured repositories and persist eligible ticket tasks.
+    /// Poll this repository once and persist eligible tasks without executing them.
     Run {
-        /// Poll once and exit without waiting for the next interval.
-        #[arg(long)]
+        /// Required safety flag confirming this is a non-executing single evaluation.
+        #[arg(long, required = true)]
         once: bool,
         /// Path to the Factory configuration file.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Directory containing the durable Factory database.
+        #[arg(long)]
+        data_directory: Option<PathBuf>,
+    },
+    /// Continuously evaluate schedules, poll for work, and execute eligible tasks.
+    Daemon {
+        /// Path to the repository-local Factory configuration file.
         #[arg(long)]
         config: Option<PathBuf>,
         /// Directory containing the durable Factory database.
@@ -170,9 +179,9 @@ enum WorkflowCommand {
     Run {
         /// Workflow ID, derived from its Markdown filename.
         workflow_id: String,
-        /// Configured repository to use as the workflow target.
+        /// Repository to use. Defaults to the enclosing Git repository.
         #[arg(long)]
-        repository: PathBuf,
+        repository: Option<PathBuf>,
         /// Path to the Factory configuration file.
         #[arg(long)]
         config: Option<PathBuf>,
@@ -207,9 +216,10 @@ async fn run_cli() -> Result<u8> {
         Command::Init { repository, check } => {
             let repository = repository
                 .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
+            let repository = factory::init::discover_repository(&repository)?;
             let report = initialize(InitOptions {
+                config_path: repository_config_path(&repository),
                 repository,
-                config_path: default_config_path(),
                 check,
             })?;
             let exit_code = report.exit_code();
@@ -221,15 +231,22 @@ async fn run_cli() -> Result<u8> {
             config,
             data_directory,
         } => {
-            return run_poller(config, data_directory, once).await;
+            debug_assert!(once);
+            return run_poller(config, data_directory, true).await;
+        }
+        Command::Daemon {
+            config,
+            data_directory,
+        } => {
+            return run_poller(config, data_directory, false).await;
         }
         Command::Validate { config } => {
-            let path = config.unwrap_or_else(default_config_path);
+            let path = resolve_config_path(config)?;
             let config = Config::load(&path)?;
             print!("{config}");
         }
         Command::Workflows { config } => {
-            let path = config.unwrap_or_else(default_config_path);
+            let path = resolve_config_path(config)?;
             let config = Config::load(&path)?;
             let catalog = WorkflowCatalog::load(&config)?;
             print!("{catalog}");
@@ -259,7 +276,7 @@ async fn run_cli() -> Result<u8> {
                     repository: repository.unwrap_or(
                         std::env::current_dir().context("failed to resolve current directory")?,
                     ),
-                    config_path: config.unwrap_or_else(default_config_path),
+                    config_path: resolve_config_path(config)?,
                     schedule,
                     timezone,
                     label,
@@ -281,6 +298,9 @@ async fn run_cli() -> Result<u8> {
                     config,
                 },
         } => {
+            let repository = repository
+                .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
+            let repository = factory::init::discover_repository(&repository)?;
             return run_workflow(&workflow_id, &repository, config).await;
         }
         Command::Tasks {
@@ -392,14 +412,21 @@ fn open_data_ledger(
     config_path: Option<PathBuf>,
     data_directory: Option<PathBuf>,
 ) -> Result<Ledger> {
-    let config_path = config_path.unwrap_or_else(default_config_path);
-    let data_directory = data_directory.unwrap_or_else(|| {
-        config_path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .to_path_buf()
-    });
-    Ledger::open_in(&data_directory)
+    if let Some(data_directory) = data_directory {
+        return Ledger::open_in(&data_directory);
+    }
+    let config_path = resolve_config_path(config_path)?;
+    let config = Config::load(&config_path)?;
+    Ledger::open_in(&config.data_directory)
+}
+
+fn resolve_config_path(config_path: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = config_path {
+        return Ok(path);
+    }
+    let current = std::env::current_dir().context("failed to resolve current directory")?;
+    let repository = factory::init::discover_repository(&current)?;
+    Ok(repository_config_path(&repository))
 }
 
 fn print_json(value: &impl serde::Serialize) -> Result<()> {
@@ -415,25 +442,26 @@ async fn run_poller(
     data_directory: Option<PathBuf>,
     once: bool,
 ) -> Result<u8> {
-    let path = config_path.unwrap_or_else(default_config_path);
+    let path = resolve_config_path(config_path)?;
     let mode = if once { "once" } else { "continuous" };
     write_stderr_best_effort(
         format!("Factory starting: mode={mode} config={}\n", path.display()).as_bytes(),
     );
     let config = Config::load(&path)?;
+    let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
+    ensure_legacy_cutover(&config, &data_directory)?;
     let catalog = WorkflowCatalog::load(&config)?;
     for repository in catalog.repositories_without_ready_workflow(&config) {
         write_stderr_best_effort(
             format!(
-                "No valid factory:ready implementation workflow found for {}; create one with factory workflow create --repository {}\n",
-                repository.display(),
+                "No valid factory:ready implementation workflow found for {}; create one with factory workflow create <workflow-id>\n",
                 repository.display()
             )
             .as_bytes(),
         );
     }
     let ticket_validation = catalog.validate_ticket_workflows();
-    if once || ticket_validation.is_err() {
+    if !once && ticket_validation.is_err() {
         for entry in catalog.invalid_scheduled_entries() {
             eprintln!(
                 "Factory skipped invalid scheduled workflow {}: {}",
@@ -443,11 +471,6 @@ async fn run_poller(
         }
     }
     ticket_validation?;
-    let data_directory = data_directory.unwrap_or_else(|| {
-        path.parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .to_path_buf()
-    });
     write_stderr_best_effort(
         format!(
             "Factory loaded: repositories={} workflows={} data={} poll_every={}\n",
@@ -458,13 +481,20 @@ async fn run_poller(
         )
         .as_bytes(),
     );
-    let mut ledger = Ledger::open_in(&data_directory)?;
-    let github = GitHubClient::default();
+    let ledger = Ledger::open_in(&data_directory)?;
     if once {
-        write_stderr_best_effort(b"Factory polling GitHub once...\n");
-        let report = github.poll_once(&config, &catalog, &mut ledger).await?;
-        print_poll_report(&report);
-        return Ok(u8::from(report.failures() > 0));
+        write_stderr_best_effort(b"Factory evaluating schedules and polling GitHub once...\n");
+        let daemon = FactoryDaemon::new(config, catalog, ledger.path());
+        let report = daemon.evaluate_once(CancellationToken::new()).await?;
+        write_stdout_best_effort(
+            format!(
+                "scheduled_tasks_created={}\n",
+                report.scheduled_tasks_created
+            )
+            .as_bytes(),
+        );
+        print_poll_report(&report.github);
+        return Ok(u8::from(report.github.failures() > 0));
     }
 
     let cancellation = CancellationToken::new();
@@ -479,6 +509,55 @@ async fn run_poller(
     signal_task.abort();
     write_stderr_best_effort(b"Factory stopped.\n");
     Ok(0)
+}
+
+fn ensure_legacy_cutover(config: &Config, data_directory: &std::path::Path) -> Result<()> {
+    let legacy_directory = std::env::var_os("FACTORY_LEGACY_DATA_DIRECTORY")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".factory")))
+        .context("could not determine legacy Factory data directory")?;
+    let legacy_database = legacy_directory.join(DATABASE_NAME);
+    if !legacy_database.is_file() {
+        return Ok(());
+    }
+    if data_directory
+        .components()
+        .any(|component| component == std::path::Component::ParentDir)
+    {
+        bail!(
+            "Factory data directory must not contain parent traversal: {}",
+            data_directory.display()
+        );
+    }
+    let legacy_directory = legacy_directory
+        .canonicalize()
+        .context("failed to resolve legacy Factory data directory")?;
+    let effective_data_directory = if data_directory.exists() {
+        data_directory
+            .canonicalize()
+            .context("failed to resolve Factory data directory")?
+    } else if data_directory.is_absolute() {
+        data_directory.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("failed to resolve current directory")?
+            .join(data_directory)
+    };
+    if effective_data_directory == legacy_directory {
+        bail!(
+            "repository-local Factory cannot use the legacy data directory {}; choose the derived repository state directory and leave legacy history untouched",
+            legacy_directory.display()
+        );
+    }
+    let repository = repository_remote_identity(&config.repositories[0])?;
+    let active = Ledger::existing_non_terminal_tasks_for_repository(&legacy_database, &repository)?;
+    if active > 0 {
+        bail!(
+            "legacy Factory has {active} non-terminal task(s) for {repository}; stop the old daemon and finish or cancel that work before starting repository-local Factory. The legacy database was left unchanged at {}",
+            legacy_database.display()
+        );
+    }
+    Ok(())
 }
 
 fn print_poll_report(report: &PollReport) {
@@ -510,7 +589,7 @@ async fn run_workflow(
     repository: &std::path::Path,
     config_path: Option<PathBuf>,
 ) -> Result<u8> {
-    let path = config_path.unwrap_or_else(default_config_path);
+    let path = resolve_config_path(config_path)?;
     let config = Config::load(&path)?;
     let catalog = WorkflowCatalog::load(&config)?;
     let workflow = ResolvedWorkflow::resolve(&config, &catalog, workflow_id, repository)?;

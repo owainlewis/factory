@@ -5,9 +5,9 @@ use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
-const DATABASE_NAME: &str = "factory.sqlite3";
+pub const DATABASE_NAME: &str = "factory.sqlite3";
 const SCHEMA_VERSION: i64 = 5;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
@@ -297,6 +297,24 @@ pub struct Ledger {
 }
 
 impl Ledger {
+    pub fn existing_non_terminal_tasks_for_repository(
+        path: &Path,
+        repository: &str,
+    ) -> Result<usize> {
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("failed to inspect legacy database {}", path.display()))?;
+        let count = connection
+            .query_row(
+                "SELECT COUNT(*) FROM tasks
+                 WHERE lower(repository) = lower(?1)
+                   AND state IN ('queued', 'running')",
+                [repository],
+                |row| row.get::<_, i64>(0),
+            )
+            .context("failed to inspect non-terminal legacy Factory tasks")?;
+        usize::try_from(count).context("legacy task count is outside the supported range")
+    }
+
     pub fn open_in(data_directory: &Path) -> Result<Self> {
         fs::create_dir_all(data_directory).with_context(|| {
             format!(
