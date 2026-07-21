@@ -77,6 +77,23 @@ persists eligible tasks, and exits without claiming or launching them. It is
 intended for setup checks and safe polling smoke tests. An empty evaluation
 does not invoke Codex.
 
+## Prove an idle poll
+
+When no configured Project item is ready and no scheduled workflow is due,
+capture the task list before and after one poll and list all Factory-managed
+containers:
+
+```sh
+factory tasks --json
+factory run --once
+factory tasks --json
+docker ps --all --filter label=dev.factory.managed=true
+```
+
+The two task listings should show zero new tasks, and the Docker listing should
+show zero Factory containers. This proves the empty poll persisted and launched
+nothing.
+
 Before first repository-local startup, Factory reads the old
 `~/.factory/factory.sqlite3` database without modifying it. If that database
 contains queued or running work for this repository, startup stops with
