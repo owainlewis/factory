@@ -462,26 +462,26 @@ without claiming or launching work.
 
 This document is the target repo-local design, not a claim that every interface
 already exists. The current binary can demonstrate the durable core today by
-following `docs/local-v1.md`: it loads a global repository list, polls a ready
-label, supervises Codex, and can produce a green draft pull request. It does not
-yet implement repo-local configuration, label-actor and content-generation
-approval, Factory-owned worktrees, effect profiles, or task-scoped commands.
+following `docs/local-v1.md`: it loads repository-local policy, verifies exact
+approval artifacts and label events, creates and records Factory-owned
+worktrees, supervises Codex, and can produce a green draft pull request. Effect
+profiles and task-scoped publication commands remain later milestones.
 
 The smallest implementation milestone for the repo-local demo is ordered to
 preserve a runnable system throughout:
 
-1. Stop the legacy daemon and require every legacy task for this repository to
+1. **Complete.** Stop the legacy daemon and require every legacy task for this repository to
    be terminal. V1 does not import legacy history. It leaves the global database
    untouched and starts a new repo-keyed database. Startup fails with cutover
    instructions if it detects non-terminal legacy work, avoiding duplicate
    claims while keeping the old history recoverable with the old binary.
-2. Resolve the enclosing Git root and load `.factory/config.toml`, while keeping
+2. **Complete.** Resolve the enclosing Git root and load `.factory/config.toml`, while keeping
    existing workflow frontmatter and the durable storage implementation.
-3. Remove the repository list, repository command arguments, and
+3. **Complete.** Remove the repository list, repository command arguments, and
    per-repository concurrency from the user interface.
-4. Implement `factory approve`, approval artifacts, GitHub label events, and the
+4. **Complete.** Implement `factory approve`, approval artifacts, GitHub label events, and the
    claim-time approval-generation algorithm.
-5. Move branch, worktree, and bounded cleanup ownership from the delivery prompt
+5. **Complete.** Move branch, worktree, and bounded cleanup ownership from the delivery prompt
    into Factory.
 6. Add effect profiles and the small task-scoped command surface, starting with
    proposal creation and idempotent draft publication.

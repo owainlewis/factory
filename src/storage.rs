@@ -8,12 +8,15 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 pub const DATABASE_NAME: &str = "factory.sqlite3";
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION_ID_BYTES: usize = 1024;
 pub const MAX_ACTIVITY_BYTES: usize = 64 * 1024;
 pub const MAX_RECOVERY_ATTEMPTS: u32 = 2;
+pub const AUTOMATIC_DELIVERY_CLEANUP: &str =
+    "clean published delivery with recorded pull request and handoff";
+pub const OPERATOR_CONFIRMED_CLEANUP: &str = "operator-confirmed cleanup";
 const DAEMON_OWNER_LEASE_MILLIS: i64 = 10_000;
 const APPROVAL_RESERVATION_TTL_MILLIS: i64 = 10 * 60 * 1000;
 
@@ -235,6 +238,22 @@ pub struct ApprovalEvidence<'a> {
     pub source_revision: &'a str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskWorkspace {
+    pub task_id: i64,
+    pub kind: String,
+    pub repository: String,
+    pub base_branch: String,
+    pub base_sha: String,
+    pub factory_branch: Option<String>,
+    pub path: PathBuf,
+    pub state: String,
+    pub status_summary: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub cleaned_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunOutcome {
     Running,
@@ -279,6 +298,10 @@ pub struct Run {
     pub working_directory: Option<String>,
     pub recovery_of: Option<i64>,
     pub recovery_attempt: u32,
+    pub base_branch: Option<String>,
+    pub base_sha: Option<String>,
+    pub factory_branch: Option<String>,
+    pub workspace_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -711,6 +734,224 @@ impl Ledger {
         query_task(&self.connection, id)
     }
 
+    pub fn record_run_workspace(
+        &self,
+        run_id: i64,
+        working_directory: &Path,
+        base_branch: &str,
+        base_sha: &str,
+        factory_branch: Option<&str>,
+        workspace_kind: &str,
+    ) -> Result<()> {
+        let changed = self.connection.execute(
+            "UPDATE runs SET working_directory = ?1, base_branch = ?2, base_sha = ?3,
+                    factory_branch = ?4, workspace_kind = ?5
+             WHERE id = ?6 AND outcome = 'running'",
+            params![
+                working_directory.display().to_string(),
+                base_branch,
+                base_sha,
+                factory_branch,
+                workspace_kind,
+                run_id
+            ],
+        )?;
+        if changed != 1 {
+            bail!("running run {run_id} disappeared before workspace persistence");
+        }
+        Ok(())
+    }
+
+    pub fn task_workspace(&self, task_id: i64) -> Result<Option<TaskWorkspace>> {
+        self.connection
+            .query_row(
+                "SELECT task_id, kind, repository, base_branch, base_sha, factory_branch, path,
+                        state, status_summary, created_at, updated_at, cleaned_at
+                 FROM task_workspaces WHERE task_id = ?1",
+                [task_id],
+                |row| {
+                    Ok(TaskWorkspace {
+                        task_id: row.get(0)?,
+                        kind: row.get(1)?,
+                        repository: row.get(2)?,
+                        base_branch: row.get(3)?,
+                        base_sha: row.get(4)?,
+                        factory_branch: row.get(5)?,
+                        path: PathBuf::from(row.get::<_, String>(6)?),
+                        state: row.get(7)?,
+                        status_summary: row.get(8)?,
+                        created_at: row.get(9)?,
+                        updated_at: row.get(10)?,
+                        cleaned_at: row.get(11)?,
+                    })
+                },
+            )
+            .optional()
+            .context("failed to query task workspace")
+    }
+
+    pub fn reserve_task_workspace(&mut self, workspace: &TaskWorkspace) -> Result<TaskWorkspace> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin workspace reservation transaction")?;
+        let existing = query_task_workspace(&transaction, workspace.task_id)?;
+        if let Some(existing) = existing {
+            ensure_same_workspace(&existing, workspace)?;
+            transaction
+                .commit()
+                .context("failed to finish existing workspace reservation")?;
+            return Ok(existing);
+        }
+        if workspace.kind == "delivery" {
+            let retained: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM task_workspaces
+                     WHERE kind = 'delivery' AND state != 'cleaned'",
+                    [],
+                    |row| row.get(0),
+                )
+                .context("failed to count retained delivery workspaces")?;
+            if retained >= 10 {
+                bail!(
+                    "Factory retains at most ten delivery worktrees; run `factory cleanup <run-id>` for one of: {}",
+                    retained_delivery_run_ids(&transaction)?
+                );
+            }
+        }
+        let now = now_millis()?;
+        transaction
+            .execute(
+                "INSERT INTO task_workspaces
+                 (task_id, kind, repository, base_branch, base_sha, factory_branch, path,
+                  state, status_summary, created_at, updated_at, cleaned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'preparing', NULL, ?8, ?8, NULL)",
+                params![
+                    workspace.task_id,
+                    workspace.kind,
+                    workspace.repository,
+                    workspace.base_branch,
+                    workspace.base_sha,
+                    workspace.factory_branch,
+                    workspace.path.display().to_string(),
+                    now,
+                ],
+            )
+            .context("failed to reserve task workspace")?;
+        let reserved = query_task_workspace(&transaction, workspace.task_id)?
+            .context("reserved task workspace disappeared")?;
+        transaction
+            .commit()
+            .context("failed to commit workspace reservation")?;
+        Ok(reserved)
+    }
+
+    pub fn update_task_workspace_state(
+        &self,
+        task_id: i64,
+        state: &str,
+        status_summary: Option<&str>,
+    ) -> Result<()> {
+        if !matches!(
+            state,
+            "preparing" | "ready" | "retained" | "cleanup_pending" | "cleaned"
+        ) {
+            bail!("invalid task workspace state {state:?}");
+        }
+        let now = now_millis()?;
+        let cleaned_at = (state == "cleaned").then_some(now);
+        let changed = self.connection.execute(
+            "UPDATE task_workspaces SET state = ?1, status_summary = ?2, updated_at = ?3,
+                    cleaned_at = CASE WHEN ?1 = 'cleaned' THEN ?4 ELSE cleaned_at END
+             WHERE task_id = ?5",
+            params![state, status_summary, now, cleaned_at, task_id],
+        )?;
+        if changed != 1 {
+            bail!("task {task_id} has no workspace to update");
+        }
+        Ok(())
+    }
+
+    pub fn retained_delivery_workspace_count(&self) -> Result<usize> {
+        let count = self.connection.query_row(
+            "SELECT COUNT(*) FROM task_workspaces
+             WHERE kind = 'delivery' AND state != 'cleaned'",
+            [],
+            |row| row.get::<_, usize>(0),
+        )?;
+        Ok(count)
+    }
+
+    pub fn retained_delivery_run_ids(&self) -> Result<Vec<i64>> {
+        let mut statement = self.connection.prepare(
+            "SELECT COALESCE(MAX(r.id), 0)
+             FROM task_workspaces w
+             LEFT JOIN runs r ON r.task_id = w.task_id
+             WHERE w.kind = 'delivery' AND w.state != 'cleaned'
+             GROUP BY w.task_id ORDER BY w.created_at, w.task_id",
+        )?;
+        Ok(statement
+            .query_map([], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|id| *id > 0)
+            .collect())
+    }
+
+    pub fn task_workspaces_in_state(&self, state: &str) -> Result<Vec<TaskWorkspace>> {
+        let mut statement = self.connection.prepare(
+            "SELECT task_id, kind, repository, base_branch, base_sha, factory_branch, path,
+                    state, status_summary, created_at, updated_at, cleaned_at
+             FROM task_workspaces WHERE state = ?1 ORDER BY task_id",
+        )?;
+        statement
+            .query_map([state], |row| {
+                Ok(TaskWorkspace {
+                    task_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    repository: row.get(2)?,
+                    base_branch: row.get(3)?,
+                    base_sha: row.get(4)?,
+                    factory_branch: row.get(5)?,
+                    path: PathBuf::from(row.get::<_, String>(6)?),
+                    state: row.get(7)?,
+                    status_summary: row.get(8)?,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
+                    cleaned_at: row.get(11)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read task workspaces")
+    }
+
+    pub fn active_task_workspaces(&self) -> Result<Vec<TaskWorkspace>> {
+        let mut statement = self.connection.prepare(
+            "SELECT task_id, kind, repository, base_branch, base_sha, factory_branch, path,
+                    state, status_summary, created_at, updated_at, cleaned_at
+             FROM task_workspaces WHERE state != 'cleaned' ORDER BY task_id",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok(TaskWorkspace {
+                    task_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    repository: row.get(2)?,
+                    base_branch: row.get(3)?,
+                    base_sha: row.get(4)?,
+                    factory_branch: row.get(5)?,
+                    path: PathBuf::from(row.get::<_, String>(6)?),
+                    state: row.get(7)?,
+                    status_summary: row.get(8)?,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
+                    cleaned_at: row.get(11)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read active task workspaces")
+    }
+
     pub fn claim_next(&mut self) -> Result<Option<Task>> {
         self.claim_next_matching(None)
     }
@@ -969,6 +1210,25 @@ impl Ledger {
         owner_pid: u32,
         working_directories: &HashMap<String, String>,
     ) -> Result<Option<ClaimedRun>> {
+        self.claim_and_start_run_with_workdirs_filtered(
+            available_repositories,
+            workflow_runtimes,
+            owner_id,
+            owner_pid,
+            working_directories,
+            true,
+        )
+    }
+
+    pub fn claim_and_start_run_with_workdirs_filtered(
+        &mut self,
+        available_repositories: &[String],
+        workflow_runtimes: &HashMap<(String, String, String), String>,
+        owner_id: &str,
+        owner_pid: u32,
+        working_directories: &HashMap<String, String>,
+        allow_new_ticket_tasks: bool,
+    ) -> Result<Option<ClaimedRun>> {
         if available_repositories.is_empty() {
             return Ok(None);
         }
@@ -1017,6 +1277,16 @@ impl Ledger {
                 .collect::<rusqlite::Result<HashMap<_, _>>>()
                 .context("failed to read schedule ownership")?
         };
+        let tasks_with_workspaces = {
+            let mut statement = transaction
+                .prepare("SELECT task_id FROM task_workspaces WHERE state != 'cleaned'")
+                .context("failed to prepare workspace ownership query")?;
+            statement
+                .query_map([], |row| row.get::<_, i64>(0))
+                .context("failed to query workspace ownership")?
+                .collect::<rusqlite::Result<std::collections::HashSet<_>>>()
+                .context("failed to read workspace ownership")?
+        };
         let candidates = {
             let mut statement = transaction
                 .prepare(
@@ -1032,6 +1302,12 @@ impl Ledger {
                 .context("failed to read queued tasks")?
         };
         let Some(task) = candidates.into_iter().find(|task| {
+            if task.kind == "ticket"
+                && !allow_new_ticket_tasks
+                && !tasks_with_workspaces.contains(&task.id)
+            {
+                return false;
+            }
             if !available.contains(&task.repository)
                 || !workflow_runtimes.contains_key(&(
                     task.repository.clone(),
@@ -1296,6 +1572,57 @@ impl Ledger {
         session_id: Option<&str>,
     ) -> Result<Run> {
         self.finish_run_and_task_with_recovery(id, outcome, result, error, session_id, false)
+    }
+
+    pub fn fail_prelaunch_and_requeue(&mut self, id: i64, error: &str) -> Result<Run> {
+        let error = truncate_utf8(
+            &crate::inspection::sanitize_for_storage(error),
+            MAX_ERROR_BYTES,
+        );
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin prelaunch recovery transaction")?;
+        let (task_id, recovery_attempt) = transaction
+            .query_row(
+                "SELECT task_id, recovery_attempt FROM runs
+                 WHERE id = ?1 AND outcome = 'running' AND process_id IS NULL",
+                [id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, u32>(1)?)),
+            )
+            .optional()?
+            .with_context(|| format!("run {id} is missing, terminal, or already launched"))?;
+        let now = now_millis()?;
+        let changed = transaction.execute(
+            "UPDATE runs SET outcome = 'failed', finished_at = ?1, error = ?2
+             WHERE id = ?3 AND outcome = 'running'",
+            params![now, error, id],
+        )?;
+        if changed != 1 {
+            bail!("run {id} changed during prelaunch recovery");
+        }
+        let changed = if recovery_attempt < MAX_RECOVERY_ATTEMPTS {
+            transaction.execute(
+                "UPDATE tasks SET state = 'queued', updated_at = ?1,
+                        recovery_source_run_id = ?2
+                 WHERE id = ?3 AND state = 'running'",
+                params![now, id, task_id],
+            )?
+        } else {
+            transaction.execute(
+                "UPDATE tasks SET state = 'failed', updated_at = ?1
+                 WHERE id = ?2 AND state = 'running'",
+                params![now, task_id],
+            )?
+        };
+        if changed != 1 {
+            bail!("task {task_id} changed during prelaunch recovery");
+        }
+        let run = query_run(&transaction, id)?.context("failed prelaunch run disappeared")?;
+        transaction
+            .commit()
+            .context("failed to commit prelaunch recovery")?;
+        Ok(run)
     }
 
     fn finish_run_and_task_with_recovery(
@@ -1784,6 +2111,9 @@ fn migrate(connection: &Connection) -> Result<()> {
         if version < 6 {
             migrate_v6(connection)?;
         }
+        if version < 7 {
+            migrate_v7(connection)?;
+        }
         Ok(())
     })();
     match result {
@@ -1958,11 +2288,109 @@ fn migrate_v6(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v7(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "ALTER TABLE runs ADD COLUMN base_branch TEXT;
+             ALTER TABLE runs ADD COLUMN base_sha TEXT;
+             ALTER TABLE runs ADD COLUMN factory_branch TEXT;
+             ALTER TABLE runs ADD COLUMN workspace_kind TEXT;
+             CREATE TABLE task_workspaces (
+                 task_id INTEGER PRIMARY KEY REFERENCES tasks(id),
+                 kind TEXT NOT NULL CHECK (kind IN ('delivery', 'proposal')),
+                 repository TEXT NOT NULL,
+                 base_branch TEXT NOT NULL,
+                 base_sha TEXT NOT NULL,
+                 factory_branch TEXT,
+                 path TEXT NOT NULL,
+                 state TEXT NOT NULL CHECK (state IN
+                     ('preparing', 'ready', 'retained', 'cleanup_pending', 'cleaned')),
+                 status_summary TEXT,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 cleaned_at INTEGER
+             );
+             CREATE UNIQUE INDEX task_workspaces_active_branch_idx
+                 ON task_workspaces(factory_branch)
+                 WHERE factory_branch IS NOT NULL AND state != 'cleaned';
+             CREATE UNIQUE INDEX task_workspaces_active_path_idx
+                 ON task_workspaces(path) WHERE state != 'cleaned';
+             INSERT INTO schema_migrations(version, applied_at)
+                 VALUES (7, unixepoch('subsec') * 1000);
+             PRAGMA user_version = 7;",
+        )
+        .context("failed to migrate SQLite ledger to version 7")?;
+    Ok(())
+}
+
 fn query_task(connection: &Connection, id: i64) -> Result<Option<Task>> {
     connection
         .query_row("SELECT * FROM tasks WHERE id = ?1", [id], row_to_task)
         .optional()
         .context("failed to query task")
+}
+
+fn query_task_workspace(connection: &Connection, task_id: i64) -> Result<Option<TaskWorkspace>> {
+    connection
+        .query_row(
+            "SELECT task_id, kind, repository, base_branch, base_sha, factory_branch, path,
+                    state, status_summary, created_at, updated_at, cleaned_at
+             FROM task_workspaces WHERE task_id = ?1",
+            [task_id],
+            |row| {
+                Ok(TaskWorkspace {
+                    task_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    repository: row.get(2)?,
+                    base_branch: row.get(3)?,
+                    base_sha: row.get(4)?,
+                    factory_branch: row.get(5)?,
+                    path: PathBuf::from(row.get::<_, String>(6)?),
+                    state: row.get(7)?,
+                    status_summary: row.get(8)?,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
+                    cleaned_at: row.get(11)?,
+                })
+            },
+        )
+        .optional()
+        .context("failed to query task workspace")
+}
+
+fn ensure_same_workspace(existing: &TaskWorkspace, requested: &TaskWorkspace) -> Result<()> {
+    if existing.kind != requested.kind
+        || existing.repository != requested.repository
+        || existing.base_branch != requested.base_branch
+        || existing.base_sha != requested.base_sha
+        || existing.factory_branch != requested.factory_branch
+        || existing.path != requested.path
+    {
+        bail!(
+            "task {} already owns a different workspace; refusing to replace durable Git ownership",
+            requested.task_id
+        );
+    }
+    Ok(())
+}
+
+fn retained_delivery_run_ids(connection: &Connection) -> Result<String> {
+    let mut statement = connection.prepare(
+        "SELECT COALESCE(MAX(r.id), 0)
+         FROM task_workspaces w
+         LEFT JOIN runs r ON r.task_id = w.task_id
+         WHERE w.kind = 'delivery' AND w.state != 'cleaned'
+         GROUP BY w.task_id ORDER BY w.created_at, w.task_id",
+    )?;
+    let ids = statement
+        .query_map([], |row| row.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids
+        .into_iter()
+        .filter(|id| *id > 0)
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(", "))
 }
 
 fn query_task_by_key(connection: &Connection, key: &str) -> Result<Option<Task>> {
@@ -2032,6 +2460,10 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         working_directory: row.get("working_directory")?,
         recovery_of: row.get("recovery_of")?,
         recovery_attempt: row.get("recovery_attempt")?,
+        base_branch: row.get("base_branch")?,
+        base_sha: row.get("base_sha")?,
+        factory_branch: row.get("factory_branch")?,
+        workspace_kind: row.get("workspace_kind")?,
     })
 }
 

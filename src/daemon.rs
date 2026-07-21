@@ -19,10 +19,14 @@ use crate::runtime::{
     CodexRuntime, ExecutionResult, RuntimeCancelled, RuntimeObservation, Termination,
     observation_channel,
 };
-use crate::storage::{Ledger, Run, RunOutcome, Task, TaskIdentity};
+use crate::storage::{
+    AUTOMATIC_DELIVERY_CLEANUP, Ledger, OPERATOR_CONFIRMED_CLEANUP, Run, RunOutcome, Task,
+    TaskIdentity, TaskState, TaskWorkspace,
+};
 use crate::workflow::{
     Trigger, WorkflowCatalog, WorkflowEntry, scheduled_workflow_fingerprint, workflow_content_hash,
 };
+use crate::workspace::{DeliveryReuse, WorkspaceKind, WorkspaceManager};
 
 const HUMAN_MERGE_POLICY: &str = "Factory-created software pull requests must remain for human merge. Never merge or enable automatic merge.";
 const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -127,7 +131,15 @@ impl FactoryDaemon {
             Err(error) => return Err(error),
         };
         let mut ledger = Ledger::open(&self.ledger_path)?;
-        report_recovery(ledger.recover_orphaned_runs()?);
+        if let Err(error) = reconcile_recovery_state(
+            &mut ledger,
+            &self.ledger_path,
+            &self.config.repositories[0],
+            &self.config.workspace_root,
+        ) {
+            eprintln!("Factory workspace startup reconciliation failed: {error:#}");
+            return Err(error);
+        }
         let owner = DaemonOwner::new()?;
         ledger.register_daemon_owner(&owner.id, owner.pid)?;
         let owner_heartbeat_shutdown = CancellationToken::new();
@@ -147,6 +159,7 @@ impl FactoryDaemon {
         };
         let mut schedules = initialize_schedules(&mut ledger, &targets, Utc::now(), &owner.id);
         let mut active = HashMap::<String, usize>::new();
+        let mut retention_warning_shown = false;
         let mut runs = JoinSet::<(String, Result<()>)>::new();
         let mut github_polls = JoinSet::<Result<()>>::new();
         let workflow_count = targets
@@ -202,6 +215,8 @@ impl FactoryDaemon {
                     &self.codex,
                     &self.github,
                     &self.config.github,
+                    &self.config.workspace_root,
+                    &mut retention_warning_shown,
                     &cancellation,
                     &owner,
                 )?;
@@ -209,7 +224,12 @@ impl FactoryDaemon {
                 tokio::select! {
                     _ = cancellation.cancelled() => return Ok(()),
                     _ = recovery_interval.tick() => {
-                        report_recovery(ledger.recover_orphaned_runs()?);
+                        reconcile_recovery_state(
+                            &mut ledger,
+                            &self.ledger_path,
+                            &self.config.repositories[0],
+                            &self.config.workspace_root,
+                        )?;
                     }
                     _ = schedule_interval.tick() => {
                         schedules = initialize_schedules(
@@ -377,6 +397,153 @@ impl FactoryDaemon {
     }
 }
 
+fn reconcile_recovery_state(
+    ledger: &mut Ledger,
+    ledger_path: &Path,
+    canonical_repository: &Path,
+    workspace_root: &Path,
+) -> Result<()> {
+    report_recovery(ledger.recover_orphaned_runs()?);
+    reconcile_pending_cleanup(ledger, canonical_repository, workspace_root)?;
+    reconcile_terminal_workspaces(ledger, ledger_path, canonical_repository, workspace_root)
+}
+
+fn reconcile_pending_cleanup(
+    ledger: &Ledger,
+    canonical_repository: &Path,
+    workspace_root: &Path,
+) -> Result<()> {
+    let manager = WorkspaceManager::new(canonical_repository, workspace_root)?;
+    manager.reconcile_startup()?;
+    for workspace in ledger.task_workspaces_in_state("cleanup_pending")? {
+        if !workspace.path.exists() {
+            ledger.update_task_workspace_state(
+                workspace.task_id,
+                "cleaned",
+                Some("completed interrupted cleanup at startup"),
+            )?;
+            continue;
+        }
+        let cleanup = if workspace.kind == "proposal" {
+            manager.cleanup_disposable(&workspace.path).map(|_| ())
+        } else if workspace.status_summary.as_deref() == Some(OPERATOR_CONFIRMED_CLEANUP) {
+            manager.cleanup(&workspace.path, true).map(|_| ())
+        } else if workspace.status_summary.as_deref() == Some(AUTOMATIC_DELIVERY_CLEANUP) {
+            match automatic_cleanup_is_still_safe(ledger, &manager, &workspace) {
+                Ok(true) => manager.cleanup_clean(&workspace.path).map(|_| ()),
+                Ok(false) => {
+                    ledger.update_task_workspace_state(
+                        workspace.task_id,
+                        "retained",
+                        Some("retained after interrupted automatic cleanup revalidation"),
+                    )?;
+                    continue;
+                }
+                Err(error) => {
+                    ledger.update_task_workspace_state(
+                        workspace.task_id,
+                        "retained",
+                        Some("retained because automatic cleanup could not be revalidated"),
+                    )?;
+                    eprintln!(
+                        "Factory retained interrupted cleanup for task {}: {error:#}",
+                        workspace.task_id
+                    );
+                    continue;
+                }
+            }
+        } else {
+            ledger.update_task_workspace_state(
+                workspace.task_id,
+                "retained",
+                Some("retained cleanup with unknown confirmation provenance"),
+            )?;
+            continue;
+        };
+        match cleanup {
+            Ok(()) => ledger.update_task_workspace_state(
+                workspace.task_id,
+                "cleaned",
+                Some("completed interrupted cleanup at startup"),
+            )?,
+            Err(error) => eprintln!(
+                "Factory retained interrupted cleanup for task {}: {error:#}",
+                workspace.task_id
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn automatic_cleanup_is_still_safe(
+    ledger: &Ledger,
+    manager: &WorkspaceManager,
+    workspace: &TaskWorkspace,
+) -> Result<bool> {
+    let task = ledger
+        .task(workspace.task_id)?
+        .with_context(|| format!("task {} disappeared", workspace.task_id))?;
+    if task.state != TaskState::Succeeded {
+        return Ok(false);
+    }
+    let run = ledger
+        .runs_for_task(task.id)?
+        .into_iter()
+        .next_back()
+        .context("successful task has no run history")?;
+    let handed_off = run
+        .result
+        .as_deref()
+        .is_some_and(|result| !result.trim().is_empty())
+        && run.pull_request.is_some();
+    let clean = !manager.preview_cleanup(&workspace.path)?.dirty;
+    let published = match workspace.factory_branch.as_deref() {
+        Some(branch) => manager.branch_is_pushed(branch)?,
+        None => false,
+    };
+    Ok(clean && published && handed_off)
+}
+
+fn reconcile_terminal_workspaces(
+    ledger: &Ledger,
+    ledger_path: &Path,
+    canonical_repository: &Path,
+    workspace_root: &Path,
+) -> Result<()> {
+    for workspace in ledger.active_task_workspaces()? {
+        if matches!(workspace.state.as_str(), "cleanup_pending" | "retained") {
+            continue;
+        }
+        let task = ledger
+            .task(workspace.task_id)?
+            .with_context(|| format!("task {} disappeared", workspace.task_id))?;
+        if !task.state.is_terminal() {
+            continue;
+        }
+        let Some(run) = ledger.runs_for_task(task.id)?.into_iter().next_back() else {
+            ledger.update_task_workspace_state(
+                task.id,
+                "retained",
+                Some("terminal task has no run history for workspace reconciliation"),
+            )?;
+            continue;
+        };
+        if let Err(error) = finalize_task_workspace(
+            ledger_path,
+            canonical_repository,
+            workspace_root,
+            task.id,
+            run.id,
+        ) {
+            eprintln!(
+                "Factory retained terminal workspace for task {} during startup reconciliation: {error:#}",
+                task.id
+            );
+        }
+    }
+    Ok(())
+}
+
 fn report_recovery(report: crate::storage::RecoveryReport) {
     for run_id in report.recovered_run_ids {
         eprintln!("Factory queued one bounded recovery for interrupted run {run_id}");
@@ -429,6 +596,8 @@ fn dispatch_available(
     codex: &CodexRuntime,
     github: &GitHubClient,
     github_config: &crate::config::GitHubConfig,
+    workspace_root: &Path,
+    retention_warning_shown: &mut bool,
     cancellation: &CancellationToken,
     owner: &DaemonOwner,
 ) -> Result<()> {
@@ -457,13 +626,29 @@ fn dispatch_available(
             .iter()
             .map(|(repository, target)| (repository.clone(), target.path.display().to_string()))
             .collect::<HashMap<_, _>>();
+        let delivery_slots_available = ledger.retained_delivery_workspace_count()? < 10;
+        if !delivery_slots_available && !*retention_warning_shown {
+            let run_ids = ledger
+                .retained_delivery_run_ids()?
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            eprintln!(
+                "Factory delivery worktree limit reached; polling continues but delivery launch is paused. Run `factory cleanup <run-id>` for one of: {run_ids}"
+            );
+            *retention_warning_shown = true;
+        } else if delivery_slots_available {
+            *retention_warning_shown = false;
+        }
         let mut worker_ledger = Ledger::open(ledger_path)?;
-        let Some(claimed) = ledger.claim_and_start_run_with_workdirs(
+        let Some(claimed) = ledger.claim_and_start_run_with_workdirs_filtered(
             &available,
             &workflow_runtimes,
             &owner.id,
             owner.pid,
             &working_directories,
+            delivery_slots_available,
         )?
         else {
             break;
@@ -502,33 +687,6 @@ fn dispatch_available(
         } else {
             None
         };
-        let prompt_result = execution_prompt(
-            &task,
-            run_id,
-            &target,
-            &workflow,
-            prior_session.as_deref(),
-            prior_successful_run_at,
-        )
-        .map(|prompt| {
-            recovery_source.as_ref().map_or(prompt.clone(), |previous| {
-                recovery_prompt(&prompt, previous, &target)
-            })
-        });
-        let prompt = match prompt_result {
-            Ok(prompt) => prompt,
-            Err(error) => {
-                worker_ledger.finish_run_and_task(
-                    run_id,
-                    RunOutcome::Failed,
-                    None,
-                    Some(&format!("{error:#}")),
-                    None,
-                )?;
-                eprintln!("Factory rejected claimed task {}: {error:#}", task.id);
-                continue;
-            }
-        };
         if workflow.runtime != "codex" {
             let error = format!(
                 "unsupported runtime {:?}; Factory v1 supports codex",
@@ -557,6 +715,8 @@ fn dispatch_available(
         let codex = codex.clone();
         let github = github.clone();
         let github_config = github_config.clone();
+        let workspace_root = workspace_root.to_owned();
+        let finalization_ledger_path = ledger_path.to_owned();
         let cancellation = cancellation.clone();
         runs.spawn(async move {
             if task.kind == "ticket"
@@ -583,14 +743,64 @@ fn dispatch_available(
                 eprintln!("Factory authorization rejected task {}: {error:#}", task.id);
                 return (repository, Ok(()));
             }
+            let execution_target = match prepare_task_workspace(
+                &mut worker_ledger,
+                &github,
+                &target,
+                &workspace_root,
+                &task,
+                run_id,
+                &cancellation,
+            )
+            .await
+            {
+                Ok(target) => target,
+                Err(error) => {
+                    if let Err(finish_error) = worker_ledger.fail_prelaunch_and_requeue(
+                        run_id,
+                        &format!("workspace preparation failed: {error:#}"),
+                    ) {
+                        return (repository, Err(finish_error));
+                    }
+                    eprintln!(
+                        "Factory workspace preparation failed for task {}: {error:#}",
+                        task.id
+                    );
+                    return (repository, Ok(()));
+                }
+            };
+            let prompt = match execution_prompt(
+                &task,
+                run_id,
+                &execution_target,
+                &workflow,
+                prior_session.as_deref(),
+                prior_successful_run_at,
+            )
+            .map(|prompt| {
+                recovery_source.as_ref().map_or(prompt.clone(), |previous| {
+                    recovery_prompt(&prompt, previous, &execution_target)
+                })
+            }) {
+                Ok(prompt) => prompt,
+                Err(error) => {
+                    if let Err(finish_error) = worker_ledger.fail_prelaunch_and_requeue(
+                        run_id,
+                        &format!("execution prompt preparation failed: {error:#}"),
+                    ) {
+                        return (repository, Err(finish_error));
+                    }
+                    return (repository, Ok(()));
+                }
+            };
             eprintln!(
-                "Factory runtime delegated: run={run_id} runtime={} cwd={} worktree=workflow-managed",
+                "Factory runtime delegated: run={run_id} runtime={} cwd={} worktree=factory-owned",
                 workflow.runtime,
-                target.path.display()
+                execution_target.path.display()
             );
             let result = execute_task(
                 worker_ledger,
-                &target,
+                &execution_target,
                 &workflow,
                 &codex,
                 run_id,
@@ -599,8 +809,244 @@ fn dispatch_available(
                 recovery_source.and_then(|previous| previous.session_id),
             )
             .await;
+            if let Err(error) = finalize_task_workspace(
+                &finalization_ledger_path,
+                &target.path,
+                &workspace_root,
+                task.id,
+                run_id,
+            ) {
+                eprintln!("Factory workspace finalization failed for run {run_id}: {error:#}");
+            }
             (repository, result)
         });
+    }
+    Ok(())
+}
+
+async fn prepare_task_workspace(
+    ledger: &mut Ledger,
+    github: &GitHubClient,
+    canonical_target: &RepositoryTarget,
+    workspace_root: &Path,
+    task: &Task,
+    run_id: i64,
+    cancellation: &CancellationToken,
+) -> Result<RepositoryTarget> {
+    let workspace_root = workspace_root
+        .canonicalize()
+        .context("failed to canonicalize Factory workspace root")?;
+    let manager = WorkspaceManager::new(&canonical_target.path, &workspace_root)?;
+    let existing = ledger.task_workspace(task.id)?;
+    let reuse = match existing.as_ref().map(|workspace| workspace.state.as_str()) {
+        None => DeliveryReuse::Reject,
+        Some("preparing") => DeliveryReuse::ExactBase,
+        Some(_) => DeliveryReuse::Owned,
+    };
+    let workspace = if let Some(existing) = existing {
+        if existing.state == "cleaned" {
+            bail!("task {} workspace was already cleaned", task.id);
+        }
+        existing
+    } else {
+        let base_branch = github
+            .repository_default_branch(&canonical_target.path, cancellation)
+            .await?;
+        let base_sha = manager.fetch_default_branch(&base_branch)?;
+        let confirmed_branch = github
+            .repository_default_branch(&canonical_target.path, cancellation)
+            .await?;
+        if confirmed_branch != base_branch {
+            bail!(
+                "GitHub default branch changed from {base_branch:?} to {confirmed_branch:?} during workspace preparation"
+            );
+        }
+        let now = 0;
+        let candidate = if task.kind == "ticket" {
+            let ticket = ticket_context(task)?;
+            TaskWorkspace {
+                task_id: task.id,
+                kind: "delivery".to_owned(),
+                repository: task.repository.clone(),
+                base_branch,
+                base_sha,
+                factory_branch: Some(WorkspaceManager::delivery_branch(
+                    ticket.number,
+                    &ticket.title,
+                )),
+                path: workspace_root.join(format!("issue-{}", ticket.number)),
+                state: "preparing".to_owned(),
+                status_summary: None,
+                created_at: now,
+                updated_at: now,
+                cleaned_at: None,
+            }
+        } else {
+            TaskWorkspace {
+                task_id: task.id,
+                kind: "proposal".to_owned(),
+                repository: task.repository.clone(),
+                base_branch,
+                base_sha,
+                factory_branch: None,
+                path: workspace_root.join(format!("proposal-{}", task.id)),
+                state: "preparing".to_owned(),
+                status_summary: None,
+                created_at: now,
+                updated_at: now,
+                cleaned_at: None,
+            }
+        };
+        ledger.reserve_task_workspace(&candidate)?
+    };
+    let prepared = if workspace.kind == "delivery" {
+        let ticket = ticket_context(task)?;
+        manager.prepare_delivery(
+            ticket.number,
+            &ticket.title,
+            &workspace.base_branch,
+            &workspace.base_sha,
+            reuse,
+        )?
+    } else {
+        manager.prepare_proposal(task.id, &workspace.base_branch, &workspace.base_sha, reuse)?
+    };
+    if prepared.path != workspace.path
+        || prepared.branch != workspace.factory_branch
+        || prepared.base_branch != workspace.base_branch
+        || prepared.base_sha != workspace.base_sha
+    {
+        bail!(
+            "Git workspace does not match task {} durable reservation",
+            task.id
+        );
+    }
+    ledger.update_task_workspace_state(task.id, "ready", None)?;
+    ledger.record_run_workspace(
+        run_id,
+        &prepared.path,
+        &prepared.base_branch,
+        &prepared.base_sha,
+        prepared.branch.as_deref(),
+        match prepared.kind {
+            WorkspaceKind::Delivery => "delivery",
+            WorkspaceKind::Proposal => "proposal",
+        },
+    )?;
+    Ok(RepositoryTarget {
+        path: prepared.path,
+        workflows: canonical_target.workflows.clone(),
+    })
+}
+
+fn ticket_context(task: &Task) -> Result<TicketContext> {
+    let payload = task
+        .payload
+        .as_deref()
+        .context("ticket task has no source payload")?;
+    serde_json::from_str(payload).context("ticket task contains invalid source context")
+}
+
+fn finalize_task_workspace(
+    ledger_path: &Path,
+    canonical_repository: &Path,
+    workspace_root: &Path,
+    task_id: i64,
+    run_id: i64,
+) -> Result<()> {
+    let ledger = Ledger::open(ledger_path)?;
+    let task = ledger
+        .task(task_id)?
+        .with_context(|| format!("task {task_id} disappeared during workspace finalization"))?;
+    let workspace = ledger
+        .task_workspace(task_id)?
+        .with_context(|| format!("task {task_id} has no workspace to finalize"))?;
+    if !task.state.is_terminal() {
+        return Ok(());
+    }
+    let manager = WorkspaceManager::new(canonical_repository, workspace_root)?;
+    if workspace.kind == "proposal" {
+        ledger.update_task_workspace_state(
+            task_id,
+            "cleanup_pending",
+            Some("terminal proposal"),
+        )?;
+        if !workspace.path.exists() {
+            ledger.update_task_workspace_state(
+                task_id,
+                "cleaned",
+                Some("terminal proposal workspace was already absent"),
+            )?;
+            return Ok(());
+        }
+        let preview = manager.cleanup_disposable(&workspace.path)?;
+        let summary = if preview.dirty {
+            "discarded terminal proposal workspace with uncommitted changes"
+        } else {
+            "removed terminal proposal workspace"
+        };
+        ledger.update_task_workspace_state(task_id, "cleaned", Some(summary))?;
+        return Ok(());
+    }
+    if !workspace.path.exists() {
+        ledger.update_task_workspace_state(
+            task_id,
+            "cleaned",
+            Some("terminal delivery workspace was already absent; local branch preserved"),
+        )?;
+        return Ok(());
+    }
+    let run = ledger
+        .run(run_id)?
+        .with_context(|| format!("run {run_id} disappeared during workspace finalization"))?;
+    let preview = match manager.preview_cleanup(&workspace.path) {
+        Ok(preview) => preview,
+        Err(error) => {
+            ledger.update_task_workspace_state(
+                task_id,
+                "retained",
+                Some("retained delivery because Git worktree inspection failed"),
+            )?;
+            return Err(error.context("failed to inspect terminal delivery workspace"));
+        }
+    };
+    let published = match workspace.factory_branch.as_deref() {
+        Some(branch) => match manager.branch_is_pushed(branch) {
+            Ok(published) => published,
+            Err(error) => {
+                ledger.update_task_workspace_state(
+                    task_id,
+                    "retained",
+                    Some("retained delivery because remote branch inspection failed"),
+                )?;
+                return Err(error.context("failed to inspect published delivery branch"));
+            }
+        },
+        None => false,
+    };
+    let handed_off = run
+        .result
+        .as_deref()
+        .is_some_and(|result| !result.trim().is_empty())
+        && run.pull_request.is_some();
+    if task.state == TaskState::Succeeded && !preview.dirty && published && handed_off {
+        ledger.update_task_workspace_state(
+            task_id,
+            "cleanup_pending",
+            Some(AUTOMATIC_DELIVERY_CLEANUP),
+        )?;
+        manager.cleanup_clean(&workspace.path)?;
+        ledger.update_task_workspace_state(
+            task_id,
+            "cleaned",
+            Some("delivery worktree removed"),
+        )?;
+    } else {
+        let summary = format!(
+            "retained delivery: task={:?} dirty={} published={} handoff={}",
+            task.state, preview.dirty, published, handed_off
+        );
+        ledger.update_task_workspace_state(task_id, "retained", Some(&summary))?;
     }
     Ok(())
 }
@@ -1579,6 +2025,10 @@ mod tests {
             working_directory: Some(repository.display().to_string()),
             recovery_of: None,
             recovery_attempt: 0,
+            base_branch: None,
+            base_sha: None,
+            factory_branch: None,
+            workspace_kind: None,
         };
 
         let prompt = recovery_prompt("base", &previous, &target);
@@ -1589,5 +2039,251 @@ mod tests {
         assert!(prompt.contains("https://github.com/owainlewis/factory/pull/99"));
         assert!(prompt.contains("Codex event: item.completed"));
         assert!(prompt.contains("runtime interrupted"));
+    }
+
+    #[test]
+    fn startup_retains_delivery_that_became_dirty_during_automatic_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repository");
+        let workspace_root = temp.path().join("worktrees");
+        std::fs::create_dir(&repository).unwrap();
+        std::fs::create_dir(&workspace_root).unwrap();
+        let git = |directory: &Path, arguments: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(arguments)
+                .current_dir(directory)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {} failed: {}",
+                arguments.join(" "),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&repository, &["init", "-b", "main"]);
+        git(
+            &repository,
+            &["config", "user.email", "factory@example.test"],
+        );
+        git(&repository, &["config", "user.name", "Factory Test"]);
+        std::fs::write(repository.join("README.md"), "fixture\n").unwrap();
+        git(&repository, &["add", "README.md"]);
+        git(&repository, &["commit", "-m", "fixture"]);
+        let remote = temp.path().join("origin.git");
+        git(
+            temp.path(),
+            &[
+                "clone",
+                "--bare",
+                repository.to_str().unwrap(),
+                remote.to_str().unwrap(),
+            ],
+        );
+        git(
+            &repository,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        let repository = repository.canonicalize().unwrap();
+        let workspace_root = workspace_root.canonicalize().unwrap();
+        let manager = WorkspaceManager::new(&repository, &workspace_root).unwrap();
+        let base_sha = manager.fetch_default_branch("main").unwrap();
+        let prepared = manager
+            .prepare_delivery(39, "Cleanup race", "main", &base_sha, DeliveryReuse::Reject)
+            .unwrap();
+        let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+        let task = ledger
+            .enqueue(&TaskIdentity::ticket("example/repo", "deliver", "39", "approval").unwrap())
+            .unwrap()
+            .task;
+        ledger.claim_next().unwrap().unwrap();
+        let run = ledger.start_run(task.id, "codex").unwrap();
+        ledger
+            .reserve_task_workspace(&TaskWorkspace {
+                task_id: task.id,
+                kind: "delivery".into(),
+                repository: task.repository,
+                base_branch: "main".into(),
+                base_sha: base_sha.clone(),
+                factory_branch: prepared.branch.clone(),
+                path: prepared.path.clone(),
+                state: "preparing".into(),
+                status_summary: None,
+                created_at: 0,
+                updated_at: 0,
+                cleaned_at: None,
+            })
+            .unwrap();
+        ledger
+            .record_run_workspace(
+                run.id,
+                &prepared.path,
+                "main",
+                &base_sha,
+                prepared.branch.as_deref(),
+                "delivery",
+            )
+            .unwrap();
+        ledger
+            .observe_run(
+                run.id,
+                None,
+                None,
+                None,
+                Some("https://github.com/example/repo/pull/1"),
+                None,
+            )
+            .unwrap();
+        ledger
+            .finish_run_and_task_terminal(
+                run.id,
+                RunOutcome::Succeeded,
+                Some("handoff"),
+                None,
+                None,
+            )
+            .unwrap();
+        ledger
+            .update_task_workspace_state(
+                task.id,
+                "cleanup_pending",
+                Some(AUTOMATIC_DELIVERY_CLEANUP),
+            )
+            .unwrap();
+        std::fs::write(prepared.path.join("late-change.txt"), "keep me\n").unwrap();
+
+        reconcile_pending_cleanup(&ledger, &repository, &workspace_root).unwrap();
+
+        assert!(prepared.path.join("late-change.txt").exists());
+        assert_eq!(
+            ledger.task_workspace(task.id).unwrap().unwrap().state,
+            "retained"
+        );
+        std::fs::rename(&remote, temp.path().join("origin-unavailable.git")).unwrap();
+        reconcile_terminal_workspaces(&ledger, ledger.path(), &repository, &workspace_root)
+            .unwrap();
+        assert_eq!(
+            ledger.task_workspace(task.id).unwrap().unwrap().state,
+            "retained"
+        );
+
+        let proposal_task = ledger
+            .enqueue(
+                &TaskIdentity::scheduled("example/repo", "review", "2026-07-21T10:00:00Z").unwrap(),
+            )
+            .unwrap()
+            .task;
+        ledger.claim_next().unwrap().unwrap();
+        let proposal_run = ledger.start_run(proposal_task.id, "codex").unwrap();
+        let proposal = manager
+            .prepare_proposal(proposal_task.id, "main", &base_sha, DeliveryReuse::Reject)
+            .unwrap();
+        ledger
+            .reserve_task_workspace(&TaskWorkspace {
+                task_id: proposal_task.id,
+                kind: "proposal".into(),
+                repository: proposal_task.repository,
+                base_branch: "main".into(),
+                base_sha: base_sha.clone(),
+                factory_branch: None,
+                path: proposal.path.clone(),
+                state: "preparing".into(),
+                status_summary: None,
+                created_at: 0,
+                updated_at: 0,
+                cleaned_at: None,
+            })
+            .unwrap();
+        ledger
+            .record_run_workspace(
+                proposal_run.id,
+                &proposal.path,
+                "main",
+                &base_sha,
+                None,
+                "proposal",
+            )
+            .unwrap();
+        ledger
+            .update_task_workspace_state(proposal_task.id, "ready", None)
+            .unwrap();
+        ledger
+            .finish_run_and_task_terminal(
+                proposal_run.id,
+                RunOutcome::Cancelled,
+                None,
+                Some("daemon stopped before finalization"),
+                None,
+            )
+            .unwrap();
+
+        reconcile_terminal_workspaces(&ledger, ledger.path(), &repository, &workspace_root)
+            .unwrap();
+
+        assert!(!proposal.path.exists());
+        assert_eq!(
+            ledger
+                .task_workspace(proposal_task.id)
+                .unwrap()
+                .unwrap()
+                .state,
+            "cleaned"
+        );
+
+        let absent_task = ledger
+            .enqueue(&TaskIdentity::ticket("example/repo", "deliver", "40", "approval").unwrap())
+            .unwrap()
+            .task;
+        ledger.claim_next().unwrap().unwrap();
+        let absent_run = ledger.start_run(absent_task.id, "codex").unwrap();
+        let absent_path = workspace_root.join("issue-40");
+        ledger
+            .reserve_task_workspace(&TaskWorkspace {
+                task_id: absent_task.id,
+                kind: "delivery".into(),
+                repository: absent_task.repository,
+                base_branch: "main".into(),
+                base_sha: base_sha.clone(),
+                factory_branch: Some("factory/40-never-created".into()),
+                path: absent_path.clone(),
+                state: "preparing".into(),
+                status_summary: None,
+                created_at: 0,
+                updated_at: 0,
+                cleaned_at: None,
+            })
+            .unwrap();
+        ledger
+            .record_run_workspace(
+                absent_run.id,
+                &absent_path,
+                "main",
+                &base_sha,
+                Some("factory/40-never-created"),
+                "delivery",
+            )
+            .unwrap();
+        ledger
+            .finish_run_and_task_terminal(
+                absent_run.id,
+                RunOutcome::Failed,
+                None,
+                Some("workspace creation failed"),
+                None,
+            )
+            .unwrap();
+
+        reconcile_terminal_workspaces(&ledger, ledger.path(), &repository, &workspace_root)
+            .unwrap();
+
+        assert!(!absent_path.exists());
+        assert_eq!(
+            ledger
+                .task_workspace(absent_task.id)
+                .unwrap()
+                .unwrap()
+                .state,
+            "cleaned"
+        );
     }
 }

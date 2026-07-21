@@ -275,8 +275,8 @@ pub fn repository_data_directory(repository: &Path) -> Result<PathBuf> {
 }
 
 pub fn repository_remote_identity(repository: &Path) -> Result<String> {
-    let origin = git_output(repository, &["remote", "get-url", "origin"])
-        .context("repository has no readable origin remote")?;
+    let origin = git_output(repository, &["config", "--get", "remote.origin.url"])
+        .context("repository has no configured origin remote")?;
     canonical_github_identity(origin.trim()).context("origin is not a supported GitHub remote")
 }
 

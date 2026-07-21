@@ -18,9 +18,12 @@ use factory::inspection::{
 use factory::runtime::{
     CodexRuntime, RuntimeCancelled, Termination, write_stderr_best_effort, write_stdout_best_effort,
 };
-use factory::storage::{CancellationRequest, DATABASE_NAME, Ledger};
+use factory::storage::{
+    CancellationRequest, DATABASE_NAME, Ledger, OPERATOR_CONFIRMED_CLEANUP, TaskState,
+};
 use factory::workflow::WorkflowCatalog;
 use factory::workflow_create::{CreateWorkflowOptions, create_workflow};
+use factory::workspace::WorkspaceManager;
 
 #[derive(Debug, Parser)]
 #[command(name = "factory", version, about)]
@@ -135,6 +138,19 @@ enum Command {
         #[arg(long)]
         json: bool,
         /// Path to the Factory configuration file used to locate the data directory.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Directory containing the durable Factory database.
+        #[arg(long)]
+        data_directory: Option<PathBuf>,
+    },
+    /// Preview or confirm removal of one retained Factory worktree.
+    Cleanup {
+        run_id: i64,
+        /// Confirm removal after reviewing the preview. Dirty files are discarded.
+        #[arg(long)]
+        confirm: bool,
+        /// Path to the repository-local Factory configuration file.
         #[arg(long)]
         config: Option<PathBuf>,
         /// Directory containing the durable Factory database.
@@ -434,6 +450,96 @@ async fn run_cli() -> Result<u8> {
                     "Run {}: {} ({})",
                     response.run_id, response.message, response.status
                 );
+            }
+        }
+        Command::Cleanup {
+            run_id,
+            confirm,
+            config,
+            data_directory,
+        } => {
+            let path = resolve_config_path(config)?;
+            let config = Config::load(&path)?;
+            let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
+            let ledger = Ledger::open_in(&data_directory)?;
+            let run = ledger
+                .run(run_id)?
+                .with_context(|| format!("run {run_id} does not exist"))?;
+            let task = ledger
+                .task(run.task_id)?
+                .with_context(|| format!("task {} for run {run_id} does not exist", run.task_id))?;
+            let workspace = ledger
+                .task_workspace(task.id)?
+                .with_context(|| format!("run {run_id} has no Factory-owned workspace"))?;
+            if workspace.state == "cleaned" {
+                println!("run: {run_id}");
+                println!("workspace: {}", workspace.path.display());
+                println!("branch preserved: true");
+                println!("action: workspace reservation is already cleaned; no changes made");
+                return Ok(0);
+            }
+            let manager = WorkspaceManager::new(&config.repositories[0], &config.workspace_root)?;
+            if !workspace.path.exists() {
+                println!("run: {run_id}");
+                println!("workspace: {}", workspace.path.display());
+                println!(
+                    "branch: {}",
+                    workspace.factory_branch.as_deref().unwrap_or("detached")
+                );
+                println!("workspace exists: false");
+                println!("branch preserved: true");
+                if !confirm {
+                    println!(
+                        "action: preview only; rerun with --confirm to release the workspace reservation"
+                    );
+                } else {
+                    if matches!(task.state, TaskState::Queued | TaskState::Running) {
+                        bail!(
+                            "refusing to release workspace for {:?} task {}; cancel or finish it first",
+                            task.state,
+                            task.id
+                        );
+                    }
+                    ledger.update_task_workspace_state(
+                        task.id,
+                        "cleaned",
+                        Some("operator confirmed absent workspace; local branch preserved"),
+                    )?;
+                    println!("action: released workspace reservation; local branch preserved");
+                }
+                return Ok(0);
+            }
+            let preview = manager.preview_cleanup(&workspace.path)?;
+            println!("run: {run_id}");
+            println!("workspace: {}", preview.path.display());
+            println!(
+                "branch: {}",
+                preview.branch.as_deref().unwrap_or("detached")
+            );
+            println!("dirty: {}", preview.dirty);
+            println!("branch preserved: true");
+            if !confirm {
+                println!("action: preview only; rerun with --confirm to remove the worktree");
+            } else {
+                if matches!(task.state, TaskState::Queued | TaskState::Running) {
+                    bail!(
+                        "refusing to clean workspace for {:?} task {}; cancel or finish it first",
+                        task.state,
+                        task.id
+                    );
+                }
+                ledger.update_task_workspace_state(
+                    task.id,
+                    "cleanup_pending",
+                    Some(OPERATOR_CONFIRMED_CLEANUP),
+                )?;
+                manager.cleanup(&workspace.path, true)?;
+                ledger.update_task_workspace_state(
+                    task.id,
+                    "cleaned",
+                    Some("operator-confirmed cleanup completed"),
+                )?;
+                println!("action: removed worktree; local branch preserved");
             }
         }
     }
