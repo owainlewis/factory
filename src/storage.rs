@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 pub const DATABASE_NAME: &str = "factory.sqlite3";
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION_ID_BYTES: usize = 1024;
@@ -251,6 +251,7 @@ pub struct ProjectClaimEvidence<'a> {
 pub struct TaskWorkspace {
     pub task_id: i64,
     pub kind: String,
+    pub backend: String,
     pub repository: String,
     pub base_branch: String,
     pub base_sha: String,
@@ -261,6 +262,22 @@ pub struct TaskWorkspace {
     pub created_at: i64,
     pub updated_at: i64,
     pub cleaned_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunContainer {
+    pub run_id: i64,
+    pub container_id: String,
+    pub instance_id: String,
+    pub image_ref: String,
+    pub image_id: String,
+    pub limits_json: String,
+    pub state: String,
+    pub exit_code: Option<i32>,
+    pub logs: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub removed_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -856,7 +873,7 @@ impl Ledger {
     pub fn task_workspace(&self, task_id: i64) -> Result<Option<TaskWorkspace>> {
         self.connection
             .query_row(
-                "SELECT task_id, kind, repository, base_branch, base_sha, factory_branch, path,
+                "SELECT task_id, kind, backend, repository, base_branch, base_sha, factory_branch, path,
                         state, status_summary, created_at, updated_at, cleaned_at
                  FROM task_workspaces WHERE task_id = ?1",
                 [task_id],
@@ -864,16 +881,17 @@ impl Ledger {
                     Ok(TaskWorkspace {
                         task_id: row.get(0)?,
                         kind: row.get(1)?,
-                        repository: row.get(2)?,
-                        base_branch: row.get(3)?,
-                        base_sha: row.get(4)?,
-                        factory_branch: row.get(5)?,
-                        path: PathBuf::from(row.get::<_, String>(6)?),
-                        state: row.get(7)?,
-                        status_summary: row.get(8)?,
-                        created_at: row.get(9)?,
-                        updated_at: row.get(10)?,
-                        cleaned_at: row.get(11)?,
+                        backend: row.get(2)?,
+                        repository: row.get(3)?,
+                        base_branch: row.get(4)?,
+                        base_sha: row.get(5)?,
+                        factory_branch: row.get(6)?,
+                        path: PathBuf::from(row.get::<_, String>(7)?),
+                        state: row.get(8)?,
+                        status_summary: row.get(9)?,
+                        created_at: row.get(10)?,
+                        updated_at: row.get(11)?,
+                        cleaned_at: row.get(12)?,
                     })
                 },
             )
@@ -914,12 +932,13 @@ impl Ledger {
         transaction
             .execute(
                 "INSERT INTO task_workspaces
-                 (task_id, kind, repository, base_branch, base_sha, factory_branch, path,
+                 (task_id, kind, backend, repository, base_branch, base_sha, factory_branch, path,
                   state, status_summary, created_at, updated_at, cleaned_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'preparing', NULL, ?8, ?8, NULL)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'preparing', NULL, ?9, ?9, NULL)",
                 params![
                     workspace.task_id,
                     workspace.kind,
+                    workspace.backend,
                     workspace.repository,
                     workspace.base_branch,
                     workspace.base_sha,
@@ -963,6 +982,93 @@ impl Ledger {
         Ok(())
     }
 
+    pub fn record_run_container(&self, container: &RunContainer) -> Result<()> {
+        let running = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runs WHERE id = ?1 AND outcome = 'running')",
+            [container.run_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !running {
+            bail!(
+                "run {} must be running before container persistence",
+                container.run_id
+            );
+        }
+        self.connection
+            .execute(
+                "INSERT INTO run_containers
+                 (run_id, container_id, instance_id, image_ref, image_id, limits_json,
+                  state, exit_code, logs, created_at, updated_at, removed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11)",
+                params![
+                    container.run_id,
+                    container.container_id,
+                    container.instance_id,
+                    container.image_ref,
+                    container.image_id,
+                    container.limits_json,
+                    container.state,
+                    container.exit_code,
+                    container.logs,
+                    container.created_at,
+                    container.removed_at,
+                ],
+            )
+            .context("failed to persist run container")?;
+        Ok(())
+    }
+
+    pub fn finish_run_container(
+        &self,
+        run_id: i64,
+        state: &str,
+        exit_code: Option<i32>,
+        logs: Option<&str>,
+        removed: bool,
+    ) -> Result<()> {
+        let logs = logs.map(|value| truncate_tail_utf8(value, MAX_ACTIVITY_BYTES));
+        let now = now_millis()?;
+        let changed = self.connection.execute(
+            "UPDATE run_containers SET state = ?1, exit_code = ?2,
+                    logs = COALESCE(?3, logs), updated_at = ?4,
+                    removed_at = CASE WHEN ?5 THEN ?4 ELSE removed_at END
+             WHERE run_id = ?6",
+            params![state, exit_code, logs, now, removed, run_id],
+        )?;
+        if changed != 1 {
+            bail!("run {run_id} has no persisted container");
+        }
+        Ok(())
+    }
+
+    pub fn run_container(&self, run_id: i64) -> Result<Option<RunContainer>> {
+        self.connection
+            .query_row(
+                "SELECT run_id, container_id, instance_id, image_ref, image_id, limits_json,
+                        state, exit_code, logs, created_at, updated_at, removed_at
+                 FROM run_containers WHERE run_id = ?1",
+                [run_id],
+                |row| {
+                    Ok(RunContainer {
+                        run_id: row.get(0)?,
+                        container_id: row.get(1)?,
+                        instance_id: row.get(2)?,
+                        image_ref: row.get(3)?,
+                        image_id: row.get(4)?,
+                        limits_json: row.get(5)?,
+                        state: row.get(6)?,
+                        exit_code: row.get(7)?,
+                        logs: row.get(8)?,
+                        created_at: row.get(9)?,
+                        updated_at: row.get(10)?,
+                        removed_at: row.get(11)?,
+                    })
+                },
+            )
+            .optional()
+            .context("failed to read run container")
+    }
+
     pub fn retained_delivery_workspace_count(&self) -> Result<usize> {
         let count = self.connection.query_row(
             "SELECT COUNT(*) FROM task_workspaces
@@ -991,7 +1097,7 @@ impl Ledger {
 
     pub fn task_workspaces_in_state(&self, state: &str) -> Result<Vec<TaskWorkspace>> {
         let mut statement = self.connection.prepare(
-            "SELECT task_id, kind, repository, base_branch, base_sha, factory_branch, path,
+            "SELECT task_id, kind, backend, repository, base_branch, base_sha, factory_branch, path,
                     state, status_summary, created_at, updated_at, cleaned_at
              FROM task_workspaces WHERE state = ?1 ORDER BY task_id",
         )?;
@@ -1000,16 +1106,17 @@ impl Ledger {
                 Ok(TaskWorkspace {
                     task_id: row.get(0)?,
                     kind: row.get(1)?,
-                    repository: row.get(2)?,
-                    base_branch: row.get(3)?,
-                    base_sha: row.get(4)?,
-                    factory_branch: row.get(5)?,
-                    path: PathBuf::from(row.get::<_, String>(6)?),
-                    state: row.get(7)?,
-                    status_summary: row.get(8)?,
-                    created_at: row.get(9)?,
-                    updated_at: row.get(10)?,
-                    cleaned_at: row.get(11)?,
+                    backend: row.get(2)?,
+                    repository: row.get(3)?,
+                    base_branch: row.get(4)?,
+                    base_sha: row.get(5)?,
+                    factory_branch: row.get(6)?,
+                    path: PathBuf::from(row.get::<_, String>(7)?),
+                    state: row.get(8)?,
+                    status_summary: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                    cleaned_at: row.get(12)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -1018,7 +1125,7 @@ impl Ledger {
 
     pub fn active_task_workspaces(&self) -> Result<Vec<TaskWorkspace>> {
         let mut statement = self.connection.prepare(
-            "SELECT task_id, kind, repository, base_branch, base_sha, factory_branch, path,
+            "SELECT task_id, kind, backend, repository, base_branch, base_sha, factory_branch, path,
                     state, status_summary, created_at, updated_at, cleaned_at
              FROM task_workspaces WHERE state != 'cleaned' ORDER BY task_id",
         )?;
@@ -1027,16 +1134,17 @@ impl Ledger {
                 Ok(TaskWorkspace {
                     task_id: row.get(0)?,
                     kind: row.get(1)?,
-                    repository: row.get(2)?,
-                    base_branch: row.get(3)?,
-                    base_sha: row.get(4)?,
-                    factory_branch: row.get(5)?,
-                    path: PathBuf::from(row.get::<_, String>(6)?),
-                    state: row.get(7)?,
-                    status_summary: row.get(8)?,
-                    created_at: row.get(9)?,
-                    updated_at: row.get(10)?,
-                    cleaned_at: row.get(11)?,
+                    backend: row.get(2)?,
+                    repository: row.get(3)?,
+                    base_branch: row.get(4)?,
+                    base_sha: row.get(5)?,
+                    factory_branch: row.get(6)?,
+                    path: PathBuf::from(row.get::<_, String>(7)?),
+                    state: row.get(8)?,
+                    status_summary: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                    cleaned_at: row.get(12)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -2233,6 +2341,9 @@ fn migrate(connection: &Connection) -> Result<()> {
         if version < 9 {
             migrate_v9(connection)?;
         }
+        if version < 10 {
+            migrate_v10(connection)?;
+        }
         Ok(())
     })();
     match result {
@@ -2499,6 +2610,35 @@ fn migrate_v9(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v10(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "ALTER TABLE task_workspaces ADD COLUMN backend TEXT NOT NULL DEFAULT 'worktree'
+                 CHECK (backend IN ('worktree', 'clone'));
+             CREATE TABLE run_containers (
+                 run_id INTEGER PRIMARY KEY REFERENCES runs(id),
+                 container_id TEXT NOT NULL UNIQUE,
+                 instance_id TEXT NOT NULL,
+                 image_ref TEXT NOT NULL,
+                 image_id TEXT NOT NULL,
+                 limits_json TEXT NOT NULL,
+                 state TEXT NOT NULL,
+                 exit_code INTEGER,
+                 logs TEXT,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 removed_at INTEGER
+             );
+             CREATE INDEX run_containers_instance_state_idx
+                 ON run_containers(instance_id, state, run_id);
+             INSERT INTO schema_migrations(version, applied_at)
+                 VALUES (10, unixepoch('subsec') * 1000);
+             PRAGMA user_version = 10;",
+        )
+        .context("failed to migrate SQLite ledger to version 10")?;
+    Ok(())
+}
+
 fn query_task(connection: &Connection, id: i64) -> Result<Option<Task>> {
     connection
         .query_row("SELECT * FROM tasks WHERE id = ?1", [id], row_to_task)
@@ -2509,7 +2649,7 @@ fn query_task(connection: &Connection, id: i64) -> Result<Option<Task>> {
 fn query_task_workspace(connection: &Connection, task_id: i64) -> Result<Option<TaskWorkspace>> {
     connection
         .query_row(
-            "SELECT task_id, kind, repository, base_branch, base_sha, factory_branch, path,
+            "SELECT task_id, kind, backend, repository, base_branch, base_sha, factory_branch, path,
                     state, status_summary, created_at, updated_at, cleaned_at
              FROM task_workspaces WHERE task_id = ?1",
             [task_id],
@@ -2517,16 +2657,17 @@ fn query_task_workspace(connection: &Connection, task_id: i64) -> Result<Option<
                 Ok(TaskWorkspace {
                     task_id: row.get(0)?,
                     kind: row.get(1)?,
-                    repository: row.get(2)?,
-                    base_branch: row.get(3)?,
-                    base_sha: row.get(4)?,
-                    factory_branch: row.get(5)?,
-                    path: PathBuf::from(row.get::<_, String>(6)?),
-                    state: row.get(7)?,
-                    status_summary: row.get(8)?,
-                    created_at: row.get(9)?,
-                    updated_at: row.get(10)?,
-                    cleaned_at: row.get(11)?,
+                    backend: row.get(2)?,
+                    repository: row.get(3)?,
+                    base_branch: row.get(4)?,
+                    base_sha: row.get(5)?,
+                    factory_branch: row.get(6)?,
+                    path: PathBuf::from(row.get::<_, String>(7)?),
+                    state: row.get(8)?,
+                    status_summary: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                    cleaned_at: row.get(12)?,
                 })
             },
         )
@@ -2536,6 +2677,7 @@ fn query_task_workspace(connection: &Connection, task_id: i64) -> Result<Option<
 
 fn ensure_same_workspace(existing: &TaskWorkspace, requested: &TaskWorkspace) -> Result<()> {
     if existing.kind != requested.kind
+        || existing.backend != requested.backend
         || existing.repository != requested.repository
         || existing.base_branch != requested.base_branch
         || existing.base_sha != requested.base_sha

@@ -84,9 +84,17 @@ fn validates_configurable_github_project_states() {
     let (temp, path, repository, data_home) = valid_config();
     let contents =
         fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/config.toml")).unwrap();
+    let auth = temp.path().join("codex/auth.json");
+    fs::create_dir_all(auth.parent().unwrap()).unwrap();
+    fs::write(&auth, "{}").unwrap();
     fs::write(
         &path,
-        contents.replace("Ready To Implement", "Queued for engineering"),
+        contents
+            .replace("Ready To Implement", "Queued for engineering")
+            .replace(
+                "~/.local/share/factory/codex/auth.json",
+                auth.to_str().unwrap(),
+            ),
     )
     .unwrap();
     fs::write(
@@ -121,6 +129,19 @@ exit 64
     let mut permissions = fs::metadata(&gh).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&gh, permissions).unwrap();
+    let docker = bin.join("docker");
+    fs::write(
+        &docker,
+        r#"#!/bin/sh
+if [ "$1" = "version" ]; then echo "27.0.0"; exit 0; fi
+if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then echo "sha256:abcdef"; exit 0; fi
+exit 64
+"#,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&docker).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&docker, permissions).unwrap();
     let path_value = format!(
         "{}:{}",
         bin.display(),
@@ -131,6 +152,7 @@ exit 64
         .unwrap()
         .args(["validate", "--config", path.to_str().unwrap()])
         .env("FACTORY_DATA_HOME", data_home)
+        .env("FACTORY_GITHUB_TOKEN", "dedicated-test-token")
         .env("PATH", path_value)
         .assert()
         .success()

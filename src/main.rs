@@ -7,8 +7,10 @@ use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 use factory::approve::approve_issue;
+use factory::clone::CloneManager;
 use factory::config::{Config, repository_config_path, repository_remote_identity};
 use factory::daemon::FactoryDaemon;
+use factory::docker::DockerWorker;
 use factory::execution::ResolvedWorkflow;
 use factory::github::{GitHubClient, PollReport};
 use factory::init::{InitOptions, initialize};
@@ -307,6 +309,11 @@ async fn run_cli() -> Result<u8> {
                         .await?;
                 }
             }
+            if let Some(worker) = &config.worker {
+                DockerWorker::new(worker.clone(), "validate")
+                    .validate(&CancellationToken::new())
+                    .await?;
+            }
             print!("{config}");
         }
         Command::Workflows { config } => {
@@ -411,7 +418,8 @@ async fn run_cli() -> Result<u8> {
             let task = ledger
                 .task(run.task_id)?
                 .with_context(|| format!("task {} for run {run_id} does not exist", run.task_id))?;
-            let inspection = RunInspection::new(&run, &task);
+            let container = ledger.run_container(run_id)?;
+            let inspection = RunInspection::new(&run, &task, container.as_ref());
             if json {
                 print_json(&inspection)?;
             } else {
@@ -496,6 +504,7 @@ async fn run_cli() -> Result<u8> {
                 return Ok(0);
             }
             let manager = WorkspaceManager::new(&config.repositories[0], &config.workspace_root)?;
+            let clone_manager = CloneManager::new(&config.workspace_root)?;
             if !workspace.path.exists() {
                 println!("run: {run_id}");
                 println!("workspace: {}", workspace.path.display());
@@ -526,7 +535,11 @@ async fn run_cli() -> Result<u8> {
                 }
                 return Ok(0);
             }
-            let preview = manager.preview_cleanup(&workspace.path)?;
+            let preview = if workspace.backend == "clone" {
+                clone_manager.preview_cleanup(&workspace.path)?
+            } else {
+                manager.preview_cleanup(&workspace.path)?
+            };
             println!("run: {run_id}");
             println!("workspace: {}", preview.path.display());
             println!(
@@ -536,7 +549,7 @@ async fn run_cli() -> Result<u8> {
             println!("dirty: {}", preview.dirty);
             println!("branch preserved: true");
             if !confirm {
-                println!("action: preview only; rerun with --confirm to remove the worktree");
+                println!("action: preview only; rerun with --confirm to remove the workspace");
             } else {
                 if matches!(task.state, TaskState::Queued | TaskState::Running) {
                     bail!(
@@ -550,13 +563,21 @@ async fn run_cli() -> Result<u8> {
                     "cleanup_pending",
                     Some(OPERATOR_CONFIRMED_CLEANUP),
                 )?;
-                manager.cleanup(&workspace.path, true)?;
+                if workspace.backend == "clone" {
+                    clone_manager.remove(&workspace.path)?;
+                } else {
+                    manager.cleanup(&workspace.path, true)?;
+                }
                 ledger.update_task_workspace_state(
                     task.id,
                     "cleaned",
                     Some("operator-confirmed cleanup completed"),
                 )?;
-                println!("action: removed worktree; local branch preserved");
+                if workspace.backend == "clone" {
+                    println!("action: removed clone; remote branch preserved");
+                } else {
+                    println!("action: removed worktree; local branch preserved");
+                }
             }
         }
     }

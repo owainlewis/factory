@@ -261,7 +261,15 @@ fn inspect_resolves_task_context_bounds_detail_and_escapes_terminal_controls() {
         .collect::<Vec<_>>();
     assert_eq!(
         keys,
-        ["activity", "error", "result", "run", "session_id", "task"]
+        [
+            "activity",
+            "container",
+            "error",
+            "result",
+            "run",
+            "session_id",
+            "task",
+        ]
     );
 }
 

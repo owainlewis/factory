@@ -20,8 +20,19 @@ pub struct Config {
     pub max_concurrent_runs_per_repository: usize,
     pub workspace_root: PathBuf,
     pub data_directory: PathBuf,
+    pub worker: Option<WorkerConfig>,
     pub source: Option<SourceConfig>,
     pub github: GitHubConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerConfig {
+    pub image: String,
+    pub memory: String,
+    pub cpus: u32,
+    pub pids: u32,
+    pub codex_auth: PathBuf,
+    pub github_token_env: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,8 +117,21 @@ struct RawConfig {
     default_timeout: String,
     maximum_timeout: String,
     max_concurrent_runs: usize,
+    worker: Option<RawWorkerConfig>,
     source: Option<RawSourceConfig>,
     github: Option<RawGitHubConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawWorkerConfig {
+    kind: String,
+    image: String,
+    memory: String,
+    cpus: u32,
+    pids: u32,
+    codex_auth: Option<String>,
+    github_token_env: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -220,6 +244,9 @@ impl Config {
         if raw.max_concurrent_runs == 0 {
             bail!("max_concurrent_runs must be greater than zero");
         }
+        if raw.worker.is_some() && raw.max_concurrent_runs != 1 {
+            bail!("Docker workers require max_concurrent_runs = 1");
+        }
         if raw.source.is_some() && raw.github.is_some() {
             bail!("configure [source] or legacy [github], not both");
         }
@@ -252,6 +279,10 @@ impl Config {
 
         let repository = canonical_directory("repository", repository, repository)?;
         let data_directory = repository_data_directory(&repository)?;
+        let worker = raw
+            .worker
+            .map(|worker| resolve_worker(worker, &repository, &data_directory))
+            .transpose()?;
         let workspace_candidate = data_directory.join("worktrees");
         let workspace_root = if allow_missing_workspace {
             canonical_directory_or_missing("workspace_root", &workspace_candidate, &repository)?
@@ -276,6 +307,7 @@ impl Config {
             max_concurrent_runs_per_repository: raw.max_concurrent_runs,
             workspace_root,
             data_directory,
+            worker,
             source,
             github,
         })
@@ -320,6 +352,23 @@ impl fmt::Display for Config {
             "max_concurrent_runs: {}",
             self.max_concurrent_runs
         )?;
+        if let Some(worker) = &self.worker {
+            writeln!(formatter, "worker: docker")?;
+            writeln!(formatter, "worker.image: {}", worker.image)?;
+            writeln!(formatter, "worker.memory: {}", worker.memory)?;
+            writeln!(formatter, "worker.cpus: {}", worker.cpus)?;
+            writeln!(formatter, "worker.pids: {}", worker.pids)?;
+            writeln!(
+                formatter,
+                "worker.codex_auth: {}",
+                worker.codex_auth.display()
+            )?;
+            writeln!(
+                formatter,
+                "worker.github_token_env: {}",
+                worker.github_token_env
+            )?;
+        }
         if let Some(source) = &self.source {
             writeln!(
                 formatter,
@@ -344,6 +393,118 @@ impl fmt::Display for Config {
             self.data_directory.display()
         )?;
         writeln!(formatter, "worktrees: {}", self.workspace_root.display())
+    }
+}
+
+fn resolve_worker(
+    raw: RawWorkerConfig,
+    repository: &Path,
+    data_directory: &Path,
+) -> Result<WorkerConfig> {
+    if raw.kind != "docker" {
+        bail!("worker.kind must be \"docker\"");
+    }
+
+    let image = raw.image.trim();
+    if image.is_empty()
+        || image.chars().count() > 255
+        || !image.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, '.' | '_' | '/' | ':' | '@' | '-')
+        })
+        || !image
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_alphanumeric())
+        || (!image.rsplit('/').next().unwrap_or(image).contains(':') && !image.contains('@'))
+    {
+        bail!("worker.image must be a valid, explicitly tagged Docker image reference");
+    }
+
+    let memory = raw.memory.trim().to_ascii_lowercase();
+    let suffix_start = memory
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(memory.len());
+    let (amount, suffix) = memory.split_at(suffix_start);
+    if amount.is_empty()
+        || amount.starts_with('0')
+        || !amount.chars().all(|character| character.is_ascii_digit())
+        || !matches!(
+            suffix,
+            "" | "b" | "k" | "kb" | "m" | "mb" | "g" | "gb" | "t" | "tb"
+        )
+    {
+        bail!("worker.memory must be a positive Docker memory limit such as \"8g\"");
+    }
+    if raw.cpus == 0 {
+        bail!("worker.cpus must be greater than zero");
+    }
+    if raw.pids == 0 {
+        bail!("worker.pids must be greater than zero");
+    }
+
+    let codex_auth = match raw.codex_auth {
+        Some(path) => expand_path(Path::new(path.trim()), repository)?,
+        None => data_directory.join("codex/auth.json"),
+    };
+    if codex_auth.file_name().and_then(|name| name.to_str()) != Some("auth.json") {
+        bail!("worker.codex_auth must name an auth.json file");
+    }
+    let codex_auth = resolve_file_or_missing("worker.codex_auth", &codex_auth)?;
+    if codex_auth.starts_with(repository) {
+        bail!("worker.codex_auth must be outside the repository");
+    }
+    if let Some(home) = dirs::home_dir()
+        && codex_auth == home.join(".codex/auth.json")
+    {
+        bail!("worker.codex_auth must use a dedicated Factory credential, not ~/.codex/auth.json");
+    }
+
+    let github_token_env = raw
+        .github_token_env
+        .unwrap_or_else(|| "FACTORY_GITHUB_TOKEN".to_owned());
+    let github_token_env = github_token_env.trim();
+    if github_token_env.is_empty()
+        || !github_token_env
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
+        || !github_token_env
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+    {
+        bail!("worker.github_token_env must be a valid environment variable name");
+    }
+
+    Ok(WorkerConfig {
+        image: image.to_owned(),
+        memory,
+        cpus: raw.cpus,
+        pids: raw.pids,
+        codex_auth,
+        github_token_env: github_token_env.to_owned(),
+    })
+}
+
+fn resolve_file_or_missing(name: &str, path: &Path) -> Result<PathBuf> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                bail!("{name} must be a regular file: {}", path.display());
+            }
+            path.canonicalize()
+                .with_context(|| format!("failed to resolve {name}: {}", path.display()))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = path
+                .parent()
+                .with_context(|| format!("{name} has no parent directory"))?;
+            let parent = canonical_directory_or_missing(name, parent, parent)?;
+            Ok(parent.join("auth.json"))
+        }
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to inspect {name}: {}", path.display()))
+        }
     }
 }
 
@@ -819,6 +980,7 @@ mod tests {
             default_timeout: "2h".into(),
             maximum_timeout: "8h".into(),
             max_concurrent_runs: 2,
+            worker: None,
             source: None,
             github: Some(RawGitHubConfig {
                 trusted_approvers: vec!["owainlewis".into()],
@@ -826,6 +988,18 @@ mod tests {
                 proposed_label: "factory:proposed".into(),
                 needs_review_label: "factory:needs-review".into(),
             }),
+        }
+    }
+
+    fn docker_worker() -> RawWorkerConfig {
+        RawWorkerConfig {
+            kind: "docker".into(),
+            image: "factory-codex:dev".into(),
+            memory: "8g".into(),
+            cpus: 4,
+            pids: 512,
+            codex_auth: None,
+            github_token_env: None,
         }
     }
 
@@ -875,6 +1049,89 @@ mod tests {
         assert_eq!(source.trusted_users, ["OwainLewis"]);
         assert_eq!(config.github.trusted_approvers, ["OwainLewis"]);
         assert_eq!(config.github.ready_label, "factory:ready");
+    }
+
+    #[test]
+    fn resolves_docker_worker_with_dedicated_default_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let workspace = temp.path().join("worktrees");
+        let mut input = raw(&repository, &workspace);
+        input.max_concurrent_runs = 1;
+        input.worker = Some(docker_worker());
+
+        let config = Config::resolve(input, &repository).unwrap();
+        let worker = config.worker.unwrap();
+
+        assert_eq!(worker.image, "factory-codex:dev");
+        assert_eq!(worker.memory, "8g");
+        assert_eq!(worker.cpus, 4);
+        assert_eq!(worker.pids, 512);
+        assert_eq!(worker.github_token_env, "FACTORY_GITHUB_TOKEN");
+        assert_eq!(
+            worker.codex_auth,
+            config.data_directory.join("codex/auth.json")
+        );
+    }
+
+    #[test]
+    fn docker_worker_requires_one_concurrent_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let workspace = temp.path().join("worktrees");
+        let mut input = raw(&repository, &workspace);
+        input.worker = Some(docker_worker());
+
+        let error = Config::resolve(input, &repository).unwrap_err();
+
+        assert!(error.to_string().contains("max_concurrent_runs = 1"));
+    }
+
+    #[test]
+    fn rejects_unsafe_docker_worker_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let workspace = temp.path().join("worktrees");
+
+        for (field, change) in [
+            ("tagged image", 0_u8),
+            ("memory limit", 1),
+            ("CPU limit", 2),
+            ("process limit", 3),
+            ("token environment", 4),
+        ] {
+            let mut input = raw(&repository, &workspace);
+            input.max_concurrent_runs = 1;
+            let mut worker = docker_worker();
+            match change {
+                0 => worker.image = "factory-codex".into(),
+                1 => worker.memory = "0g".into(),
+                2 => worker.cpus = 0,
+                3 => worker.pids = 0,
+                4 => worker.github_token_env = Some("BAD-NAME".into()),
+                _ => unreachable!(),
+            }
+            input.worker = Some(worker);
+
+            let error = Config::resolve(input, &repository).unwrap_err();
+            assert!(!error.to_string().is_empty(), "accepted invalid {field}");
+        }
+    }
+
+    #[test]
+    fn rejects_repository_owned_codex_auth() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let workspace = temp.path().join("worktrees");
+        let mut input = raw(&repository, &workspace);
+        input.max_concurrent_runs = 1;
+        let mut worker = docker_worker();
+        worker.codex_auth = Some(".factory/auth.json".into());
+        input.worker = Some(worker);
+
+        let error = Config::resolve(input, &repository).unwrap_err();
+
+        assert!(error.to_string().contains("outside the repository"));
     }
 
     #[test]
@@ -962,6 +1219,7 @@ mod tests {
             default_timeout: "2h".into(),
             maximum_timeout: "8h".into(),
             max_concurrent_runs: 1,
+            worker: None,
             source: None,
             github: Some(RawGitHubConfig {
                 trusted_approvers: vec!["owainlewis".into()],

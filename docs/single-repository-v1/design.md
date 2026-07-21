@@ -252,7 +252,7 @@ Factory instance and run ID.
 Factory starts it with these minimum controls:
 
 ```text
---user 1000:1000
+--user <host-clone-uid>:<host-clone-gid>
 --read-only
 --cap-drop ALL
 --security-opt no-new-privileges
@@ -260,10 +260,14 @@ Factory starts it with these minimum controls:
 --memory 8g
 --cpus 4
 --tmpfs /tmp:rw,size=1g
---tmpfs /home/agent/.codex:rw,uid=1000,gid=1000,mode=700
+--tmpfs /home/agent/.codex:rw,uid=<uid>,gid=<gid>,mode=700
 --mount <factory-auth.json>:/home/agent/.codex/auth.json:rw
 --mount <standalone-clone>:/workspace:ro|rw
 ```
+
+Factory derives the numeric UID and GID from the host clone. This keeps the
+bind mount writable on native Linux while still running the container without
+root privileges.
 
 It never mounts `/var/run/docker.sock`, SSH keys, the host `gh` configuration,
 the canonical checkout, or Factory's data directory. Network remains enabled in

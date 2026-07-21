@@ -89,6 +89,7 @@ fn test_config(repositories: Vec<PathBuf>, workspace: PathBuf, data: PathBuf) ->
         max_concurrent_runs_per_repository: 2,
         workspace_root: workspace,
         data_directory: data,
+        worker: None,
         source: None,
         github: GitHubConfig {
             trusted_approvers: vec!["owainlewis".into()],
@@ -599,6 +600,7 @@ fn catalog_output_escapes_control_characters_in_every_dynamic_cell() {
         max_concurrent_runs_per_repository: 1,
         workspace_root: workspace,
         data_directory: temp.path().join("data"),
+        worker: None,
         source: None,
         github: GitHubConfig {
             trusted_approvers: vec!["owainlewis".into()],
