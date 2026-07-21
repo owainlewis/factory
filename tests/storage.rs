@@ -9,8 +9,8 @@ use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 use factory::storage::{
-    CancellationRequest, Ledger, MAX_ERROR_BYTES, MAX_RESULT_BYTES, RunOutcome, TaskIdentity,
-    TaskState,
+    ApprovalEvidence, CancellationRequest, Ledger, MAX_ERROR_BYTES, MAX_RESULT_BYTES,
+    ObservedTicket, RunOutcome, TaskIdentity, TaskState,
 };
 use rusqlite::Connection;
 
@@ -77,7 +77,7 @@ fn concurrent_first_open_converges_on_one_complete_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     let schedule_tables: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_schema
@@ -110,6 +110,40 @@ fn ticket_and_schedule_identities_deduplicate_exact_triggers() {
     assert!(first_schedule.created);
     assert!(!duplicate_schedule.created);
     assert_eq!(duplicate_schedule.task.id, first_schedule.task.id);
+}
+
+#[test]
+fn a_new_approval_revision_enqueues_without_an_observed_label_gap() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    let observe = |revision: &str| ObservedTicket {
+        source_item: "3".into(),
+        revision: revision.into(),
+        eligible: true,
+        payload: format!("payload-{revision}"),
+    };
+    let first = ledger
+        .reconcile_ticket_poll("owainlewis/factory", "deliver", &[observe("approval-a")])
+        .unwrap();
+    assert_eq!(first.iter().filter(|task| task.created).count(), 1);
+    assert!(
+        ledger
+            .reconcile_ticket_poll("owainlewis/factory", "deliver", &[observe("approval-a")])
+            .unwrap()
+            .is_empty()
+    );
+    let task = ledger.claim_next().unwrap().unwrap();
+    let run = ledger.start_run(task.id, "codex").unwrap();
+    ledger
+        .finish_run_and_task(run.id, RunOutcome::Succeeded, None, None, None)
+        .unwrap();
+
+    let second = ledger
+        .reconcile_ticket_poll("owainlewis/factory", "deliver", &[observe("approval-b")])
+        .unwrap();
+
+    assert_eq!(second.iter().filter(|task| task.created).count(), 1);
+    assert_ne!(second[0].task.identity_key, task.identity_key);
 }
 
 #[test]
@@ -834,7 +868,78 @@ fn migrates_a_version_one_ledger_without_losing_tasks() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
+}
+
+#[test]
+fn approval_consumption_is_durable_and_single_use() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
+    let first = ledger.enqueue(&ticket("approval-one")).unwrap().task;
+    ledger.claim_next().unwrap().unwrap();
+    let run = ledger.start_run(first.id, "codex").unwrap();
+    let evidence = ApprovalEvidence {
+        artifact_id: 101,
+        label_event_id: 201,
+        approver_id: 42,
+        content_hash: "content",
+        workflow_hash: "workflow",
+        source_revision: "revision",
+    };
+    ledger.consume_task_approval(first.id, &evidence).unwrap();
+    drop(ledger);
+
+    let mut reopened = Ledger::open(&path).unwrap();
+    assert!(reopened.approval_is_consumed(101).unwrap());
+    assert!(reopened.task_has_consumed_approval(first.id).unwrap());
+    let second = reopened.enqueue(&ticket("approval-two")).unwrap().task;
+    reopened
+        .finish_run_and_task(run.id, RunOutcome::Failed, None, Some("test"), None)
+        .unwrap();
+    reopened.claim_next().unwrap().unwrap();
+    reopened.start_run(second.id, "codex").unwrap();
+    assert!(
+        reopened
+            .consume_task_approval(second.id, &evidence)
+            .unwrap_err()
+            .to_string()
+            .contains("already been consumed")
+    );
+}
+
+#[test]
+fn approval_reservation_serializes_reapproval_against_active_work() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
+    ledger
+        .reserve_issue_approval("owainlewis/factory", 3, "reservation-one")
+        .unwrap();
+    assert!(
+        ledger
+            .reserve_issue_approval("owainlewis/factory", 3, "reservation-two")
+            .unwrap_err()
+            .to_string()
+            .contains("already has an approval operation")
+    );
+    assert!(
+        ledger
+            .issue_approval_is_reserved("owainlewis/factory", 3)
+            .unwrap()
+    );
+    ledger
+        .release_issue_approval("owainlewis/factory", 3, "reservation-one")
+        .unwrap();
+
+    ledger.enqueue(&ticket("active-approval")).unwrap();
+    assert!(
+        ledger
+            .reserve_issue_approval("owainlewis/factory", 3, "reservation-three")
+            .unwrap_err()
+            .to_string()
+            .contains("active Factory work")
+    );
 }
 
 #[test]

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use assert_cmd::Command;
-use factory::config::Config;
+use factory::config::{Config, GitHubConfig};
 use factory::workflow::{Trigger, WorkflowCatalog};
 use predicates::prelude::*;
 
@@ -89,6 +89,12 @@ fn test_config(repositories: Vec<PathBuf>, workspace: PathBuf, data: PathBuf) ->
         max_concurrent_runs_per_repository: 2,
         workspace_root: workspace,
         data_directory: data,
+        github: GitHubConfig {
+            trusted_approvers: vec!["owainlewis".into()],
+            ready_label: "factory:ready".into(),
+            proposed_label: "factory:proposed".into(),
+            needs_review_label: "factory:needs-review".into(),
+        },
     }
 }
 
@@ -178,8 +184,8 @@ fn checked_in_implementation_workflow_is_valid_and_requires_human_merge() {
     let prompt = workflow.prompt.as_deref().unwrap();
     assert!(prompt.contains("Never merge the pull request"));
     assert!(prompt.contains("factory:needs-review"));
-    assert!(prompt.contains("ensure `factory:ready` is removed"));
-    assert!(prompt.contains("labels mutually exclusive"));
+    assert!(prompt.contains("already consumed the exact approval"));
+    assert!(prompt.contains("`factory approve ISSUE_NUMBER` again"));
     assert!(prompt.contains("fresh subagent"));
     let step_headings: Vec<_> = prompt
         .lines()
@@ -190,7 +196,7 @@ fn checked_in_implementation_workflow_is_valid_and_requires_human_merge() {
         [
             "## Step 1: Establish scope and safety",
             "## Step 2: Inspect the issue and existing work",
-            "## Step 3: Claim the ticket or report a blocker",
+            "## Step 3: Confirm the claim or report a blocker",
             "## Step 4: Implement the ticket",
             "## Step 5: Verify the implementation",
             "## Step 6: Review and publish the change",
@@ -514,6 +520,12 @@ fn catalog_output_escapes_control_characters_in_every_dynamic_cell() {
         max_concurrent_runs_per_repository: 1,
         workspace_root: workspace,
         data_directory: temp.path().join("data"),
+        github: GitHubConfig {
+            trusted_approvers: vec!["owainlewis".into()],
+            ready_label: "factory:ready".into(),
+            proposed_label: "factory:proposed".into(),
+            needs_review_label: "factory:needs-review".into(),
+        },
     };
 
     let output = WorkflowCatalog::load(&config).unwrap().to_string();

@@ -34,6 +34,19 @@ pub fn scheduled_workflow_fingerprint(
     Ok(format!("v2:{:x}", Sha256::digest(definition)))
 }
 
+pub fn workflow_content_hash(entry: &WorkflowEntry) -> Result<String> {
+    let definition = serde_json::to_vec(&(
+        &entry.id,
+        entry.trigger.as_ref().map(ToString::to_string),
+        entry.runtime.as_deref(),
+        entry
+            .timeout
+            .map(|timeout| (timeout.as_secs(), timeout.subsec_nanos())),
+        entry.prompt.as_deref(),
+    ))?;
+    Ok(format!("v1:{:x}", Sha256::digest(definition)))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowCatalog {
     pub entries: Vec<WorkflowEntry>,
@@ -124,7 +137,7 @@ impl WorkflowCatalog {
                     && entry.errors.is_empty()
                     && matches!(
                         entry.trigger.as_ref(),
-                        Some(Trigger::Label(label)) if label == "factory:ready"
+                        Some(Trigger::Label(label)) if label == &config.github.ready_label
                     )
             })
         })

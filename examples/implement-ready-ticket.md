@@ -19,13 +19,13 @@ pull requests, and repository state. Search for an existing implementation or
 pull request. If the work is already represented by a pull request, reconcile
 and continue that work instead of creating a duplicate.
 
-## Step 3: Claim the ticket or report a blocker
+## Step 3: Confirm the claim or report a blocker
 
-Remove `factory:ready` when you take ownership. If requirements are materially
-unclear or unsafe, ensure `factory:ready` is removed, apply
-`factory:needs-review`, post focused questions, and stop without guessing. Keep
-the two workflow labels mutually exclusive so a human can explicitly reapply
-`factory:ready` after resolving the blocker.
+Factory has already consumed the exact approval and removed `factory:ready`
+before starting this run. If requirements are materially unclear or unsafe,
+apply `factory:needs-review`, post focused questions, and stop without guessing.
+A trusted human must run `factory approve ISSUE_NUMBER` again after resolving
+the blocker.
 
 ## Step 4: Implement the ticket
 
@@ -57,7 +57,6 @@ blocker, and stop without claiming a successful acceptance handoff.
 ## Step 8: Hand off for human review
 
 Only when the draft pull request is green and automated review is complete with
-all actionable feedback addressed, remove `factory:ready`, apply
-`factory:needs-review`, and post one issue handoff comment containing the pull
-request link, summary, checks, review state, and any real limitations. Leave the
-pull request unmerged for a human.
+all actionable feedback addressed, apply `factory:needs-review` and post one
+issue handoff comment containing the pull request link, summary, checks, review
+state, and any real limitations. Leave the pull request unmerged for a human.

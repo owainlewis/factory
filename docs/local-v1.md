@@ -106,17 +106,19 @@ factory workflows
 ## Start and prove one ticket
 
 Write one complete issue with a bounded outcome, acceptance criteria, and
-verification. Ensure there is no existing implementation or pull request, then
-apply the ready label:
+verification. Ensure there is no existing implementation or pull request.
+Confirm your GitHub login appears in `[github].trusted_approvers`, then approve
+the exact ticket and workflow revision:
 
 ```sh
-gh issue edit ISSUE_NUMBER --add-label factory:ready
+factory approve ISSUE_NUMBER
 factory daemon
 ```
 
 Keep the terminal open. The daemon polls GitHub, persists one task, atomically
-claims it, and launches the authenticated Codex CLI. The workflow removes the
-ready label when it takes ownership.
+claims it, re-fetches the issue and approval evidence, consumes that approval
+once, removes the ready label, and launches the authenticated Codex CLI. A
+directly applied `factory:ready` label has no authority and launches nothing.
 
 Use a second terminal to inspect durable state:
 

@@ -17,7 +17,9 @@ and Codex CLIs. It does not use model API keys.
 4. In a trusted target repository, run `factory init`.
 5. Create a workflow with `factory workflow create`.
 6. Review and commit the new file under `.factory/workflows/`.
-7. Run `factory validate`, `factory workflows`, then `factory daemon`.
+7. Set `[github].trusted_approvers` to trusted GitHub logins.
+8. Run `factory validate`, `factory workflows`, then `factory daemon`.
+9. Authorize a complete issue with `factory approve ISSUE_NUMBER`.
 
 `factory init --check` previews setup without writes. Initialization creates
 `.factory/config.toml`, external machine state and worktree storage, and the
@@ -43,6 +45,11 @@ creation.
 and polls once, persists eligible tasks, and exits without launching Codex.
 If no schedule or issue matches, Factory launches no agent and uses no model
 tokens.
+
+The `factory:ready` label is only a wake signal. Adding it directly never
+authorizes work. `factory approve ISSUE_NUMBER` records the exact issue title,
+body, workflow revision, trusted GitHub user ID, and new label event that the
+daemon must verify again immediately before Codex starts.
 
 See [`docs/local-v1.md`](docs/local-v1.md) for the current implementation's
 installation, setup, operation, recovery, and acceptance instructions. The

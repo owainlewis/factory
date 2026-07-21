@@ -6,6 +6,7 @@ use clap::{ArgGroup, Parser, Subcommand};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
+use factory::approve::approve_issue;
 use factory::config::{Config, repository_config_path, repository_remote_identity};
 use factory::daemon::FactoryDaemon;
 use factory::execution::ResolvedWorkflow;
@@ -53,6 +54,17 @@ enum Command {
     },
     /// Continuously evaluate schedules, poll for work, and execute eligible tasks.
     Daemon {
+        /// Path to the repository-local Factory configuration file.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Directory containing the durable Factory database.
+        #[arg(long)]
+        data_directory: Option<PathBuf>,
+    },
+    /// Approve the current issue title, body, and delivery workflow revision.
+    Approve {
+        /// GitHub issue number to approve.
+        issue: u64,
         /// Path to the repository-local Factory configuration file.
         #[arg(long)]
         config: Option<PathBuf>,
@@ -239,6 +251,27 @@ async fn run_cli() -> Result<u8> {
             data_directory,
         } => {
             return run_poller(config, data_directory, false).await;
+        }
+        Command::Approve {
+            issue,
+            config,
+            data_directory,
+        } => {
+            let path = resolve_config_path(config)?;
+            let config = Config::load(&path)?;
+            let catalog = WorkflowCatalog::load(&config)?;
+            catalog.validate_ticket_workflows()?;
+            let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
+            let mut ledger = Ledger::open_in(&data_directory)?;
+            let report = approve_issue(
+                &config,
+                &catalog,
+                &mut ledger,
+                issue,
+                &GitHubClient::default(),
+            )
+            .await?;
+            print!("{report}");
         }
         Command::Validate { config } => {
             let path = resolve_config_path(config)?;
@@ -454,7 +487,8 @@ async fn run_poller(
     for repository in catalog.repositories_without_ready_workflow(&config) {
         write_stderr_best_effort(
             format!(
-                "No valid factory:ready implementation workflow found for {}; create one with factory workflow create <workflow-id>\n",
+                "No valid {:?} implementation workflow found for {}; create one with factory workflow create <workflow-id>\n",
+                config.github.ready_label,
                 repository.display()
             )
             .as_bytes(),

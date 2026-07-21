@@ -1,6 +1,8 @@
 #[cfg(not(unix))]
 compile_error!("Factory v1 supports Unix-like operating systems only");
 
+pub mod approval;
+pub mod approve;
 pub mod config;
 pub mod daemon;
 pub mod execution;
