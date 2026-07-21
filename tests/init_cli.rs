@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use assert_cmd::Command;
-use factory::config::Config;
 use predicates::prelude::*;
 
 struct Fixture {
     _temp: tempfile::TempDir,
     home: PathBuf,
+    data_home: PathBuf,
     repository: PathBuf,
 }
 
@@ -20,11 +20,13 @@ impl Fixture {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("home");
         let repository = temp.path().join("repository");
+        let data_home = temp.path().join("factory-data");
         fs::create_dir(&home).unwrap();
         init_git_repository(&repository, "git@github.com:example/repository.git");
         Self {
             _temp: temp,
             home,
+            data_home,
             repository,
         }
     }
@@ -33,16 +35,23 @@ impl Fixture {
         let mut command = Command::cargo_bin("factory").unwrap();
         command
             .current_dir(&self.repository)
-            .env("HOME", &self.home);
+            .env("HOME", &self.home)
+            .env("FACTORY_DATA_HOME", &self.data_home);
         command
     }
 
     fn config_path(&self) -> PathBuf {
-        self.home.join(".factory/config.toml")
+        self.repository.join(".factory/config.toml")
     }
 
     fn workspace(&self) -> PathBuf {
-        self.home.join(".factory/workspaces")
+        let state = fs::read_dir(&self.data_home)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        state.join("worktrees")
     }
 
     fn workflows(&self) -> PathBuf {
@@ -81,22 +90,6 @@ fn set_origin(path: &Path, origin: &str) {
     );
 }
 
-fn write_config(path: &Path, repositories: &[&Path], workspace: &Path, prefix: &str) -> String {
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::create_dir_all(workspace).unwrap();
-    let repositories = repositories
-        .iter()
-        .map(|repository| format!("\"{}\"", repository.display()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let contents = format!(
-        "{prefix}repositories = [{repositories}]\npoll_every = \"30s\"\ndefault_runtime = \"codex\"\ndefault_timeout = \"2h\"\nmaximum_timeout = \"8h\"\nmax_concurrent_runs = 2\nmax_concurrent_runs_per_repository = 1\nworkspace_root = \"{}\"\n",
-        workspace.display()
-    );
-    fs::write(path, &contents).unwrap();
-    contents
-}
-
 #[test]
 fn init_creates_only_configuration_and_workflow_directory() {
     let fixture = Fixture::new();
@@ -106,21 +99,17 @@ fn init_creates_only_configuration_and_workflow_directory() {
         .arg("init")
         .assert()
         .success()
-        .stdout(predicate::str::contains("global configuration"))
+        .stdout(predicate::str::contains("repository configuration"))
         .stdout(predicate::str::contains("workflow directory"))
         .stdout(predicate::str::contains("factory workflow create"))
         .stdout(predicate::str::contains("GitHub label").not())
         .stdout(predicate::str::contains("implement-ready-ticket.md").not());
 
-    let config = Config::load(&fixture.config_path()).unwrap();
-    assert_eq!(
-        config.repositories,
-        vec![fixture.repository.canonicalize().unwrap()]
-    );
-    assert_eq!(
-        config.workspace_root,
-        fixture.workspace().canonicalize().unwrap()
-    );
+    let config = fs::read_to_string(fixture.config_path()).unwrap();
+    assert!(config.contains("version = 1"));
+    assert!(!config.contains("repositories"));
+    assert!(!config.contains("workspace_root"));
+    assert!(fixture.workspace().is_dir());
     assert!(fixture.workflows().is_dir());
     assert_eq!(fs::read_dir(fixture.workflows()).unwrap().count(), 0);
     assert!(!fixture.repository.join(".gh-calls").exists());
@@ -131,13 +120,7 @@ fn init_creates_only_configuration_and_workflow_directory() {
         .assert()
         .success()
         .stdout(predicate::str::contains("unchanged:"));
-    assert_eq!(
-        fs::read_to_string(fixture.config_path())
-            .unwrap()
-            .matches(fixture.repository.to_str().unwrap())
-            .count(),
-        1
-    );
+    assert_eq!(fs::read_to_string(fixture.config_path()).unwrap(), config);
 }
 
 #[test]
@@ -150,12 +133,12 @@ fn check_reports_missing_resources_without_writes() {
         .assert()
         .failure()
         .stdout(predicate::str::contains("would create:"))
-        .stdout(predicate::str::contains("global configuration"))
+        .stdout(predicate::str::contains("repository configuration"))
         .stdout(predicate::str::contains("workspace directory"))
         .stdout(predicate::str::contains("workflow directory"));
 
     assert!(!fixture.config_path().exists());
-    assert!(!fixture.workspace().exists());
+    assert!(!fixture.data_home.exists());
     assert!(!fixture.repository.join(".factory").exists());
 }
 
@@ -172,48 +155,25 @@ fn init_does_not_touch_existing_workflows() {
 }
 
 #[test]
-fn existing_config_preserves_comments_and_registers_repository_once() {
+fn existing_config_is_preserved_byte_for_byte() {
     let fixture = Fixture::new();
-    let other = fixture._temp.path().join("other");
-    fs::create_dir(&other).unwrap();
-    let workspace = fixture._temp.path().join("workspaces");
-    write_config(
-        &fixture.config_path(),
-        &[&other],
-        &workspace,
-        "# keep this comment\n",
-    );
+    fixture.command().arg("init").assert().success();
+    let original = fs::read_to_string(fixture.config_path()).unwrap();
+    let original = format!("# keep this comment\n{original}");
+    fs::write(fixture.config_path(), &original).unwrap();
 
     for _ in 0..2 {
         fixture.command().arg("init").assert().success();
     }
 
-    let contents = fs::read_to_string(fixture.config_path()).unwrap();
-    assert!(contents.starts_with("# keep this comment\n"));
-    assert_eq!(
-        contents
-            .matches(fixture.repository.to_str().unwrap())
-            .count(),
-        1
-    );
-    assert_eq!(
-        Config::load(&fixture.config_path())
-            .unwrap()
-            .repositories
-            .len(),
-        2
-    );
+    assert_eq!(fs::read_to_string(fixture.config_path()).unwrap(), original);
 }
 
 #[test]
 fn init_recreates_workspace_missing_from_existing_config() {
     let fixture = Fixture::new();
-    let original = write_config(
-        &fixture.config_path(),
-        &[&fixture.repository],
-        &fixture.workspace(),
-        "# keep this comment\n",
-    );
+    fixture.command().arg("init").assert().success();
+    let original = fs::read_to_string(fixture.config_path()).unwrap();
     fs::remove_dir(fixture.workspace()).unwrap();
 
     fixture
@@ -255,28 +215,11 @@ fn check_does_not_probe_existing_workspace_writability() {
 }
 
 #[test]
-fn init_rejects_parent_traversal_without_repository_writes() {
+fn init_rejects_a_symlinked_factory_directory() {
     let fixture = Fixture::new();
-    let safe_workspace = fixture._temp.path().join("safe-workspace");
-    let original = write_config(
-        &fixture.config_path(),
-        &[&fixture.repository],
-        &safe_workspace,
-        "",
-    );
-    let dangerous_workspace = fixture
-        ._temp
-        .path()
-        .join("missing/../repository/workspaces");
-    fs::remove_dir(&safe_workspace).unwrap();
-    fs::write(
-        fixture.config_path(),
-        original.replace(
-            safe_workspace.to_str().unwrap(),
-            dangerous_workspace.to_str().unwrap(),
-        ),
-    )
-    .unwrap();
+    let outside = fixture._temp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    symlink(&outside, fixture.repository.join(".factory")).unwrap();
 
     fixture
         .command()
@@ -284,18 +227,18 @@ fn init_rejects_parent_traversal_without_repository_writes() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "must not contain parent traversal in a missing suffix",
+            "setup path must be a regular directory",
         ));
 
-    assert!(!fixture.repository.join(".factory").exists());
+    assert!(!outside.join("config.toml").exists());
 }
 
 #[test]
 fn init_resolves_symlinked_config_ancestors_before_writes() {
     let fixture = Fixture::new();
-    let state = fixture.repository.join(".factory-state");
+    let state = fixture._temp.path().join("factory-state");
     fs::create_dir(&state).unwrap();
-    symlink(&state, fixture.home.join(".factory")).unwrap();
+    symlink(&state, fixture.repository.join(".factory")).unwrap();
 
     fixture
         .command()
@@ -303,44 +246,29 @@ fn init_resolves_symlinked_config_ancestors_before_writes() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "generated configuration is invalid",
-        ))
-        .stderr(predicate::str::contains("must not overlap"));
+            "setup path must be a regular directory",
+        ));
 
-    assert!(!state.join("workspaces").exists());
-    assert!(!fixture.repository.join(".factory").exists());
+    assert!(!state.join("config.toml").exists());
 }
 
 #[test]
-fn invalid_candidate_leaves_existing_config_and_repository_untouched() {
+fn init_targets_the_selected_repository_only() {
     let fixture = Fixture::new();
-    let other = fixture._temp.path().join("other");
-    fs::create_dir(&other).unwrap();
-    let workspace = fixture._temp.path().join("workspaces");
-    let nested_repository = workspace.join("nested-repository");
+    let nested_repository = fixture._temp.path().join("nested-repository");
     init_git_repository(
         &nested_repository,
         "https://github.com/example/nested-repository.git",
     );
-    let original = write_config(
-        &fixture.config_path(),
-        &[&other],
-        &workspace,
-        "# must survive\n",
-    );
-
     fixture
         .command()
         .args(["init", "--repository"])
         .arg(&nested_repository)
         .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "generated configuration is invalid",
-        ));
+        .success();
 
-    assert_eq!(fs::read_to_string(fixture.config_path()).unwrap(), original);
-    assert!(!nested_repository.join(".factory").exists());
+    assert!(!fixture.config_path().exists());
+    assert!(nested_repository.join(".factory/config.toml").is_file());
 }
 
 #[test]

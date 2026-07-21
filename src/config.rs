@@ -2,10 +2,12 @@ use std::env;
 use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -17,20 +19,18 @@ pub struct Config {
     pub max_concurrent_runs: usize,
     pub max_concurrent_runs_per_repository: usize,
     pub workspace_root: PathBuf,
+    pub data_directory: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
-    repositories: Vec<String>,
+    version: u8,
     poll_every: String,
     default_runtime: String,
     default_timeout: String,
     maximum_timeout: String,
     max_concurrent_runs: usize,
-    #[serde(default = "default_repository_concurrency")]
-    max_concurrent_runs_per_repository: usize,
-    workspace_root: String,
 }
 
 impl Config {
@@ -59,48 +59,58 @@ impl Config {
         let config_dir = path
             .parent()
             .context("configuration path has no parent directory")?;
+        if config_dir.file_name().and_then(|name| name.to_str()) != Some(".factory") {
+            bail!(
+                "Factory v1 requires repository-local configuration at <git-root>/.factory/config.toml; legacy global configuration is not executable"
+            );
+        }
+        let repository = config_dir
+            .parent()
+            .context(".factory configuration has no repository parent")?;
+        let expected = repository_config_path(repository);
+        if path != expected {
+            bail!(
+                "Factory repository configuration must be {}; got {}",
+                expected.display(),
+                path.display()
+            );
+        }
 
         Self::resolve_with_workspace_probe(
             raw,
-            config_dir,
+            repository,
             workspace_probe,
             allow_missing_workspace,
         )
         .with_context(|| format!("invalid Factory configuration in {}", path.display()))
     }
 
-    pub(crate) fn validate_candidate(contents: &str, config_dir: &Path) -> Result<Self> {
+    pub(crate) fn validate_candidate(contents: &str, repository: &Path) -> Result<Self> {
         let raw: RawConfig =
             toml::from_str(contents).context("failed to parse candidate config")?;
-        Self::resolve_with_workspace_probe(raw, config_dir, |_| Ok(()), true)
+        Self::resolve_with_workspace_probe(raw, repository, |_| Ok(()), true)
             .context("invalid candidate Factory configuration")
     }
 
     #[cfg(test)]
-    fn resolve(raw: RawConfig, config_dir: &Path) -> Result<Self> {
-        Self::resolve_with_workspace_probe(raw, config_dir, ensure_workspace_writable, false)
+    fn resolve(raw: RawConfig, repository: &Path) -> Result<Self> {
+        Self::resolve_with_workspace_probe(raw, repository, |_| Ok(()), true)
     }
 
     fn resolve_with_workspace_probe<F>(
         raw: RawConfig,
-        config_dir: &Path,
+        repository: &Path,
         workspace_probe: F,
         allow_missing_workspace: bool,
     ) -> Result<Self>
     where
         F: FnOnce(&Path) -> Result<()>,
     {
-        if raw.repositories.is_empty() {
-            bail!("repositories must contain at least one path");
+        if raw.version != 1 {
+            bail!("version must be 1");
         }
         if raw.max_concurrent_runs == 0 {
             bail!("max_concurrent_runs must be greater than zero");
-        }
-        if raw.max_concurrent_runs_per_repository == 0 {
-            bail!("max_concurrent_runs_per_repository must be greater than zero");
-        }
-        if raw.max_concurrent_runs_per_repository > raw.max_concurrent_runs {
-            bail!("max_concurrent_runs_per_repository must not exceed max_concurrent_runs");
         }
         let default_runtime = raw.default_runtime.trim();
         if default_runtime.is_empty() {
@@ -114,33 +124,32 @@ impl Config {
             bail!("default_timeout must not exceed maximum_timeout");
         }
 
-        let repositories = raw
-            .repositories
-            .iter()
-            .map(|path| canonical_directory("repository", Path::new(path), config_dir))
-            .collect::<Result<Vec<_>>>()?;
+        let repository = canonical_directory("repository", repository, repository)?;
+        let data_directory = repository_data_directory(&repository)?;
+        let workspace_candidate = data_directory.join("worktrees");
         let workspace_root = if allow_missing_workspace {
-            canonical_directory_or_missing(
-                "workspace_root",
-                Path::new(&raw.workspace_root),
-                config_dir,
-            )?
+            canonical_directory_or_missing("workspace_root", &workspace_candidate, &repository)?
         } else {
-            canonical_directory("workspace_root", Path::new(&raw.workspace_root), config_dir)?
+            canonical_directory("workspace_root", &workspace_candidate, &repository)?
         };
         let home = canonical_home_dir()?;
-        validate_workspace(&workspace_root, &repositories, home.as_deref())?;
+        validate_workspace(
+            &workspace_root,
+            std::slice::from_ref(&repository),
+            home.as_deref(),
+        )?;
         workspace_probe(&workspace_root)?;
 
         Ok(Self {
-            repositories,
+            repositories: vec![repository],
             poll_every,
             default_runtime: default_runtime.to_owned(),
             default_timeout,
             maximum_timeout,
             max_concurrent_runs: raw.max_concurrent_runs,
-            max_concurrent_runs_per_repository: raw.max_concurrent_runs_per_repository,
+            max_concurrent_runs_per_repository: raw.max_concurrent_runs,
             workspace_root,
+            data_directory,
         })
     }
 }
@@ -148,10 +157,7 @@ impl Config {
 impl fmt::Display for Config {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(formatter, "Configuration is valid.")?;
-        writeln!(formatter, "repositories:")?;
-        for repository in &self.repositories {
-            writeln!(formatter, "  - {}", repository.display())?;
-        }
+        writeln!(formatter, "repository: {}", self.repositories[0].display())?;
         writeln!(
             formatter,
             "poll_every: {}",
@@ -175,25 +181,135 @@ impl fmt::Display for Config {
         )?;
         writeln!(
             formatter,
-            "max_concurrent_runs_per_repository: {}",
-            self.max_concurrent_runs_per_repository
+            "state_directory: {}",
+            self.data_directory.display()
         )?;
-        writeln!(
-            formatter,
-            "workspace_root: {}",
-            self.workspace_root.display()
-        )
+        writeln!(formatter, "worktrees: {}", self.workspace_root.display())
     }
 }
 
-fn default_repository_concurrency() -> usize {
-    1
+pub fn repository_config_path(repository: &Path) -> PathBuf {
+    repository.join(".factory/config.toml")
 }
 
-pub fn default_config_path() -> PathBuf {
-    dirs::home_dir()
-        .map(|home| home.join(".factory/config.toml"))
-        .unwrap_or_else(|| PathBuf::from(".factory/config.toml"))
+pub fn repository_data_directory(repository: &Path) -> Result<PathBuf> {
+    let repository = repository
+        .canonicalize()
+        .with_context(|| format!("failed to resolve repository {}", repository.display()))?;
+    ensure_primary_checkout(&repository)?;
+    let identity = repository_remote_identity(&repository)?;
+    let mut hasher = Sha256::new();
+    hasher.update(identity.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(repository.as_os_str().as_encoded_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    let base = env::var_os("FACTORY_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::data_local_dir().map(|path| path.join("factory")))
+        .context("could not determine Factory data directory")?;
+    let base = if base.is_absolute() {
+        base
+    } else {
+        env::current_dir()
+            .context("failed to resolve current directory")?
+            .join(base)
+    };
+    Ok(base.join(&digest[..20]))
+}
+
+pub fn repository_remote_identity(repository: &Path) -> Result<String> {
+    let origin = git_output(repository, &["remote", "get-url", "origin"])
+        .context("repository has no readable origin remote")?;
+    canonical_github_identity(origin.trim()).context("origin is not a supported GitHub remote")
+}
+
+fn canonical_github_identity(origin: &str) -> Result<String> {
+    let path = if let Some(path) = origin.strip_prefix("git@github.com:") {
+        path
+    } else if let Some(remainder) = origin.strip_prefix("https://") {
+        let (authority, path) = remainder
+            .split_once('/')
+            .context("GitHub HTTPS origin has no repository path")?;
+        let host = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        let host = host.split_once(':').map_or(host, |(host, _)| host);
+        if !host.eq_ignore_ascii_case("github.com") {
+            bail!("GitHub HTTPS origin has an unsupported host");
+        }
+        path
+    } else if let Some(remainder) = origin.strip_prefix("ssh://git@") {
+        let (authority, path) = remainder
+            .split_once('/')
+            .context("GitHub SSH origin has no repository path")?;
+        let host = authority
+            .split_once(':')
+            .map_or(authority, |(host, _)| host);
+        if !host.eq_ignore_ascii_case("github.com") && !host.eq_ignore_ascii_case("ssh.github.com")
+        {
+            bail!("GitHub SSH origin has an unsupported host");
+        }
+        path
+    } else {
+        bail!("unsupported GitHub origin syntax");
+    };
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let mut segments = path.split('/');
+    let owner = segments
+        .next()
+        .filter(|value| !value.is_empty())
+        .context("GitHub origin has no owner")?;
+    let repository = segments
+        .next()
+        .filter(|value| !value.is_empty())
+        .context("GitHub origin has no repository")?;
+    if segments.next().is_some() {
+        bail!("GitHub origin has an invalid repository path");
+    }
+    Ok(format!(
+        "{}/{}",
+        owner.to_ascii_lowercase(),
+        repository.to_ascii_lowercase()
+    ))
+}
+
+fn ensure_primary_checkout(repository: &Path) -> Result<()> {
+    let git_dir = git_output(
+        repository,
+        &["rev-parse", "--path-format=absolute", "--git-dir"],
+    )?;
+    let common_dir = git_output(
+        repository,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let git_dir = PathBuf::from(git_dir.trim())
+        .canonicalize()
+        .context("failed to resolve Git directory")?;
+    let common_dir = PathBuf::from(common_dir.trim())
+        .canonicalize()
+        .context("failed to resolve common Git directory")?;
+    if git_dir != common_dir {
+        bail!("Factory must run from the primary checkout, not a linked Git worktree");
+    }
+    Ok(())
+}
+
+fn git_output(repository: &Path, arguments: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(arguments)
+        .output()
+        .context("failed to start git")?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            arguments.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    String::from_utf8(output.stdout).context("git output was not valid UTF-8")
 }
 
 fn parse_positive_duration(name: &str, value: &str) -> Result<Duration> {
@@ -373,16 +489,38 @@ fn ensure_workspace_writable(workspace: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn raw(repository: &Path, workspace: &Path) -> RawConfig {
+    fn raw(repository: &Path, _workspace: &Path) -> RawConfig {
+        fs::create_dir_all(repository).unwrap();
+        if !repository.join(".git").exists() {
+            assert!(
+                Command::new("git")
+                    .args(["init", "--quiet"])
+                    .current_dir(repository)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            assert!(
+                Command::new("git")
+                    .args([
+                        "remote",
+                        "add",
+                        "origin",
+                        "git@github.com:example/repository.git"
+                    ])
+                    .current_dir(repository)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
         RawConfig {
-            repositories: vec![repository.display().to_string()],
+            version: 1,
             poll_every: "30s".into(),
             default_runtime: "codex".into(),
             default_timeout: "2h".into(),
             maximum_timeout: "8h".into(),
             max_concurrent_runs: 2,
-            max_concurrent_runs_per_repository: 1,
-            workspace_root: workspace.display().to_string(),
         }
     }
 
@@ -391,16 +529,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let repository = temp.path().join("repo");
         let workspace = temp.path().join("worktrees");
-        fs::create_dir(&repository).unwrap();
-        fs::create_dir(&workspace).unwrap();
-
-        let config = Config::resolve(raw(&repository, &workspace), temp.path()).unwrap();
+        let config = Config::resolve(raw(&repository, &workspace), &repository).unwrap();
 
         assert_eq!(
             config.repositories,
             vec![repository.canonicalize().unwrap()]
         );
-        assert_eq!(config.workspace_root, workspace.canonicalize().unwrap());
+        assert!(config.workspace_root.ends_with("worktrees"));
         assert_eq!(config.poll_every, Duration::from_secs(30));
     }
 
@@ -409,12 +544,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let repository = temp.path().join("repo");
         let workspace = temp.path().join("worktrees");
-        fs::create_dir(&repository).unwrap();
-        fs::create_dir(&workspace).unwrap();
         let mut input = raw(&repository, &workspace);
         input.default_runtime = "  codex  ".into();
 
-        let config = Config::resolve(input, temp.path()).unwrap();
+        let config = Config::resolve(input, &repository).unwrap();
 
         assert_eq!(config.default_runtime, "codex");
     }
@@ -424,8 +557,6 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let repository = temp.path().join("repo");
         let workspace = temp.path().join("worktrees");
-        fs::create_dir(&repository).unwrap();
-        fs::create_dir(&workspace).unwrap();
         let mut config = raw(&repository, &workspace);
         config.poll_every = "eventually".into();
 
@@ -454,28 +585,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_repository_concurrency() {
+    fn rejects_unsupported_version() {
         let temp = tempfile::tempdir().unwrap();
         let repository = temp.path().join("repo");
         let workspace = temp.path().join("worktrees");
-        fs::create_dir(&repository).unwrap();
-        fs::create_dir(&workspace).unwrap();
         let mut config = raw(&repository, &workspace);
-        config.max_concurrent_runs_per_repository = 0;
+        config.version = 2;
         assert!(
             Config::resolve(config, temp.path())
                 .unwrap_err()
                 .to_string()
-                .contains("must be greater than zero")
-        );
-
-        let mut config = raw(&repository, &workspace);
-        config.max_concurrent_runs_per_repository = 3;
-        assert!(
-            Config::resolve(config, temp.path())
-                .unwrap_err()
-                .to_string()
-                .contains("must not exceed")
+                .contains("version must be 1")
         );
     }
 
@@ -484,33 +604,26 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let workspace = temp.path().join("worktrees");
         fs::create_dir(&workspace).unwrap();
-        let config = raw(&temp.path().join("missing"), &workspace);
+        let config = RawConfig {
+            version: 1,
+            poll_every: "30s".into(),
+            default_runtime: "codex".into(),
+            default_timeout: "2h".into(),
+            maximum_timeout: "8h".into(),
+            max_concurrent_runs: 1,
+        };
 
-        let error = Config::resolve(config, temp.path()).unwrap_err();
+        let error = Config::resolve(config, &temp.path().join("missing")).unwrap_err();
 
         assert!(error.to_string().contains("repository path does not exist"));
     }
 
     #[test]
-    fn rejects_workspace_inside_repository() {
+    fn derives_workspace_outside_repository() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = temp.path().join("worktrees");
-        fs::create_dir(&workspace).unwrap();
-
-        let error = Config::resolve(raw(temp.path(), &workspace), temp.path()).unwrap_err();
-
-        assert!(error.to_string().contains("must not overlap"));
-    }
-
-    #[test]
-    fn rejects_repository_inside_workspace() {
-        let temp = tempfile::tempdir().unwrap();
-        let repository = temp.path().join("repo");
-        fs::create_dir(&repository).unwrap();
-
-        let error = Config::resolve(raw(&repository, temp.path()), temp.path()).unwrap_err();
-
-        assert!(error.to_string().contains("must not overlap"));
+        let config = Config::resolve(raw(temp.path(), &workspace), temp.path()).unwrap();
+        assert!(!config.workspace_root.starts_with(temp.path()));
     }
 
     #[cfg(unix)]
@@ -537,18 +650,119 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let repository = temp.path().join("repo");
         let workspace = temp.path().join("worktrees");
-        fs::create_dir(&repository).unwrap();
-        fs::create_dir(&workspace).unwrap();
-
         let error = Config::resolve_with_workspace_probe(
             raw(&repository, &workspace),
-            temp.path(),
+            &repository,
             |path| bail!("workspace_root is not writable: {}", path.display()),
-            false,
+            true,
         )
         .unwrap_err();
 
-        assert!(error.to_string().contains("workspace_root is not writable"));
-        assert!(error.to_string().contains(workspace.to_str().unwrap()));
+        assert!(
+            error.to_string().contains("workspace_root is not writable"),
+            "{error:#}"
+        );
+        assert!(error.to_string().contains("worktrees"));
+    }
+
+    #[test]
+    fn repository_config_requires_version_and_rejects_legacy_registry_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let workspace = temp.path().join("worktrees");
+        let valid = raw(&repository, &workspace);
+        let valid = toml::to_string(&serde_json::json!({
+            "version": valid.version,
+            "poll_every": valid.poll_every,
+            "default_runtime": valid.default_runtime,
+            "default_timeout": valid.default_timeout,
+            "maximum_timeout": valid.maximum_timeout,
+            "max_concurrent_runs": valid.max_concurrent_runs,
+        }))
+        .unwrap();
+        let missing_version = valid
+            .lines()
+            .filter(|line| !line.starts_with("version ="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let error = Config::validate_candidate(&missing_version, &repository).unwrap_err();
+        assert!(format!("{error:#}").contains("missing field `version`"));
+        for legacy in [
+            "repositories = [\"/tmp/repo\"]",
+            "workspace_root = \"/tmp/worktrees\"",
+            "max_concurrent_runs_per_repository = 1",
+        ] {
+            let error = Config::validate_candidate(&format!("{valid}\n{legacy}\n"), &repository)
+                .unwrap_err();
+            assert!(format!("{error:#}").contains("unknown field"), "{error:#}");
+        }
+    }
+
+    #[test]
+    fn state_identity_normalizes_remote_syntax_but_distinguishes_clones() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        raw(&first, temp.path());
+        raw(&second, temp.path());
+        let ssh = repository_data_directory(&first).unwrap();
+        assert!(
+            Command::new("git")
+                .args([
+                    "remote",
+                    "set-url",
+                    "origin",
+                    "https://github.com/Example/Repository.git",
+                ])
+                .current_dir(&first)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(ssh, repository_data_directory(&first).unwrap());
+        assert_ne!(ssh, repository_data_directory(&second).unwrap());
+    }
+
+    #[test]
+    fn linked_git_worktree_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        raw(&repository, temp.path());
+        fs::write(repository.join("README.md"), "test\n").unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "."])
+                .current_dir(&repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "-m",
+                    "test"
+                ])
+                .current_dir(&repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let linked = temp.path().join("linked");
+        assert!(
+            Command::new("git")
+                .args(["worktree", "add", "-b", "linked", linked.to_str().unwrap()])
+                .current_dir(&repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let error = repository_data_directory(&linked).unwrap_err();
+        assert!(error.to_string().contains("primary checkout"), "{error:#}");
     }
 }

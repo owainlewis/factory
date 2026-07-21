@@ -1,41 +1,70 @@
 use std::fs;
+use std::process::Command as ProcessCommand;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 
-fn valid_config() -> (tempfile::TempDir, std::path::PathBuf) {
+fn valid_config() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repository");
-    let workspace = temp.path().join("worktrees");
-    fs::create_dir(&repository).unwrap();
-    fs::create_dir(&workspace).unwrap();
-    let path = temp.path().join("config.toml");
+    let data_home = temp.path().join("data");
+    fs::create_dir_all(repository.join(".factory")).unwrap();
+    assert!(
+        ProcessCommand::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        ProcessCommand::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:example/repository.git"
+            ])
+            .current_dir(&repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    Command::cargo_bin("factory")
+        .unwrap()
+        .current_dir(&repository)
+        .env("FACTORY_DATA_HOME", &data_home)
+        .arg("init")
+        .assert()
+        .success();
+    let path = repository.join(".factory/config.toml");
     fs::write(
         &path,
-        format!(
-            r#"repositories = ["{}"]
+        r#"version = 1
 poll_every = "30s"
 default_runtime = "codex"
 default_timeout = "2h"
 maximum_timeout = "8h"
 max_concurrent_runs = 2
-workspace_root = "{}"
 "#,
-            repository.display(),
-            workspace.display()
-        ),
     )
     .unwrap();
-    (temp, path)
+    (temp, path, repository, data_home)
 }
 
 #[test]
 fn validates_explicit_config() {
-    let (_temp, path) = valid_config();
+    let (_temp, path, _repository, data_home) = valid_config();
 
     Command::cargo_bin("factory")
         .unwrap()
         .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", data_home)
         .assert()
         .success()
         .stdout(predicate::str::contains("Configuration is valid."))
@@ -44,7 +73,7 @@ fn validates_explicit_config() {
 
 #[test]
 fn reports_specific_validation_failures() {
-    let (_temp, path) = valid_config();
+    let (_temp, path, _repository, data_home) = valid_config();
     let contents = fs::read_to_string(&path).unwrap();
     fs::write(
         &path,
@@ -55,6 +84,7 @@ fn reports_specific_validation_failures() {
     Command::cargo_bin("factory")
         .unwrap()
         .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", data_home)
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -64,16 +94,14 @@ fn reports_specific_validation_failures() {
 
 #[test]
 fn uses_default_config_path() {
-    let (temp, path) = valid_config();
-    let home = temp.path().join("home");
-    let config_dir = home.join(".factory");
-    fs::create_dir_all(&config_dir).unwrap();
-    fs::copy(path, config_dir.join("config.toml")).unwrap();
+    let (_temp, _path, repository, data_home) = valid_config();
+    fs::create_dir_all(repository.join("nested/directory")).unwrap();
 
     Command::cargo_bin("factory")
         .unwrap()
         .arg("validate")
-        .env("HOME", home)
+        .current_dir(repository.join("nested/directory"))
+        .env("FACTORY_DATA_HOME", data_home)
         .assert()
         .success()
         .stdout(predicate::str::contains("Configuration is valid."));
@@ -81,34 +109,17 @@ fn uses_default_config_path() {
 
 #[test]
 fn resolves_relative_paths_from_config_directory() {
-    let temp = tempfile::tempdir().unwrap();
-    let config_dir = temp.path().join("configuration");
-    let repository = config_dir.join("repository");
-    let workspace = config_dir.join("worktrees");
-    let launch_dir = temp.path().join("launch");
-    fs::create_dir_all(&repository).unwrap();
-    fs::create_dir(&workspace).unwrap();
+    let (_temp, path, repository, data_home) = valid_config();
+    let launch_dir = repository.join("nested");
     fs::create_dir(&launch_dir).unwrap();
-    let path = config_dir.join("config.toml");
-    fs::write(
-        &path,
-        r#"repositories = ["repository"]
-poll_every = "30s"
-default_runtime = "codex"
-default_timeout = "2h"
-maximum_timeout = "8h"
-max_concurrent_runs = 2
-workspace_root = "worktrees"
-"#,
-    )
-    .unwrap();
 
     Command::cargo_bin("factory")
         .unwrap()
         .current_dir(launch_dir)
         .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", &data_home)
         .assert()
         .success()
         .stdout(predicate::str::contains(repository.to_str().unwrap()))
-        .stdout(predicate::str::contains(workspace.to_str().unwrap()));
+        .stdout(predicate::str::contains(data_home.to_str().unwrap()));
 }

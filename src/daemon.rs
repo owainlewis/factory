@@ -78,6 +78,11 @@ pub struct FactoryDaemon {
     codex: CodexRuntime,
 }
 
+pub struct OneShotReport {
+    pub github: PollReport,
+    pub scheduled_tasks_created: usize,
+}
+
 impl FactoryDaemon {
     pub fn new(config: Config, catalog: WorkflowCatalog, ledger_path: impl Into<PathBuf>) -> Self {
         Self::with_clients(
@@ -274,6 +279,45 @@ impl FactoryDaemon {
             return Err(error);
         }
         Ok(())
+    }
+
+    pub async fn evaluate_once(&self, cancellation: CancellationToken) -> Result<OneShotReport> {
+        for entry in self.catalog.invalid_scheduled_entries() {
+            eprintln!(
+                "Factory skipped invalid scheduled workflow {}: {}",
+                entry.path.display(),
+                entry.errors.join("; ")
+            );
+        }
+        self.catalog.validate_ticket_workflows()?;
+        self.github.validate_global(&cancellation).await?;
+        let targets = self.resolve_targets(&cancellation).await?;
+        let mut ledger = Ledger::open(&self.ledger_path)?;
+        let scheduled_before = ledger
+            .tasks()?
+            .into_iter()
+            .filter(|task| task.kind == "scheduled")
+            .count();
+        let owner = DaemonOwner::new()?;
+        ledger.register_daemon_owner(&owner.id, owner.pid)?;
+        let now = Utc::now();
+        let mut schedules =
+            initialize_schedules_preserving_due(&mut ledger, &targets, now, &owner.id);
+        evaluate_schedules_once(&mut ledger, &mut schedules, now);
+        ledger.remove_daemon_owner(&owner.id)?;
+        let scheduled_after = ledger
+            .tasks()?
+            .into_iter()
+            .filter(|task| task.kind == "scheduled")
+            .count();
+        let github = self
+            .github
+            .poll_once(&self.config, &self.catalog, &mut ledger)
+            .await?;
+        Ok(OneShotReport {
+            github,
+            scheduled_tasks_created: scheduled_after.saturating_sub(scheduled_before),
+        })
     }
 
     async fn validate(&self, cancellation: &CancellationToken) -> Result<()> {
@@ -983,6 +1027,25 @@ fn initialize_schedules(
     startup_at: DateTime<Utc>,
     owner_id: &str,
 ) -> Vec<ScheduledTarget> {
+    initialize_schedules_with_policy(ledger, targets, startup_at, owner_id, false)
+}
+
+fn initialize_schedules_preserving_due(
+    ledger: &mut Ledger,
+    targets: &HashMap<String, RepositoryTarget>,
+    startup_at: DateTime<Utc>,
+    owner_id: &str,
+) -> Vec<ScheduledTarget> {
+    initialize_schedules_with_policy(ledger, targets, startup_at, owner_id, true)
+}
+
+fn initialize_schedules_with_policy(
+    ledger: &mut Ledger,
+    targets: &HashMap<String, RepositoryTarget>,
+    startup_at: DateTime<Utc>,
+    owner_id: &str,
+    preserve_existing_due: bool,
+) -> Vec<ScheduledTarget> {
     let mut schedules = Vec::new();
     for (repository, target) in targets {
         for (workflow, target) in &target.workflows {
@@ -1009,7 +1072,11 @@ fn initialize_schedules(
                     workflow,
                     &fingerprint,
                     calculated.timestamp_millis(),
-                    startup_at.timestamp_millis(),
+                    if preserve_existing_due {
+                        i64::MIN
+                    } else {
+                        startup_at.timestamp_millis()
+                    },
                     owner_id,
                 )?;
                 let next_due = DateTime::<Utc>::from_timestamp_millis(cursor.next_due_at)
@@ -1041,23 +1108,7 @@ fn evaluate_schedules(
 ) {
     for target in schedules {
         while target.next_due <= through {
-            let due = target.next_due;
-            let result = (|| -> Result<DateTime<Utc>> {
-                let next = next_occurrence(&target.schedule, target.timezone, due)?;
-                let scheduled_at = due.to_rfc3339_opts(SecondsFormat::Secs, true);
-                let identity =
-                    TaskIdentity::scheduled(&target.repository, &target.workflow, &scheduled_at)?;
-                let payload = serde_json::json!({ "scheduled_at": scheduled_at }).to_string();
-                ledger.enqueue_scheduled_occurrence(
-                    &identity,
-                    &payload,
-                    &target.fingerprint,
-                    due.timestamp_millis(),
-                    next.timestamp_millis(),
-                )?;
-                Ok(next)
-            })();
-            match result {
+            match evaluate_schedule(ledger, target) {
                 Ok(next) => target.next_due = next,
                 Err(error) => {
                     eprintln!(
@@ -1069,6 +1120,41 @@ fn evaluate_schedules(
             }
         }
     }
+}
+
+fn evaluate_schedules_once(
+    ledger: &mut Ledger,
+    schedules: &mut [ScheduledTarget],
+    through: DateTime<Utc>,
+) {
+    for target in schedules {
+        if target.next_due > through {
+            continue;
+        }
+        match evaluate_schedule(ledger, target) {
+            Ok(next) => target.next_due = next,
+            Err(error) => eprintln!(
+                "Factory schedule tick failed for {}/{}: {error:#}",
+                target.repository, target.workflow
+            ),
+        }
+    }
+}
+
+fn evaluate_schedule(ledger: &mut Ledger, target: &ScheduledTarget) -> Result<DateTime<Utc>> {
+    let due = target.next_due;
+    let next = next_occurrence(&target.schedule, target.timezone, due)?;
+    let scheduled_at = due.to_rfc3339_opts(SecondsFormat::Secs, true);
+    let identity = TaskIdentity::scheduled(&target.repository, &target.workflow, &scheduled_at)?;
+    let payload = serde_json::json!({ "scheduled_at": scheduled_at }).to_string();
+    ledger.enqueue_scheduled_occurrence(
+        &identity,
+        &payload,
+        &target.fingerprint,
+        due.timestamp_millis(),
+        next.timestamp_millis(),
+    )?;
+    Ok(next)
 }
 
 fn next_occurrence(

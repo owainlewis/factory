@@ -32,7 +32,7 @@ impl ResolvedWorkflow {
         })?;
         if !config.repositories.contains(&repository) {
             bail!(
-                "repository {} is not listed in Factory configuration",
+                "repository {} does not match the repository-local Factory configuration",
                 repository.display()
             );
         }

@@ -26,6 +26,7 @@ struct Fixture {
     gh: PathBuf,
     codex: PathBuf,
     runtime_dir: PathBuf,
+    data_home: PathBuf,
 }
 
 impl Fixture {
@@ -37,6 +38,27 @@ impl Fixture {
         for (index, issues) in issue_pages.iter().enumerate() {
             let repository = temp.path().join(format!("repo-{index}"));
             fs::create_dir_all(repository.join(".factory/workflows")).unwrap();
+            assert!(
+                Command::new("git")
+                    .args(["init", "--quiet"])
+                    .current_dir(&repository)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            assert!(
+                Command::new("git")
+                    .args([
+                        "remote",
+                        "add",
+                        "origin",
+                        &format!("git@github.com:example/repo-{index}.git")
+                    ])
+                    .current_dir(&repository)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
             fs::write(
                 repository.join(".factory/workflows/implement-ready-ticket.md"),
                 "+++\nlabel = \"factory:ready\"\nruntime = \"codex\"\ntimeout = \"10s\"\n+++\n\nCUSTOM WORKFLOW: deliver a green draft PR and never merge it.\n",
@@ -62,25 +84,37 @@ impl Fixture {
                 )
                 .unwrap();
             }
-            repositories.push(repository);
+            repositories.push(repository.canonicalize().unwrap());
         }
         let workspace = temp.path().join("worktrees");
         fs::create_dir(&workspace).unwrap();
-        let config_path = temp.path().join("config.toml");
-        let repository_values = repositories
-            .iter()
-            .map(|path| format!("\"{}\"", path.display()))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let data_home = temp.path().join("factory-data");
+        let config_path = repositories[0].join(".factory/config.toml");
+        AssertCommand::cargo_bin("factory")
+            .unwrap()
+            .current_dir(&repositories[0])
+            .env("FACTORY_DATA_HOME", &data_home)
+            .arg("init")
+            .assert()
+            .success();
         fs::write(
             &config_path,
             format!(
-                "repositories = [{repository_values}]\npoll_every = \"20ms\"\ndefault_runtime = \"codex\"\ndefault_timeout = \"2h\"\nmaximum_timeout = \"8h\"\nmax_concurrent_runs = {global_limit}\nmax_concurrent_runs_per_repository = {repository_limit}\nworkspace_root = \"{}\"\n",
-                workspace.display()
+                "version = 1\npoll_every = \"20ms\"\ndefault_runtime = \"codex\"\ndefault_timeout = \"2h\"\nmaximum_timeout = \"8h\"\nmax_concurrent_runs = {global_limit}\n"
             ),
         )
         .unwrap();
-        let config = Config::load(&config_path).unwrap();
+        let config = Config {
+            repositories,
+            poll_every: Duration::from_millis(20),
+            default_runtime: "codex".into(),
+            default_timeout: Duration::from_secs(2 * 60 * 60),
+            maximum_timeout: Duration::from_secs(8 * 60 * 60),
+            max_concurrent_runs: global_limit,
+            max_concurrent_runs_per_repository: repository_limit,
+            workspace_root: workspace,
+            data_directory: temp.path().join("data"),
+        };
         let catalog = WorkflowCatalog::load(&config).unwrap();
         let gh = temp.path().join("gh");
         write_executable(
@@ -177,6 +211,7 @@ exit 0
             gh,
             codex,
             runtime_dir,
+            data_home,
         }
     }
 
@@ -299,12 +334,13 @@ fn spawn_daemon_cli(fixture: &Fixture, stderr_path: &Path) -> std::process::Chil
     let mut command = Command::new(env!("CARGO_BIN_EXE_factory"));
     command
         .args([
-            "run",
+            "daemon",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
             fixture.ledger_path.parent().unwrap().to_str().unwrap(),
         ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .env("PATH", search_path)
         .stdout(Stdio::null())
         .stderr(Stdio::from(stderr));
@@ -351,6 +387,57 @@ async fn cli_reports_live_startup_ready_and_shutdown_progress() {
             .unwrap()
             .contains("Factory stopped.")
     );
+}
+
+#[tokio::test]
+async fn daemon_discovers_repository_from_nested_directory_and_restarts_cleanly() {
+    let fixture = Fixture::new(&[vec![]], 1, 1);
+    let nested = fixture.config.repositories[0].join("nested/directory");
+    fs::create_dir_all(&nested).unwrap();
+    let legacy = fixture._temp.path().join("empty-legacy");
+    let search_path = std::env::join_paths(
+        std::iter::once(fixture.gh.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .as_deref()
+                .map(std::env::split_paths)
+                .into_iter()
+                .flatten(),
+        ),
+    )
+    .unwrap();
+
+    for attempt in 1..=2 {
+        let stderr_path = fixture
+            ._temp
+            .path()
+            .join(format!("nested-{attempt}.stderr"));
+        let mut child = Command::new(env!("CARGO_BIN_EXE_factory"))
+            .arg("daemon")
+            .current_dir(&nested)
+            .env("FACTORY_DATA_HOME", &fixture.data_home)
+            .env("FACTORY_LEGACY_DATA_DIRECTORY", &legacy)
+            .env("PATH", &search_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()))
+            .spawn()
+            .unwrap();
+        wait_for(|| {
+            fs::read_to_string(&stderr_path)
+                .is_ok_and(|output| output.contains("Factory ready: watching 1 repositories"))
+        })
+        .await;
+        interrupt(&child);
+        assert!(child.wait().unwrap().success());
+    }
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .args(["tasks", "--json"])
+        .current_dir(&nested)
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("[]"));
 }
 
 #[tokio::test]
@@ -806,12 +893,13 @@ async fn subprocess_restart_kills_the_surviving_anchored_process_tree() {
     let mut first = Command::new(env!("CARGO_BIN_EXE_factory"));
     first
         .args([
-            "run",
+            "daemon",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
             fixture.ledger_path.parent().unwrap().to_str().unwrap(),
         ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .env("PATH", &search_path);
     let mut first = first.spawn().unwrap();
     wait_for(|| fixture.started_slots().len() == 1).await;
@@ -857,12 +945,13 @@ async fn subprocess_restart_kills_the_surviving_anchored_process_tree() {
     let mut second = Command::new(env!("CARGO_BIN_EXE_factory"));
     second
         .args([
-            "run",
+            "daemon",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
             fixture.ledger_path.parent().unwrap().to_str().unwrap(),
         ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .env("PATH", &search_path);
     let mut second = second.spawn().unwrap();
     wait_for(|| fixture.started_slots().len() == 2).await;
@@ -1393,12 +1482,13 @@ async fn invalid_scheduled_workflow_does_not_block_valid_ticket_workflow() {
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_factory"));
     daemon
         .args([
-            "run",
+            "daemon",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
             fixture.ledger_path.parent().unwrap().to_str().unwrap(),
         ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .env("PATH", search_path);
     let mut daemon = daemon.spawn().unwrap();
 
@@ -1447,12 +1537,13 @@ fn invalid_label_workflow_fails_daemon_startup() {
     AssertCommand::cargo_bin("factory")
         .unwrap()
         .args([
-            "run",
+            "daemon",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
             fixture.ledger_path.parent().unwrap().to_str().unwrap(),
         ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .env("PATH", search_path)
         .assert()
         .failure()
@@ -1490,12 +1581,13 @@ fn ambiguous_schedule_and_label_workflow_fails_daemon_startup() {
     AssertCommand::cargo_bin("factory")
         .unwrap()
         .args([
-            "run",
+            "daemon",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
             fixture.ledger_path.parent().unwrap().to_str().unwrap(),
         ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .env("PATH", search_path)
         .assert()
         .failure()

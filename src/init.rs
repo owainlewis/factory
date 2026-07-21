@@ -6,7 +6,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use tempfile::NamedTempFile;
-use toml_edit::{Array, DocumentMut, Item, Value, value};
+use toml_edit::{DocumentMut, value};
 
 use crate::config::Config;
 
@@ -20,17 +20,14 @@ pub struct InitOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlannedAction {
     Create,
-    Update,
     Unchanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResourceStatus {
     Created,
-    Updated,
     Unchanged,
     WouldCreate,
-    WouldUpdate,
     Failed,
     Skipped,
 }
@@ -39,10 +36,8 @@ impl ResourceStatus {
     fn label(self) -> &'static str {
         match self {
             Self::Created => "created",
-            Self::Updated => "updated",
             Self::Unchanged => "unchanged",
             Self::WouldCreate => "would create",
-            Self::WouldUpdate => "would update",
             Self::Failed => "failed",
             Self::Skipped => "skipped",
         }
@@ -68,7 +63,7 @@ impl InitReport {
         u8::from(self.resources.iter().any(|resource| {
             matches!(
                 resource.status,
-                ResourceStatus::WouldCreate | ResourceStatus::WouldUpdate | ResourceStatus::Failed
+                ResourceStatus::WouldCreate | ResourceStatus::Failed
             )
         }))
     }
@@ -110,7 +105,7 @@ impl fmt::Display for InitReport {
             writeln!(formatter, "Next:")?;
             writeln!(formatter, "  factory workflow create <workflow-id> --help")?;
             writeln!(formatter, "  factory validate")?;
-            writeln!(formatter, "  factory run")
+            writeln!(formatter, "  factory daemon")
         } else {
             writeln!(
                 formatter,
@@ -135,14 +130,14 @@ struct ConfigPlan {
 
 pub fn initialize(options: InitOptions) -> Result<InitReport> {
     let repository = discover_repository(&options.repository)?;
-    let config = plan_config(&options.config_path, &repository)?;
     let workflows = plan_workflow_directory(&repository)?;
+    let config = plan_config(&options.config_path, &repository)?;
 
     if options.check {
         return Ok(InitReport {
             repository,
             resources: vec![
-                planned_resource(config.action, &config.path, "global configuration"),
+                planned_resource(config.action, &config.path, "repository configuration"),
                 planned_resource(
                     config.workspace_action,
                     &config.workspace,
@@ -186,7 +181,7 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
     resources.push(ResourceResult {
         status: applied_status(config.action),
         resource: config.path.display().to_string(),
-        detail: Some("global configuration".to_owned()),
+        detail: Some("repository configuration".to_owned()),
     });
     resources.push(ResourceResult {
         status: applied_status(config.workspace_action),
@@ -231,7 +226,7 @@ fn skipped_resource(resource: String, reason: &str) -> ResourceResult {
     }
 }
 
-pub(crate) fn discover_repository(requested: &Path) -> Result<PathBuf> {
+pub fn discover_repository(requested: &Path) -> Result<PathBuf> {
     let requested = requested
         .canonicalize()
         .with_context(|| format!("repository path does not exist: {}", requested.display()))?;
@@ -361,6 +356,14 @@ pub(crate) fn validate_optional_directory(path: &Path) -> Result<()> {
 
 fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
     let path = absolute_path(path)?;
+    let expected = repository.join(".factory/config.toml");
+    if path != expected {
+        bail!(
+            "repository configuration must be {}; got {}",
+            expected.display(),
+            path.display()
+        );
+    }
     match fs::symlink_metadata(&path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -372,45 +375,17 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
             } else {
                 PlannedAction::Create
             };
-            if config.repositories.iter().any(|item| item == repository) {
-                return Ok(ConfigPlan {
-                    path,
-                    workspace: config.workspace_root,
-                    workspace_action,
-                    action: PlannedAction::Unchanged,
-                    candidate: None,
-                });
-            }
-            let contents = fs::read_to_string(&path)
-                .with_context(|| format!("failed to read config {}", path.display()))?;
-            let mut document = contents
-                .parse::<DocumentMut>()
-                .with_context(|| format!("failed to edit config {}", path.display()))?;
-            let repositories = document["repositories"]
-                .as_array_mut()
-                .context("config repositories must be an array")?;
-            repositories.push(repository.display().to_string());
-            let candidate = document.to_string();
-            let config_directory = path
-                .parent()
-                .context("configuration path has no parent directory")?;
-            let effective = Config::validate_candidate(&candidate, config_directory)
-                .context("generated configuration is invalid")?;
             Ok(ConfigPlan {
                 path,
-                workspace: effective.workspace_root,
+                workspace: config.workspace_root,
                 workspace_action,
-                action: PlannedAction::Update,
-                candidate: Some(candidate),
+                action: PlannedAction::Unchanged,
+                candidate: None,
             })
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let config_directory = path
-                .parent()
-                .context("configuration path has no parent directory")?;
-            let candidate_workspace = config_directory.join("workspaces");
-            let candidate = default_config(repository, &candidate_workspace);
-            let validated = Config::validate_candidate(&candidate, config_directory)
+            let candidate = default_config();
+            let validated = Config::validate_candidate(&candidate, repository)
                 .context("generated configuration is invalid")?;
             let workspace = validated.workspace_root;
             Ok(ConfigPlan {
@@ -441,25 +416,20 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn default_config(repository: &Path, workspace: &Path) -> String {
+fn default_config() -> String {
     let mut document = DocumentMut::new();
-    let mut repositories = Array::new();
-    repositories.push(repository.display().to_string());
-    document["repositories"] = Item::Value(Value::Array(repositories));
+    document["version"] = value(1);
     document["poll_every"] = value("30s");
     document["default_runtime"] = value("codex");
     document["default_timeout"] = value("2h");
     document["maximum_timeout"] = value("8h");
-    document["max_concurrent_runs"] = value(2);
-    document["max_concurrent_runs_per_repository"] = value(1);
-    document["workspace_root"] = value(workspace.display().to_string());
+    document["max_concurrent_runs"] = value(1);
     document.to_string()
 }
 
 fn planned_resource(action: PlannedAction, path: &Path, detail: &str) -> ResourceResult {
     let status = match action {
         PlannedAction::Create => ResourceStatus::WouldCreate,
-        PlannedAction::Update => ResourceStatus::WouldUpdate,
         PlannedAction::Unchanged => ResourceStatus::Unchanged,
     };
     ResourceResult {
@@ -472,7 +442,6 @@ fn planned_resource(action: PlannedAction, path: &Path, detail: &str) -> Resourc
 fn applied_status(action: PlannedAction) -> ResourceStatus {
     match action {
         PlannedAction::Create => ResourceStatus::Created,
-        PlannedAction::Update => ResourceStatus::Updated,
         PlannedAction::Unchanged => ResourceStatus::Unchanged,
     }
 }
@@ -516,7 +485,13 @@ fn validated_atomic_config_write(path: &Path, contents: &str) -> Result<()> {
         .as_file_mut()
         .sync_all()
         .context("failed to sync temporary configuration")?;
-    Config::load(temporary.path()).context("generated configuration is invalid")?;
+    let repository = parent
+        .parent()
+        .context("repository configuration has no repository parent")?;
+    let written =
+        fs::read_to_string(temporary.path()).context("failed to read temporary configuration")?;
+    Config::validate_candidate(&written, repository)
+        .context("generated configuration is invalid")?;
     if let Ok(metadata) = fs::metadata(path) {
         temporary
             .as_file()

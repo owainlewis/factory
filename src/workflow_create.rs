@@ -52,7 +52,7 @@ impl fmt::Display for CreateWorkflowReport {
             )
         )?;
         writeln!(formatter, "  factory workflows")?;
-        writeln!(formatter, "  factory run")
+        writeln!(formatter, "  factory daemon")
     }
 }
 
@@ -67,8 +67,7 @@ pub async fn create_workflow(
     let config = Config::load(&options.config_path)?;
     if !config.repositories.iter().any(|item| item == &repository) {
         bail!(
-            "repository is not configured: {}; run factory init --repository {}",
-            repository.display(),
+            "repository is not configured: {}; run factory init from that repository",
             repository.display()
         );
     }
@@ -79,9 +78,8 @@ pub async fn create_workflow(
     validate_optional_directory(&workflow_directory)?;
     if !workflow_directory.is_dir() {
         bail!(
-            "workflow directory does not exist: {}; run factory init --repository {}",
-            workflow_directory.display(),
-            repository.display()
+            "workflow directory does not exist: {}; run factory init from that repository",
+            workflow_directory.display()
         );
     }
 
