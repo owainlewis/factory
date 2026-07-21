@@ -37,31 +37,57 @@ impl Fixture {
         let temp = tempfile::tempdir().unwrap();
         let runtime_dir = temp.path().join("runtime");
         fs::create_dir(&runtime_dir).unwrap();
+        let data_home = temp.path().join("factory-data");
         let mut repositories = Vec::new();
         for (index, issues) in issue_pages.iter().enumerate() {
             let repository = temp.path().join(format!("repo-{index}"));
             fs::create_dir_all(repository.join(".factory/workflows")).unwrap();
             assert!(
                 Command::new("git")
-                    .args(["init", "--quiet"])
+                    .args(["init", "--quiet", "-b", "main"])
                     .current_dir(&repository)
                     .status()
                     .unwrap()
                     .success()
             );
+            git(
+                &repository,
+                &["config", "user.email", "factory@example.test"],
+            );
+            git(&repository, &["config", "user.name", "Factory Tests"]);
+            fs::write(repository.join("README.md"), "fixture\n").unwrap();
+            git(&repository, &["add", "README.md"]);
+            git(&repository, &["commit", "-m", "fixture base"]);
+            let remote = temp.path().join(format!("remote-{index}.git"));
             assert!(
                 Command::new("git")
-                    .args([
-                        "remote",
-                        "add",
-                        "origin",
-                        &format!("git@github.com:example/repo-{index}.git")
-                    ])
+                    .args(["init", "--quiet", "--bare"])
+                    .arg(&remote)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let github_remote = format!("git@github.com:example/repo-{index}.git");
+            assert!(
+                Command::new("git")
+                    .args(["remote", "add", "origin", &github_remote])
                     .current_dir(&repository)
                     .status()
                     .unwrap()
                     .success()
             );
+            if index == 0 {
+                AssertCommand::cargo_bin("factory")
+                    .unwrap()
+                    .current_dir(&repository)
+                    .env("FACTORY_DATA_HOME", &data_home)
+                    .arg("init")
+                    .assert()
+                    .success();
+            }
+            let rewrite = format!("url.file://{}.insteadOf", remote.display());
+            git(&repository, &["config", &rewrite, &github_remote]);
+            git(&repository, &["push", "-u", "origin", "main"]);
             fs::write(
                 repository.join(".factory/workflows/implement-ready-ticket.md"),
                 "+++\nlabel = \"factory:ready\"\nruntime = \"codex\"\ntimeout = \"10s\"\n+++\n\nCUSTOM WORKFLOW: deliver a green draft PR and never merge it.\n",
@@ -81,15 +107,7 @@ impl Fixture {
         }
         let workspace = temp.path().join("worktrees");
         fs::create_dir(&workspace).unwrap();
-        let data_home = temp.path().join("factory-data");
         let config_path = repositories[0].join(".factory/config.toml");
-        AssertCommand::cargo_bin("factory")
-            .unwrap()
-            .current_dir(&repositories[0])
-            .env("FACTORY_DATA_HOME", &data_home)
-            .arg("init")
-            .assert()
-            .success();
         fs::write(
             &config_path,
             format!(
@@ -193,7 +211,10 @@ if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
   if [ -f "$0.auth-fail" ]; then echo "authentication expired" >&2; exit 1; fi
   echo "logged in"; exit 0
 fi
-if [ "$1" = "repo" ]; then cat .gh-name; exit 0; fi
+if [ "$1" = "repo" ]; then
+  case "$*" in *defaultBranchRef*) printf 'main\n' ;; *) cat .gh-name ;; esac
+  exit 0
+fi
 if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then
   touch ".ready-removed-$3"
   exit 0
@@ -210,6 +231,7 @@ if [ "$1" = "api" ]; then
   fi
   case "$endpoint" in
     user|users/*) printf '{"id":42,"login":"owainlewis"}' ;;
+    repos/example/repo-[0-9]) printf '{"default_branch":"main"}' ;;
     */timeline*)
       number=$(printf '%s' "$endpoint" | sed -E 's#^.*/issues/([0-9]+)/timeline.*#\1#')
       cat ".timeline-$number.json"
@@ -448,6 +470,20 @@ fn write_executable(path: &Path, contents: &str) {
     fs::set_permissions(path, permissions).unwrap();
 }
 
+fn git(repository: &Path, arguments: &[&str]) {
+    let output = Command::new("git")
+        .args(arguments)
+        .current_dir(repository)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        arguments.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 async fn wait_for<F>(mut condition: F)
 where
     F: FnMut() -> bool,
@@ -567,8 +603,10 @@ async fn daemon_discovers_repository_from_nested_directory_and_restarts_cleanly(
             .spawn()
             .unwrap();
         wait_for(|| {
-            fs::read_to_string(&stderr_path)
-                .is_ok_and(|output| output.contains("Factory ready: watching 1 repositories"))
+            fs::read_to_string(&stderr_path).is_ok_and(|output| {
+                assert!(!output.contains("Error:"), "daemon failed:\n{output}");
+                output.contains("Factory ready: watching 1 repositories")
+            })
         })
         .await;
         interrupt(&child);
@@ -607,10 +645,8 @@ async fn cli_reports_ticket_and_runtime_lifecycle() {
     assert!(output.contains(
         "Factory task claimed: task=1 issue=#42 repository=example/repo-0 workflow=implement-ready-ticket run=1"
     ));
-    assert!(output.contains(&format!(
-        "Factory runtime delegated: run=1 runtime=codex cwd={} worktree=workflow-managed",
-        fixture.config.repositories[0].display()
-    )));
+    assert!(output.contains("Factory runtime delegated: run=1 runtime=codex cwd="));
+    assert!(output.contains("worktrees/issue-42 worktree=factory-owned"));
     assert!(output.contains("Factory run finished: run=1 outcome=succeeded duration="));
     assert!(!output.contains("Factory poll failed"));
 }
@@ -688,6 +724,25 @@ async fn discovers_claims_and_records_a_complete_codex_run() {
     assert_eq!(runs[0].outcome, "succeeded");
     assert_eq!(runs[0].session_id.as_deref(), Some("thread-1"));
     assert!(runs[0].result.as_deref().unwrap().contains("Draft PR"));
+    assert_eq!(runs[0].base_branch.as_deref(), Some("main"));
+    assert_eq!(
+        runs[0].factory_branch.as_deref(),
+        Some("factory/6-ticket-6")
+    );
+    assert_eq!(runs[0].workspace_kind.as_deref(), Some("delivery"));
+    assert_ne!(
+        runs[0].working_directory.as_deref(),
+        Some(fixture.config.repositories[0].to_str().unwrap())
+    );
+    assert_eq!(
+        Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(&fixture.config.repositories[0])
+            .output()
+            .unwrap()
+            .stdout,
+        b"main\n"
+    );
     let prompt = fs::read_to_string(fixture.started_slots()[0].join("prompt")).unwrap();
     for expected in [
         "Factory-created software pull requests must remain for human merge",
@@ -1537,6 +1592,7 @@ async fn scheduled_tasks_use_the_same_worker_and_run_history() {
                 .success()
         );
     }
+    git(repository, &["push", "origin", "main"]);
     let inspected_commit = String::from_utf8(
         Command::new("git")
             .args(["rev-parse", "HEAD"])
@@ -1582,7 +1638,12 @@ async fn scheduled_tasks_use_the_same_worker_and_run_history() {
     let tasks = ledger.tasks().unwrap();
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].state, TaskState::Succeeded);
-    assert_eq!(ledger.runs_for_task(tasks[0].id).unwrap().len(), 1);
+    let runs = ledger.runs_for_task(tasks[0].id).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].workspace_kind.as_deref(), Some("proposal"));
+    let workspace = ledger.task_workspace(tasks[0].id).unwrap().unwrap();
+    assert_eq!(workspace.state, "cleaned");
+    assert!(!workspace.path.exists());
     let prompt = fs::read_to_string(fixture.started_slots()[0].join("prompt")).unwrap();
     assert!(prompt.contains("Scheduled occurrence: 2026-07-18T12:00:00Z"));
     assert!(prompt.contains("You may use the authenticated gh CLI"));

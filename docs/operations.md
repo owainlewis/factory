@@ -10,10 +10,10 @@ checkout.
 In continuous mode, Factory writes concise lifecycle events to standard error.
 It reports startup validation, polls that queue work, claimed tasks, runtime
 delegation, and terminal run outcomes. Runtime delegation includes the initial
-working directory and marks worktree creation as workflow-managed. The bundled
-ready-ticket workflow requires Codex to create or reuse an isolated
-ticket-numbered worktree; Factory does not create that worktree before starting
-Codex.
+working directory and marks the worktree as Factory-owned. Before Codex starts,
+Factory queries GitHub's default branch, fetches its exact commit, reserves a
+stable `factory/<issue>-<slug>` branch and worktree, records them durably, and
+launches Codex there. The canonical checkout is never used for agent changes.
 
 The ready label is a wake signal, not authority. `factory approve ISSUE_NUMBER`
 binds the current title, body, delivery workflow hash, stable trusted GitHub
@@ -66,7 +66,11 @@ On Ctrl-C, Factory stops polling and claiming immediately, cancels active
 Codex process trees, waits for the workers to record `cancelled`, and exits.
 Queued tasks remain durable for the next start. Failed and cancelled runs keep
 their bounded output, error, session, ticket, branch, and pull-request context
-for inspection. Factory never merges software pull requests.
+for inspection. Scheduled proposal workspaces are detached and removed at a
+terminal outcome. Failed, cancelled, dirty, or unpublished delivery worktrees
+are retained, up to ten. Preview cleanup with `factory cleanup RUN_ID`; removal
+requires `factory cleanup RUN_ID --confirm` and preserves the local branch.
+Factory never merges software pull requests.
 
 `factory run --once` evaluates one schedule tick, performs one discovery poll,
 persists eligible tasks, and exits without claiming or launching them. It is

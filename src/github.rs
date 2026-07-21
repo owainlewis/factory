@@ -54,6 +54,11 @@ pub struct IssueSnapshot {
     pub updated_at: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ApiRepository {
+    default_branch: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositoryPoll {
     pub repository: PathBuf,
@@ -236,6 +241,58 @@ impl GitHubClient {
             )
             .await?;
         Ok(IssueSnapshot::from(issue))
+    }
+
+    pub async fn default_branch(
+        &self,
+        repository: &Path,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<String> {
+        let response: ApiRepository = self
+            .api_json(Some(repository), &format!("repos/{name}"), cancellation)
+            .await?;
+        let branch = response.default_branch.trim();
+        if branch.is_empty()
+            || branch.starts_with('-')
+            || branch
+                .chars()
+                .any(|character| matches!(character, '\0' | '\n' | '\r'))
+        {
+            bail!("GitHub returned invalid default branch {branch:?}");
+        }
+        Ok(branch.to_owned())
+    }
+
+    pub async fn repository_default_branch(
+        &self,
+        repository: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<String> {
+        let output = self
+            .run(
+                Some(repository),
+                &[
+                    "repo",
+                    "view",
+                    "--json",
+                    "defaultBranchRef",
+                    "--jq",
+                    ".defaultBranchRef.name",
+                ],
+                cancellation,
+            )
+            .await?;
+        let branch = output.trim();
+        if branch.is_empty()
+            || branch.starts_with('-')
+            || branch
+                .chars()
+                .any(|character| matches!(character, '\0' | '\n' | '\r'))
+        {
+            bail!("GitHub returned invalid default branch {branch:?}");
+        }
+        Ok(branch.to_owned())
     }
 
     pub async fn issue_comments(

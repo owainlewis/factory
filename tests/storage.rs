@@ -10,7 +10,7 @@ use std::process::Command;
 
 use factory::storage::{
     ApprovalEvidence, CancellationRequest, Ledger, MAX_ERROR_BYTES, MAX_RESULT_BYTES,
-    ObservedTicket, RunOutcome, TaskIdentity, TaskState,
+    ObservedTicket, RunOutcome, TaskIdentity, TaskState, TaskWorkspace,
 };
 use rusqlite::Connection;
 
@@ -77,7 +77,7 @@ fn concurrent_first_open_converges_on_one_complete_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
     let schedule_tables: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_schema
@@ -87,6 +87,15 @@ fn concurrent_first_open_converges_on_one_complete_schema() {
         )
         .unwrap();
     assert_eq!(schedule_tables, 2);
+    let workspace_tables: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_schema
+             WHERE type = 'table' AND name = 'task_workspaces'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(workspace_tables, 1);
 }
 
 #[test]
@@ -110,6 +119,111 @@ fn ticket_and_schedule_identities_deduplicate_exact_triggers() {
     assert!(first_schedule.created);
     assert!(!duplicate_schedule.created);
     assert_eq!(duplicate_schedule.task.id, first_schedule.task.id);
+}
+
+#[test]
+fn workspace_reservation_is_task_stable_and_rejects_reassignment() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    let task = ledger.enqueue(&ticket("workspace-owner")).unwrap().task;
+    let workspace = TaskWorkspace {
+        task_id: task.id,
+        kind: "delivery".into(),
+        repository: task.repository.clone(),
+        base_branch: "main".into(),
+        base_sha: "0123456789012345678901234567890123456789".into(),
+        factory_branch: Some("factory/3-own-workspace".into()),
+        path: temp.path().join("worktrees/issue-3"),
+        state: "preparing".into(),
+        status_summary: None,
+        created_at: 0,
+        updated_at: 0,
+        cleaned_at: None,
+    };
+
+    let reserved = ledger.reserve_task_workspace(&workspace).unwrap();
+    let repeated = ledger.reserve_task_workspace(&workspace).unwrap();
+    assert_eq!(reserved, repeated);
+    let mut conflicting = workspace;
+    conflicting.path = temp.path().join("worktrees/other");
+    assert!(
+        ledger
+            .reserve_task_workspace(&conflicting)
+            .unwrap_err()
+            .to_string()
+            .contains("different workspace")
+    );
+}
+
+#[test]
+fn delivery_workspace_reservations_are_bounded_to_ten_active_slots() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    let mut task_ids = Vec::new();
+    for number in 1..=11 {
+        let task = ledger
+            .enqueue(
+                &TaskIdentity::ticket(
+                    "owainlewis/factory",
+                    "implement-ready-ticket",
+                    number.to_string(),
+                    format!("approval-{number}"),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .task;
+        task_ids.push(task.id);
+        let workspace = TaskWorkspace {
+            task_id: task.id,
+            kind: "delivery".into(),
+            repository: task.repository,
+            base_branch: "main".into(),
+            base_sha: "0123456789012345678901234567890123456789".into(),
+            factory_branch: Some(format!("factory/{number}-task")),
+            path: temp.path().join(format!("worktrees/issue-{number}")),
+            state: "preparing".into(),
+            status_summary: None,
+            created_at: 0,
+            updated_at: 0,
+            cleaned_at: None,
+        };
+        if number <= 10 {
+            ledger.reserve_task_workspace(&workspace).unwrap();
+        } else {
+            assert!(
+                ledger
+                    .reserve_task_workspace(&workspace)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("at most ten")
+            );
+            ledger
+                .update_task_workspace_state(task_ids[0], "cleaned", Some("released"))
+                .unwrap();
+            ledger.reserve_task_workspace(&workspace).unwrap();
+        }
+    }
+    assert_eq!(ledger.retained_delivery_workspace_count().unwrap(), 10);
+    ledger
+        .register_daemon_owner("workspace-cap-owner", std::process::id())
+        .unwrap();
+    let workdirs = HashMap::from([(
+        "owainlewis/factory".to_owned(),
+        "/canonical/repository".to_owned(),
+    )]);
+    let claimed = ledger
+        .claim_and_start_run_with_workdirs_filtered(
+            &["owainlewis/factory".to_owned()],
+            &ticket_runtimes(),
+            "workspace-cap-owner",
+            std::process::id(),
+            &workdirs,
+            false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.task.id, task_ids[1]);
 }
 
 #[test]
@@ -868,7 +982,7 @@ fn migrates_a_version_one_ledger_without_losing_tasks() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
 }
 
 #[test]

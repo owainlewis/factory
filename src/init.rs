@@ -241,7 +241,7 @@ pub fn discover_repository(requested: &Path) -> Result<PathBuf> {
     let repository = PathBuf::from(root.trim())
         .canonicalize()
         .context("failed to resolve Git repository root")?;
-    let origin = git_output(&repository, &["remote", "get-url", "origin"])
+    let origin = git_output(&repository, &["config", "--get", "remote.origin.url"])
         .context("target repository has no origin remote")?;
     if !is_github_origin(origin.trim()) {
         bail!("origin is not a supported GitHub remote");

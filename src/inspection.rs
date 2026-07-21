@@ -56,6 +56,10 @@ pub struct RunView {
     pub working_directory: Option<String>,
     pub recovery_of: Option<i64>,
     pub recovery_attempt: u32,
+    pub base_branch: Option<String>,
+    pub base_sha: Option<String>,
+    pub factory_branch: Option<String>,
+    pub workspace_kind: Option<String>,
 }
 
 impl From<&Run> for RunView {
@@ -90,6 +94,10 @@ impl From<&Run> for RunView {
             working_directory: run.working_directory.clone(),
             recovery_of: run.recovery_of,
             recovery_attempt: run.recovery_attempt,
+            base_branch: run.base_branch.clone(),
+            base_sha: run.base_sha.clone(),
+            factory_branch: run.factory_branch.clone(),
+            workspace_kind: run.workspace_kind.clone(),
         }
     }
 }
@@ -193,6 +201,19 @@ pub fn print_inspection(inspection: &RunInspection) {
     println!(
         "Working directory: {}",
         safe_text(inspection.run.working_directory.as_deref().unwrap_or("-"))
+    );
+    println!(
+        "Workspace kind: {}",
+        safe_text(inspection.run.workspace_kind.as_deref().unwrap_or("-"))
+    );
+    println!(
+        "Base: {} @ {}",
+        safe_text(inspection.run.base_branch.as_deref().unwrap_or("-")),
+        safe_text(inspection.run.base_sha.as_deref().unwrap_or("-"))
+    );
+    println!(
+        "Factory branch: {}",
+        safe_text(inspection.run.factory_branch.as_deref().unwrap_or("-"))
     );
     println!(
         "Pull request: {}",

@@ -2,9 +2,10 @@
 
 Factory is a local-first daemon that turns trusted GitHub issues and scheduled
 prompts into supervised Codex runs. Factory owns durable scheduling, task
-claims, concurrency, process supervision, inspection, cancellation, and
-recovery. Codex owns the adaptive development procedure and leaves software
-pull requests for human merge.
+claims, concurrency, Factory-created branches and worktrees, process
+supervision, inspection, cancellation, cleanup, and recovery. Codex owns the
+adaptive development procedure inside the supplied worktree and leaves
+software pull requests for human merge.
 
 Factory v1 supports Unix-like systems and uses the authenticated local `gh`
 and Codex CLIs. It does not use model API keys.

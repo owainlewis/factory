@@ -91,11 +91,11 @@ Validate the machine-specific configuration without runtime work:
 factory validate
 ```
 
-The workflow is versioned policy: Codex owns
-ticket updates, worktree and branch creation, implementation, tests, diff
-review, draft pull-request creation, CI repair, and handoff. Factory owns the
+The workflow is versioned policy: Codex owns ticket updates, implementation,
+tests, diff review, draft pull-request creation, CI repair, and handoff inside
+the supplied worktree. Factory owns the base commit, branch and worktree,
 durable task, one claim, concurrency, supervision, cancellation, inspection,
-deduplication, and recovery.
+deduplication, cleanup, and recovery.
 
 Check the resolved workflow catalog:
 
@@ -136,7 +136,8 @@ the task/run counts and linked pull request remain unchanged.
 
 Success means:
 
-- one Codex run produced one ticket-numbered branch or worktree;
+- one Codex run used the recorded Factory branch and worktree without changing
+  the canonical checkout;
 - one linked draft pull request contains a useful summary and verification;
 - required CI and automated review are complete with no actionable feedback;
 - the issue has `factory:needs-review` and a useful handoff comment;

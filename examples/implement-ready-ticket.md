@@ -29,8 +29,9 @@ the blocker.
 
 ## Step 4: Implement the ticket
 
-Create an isolated ticket-numbered branch and worktree using the repository's
-documented conventions. Implement the complete acceptance criteria without
+Factory has already created and recorded the ticket branch and worktree. Work
+only in the supplied working directory. Do not create, switch, or remove
+another worktree. Implement the complete acceptance criteria without
 placeholders. Preserve unrelated user changes. Add or update tests where they
 provide useful proof.
 
