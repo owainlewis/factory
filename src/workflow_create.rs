@@ -11,13 +11,14 @@ use toml_edit::{DocumentMut, value};
 use crate::config::Config;
 use crate::github::GitHubClient;
 use crate::init::{discover_repository, validate_optional_directory};
-use crate::workflow::WorkflowCatalog;
+use crate::workflow::{WorkflowCatalog, WorkflowEffect};
 
 #[derive(Debug, Clone)]
 pub struct CreateWorkflowOptions {
     pub id: String,
     pub repository: PathBuf,
     pub config_path: PathBuf,
+    pub effect: WorkflowEffect,
     pub schedule: Option<String>,
     pub timezone: Option<String>,
     pub label: Option<String>,
@@ -170,6 +171,9 @@ fn validate_options(options: &CreateWorkflowOptions) -> Result<()> {
         }
         _ => {}
     }
+    if options.effect == WorkflowEffect::Delivery && options.label.is_none() {
+        bail!("delivery workflow must use a label trigger");
+    }
     match (&options.prompt, &options.prompt_file) {
         (Some(_), Some(_)) => bail!("use exactly one of --prompt or --prompt-file"),
         (None, None) => bail!("use exactly one of --prompt or --prompt-file"),
@@ -218,6 +222,7 @@ fn read_prompt(options: &CreateWorkflowOptions) -> Result<String> {
 
 fn render_workflow(options: &CreateWorkflowOptions, prompt: &str) -> String {
     let mut frontmatter = DocumentMut::new();
+    frontmatter["effect"] = value(options.effect.as_str());
     if let Some(schedule) = &options.schedule {
         frontmatter["schedule"] = value(schedule);
     }

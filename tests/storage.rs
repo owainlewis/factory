@@ -9,8 +9,8 @@ use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 use factory::storage::{
-    ApprovalEvidence, CancellationRequest, Ledger, MAX_ERROR_BYTES, MAX_RESULT_BYTES,
-    ObservedTicket, RunOutcome, TaskIdentity, TaskState, TaskWorkspace,
+    ApprovalEvidence, CancellationRequest, EffectReservation, Ledger, MAX_ERROR_BYTES,
+    MAX_RESULT_BYTES, ObservedTicket, RunOutcome, TaskIdentity, TaskState, TaskWorkspace,
 };
 use rusqlite::Connection;
 
@@ -77,7 +77,7 @@ fn concurrent_first_open_converges_on_one_complete_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
     let schedule_tables: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_schema
@@ -982,7 +982,7 @@ fn migrates_a_version_one_ledger_without_losing_tasks() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 }
 
 #[test]
@@ -1468,4 +1468,104 @@ fn failed_writes_do_not_damage_prior_state() {
         TaskState::Queued
     );
     assert!(ledger.runs_for_task(task.id).unwrap().is_empty());
+}
+
+#[test]
+fn active_run_capabilities_and_effect_idempotency_are_durable() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    let task = ledger.enqueue(&ticket("effects")).unwrap().task;
+    ledger.claim_next().unwrap().unwrap();
+    let run = ledger.start_run(task.id, "codex").unwrap();
+    let workspace = TaskWorkspace {
+        task_id: task.id,
+        kind: "delivery".into(),
+        repository: task.repository.clone(),
+        base_branch: "main".into(),
+        base_sha: "0123456789012345678901234567890123456789".into(),
+        factory_branch: Some("factory/3-effects".into()),
+        path: temp.path().join("worktrees/issue-3"),
+        state: "ready".into(),
+        status_summary: None,
+        created_at: 0,
+        updated_at: 0,
+        cleaned_at: None,
+    };
+    ledger.reserve_task_workspace(&workspace).unwrap();
+    ledger
+        .update_task_workspace_state(task.id, "ready", None)
+        .unwrap();
+    ledger
+        .record_run_workspace(
+            run.id,
+            &workspace.path,
+            "main",
+            &workspace.base_sha,
+            workspace.factory_branch.as_deref(),
+            "delivery",
+        )
+        .unwrap();
+    ledger
+        .activate_run_context(
+            run.id,
+            "delivery",
+            "v2:workflow",
+            r#"{"version":1}"#,
+            "sha256:capability",
+        )
+        .unwrap();
+
+    assert!(ledger.active_run_context(run.id, "sha256:wrong").is_err());
+    let context = ledger
+        .active_run_context(run.id, "sha256:capability")
+        .unwrap();
+    assert_eq!(context.task.id, task.id);
+    assert_eq!(context.workspace.state, "ready");
+    assert_eq!(context.workspace.path, workspace.path);
+
+    let reserved = ledger
+        .reserve_run_effect(
+            run.id,
+            "change.publish",
+            "delivery",
+            "publish-once",
+            1,
+            "sha256:payload-a",
+        )
+        .unwrap();
+    let effect = match reserved {
+        EffectReservation::Reserved(effect) => effect,
+        EffectReservation::Existing(_) => panic!("first reservation must be new"),
+    };
+    assert!(matches!(
+        ledger
+            .reserve_run_effect(
+                run.id,
+                "change.publish",
+                "delivery",
+                "publish-once",
+                1,
+                "sha256:payload-a",
+            )
+            .unwrap(),
+        EffectReservation::Existing(_)
+    ));
+    assert!(
+        ledger
+            .reserve_run_effect(
+                run.id,
+                "change.publish",
+                "delivery",
+                "publish-once",
+                1,
+                "sha256:payload-b",
+            )
+            .is_err()
+    );
+    ledger
+        .complete_run_effect(effect.id, Some("https://example.test/pr/1"), "published")
+        .unwrap();
+    let effects = ledger.run_effects(run.id).unwrap();
+    assert_eq!(effects.len(), 1);
+    assert_eq!(effects[0].outcome, "applied");
 }

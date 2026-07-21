@@ -58,7 +58,7 @@ impl Fixture {
             );
             fs::write(
                 repository.join(".factory/workflows/implement-ready-ticket.md"),
-                "+++\nlabel = \"factory:ready\"\n+++\n\nImplement the ticket.\n",
+                "+++\neffect = \"delivery\"\nlabel = \"factory:ready\"\n+++\n\nImplement the ticket.\n",
             )
             .unwrap();
             fs::write(
@@ -837,7 +837,7 @@ fn factory_run_once_evaluates_due_schedules_without_launching_codex() {
     let fixture = Fixture::new(1);
     fs::write(
         fixture.repositories[0].join(".factory/workflows/scheduled.md"),
-        "+++\nschedule = \"* * * * *\"\ntimezone = \"UTC\"\n+++\n\nReview the repository.\n",
+        "+++\neffect = \"proposal\"\nschedule = \"* * * * *\"\ntimezone = \"UTC\"\n+++\n\nReview the repository.\n",
     )
     .unwrap();
     let catalog = WorkflowCatalog::load(&fixture.config).unwrap();
@@ -856,6 +856,7 @@ fn factory_run_once_evaluates_due_schedules_without_launching_codex() {
     let fingerprint = scheduled_workflow_fingerprint(
         expression,
         *timezone,
+        workflow.effect.unwrap(),
         workflow.runtime.as_deref().unwrap(),
         workflow.timeout.unwrap(),
         workflow.prompt.as_deref().unwrap(),

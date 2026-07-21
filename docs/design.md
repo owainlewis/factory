@@ -9,7 +9,7 @@
 
 ## Summary
 
-Factory is a local-first daemon that turns scheduled prompts and ready tickets into supervised agent runs. A workflow is a versioned Markdown prompt with a small frontmatter trigger. Factory polls configured GitHub repositories, creates durable tasks for due schedules or tickets labelled `factory:ready`, atomically claims those tasks, and delegates the complete workflow to a selected agent runtime such as Codex or Claude Code. Agents own GitHub CLI operations, ticket updates, implementation, pull requests, and CI repair. Factory owns polling, deduplication, claims, concurrency, timeouts, process supervision, recovery, and run history. V1 is a single Rust binary using SQLite, GitHub polling, cron and label triggers, and local subscription-authenticated agent CLIs.
+Factory is a local-first daemon that turns scheduled prompts and ready tickets into supervised agent runs. A workflow is a versioned Markdown prompt with a small frontmatter trigger and a required `proposal` or `delivery` effect. Factory polls configured GitHub repositories, creates durable tasks for due schedules or tickets labelled `factory:ready`, atomically claims those tasks, and delegates the complete workflow to a selected agent runtime such as Codex or Claude Code. Agents own the adaptive implementation and CI repair loop. Factory owns polling, deduplication, claims, concurrency, timeouts, process supervision, recovery, run history, and a small run-scoped command surface for ticket, proposal, and draft pull-request effects. V1 is a single Rust binary using SQLite, GitHub polling, cron and label triggers, and local subscription-authenticated agent CLIs.
 
 ## Goals
 
@@ -140,6 +140,7 @@ A scheduled discovery workflow:
 +++
 schedule = "0 9 * * 1"
 timezone = "Europe/London"
+effect = "proposal"
 runtime = "codex"
 timeout = "2h"
 +++
@@ -158,18 +159,19 @@ A label-triggered implementation workflow:
 ```markdown
 +++
 label = "factory:ready"
+effect = "delivery"
 runtime = "codex"
 timeout = "4h"
 +++
 
 # Take the ticket to a green pull request
 
-Take ownership of the supplied ticket. Remove `factory:ready`, update the
-ticket, create an isolated worktree and ticket-numbered branch, implement and
-verify the change, open a draft pull request, watch CI, and repair failures
-when practical. If requirements are unclear, apply `factory:needs-review`,
-ask focused questions, and stop. When the pull request is green, apply
-`factory:needs-review`, post the evidence, and leave the merge to a human.
+Read the supplied ticket with `factory task show`, implement and verify the
+change in the supplied worktree, then publish it with `factory change publish`.
+Watch CI and repair failures when practical. If requirements are unclear, use
+`factory task block` and stop. When the pull request is ready for review, post
+the evidence with `factory task comment`, call `factory run complete`, and
+leave the merge to a human.
 ```
 
 V1 permits exactly one trigger per file: either `schedule` or `label`. Runtime and timeout inherit global defaults when absent. A future version can add explicit trigger types without introducing a general expression language.
@@ -262,7 +264,7 @@ The daemon runs as `factory run`, initially in a terminal and later under `launc
 factory init [--repository <path>] [--check]
 factory validate
 factory workflows
-factory workflow create <workflow-id> (--schedule <cron> --timezone <iana> | --label <label>) (--prompt <text> | --prompt-file <path>)
+factory workflow create <workflow-id> --effect <proposal|delivery> (--schedule <cron> --timezone <iana> | --label <label>) (--prompt <text> | --prompt-file <path>)
 factory workflow run <workflow-id> --repository <path>
 factory tasks
 factory runs [workflow]

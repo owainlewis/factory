@@ -22,9 +22,9 @@ daemon re-fetches and validates that evidence immediately before runtime
 delegation, atomically consumes it, removes the label, and posts a claim record.
 Changed, malformed, untrusted, or replayed evidence fails closed without
 starting Codex. Comments and attachments are never copied into the execution
-prompt. `factory workflow create --label LABEL` creates a missing label without
-changing an existing definition. `factory init` does not inspect or mutate
-GitHub labels.
+prompt. `factory workflow create --effect delivery --label LABEL` creates a
+missing label without changing an existing definition. `factory init` does not
+inspect or mutate GitHub labels.
 
 Five-field cron schedules are evaluated in the IANA timezone declared by the
 workflow. Factory stores the next occurrence and atomically advances that
@@ -34,9 +34,23 @@ an overdue cursor to the next future occurrence instead of replaying work missed
 while Factory was offline. Disabled workflows are not evaluated. Invalid or
 failing scheduled workflows are reported and isolated from ready-ticket
 polling. A scheduled prompt receives its UTC occurrence, repository path,
-inspected commit, and previous successful run time when available. The agent may
-use its authenticated `gh` CLI to create or update tickets; Factory does not
-hard-code those effects.
+inspected commit, and previous successful run time when available. Active
+agents use the small run-scoped command surface: `factory task show`, `factory
+task comment`, `factory task block`, `factory proposal create`, `factory change
+publish`, and `factory run complete`. Mutating commands accept version 1 JSON
+files with strict schemas, size limits, and idempotency keys. Factory infers the
+durable run, repository, source item, branch, and allowed proposal or delivery
+effect. Proposal creation can apply only the configured proposed label. Change
+publication pushes only the recorded Factory branch and creates or updates one
+draft pull request. Factory exposes no merge command.
+
+Each delegated process receives an opaque per-run capability whose hash and
+policy are stored in SQLite. Commands reject stale runs, unrelated worktrees,
+repositories, source items, and disallowed effects, and Factory records allowed
+and rejected attempts. This is an accidental-scope boundary, not a sandbox:
+Codex still runs as the trusted local user and may directly access that user's
+authenticated tools. Strong protection from malicious local code requires a
+future isolated runtime with brokered credentials.
 
 Every active run records the Factory owner, a durable supervisor anchor that
 owns the Codex process group, the anchor's process-start identity, Codex session

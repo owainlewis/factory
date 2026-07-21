@@ -54,6 +54,36 @@ pub struct IssueSnapshot {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposalIssue {
+    pub number: u64,
+    pub url: String,
+    pub created: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ProposalIssueRequest<'a> {
+    pub title: &'a str,
+    pub body: &'a str,
+    pub proposed_label: &'a str,
+    pub marker: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftPullRequest {
+    pub number: u64,
+    pub url: String,
+    pub created: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DraftPullRequestRequest<'a> {
+    pub head_branch: &'a str,
+    pub base_branch: &'a str,
+    pub title: &'a str,
+    pub body: &'a str,
+}
+
 #[derive(Debug, Deserialize)]
 struct ApiRepository {
     default_branch: String,
@@ -373,6 +403,251 @@ impl GitHubClient {
         )
         .await?;
         Ok(())
+    }
+
+    pub async fn find_or_create_proposal(
+        &self,
+        repository: &Path,
+        name: &str,
+        request: ProposalIssueRequest<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<ProposalIssue> {
+        let ProposalIssueRequest {
+            title,
+            body,
+            proposed_label,
+            marker,
+        } = request;
+        validate_label(proposed_label)?;
+        validate_proposal_marker(marker)?;
+        let labels = self.labels(repository, cancellation).await?;
+        if !labels
+            .iter()
+            .any(|label| label.eq_ignore_ascii_case(proposed_label))
+        {
+            self.create_label(
+                repository,
+                proposed_label,
+                "Proposed by Factory for human review",
+                "5319E7",
+                cancellation,
+            )
+            .await?;
+        }
+        let issues: Vec<ApiProposalIssue> = self
+            .api_pages(
+                repository,
+                &format!("repos/{name}/issues?state=all&per_page=100"),
+                cancellation,
+            )
+            .await?;
+        let mut matches = issues.into_iter().filter(|issue| {
+            issue.pull_request.is_none()
+                && issue
+                    .body
+                    .as_deref()
+                    .is_some_and(|body| body.contains(marker))
+        });
+        if let Some(issue) = matches.next() {
+            if matches.next().is_some() {
+                bail!("multiple GitHub issues contain proposal marker {marker:?}");
+            }
+            if !issue
+                .labels
+                .iter()
+                .any(|label| label.name.eq_ignore_ascii_case(proposed_label))
+            {
+                self.edit_issue_label(repository, issue.number, proposed_label, true, cancellation)
+                    .await?;
+            }
+            return Ok(ProposalIssue {
+                number: issue.number,
+                url: issue.html_url,
+                created: false,
+            });
+        }
+
+        let proposal_body = if body.ends_with('\n') {
+            format!("{body}\n{marker}")
+        } else {
+            format!("{body}\n\n{marker}")
+        };
+        let endpoint = format!("repos/{name}/issues");
+        let response: ApiCreatedIssue = self
+            .run_json(
+                Some(repository),
+                &[
+                    "api",
+                    "--method",
+                    "POST",
+                    &endpoint,
+                    "-f",
+                    &format!("title={title}"),
+                    "-f",
+                    &format!("body={proposal_body}"),
+                    "-f",
+                    &format!("labels[]={proposed_label}"),
+                ],
+                cancellation,
+            )
+            .await
+            .context("failed to create GitHub proposal issue")?;
+        if !response
+            .labels
+            .iter()
+            .any(|label| label.name.eq_ignore_ascii_case(proposed_label))
+        {
+            bail!(
+                "GitHub created proposal issue #{} without configured label {proposed_label:?}",
+                response.number
+            );
+        }
+        Ok(ProposalIssue {
+            number: response.number,
+            url: response.html_url,
+            created: true,
+        })
+    }
+
+    pub async fn publish_draft_pull_request(
+        &self,
+        repository: &Path,
+        name: &str,
+        request: DraftPullRequestRequest<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<DraftPullRequest> {
+        let DraftPullRequestRequest {
+            head_branch,
+            base_branch,
+            title,
+            body,
+        } = request;
+        validate_branch_name(head_branch, "head")?;
+        validate_branch_name(base_branch, "base")?;
+        if let Some(pull) = self
+            .draft_pull_request_for_head(repository, name, head_branch, cancellation)
+            .await?
+        {
+            let endpoint = format!("repos/{name}/pulls/{}", pull.number);
+            let response: ApiPullRequest = self
+                .run_json(
+                    Some(repository),
+                    &[
+                        "api",
+                        "--method",
+                        "PATCH",
+                        &endpoint,
+                        "-f",
+                        &format!("title={title}"),
+                        "-f",
+                        &format!("body={body}"),
+                        "-f",
+                        &format!("base={base_branch}"),
+                    ],
+                    cancellation,
+                )
+                .await
+                .context("failed to update GitHub draft pull request")?;
+            validate_published_pull_request(&response, head_branch)?;
+            return Ok(DraftPullRequest {
+                number: response.number,
+                url: response.html_url,
+                created: false,
+            });
+        }
+
+        let endpoint = format!("repos/{name}/pulls");
+        let response: ApiPullRequest = self
+            .run_json(
+                Some(repository),
+                &[
+                    "api",
+                    "--method",
+                    "POST",
+                    &endpoint,
+                    "-f",
+                    &format!("title={title}"),
+                    "-f",
+                    &format!("body={body}"),
+                    "-f",
+                    &format!("head={head_branch}"),
+                    "-f",
+                    &format!("base={base_branch}"),
+                    "-F",
+                    "draft=true",
+                ],
+                cancellation,
+            )
+            .await
+            .context("failed to create GitHub draft pull request")?;
+        validate_published_pull_request(&response, head_branch)?;
+        Ok(DraftPullRequest {
+            number: response.number,
+            url: response.html_url,
+            created: true,
+        })
+    }
+
+    pub async fn validate_draft_pull_request_target(
+        &self,
+        repository: &Path,
+        name: &str,
+        head_branch: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        validate_branch_name(head_branch, "head")?;
+        self.draft_pull_request_for_head(repository, name, head_branch, cancellation)
+            .await?;
+        Ok(())
+    }
+
+    async fn draft_pull_request_for_head(
+        &self,
+        repository: &Path,
+        name: &str,
+        head_branch: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<ApiPullRequest>> {
+        let pulls: Vec<ApiPullRequest> = self
+            .api_pages(
+                repository,
+                &format!("repos/{name}/pulls?state=all&per_page=100"),
+                cancellation,
+            )
+            .await?;
+        let mut matches = pulls.into_iter().filter(|pull| {
+            pull.head.reference == head_branch
+                && pull
+                    .head
+                    .repository
+                    .as_ref()
+                    .is_some_and(|repository| repository.full_name == name)
+        });
+        let Some(pull) = matches.next() else {
+            return Ok(None);
+        };
+        if matches.next().is_some() {
+            bail!("multiple pull requests use head branch {head_branch:?}");
+        }
+        if pull.merged_at.is_some() {
+            bail!(
+                "pull request #{} for head branch {head_branch:?} is already merged",
+                pull.number
+            );
+        }
+        if pull.state != "open" {
+            bail!(
+                "pull request #{} for head branch {head_branch:?} is closed",
+                pull.number
+            );
+        }
+        if !pull.draft {
+            bail!(
+                "pull request #{} for head branch {head_branch:?} is not a draft",
+                pull.number
+            );
+        }
+        Ok(Some(pull))
     }
 
     pub async fn authorize_claim(
@@ -784,6 +1059,16 @@ impl GitHubClient {
             .with_context(|| format!("gh returned malformed JSON for {endpoint}"))
     }
 
+    async fn run_json<T: DeserializeOwned>(
+        &self,
+        repository: Option<&Path>,
+        arguments: &[&str],
+        cancellation: &CancellationToken,
+    ) -> Result<T> {
+        let output = self.run(repository, arguments, cancellation).await?;
+        serde_json::from_str(&output).context("gh returned malformed JSON")
+    }
+
     async fn run(
         &self,
         repository: Option<&Path>,
@@ -988,6 +1273,58 @@ fn valid_name_with_owner(value: &str) -> bool {
     matches!((parts.next(), parts.next(), parts.next()), (Some(owner), Some(repository), None) if !owner.is_empty() && !repository.is_empty())
 }
 
+fn validate_proposal_marker(marker: &str) -> Result<()> {
+    if marker.len() > 256
+        || !marker.starts_with("<!-- factory-proposal:")
+        || !marker.ends_with(" -->")
+        || marker
+            .chars()
+            .any(|character| matches!(character, '\0' | '\n' | '\r'))
+    {
+        bail!("invalid Factory proposal marker");
+    }
+    Ok(())
+}
+
+fn validate_label(label: &str) -> Result<()> {
+    if label.is_empty()
+        || label.len() > 50
+        || label
+            .chars()
+            .any(|character| matches!(character, '\0' | '\n' | '\r'))
+    {
+        bail!("invalid GitHub proposal label {label:?}");
+    }
+    Ok(())
+}
+
+fn validate_branch_name(branch: &str, role: &str) -> Result<()> {
+    if branch.is_empty()
+        || branch.starts_with('-')
+        || branch.len() > 255
+        || branch
+            .chars()
+            .any(|character| matches!(character, '\0' | '\n' | '\r'))
+    {
+        bail!("invalid {role} branch {branch:?}");
+    }
+    Ok(())
+}
+
+fn validate_published_pull_request(pull: &ApiPullRequest, head_branch: &str) -> Result<()> {
+    if !pull.draft {
+        bail!("GitHub returned pull request #{} as ready", pull.number);
+    }
+    if pull.head.reference != head_branch {
+        bail!(
+            "GitHub returned pull request #{} for unexpected head branch {:?}",
+            pull.number,
+            pull.head.reference
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 struct ApiIssue {
     number: u64,
@@ -999,6 +1336,45 @@ struct ApiIssue {
     #[serde(default = "open_state")]
     state: String,
     pull_request: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiProposalIssue {
+    number: u64,
+    html_url: String,
+    body: Option<String>,
+    labels: Vec<ApiLabel>,
+    pull_request: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiCreatedIssue {
+    number: u64,
+    html_url: String,
+    labels: Vec<ApiLabel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiPullRequest {
+    number: u64,
+    html_url: String,
+    draft: bool,
+    state: String,
+    merged_at: Option<String>,
+    head: ApiPullRequestHead,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiPullRequestHead {
+    #[serde(rename = "ref")]
+    reference: String,
+    #[serde(rename = "repo")]
+    repository: Option<ApiPullRequestRepository>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiPullRequestRepository {
+    full_name: String,
 }
 
 fn open_state() -> String {

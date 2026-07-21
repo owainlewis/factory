@@ -126,6 +126,7 @@ pub struct CodexRuntime {
     executable: PathBuf,
     health_timeout: Duration,
     stream_activity: bool,
+    environment: Vec<(String, String)>,
 }
 
 struct RunProcessGroup {
@@ -238,6 +239,7 @@ impl CodexRuntime {
             executable: executable.into(),
             health_timeout: DEFAULT_HEALTH_TIMEOUT,
             stream_activity: true,
+            environment: Vec::new(),
         }
     }
 
@@ -248,6 +250,14 @@ impl CodexRuntime {
 
     pub fn with_activity_streaming(mut self, stream_activity: bool) -> Self {
         self.stream_activity = stream_activity;
+        self
+    }
+
+    pub fn with_environment(
+        mut self,
+        environment: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
+        self.environment = environment.into_iter().collect();
         self
     }
 
@@ -372,6 +382,7 @@ impl CodexRuntime {
             .context("failed to create Codex final-response file")?
             .into_temp_path();
         let mut command = Command::new(&self.executable);
+        command.envs(self.environment.iter().map(|(name, value)| (name, value)));
         command.arg("exec");
         if let Some(session_id) = resume_session {
             command.arg("resume");
