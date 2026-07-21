@@ -10,6 +10,10 @@ use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::config::Config;
 
+const TRIAGE_WORKFLOW: &str = include_str!("../.factory/workflows/triage-ticket.md");
+const IMPLEMENT_WORKFLOW: &str = include_str!("../.factory/workflows/implement-ready-ticket.md");
+const WORKER_DOCKERFILE: &str = include_str!("../.factory/Dockerfile");
+
 #[derive(Debug, Clone)]
 pub struct InitOptions {
     pub repository: PathBuf,
@@ -103,7 +107,11 @@ impl fmt::Display for InitReport {
             }
         } else if self.exit_code() == 0 {
             writeln!(formatter, "Next:")?;
-            writeln!(formatter, "  factory workflow create <workflow-id> --help")?;
+            writeln!(formatter, "  edit .factory/config.toml for your Project")?;
+            writeln!(
+                formatter,
+                "  docker build -f .factory/Dockerfile -t factory-codex:dev ."
+            )?;
             writeln!(formatter, "  factory validate")?;
             writeln!(formatter, "  factory daemon")
         } else {
@@ -120,6 +128,13 @@ struct DirectoryPlan {
     action: PlannedAction,
 }
 
+struct FilePlan {
+    path: PathBuf,
+    action: PlannedAction,
+    contents: &'static str,
+    detail: &'static str,
+}
+
 struct ConfigPlan {
     path: PathBuf,
     workspace: PathBuf,
@@ -132,6 +147,7 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
     let repository = discover_repository(&options.repository)?;
     let workflows = plan_workflow_directory(&repository)?;
     let config = plan_config(&options.config_path, &repository)?;
+    let assets = plan_default_assets(&repository)?;
 
     if options.check {
         return Ok(InitReport {
@@ -144,7 +160,14 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
                     "workspace directory",
                 ),
                 planned_resource(workflows.action, &workflows.path, "workflow directory"),
-            ],
+            ]
+            .into_iter()
+            .chain(
+                assets
+                    .iter()
+                    .map(|asset| planned_resource(asset.action, &asset.path, asset.detail)),
+            )
+            .collect(),
             check: true,
         });
     }
@@ -202,6 +225,28 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
         resource: workflows.path.display().to_string(),
         detail: Some("workflow directory".to_owned()),
     });
+
+    for (index, asset) in assets.iter().enumerate() {
+        if let Err(error) = apply_file(asset) {
+            resources.push(failed_resource(asset.path.display().to_string(), error));
+            for skipped in &assets[index + 1..] {
+                resources.push(skipped_resource(
+                    skipped.path.display().to_string(),
+                    "an earlier setup file failed",
+                ));
+            }
+            return Ok(InitReport {
+                repository,
+                resources,
+                check: false,
+            });
+        }
+        resources.push(ResourceResult {
+            status: applied_status(asset.action),
+            resource: asset.path.display().to_string(),
+            detail: Some(asset.detail.to_owned()),
+        });
+    }
 
     Ok(InitReport {
         repository,
@@ -340,6 +385,46 @@ fn plan_workflow_directory(repository: &Path) -> Result<DirectoryPlan> {
             PlannedAction::Create
         },
         path,
+    })
+}
+
+fn plan_default_assets(repository: &Path) -> Result<Vec<FilePlan>> {
+    let factory = repository.join(".factory");
+    Ok(vec![
+        plan_file(
+            factory.join("workflows/triage-ticket.md"),
+            TRIAGE_WORKFLOW,
+            "triage workflow",
+        )?,
+        plan_file(
+            factory.join("workflows/implement-ready-ticket.md"),
+            IMPLEMENT_WORKFLOW,
+            "implementation workflow",
+        )?,
+        plan_file(
+            factory.join("Dockerfile"),
+            WORKER_DOCKERFILE,
+            "Docker worker image",
+        )?,
+    ])
+}
+
+fn plan_file(path: PathBuf, contents: &'static str, detail: &'static str) -> Result<FilePlan> {
+    let action = match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            bail!("setup path must be a regular file: {}", path.display())
+        }
+        Ok(_) => PlannedAction::Unchanged,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => PlannedAction::Create,
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    };
+    Ok(FilePlan {
+        path,
+        action,
+        contents,
+        detail,
     })
 }
 
@@ -540,6 +625,27 @@ fn apply_directory(plan: &DirectoryPlan) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+fn apply_file(plan: &FilePlan) -> Result<()> {
+    if plan.action == PlannedAction::Unchanged {
+        return Ok(());
+    }
+    let parent = plan.path.parent().context("setup file has no parent")?;
+    let mut temporary = NamedTempFile::new_in(parent)
+        .with_context(|| format!("failed to create temporary file in {}", parent.display()))?;
+    temporary
+        .write_all(plan.contents.as_bytes())
+        .with_context(|| format!("failed to write {}", plan.path.display()))?;
+    temporary
+        .as_file_mut()
+        .sync_all()
+        .with_context(|| format!("failed to sync {}", plan.path.display()))?;
+    temporary
+        .persist_noclobber(&plan.path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("refusing to overwrite {}", plan.path.display()))?;
+    sync_parent(parent)
 }
 
 #[cfg(unix)]

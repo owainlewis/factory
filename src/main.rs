@@ -310,6 +310,9 @@ async fn run_cli() -> Result<u8> {
                 }
             }
             if let Some(worker) = &config.worker {
+                GitHubClient::default()
+                    .validate_token_env(&worker.github_token_env, &CancellationToken::new())
+                    .await?;
                 DockerWorker::new(worker.clone(), "validate")
                     .validate(&CancellationToken::new())
                     .await?;

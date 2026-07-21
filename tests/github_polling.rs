@@ -80,6 +80,7 @@ impl Fixture {
             .arg("init")
             .assert()
             .success();
+        fs::remove_file(repositories[0].join(".factory/workflows/triage-ticket.md")).unwrap();
         fs::write(
             &config_path,
             "version = 1\npoll_every = \"20ms\"\ndefault_runtime = \"codex\"\ndefault_timeout = \"2h\"\nmaximum_timeout = \"8h\"\nmax_concurrent_runs = 2\n\n[github]\ntrusted_approvers = [\"owainlewis\"]\nready_label = \"factory:ready\"\nproposed_label = \"factory:proposed\"\nneeds_review_label = \"factory:needs-review\"\n",

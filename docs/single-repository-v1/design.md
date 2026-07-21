@@ -464,10 +464,11 @@ and workflows only from the canonical checkout, never from an agent branch.
 
 ### Bootstrap the local proof
 
-The repository supplies `.factory/Dockerfile` and the two workflow files. The
-documented first run is:
+`factory init` creates `.factory/Dockerfile` and the two workflow files when
+they are missing and never overwrites them. The documented first run is:
 
 ```sh
+factory init
 docker build --file .factory/Dockerfile --tag factory-codex:dev .
 
 mkdir -p "$HOME/.local/share/factory/codex"

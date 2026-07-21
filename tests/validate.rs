@@ -44,6 +44,8 @@ fn valid_config() -> (
         .arg("init")
         .assert()
         .success();
+    fs::remove_dir_all(repository.join(".factory/workflows")).unwrap();
+    fs::create_dir(repository.join(".factory/workflows")).unwrap();
     let path = repository.join(".factory/config.toml");
     fs::write(
         &path,
@@ -116,6 +118,7 @@ fn validates_configurable_github_project_states() {
 if [ "$1" = "--version" ]; then echo "gh version 2.80.0"; exit 0; fi
 if [ "$1" = "auth" ]; then exit 0; fi
 if [ "$1" = "repo" ]; then echo "example/repository"; exit 0; fi
+if [ "$1" = "api" ] && [ "$2" = "user" ] && [ "$GH_TOKEN" = "dedicated-test-token" ]; then echo '{"id":99,"login":"factory-bot"}'; exit 0; fi
 if [ "$1" = "api" ] && [ "$2" = "users/owainlewis" ]; then echo '{"id":1,"login":"owainlewis","node_id":"U_1"}'; exit 0; fi
 if [ "$1" = "project" ] && [ "$2" = "view" ]; then echo '{"id":"PVT_16"}'; exit 0; fi
 if [ "$1" = "project" ] && [ "$2" = "field-list" ]; then
