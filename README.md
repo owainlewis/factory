@@ -18,9 +18,9 @@ dedicated Codex login. It does not use model API keys.
 4. In a trusted target repository, run `factory init`.
 5. Configure the GitHub Project, trusted users, and status names in
    `.factory/config.toml`.
-6. Add the triage and implementation workflows under `.factory/workflows/`
-   and a repository-specific `.factory/Dockerfile` with the real toolchain.
-7. Build the repository worker image:
+6. Review the generated triage and implementation workflows and adapt the
+   generated `.factory/Dockerfile` to the repository toolchain.
+7. Build the worker image:
 
    ```sh
    docker build --file .factory/Dockerfile --tag factory-codex:dev .
@@ -41,8 +41,8 @@ dedicated Codex login. It does not use model API keys.
 
 `factory init --check` previews setup without writes. Initialization creates
 `.factory/config.toml`, external machine state and workspace storage, and the
-repository's workflow directory. It does not alter the GitHub Project or
-install opinionated workflows.
+two workflows plus `.factory/Dockerfile`. Existing files are never overwritten.
+It does not alter the GitHub Project or start an agent.
 
 Create a scheduled pull-request triage workflow without opening an editor:
 
@@ -78,7 +78,8 @@ feature in v1.
 
 See [`docs/single-repository-v1/design.md`](docs/single-repository-v1/design.md)
 for the setup, state machine, worker boundary, recovery model, and acceptance
-checks.
+checks. See [`docs/local-v1.md`](docs/local-v1.md) for the runnable setup and
+[`docs/operations.md`](docs/operations.md) for day-two operation.
 
 ## Development checks
 

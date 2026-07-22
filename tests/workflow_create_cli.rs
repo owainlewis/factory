@@ -83,6 +83,8 @@ exit 64
             executable_path,
         };
         fixture.command().arg("init").assert().success();
+        fs::remove_file(fixture.workflow("triage-ticket")).unwrap();
+        fs::remove_file(fixture.workflow("implement-ready-ticket")).unwrap();
         fs::write(
             fixture.repository.join(".factory/config.toml"),
             r#"version = 1

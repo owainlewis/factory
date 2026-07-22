@@ -84,6 +84,7 @@ impl Fixture {
                     .arg("init")
                     .assert()
                     .success();
+                fs::remove_file(repository.join(".factory/workflows/triage-ticket.md")).unwrap();
             }
             let rewrite = format!("url.file://{}.insteadOf", remote.display());
             git(&repository, &["config", &rewrite, &github_remote]);

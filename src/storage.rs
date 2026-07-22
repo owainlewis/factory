@@ -20,6 +20,59 @@ pub const OPERATOR_CONFIRMED_CLEANUP: &str = "operator-confirmed cleanup";
 const DAEMON_OWNER_LEASE_MILLIS: i64 = 10_000;
 const APPROVAL_RESERVATION_TTL_MILLIS: i64 = 10 * 60 * 1000;
 
+pub fn validate_data_directory(data_directory: &Path) -> Result<()> {
+    fs::create_dir_all(data_directory).with_context(|| {
+        format!(
+            "failed to create Factory data directory {}",
+            data_directory.display()
+        )
+    })?;
+    tempfile::NamedTempFile::new_in(data_directory).with_context(|| {
+        format!(
+            "Factory data directory is not writable: {}",
+            data_directory.display()
+        )
+    })?;
+
+    let database = data_directory.join(DATABASE_NAME);
+    if !database.exists() {
+        return Ok(());
+    }
+    let metadata = fs::symlink_metadata(&database)
+        .with_context(|| format!("failed to inspect Factory database {}", database.display()))?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        bail!(
+            "Factory database must be a regular non-symlink file: {}",
+            database.display()
+        );
+    }
+    if metadata.permissions().readonly() {
+        bail!(
+            "Factory database is read-only and cannot be opened read-write: {}",
+            database.display()
+        );
+    }
+    let connection = Connection::open_with_flags(
+        &database,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| {
+        format!(
+            "Factory database cannot be opened read-write: {}",
+            database.display()
+        )
+    })?;
+    connection
+        .execute_batch("BEGIN IMMEDIATE; ROLLBACK;")
+        .with_context(|| {
+            format!(
+                "Factory database cannot acquire a write transaction: {}",
+                database.display()
+            )
+        })?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
     Queued,

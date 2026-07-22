@@ -44,6 +44,8 @@ fn valid_config() -> (
         .arg("init")
         .assert()
         .success();
+    fs::remove_dir_all(repository.join(".factory/workflows")).unwrap();
+    fs::create_dir(repository.join(".factory/workflows")).unwrap();
     let path = repository.join(".factory/config.toml");
     fs::write(
         &path,
@@ -77,6 +79,44 @@ fn validates_explicit_config() {
         .success()
         .stdout(predicate::str::contains("Configuration is valid."))
         .stdout(predicate::str::contains("default_runtime: codex"));
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_an_existing_database_that_is_not_writable() {
+    let (_temp, path, _repository, data_home) = valid_config();
+    Command::cargo_bin("factory")
+        .unwrap()
+        .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", &data_home)
+        .assert()
+        .success();
+    let state_directory = fs::read_dir(&data_home)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let database = state_directory.join("factory.sqlite3");
+    rusqlite::Connection::open(&database)
+        .unwrap()
+        .execute_batch("CREATE TABLE proof (id INTEGER);")
+        .unwrap();
+    let mut permissions = fs::metadata(&database).unwrap().permissions();
+    permissions.set_mode(0o400);
+    fs::set_permissions(&database, permissions).unwrap();
+
+    Command::cargo_bin("factory")
+        .unwrap()
+        .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", &data_home)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Factory database is read-only"));
+
+    let mut permissions = fs::metadata(&database).unwrap().permissions();
+    permissions.set_mode(0o600);
+    fs::set_permissions(database, permissions).unwrap();
 }
 
 #[test]
@@ -116,6 +156,7 @@ fn validates_configurable_github_project_states() {
 if [ "$1" = "--version" ]; then echo "gh version 2.80.0"; exit 0; fi
 if [ "$1" = "auth" ]; then exit 0; fi
 if [ "$1" = "repo" ]; then echo "example/repository"; exit 0; fi
+if [ "$1" = "api" ] && [ "$2" = "user" ] && [ "$GH_TOKEN" = "dedicated-test-token" ]; then echo '{"id":99,"login":"factory-bot"}'; exit 0; fi
 if [ "$1" = "api" ] && [ "$2" = "users/owainlewis" ]; then echo '{"id":1,"login":"owainlewis","node_id":"U_1"}'; exit 0; fi
 if [ "$1" = "project" ] && [ "$2" = "view" ]; then echo '{"id":"PVT_16"}'; exit 0; fi
 if [ "$1" = "project" ] && [ "$2" = "field-list" ]; then
@@ -135,6 +176,7 @@ exit 64
         r#"#!/bin/sh
 if [ "$1" = "version" ]; then echo "27.0.0"; exit 0; fi
 if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then echo "sha256:abcdef"; exit 0; fi
+if [ "$1" = "run" ] && [ "$2" = "--rm" ]; then echo "Logged in using ChatGPT"; exit 0; fi
 exit 64
 "#,
     )

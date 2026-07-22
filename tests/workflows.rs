@@ -52,6 +52,8 @@ impl Fixture {
             .arg("init")
             .assert()
             .success();
+        fs::remove_dir_all(repository.join(".factory/workflows")).unwrap();
+        fs::create_dir(repository.join(".factory/workflows")).unwrap();
         let config_path = repository.join(".factory/config.toml");
         let config = test_config(
             vec![repository.canonicalize().unwrap()],

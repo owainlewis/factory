@@ -40,6 +40,8 @@ fn initialize_repository(repository: &std::path::Path, data_home: &std::path::Pa
         .arg("init")
         .assert()
         .success();
+    fs::remove_file(repository.join(".factory/workflows/triage-ticket.md")).unwrap();
+    fs::remove_file(repository.join(".factory/workflows/implement-ready-ticket.md")).unwrap();
 }
 
 #[test]
