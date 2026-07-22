@@ -1,118 +1,144 @@
 # Factory
 
-Factory is a local-first daemon that turns trusted GitHub Project items into
-supervised Codex runs. Factory owns polling, durable claims, concurrency,
-workspace isolation, inspection, cancellation, cleanup, and recovery. Codex
-owns the adaptive workflow and uses `gh` and `git` directly. It leaves pull
-requests for human review and merge.
+Factory is a small automation loop around one repository. It watches a trusted
+GitHub source, turns matching events into durable tasks, and runs an agent prompt
+in an isolated worker.
 
-Factory v1 manages one trusted repository on a Unix-like host. Worktree mode is
-the fast default for trusted local development. Docker mode uses standalone
-clones, a dedicated GitHub token, and a dedicated Codex login for reproducible,
-resource-bounded execution. Factory does not use model API keys.
+The source is the control plane. Issues and Project statuses decide what work is
+ready. Factory handles polling, deduplication, durable claims, concurrency,
+timeouts, sandbox setup, supervision, recovery, and run history. The workflow is
+plain Markdown. The agent uses normal tools such as `gh` and `git` to understand
+the issue, change code, open a pull request, respond to CI, and update the ticket.
+
+Factory does not encode a fixed software development pipeline. A trigger simply
+means: when this condition is true, run this prompt.
 
 ## Quick start
 
-1. Install Rust, `git`, `gh`, and Codex CLI.
-2. Authenticate the host with `gh auth login`.
-3. Clone Factory and run `cargo install --path . --locked`.
-4. In a trusted target repository, run `factory init`.
-5. Configure the GitHub Project, trusted users, and status names in
-   `.factory/config.toml`.
-6. Review the generated triage and implementation workflows.
-7. Run `factory validate`, `factory workflows`, and `factory run`.
-
-For Docker execution, initialize with `factory init --execution-mode docker`,
-adapt the generated `.factory/Dockerfile`, and build the worker image:
+Install Rust, Git, GitHub CLI, and Codex CLI. Authenticate the host tools, then
+install Factory:
 
 ```sh
-docker build --file .factory/Dockerfile --tag factory-codex:dev .
-```
-
-Create the dedicated Codex login used by the worker:
-
-```sh
-mkdir -p "$HOME/.local/share/factory/codex"
-CODEX_HOME="$HOME/.local/share/factory/codex" codex login
-```
-
-Set `worker.codex_auth` to `~/.local/share/factory/codex/auth.json` in the
-config.
-
-Export `FACTORY_GITHUB_TOKEN` for a dedicated GitHub identity before starting
-Factory in Docker mode.
-
-Run the install command from the Factory repository, then verify the command:
-
-```sh
+gh auth login
+codex login
 cargo install --path . --locked
-factory --help
 ```
 
-Cargo normally installs the binary at `~/.cargo/bin/factory`. If zsh cannot
-find it, add Cargo's binary directory to your path:
+From the repository Factory will manage:
 
 ```sh
-echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
+factory init
 ```
 
-Reinstall after local development changes:
+`factory init` creates a repository-scoped `.factory/config.toml` and two plain
+Markdown workflows. Edit the generated source values, status names, trusted
+users, and prompts. A complete worktree configuration looks like this:
+
+```toml
+version = 1
+poll_every = "30s"
+
+[worker]
+runtime = "codex"
+sandbox = "worktree"
+timeout = "2h"
+maximum_timeout = "8h"
+max_concurrent = 1
+
+[source]
+type = "github"
+project_owner = "owainlewis"
+project_number = 16
+status_field = "Status"
+trusted_users = ["owainlewis"]
+
+[trigger.triage]
+type = "status"
+status = "Ready For Spec"
+workflow = ".factory/workflows/triage/WORKFLOW.md"
+
+[trigger.implement]
+type = "status"
+status = "Ready To Implement"
+workflow = ".factory/workflows/implement/WORKFLOW.md"
+timeout = "4h"
+
+[trigger.maintenance]
+type = "schedule"
+schedule = "0 9 * * 1"
+timezone = "Europe/London"
+workflow = ".factory/workflows/maintenance/WORKFLOW.md"
+```
+
+Each `[trigger.<id>]` has an explicit `type`:
+
+- `status` runs when a trusted issue enters a configured GitHub Project status.
+- `label` runs when a trusted open issue has a configured label.
+- `schedule` runs once for each due cron instant.
+
+Status and label triggers run once while the condition remains true. They become
+eligible again after the issue leaves and later re-enters the condition. A
+schedule trigger runs once per scheduled instant.
+
+Workflow files contain only instructions. They have no frontmatter. The trigger,
+runtime, timeout, and sandbox belong in config so there is one clear source of
+truth.
+
+Validate and start the loop:
 
 ```sh
-cargo install --path . --locked --force
+factory validate
+factory workflows
+factory run --once
+factory run
 ```
 
-`factory init --check` previews setup without writes. Initialization creates
-`.factory/config.toml`, external machine state and workspace storage, and the
-two workflows. Docker mode also creates `.factory/Dockerfile`. Existing files
-are never overwritten. It does not alter the GitHub Project or start an agent.
+`factory run --once` polls and records eligible work without launching an agent.
+`factory run` stays active until Ctrl-C. If nothing matches, Factory starts no
+worker and uses no model tokens.
 
-Create a scheduled pull-request triage workflow without opening an editor:
+Inspect or operate the durable queue with:
 
 ```sh
-factory workflow create triage-pull-requests \
-  --schedule "*/30 * * * *" \
-  --timezone Europe/London \
-  --timeout 1h \
-  --prompt "Review open pull requests with no labels. Process at most five per run. Read each diff, checks, and existing reviews; add appropriate repository labels and leave a review only for actionable findings. Never merge or close a pull request."
+factory tasks
+factory runs
+factory inspect RUN_ID
+factory cancel RUN_ID
 ```
 
-Use `--prompt-file PATH` for longer policies, or `--prompt-file -` to read the
-prompt from standard input. Label-triggered workflows create their missing
-trigger label explicitly; scheduled workflows do not mutate labels during
-creation.
+You can also test a configured prompt directly with `factory workflow run ID`.
 
-`factory run` runs until Ctrl-C. `factory run --once` evaluates schedules
-and polls once, persists eligible tasks, and exits without launching Codex.
-If no schedule or issue matches, Factory launches no agent and uses no model
-tokens.
+## Sandboxes
 
-The v1 loop has two reactions. An item in the configured ready-for-spec state
-runs triage. An item in the ready-to-implement state runs implementation and
-advances to review. Only items from configured trusted users can be claimed.
-All six status names are configurable.
+`sandbox = "worktree"` is fast and uses the authenticated `gh` and Codex CLIs on
+the host. It protects the canonical checkout but is not a security boundary. Use
+it only for trusted work.
 
-`execution_mode = "worktree"` runs every daemon task with the host Codex CLI in
-a Factory-owned Git worktree. It is fast, but it is not a security boundary and
-should be used only for trusted local work. `execution_mode = "docker"` runs
-every daemon task in a disposable container backed by a standalone clone. The
-container has a read-only root, no added Linux capabilities, bounded CPU,
-memory and processes, and no Docker socket or canonical repository mount.
+For stronger isolation, initialize with:
 
-See [`docs/single-repository-v1/design.md`](docs/single-repository-v1/design.md)
-for the setup, state machine, worker boundary, recovery model, and acceptance
-checks. See [`docs/local-v1.md`](docs/local-v1.md) for the runnable setup and
-[`docs/operations.md`](docs/operations.md) for day-two operation.
+```sh
+factory init --execution-mode docker
+```
+
+Docker workers use a standalone clone, an explicitly configured image, resource
+limits, a read-only Codex authentication file, and the token named by
+`worker.github_token_env`. The generated config defaults to a dedicated Codex
+login. For a local demo, `worker.codex_auth` may explicitly point at your
+existing `~/.codex/auth.json`. Host polling always uses your authenticated `gh`
+CLI; the container needs the configured token for its own `gh` and Git access.
+Review the generated `.factory/Dockerfile`, build the image, and use credentials
+that cannot bypass protected-branch review.
+
+Factory leaves pull requests for human review. Ticket changes, merges, and
+deployments are workflow policy, not built-in Factory operations.
+
+See [the runnable guide](docs/local-v1.md), [the architecture](docs/design.md),
+and [the detailed v1 design](docs/single-repository-v1/design.md).
 
 ## Development checks
-
-Every pull request runs:
 
 ```sh
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
-
-Factory never merges software pull requests or enables automatic merge.

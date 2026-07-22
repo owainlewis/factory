@@ -40,8 +40,6 @@ fn initialize_repository(repository: &std::path::Path, data_home: &std::path::Pa
         .arg("init")
         .assert()
         .success();
-    fs::remove_file(repository.join(".factory/workflows/triage-ticket.md")).unwrap();
-    fs::remove_file(repository.join(".factory/workflows/implement-ready-ticket.md")).unwrap();
 }
 
 #[test]
@@ -54,12 +52,12 @@ fn manual_workflow_run_resolves_context_and_invokes_codex() {
     let binaries = temp.path().join("bin");
     fs::create_dir_all(&workflows).unwrap();
     fs::create_dir(&binaries).unwrap();
+    initialize_repository(&repository, &data_home);
     fs::write(
-        workflows.join("read-only.md"),
-        "+++\nschedule = \"0 9 * * *\"\ntimezone = \"UTC\"\ntimeout = \"30s\"\n+++\n\nInspect without changing files.\n",
+        workflows.join("triage/WORKFLOW.md"),
+        "Inspect without changing files.\n",
     )
     .unwrap();
-    initialize_repository(&repository, &data_home);
     let prompt_capture = temp.path().join("prompt.txt");
     let executable = binaries.join("codex");
     fs::write(
@@ -98,7 +96,7 @@ printf 'Read-only workflow complete.' > "$output"
 
     Command::cargo_bin("factory")
         .unwrap()
-        .args(["workflow", "run", "read-only"])
+        .args(["workflow", "run", "triage"])
         .current_dir(&repository)
         .env("FACTORY_DATA_HOME", &data_home)
         .env("PATH", path)
@@ -114,7 +112,7 @@ printf 'Read-only workflow complete.' > "$output"
 
     let prompt = fs::read_to_string(prompt_capture).unwrap();
     assert!(prompt.contains("Inspect without changing files."));
-    assert!(prompt.contains("Workflow: read-only"));
+    assert!(prompt.contains("Workflow: triage"));
     assert!(prompt.contains(repository.to_str().unwrap()));
     assert!(!prompt.contains(workspace.to_str().unwrap()));
     assert!(!prompt.contains("max_concurrent_runs"));
@@ -129,12 +127,8 @@ fn concurrent_manual_runs_exit_when_shared_output_is_full_and_unread() {
     let binaries = temp.path().join("bin");
     fs::create_dir_all(&workflows).unwrap();
     fs::create_dir(&binaries).unwrap();
-    fs::write(
-        workflows.join("verbose.md"),
-        "+++\nschedule = \"0 9 * * *\"\ntimezone = \"UTC\"\ntimeout = \"30s\"\n+++\n\nBe verbose.\n",
-    )
-    .unwrap();
     initialize_repository(&repository, &data_home);
+    fs::write(workflows.join("triage/WORKFLOW.md"), "Be verbose.\n").unwrap();
     let executable = binaries.join("codex");
     fs::write(
         &executable,
@@ -179,7 +173,7 @@ printf 'Verbose workflow complete.' > "$output"
     let mut children = (0..2)
         .map(|_| {
             std::process::Command::new(assert_cmd::cargo::cargo_bin!("factory"))
-                .args(["workflow", "run", "verbose"])
+                .args(["workflow", "run", "triage"])
                 .current_dir(&repository)
                 .env("FACTORY_DATA_HOME", &data_home)
                 .env("PATH", &path)

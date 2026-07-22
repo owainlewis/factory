@@ -11,9 +11,9 @@ use tokio_util::sync::CancellationToken;
 use crate::approval::{
     ClaimArtifact, approved_content_hash, parse as parse_approval, parse_claim, render_claim,
 };
-use crate::config::{Config, GitHubConfig, PipelineState, SourceConfig, SourceStates};
-use crate::storage::{ApprovalEvidence, Ledger, ObservedTicket, ProjectClaimEvidence, Task};
-use crate::workflow::{Trigger, WorkflowCatalog, WorkflowEntry, workflow_content_hash};
+use crate::config::{Config, GitHubConfig, SourceConfig};
+use crate::storage::{ApprovalEvidence, Ledger, ObservedTicket, Task};
+use crate::workflow::{Trigger, WorkflowCatalog, WorkflowEntry};
 
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -49,10 +49,8 @@ pub struct ProjectTicketContext {
     pub author_id: String,
     pub author_login: String,
     pub repository: String,
-    pub expected_state: PipelineState,
+    pub expected_status: String,
     pub expected_option_id: String,
-    pub active_state: PipelineState,
-    pub active_option_id: String,
     pub status_updated_at: String,
 }
 
@@ -60,7 +58,7 @@ pub struct ProjectTicketContext {
 pub struct ResolvedProjectSource {
     pub project_id: String,
     pub status_field_id: String,
-    pub options: HashMap<PipelineState, String>,
+    pub options: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -80,6 +78,20 @@ pub struct IssueSnapshot {
     pub state: String,
     pub labels: Vec<String>,
     pub updated_at: String,
+    pub author_id: u64,
+    pub author_login: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LabelTicketContext {
+    pub number: u64,
+    pub url: String,
+    pub title: String,
+    pub author_id: u64,
+    pub author_login: String,
+    pub repository: String,
+    pub expected_label: String,
+    pub label_event_id: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -632,13 +644,37 @@ impl GitHubClient {
         &self,
         repository: &Path,
         source: &SourceConfig,
+        statuses: &[String],
         cancellation: &CancellationToken,
     ) -> Result<ResolvedProjectSource> {
         self.validate_repository(repository, cancellation).await?;
         self.trusted_source_user_ids(repository, source, cancellation)
             .await?;
-        self.resolve_project_source(repository, source, cancellation)
-            .await
+        let resolved = self
+            .resolve_project_source(repository, source, cancellation)
+            .await?;
+        for status in statuses {
+            if !resolved.options.contains_key(status) {
+                bail!(
+                    "GitHub Project field {:?} has no option {:?} required by a status trigger",
+                    source.status_field,
+                    status
+                );
+            }
+        }
+        Ok(resolved)
+    }
+
+    pub async fn validate_issue_source(
+        &self,
+        repository: &Path,
+        source: &SourceConfig,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.validate_repository(repository, cancellation).await?;
+        self.trusted_source_numeric_user_ids(repository, source, cancellation)
+            .await?;
+        Ok(())
     }
 
     pub async fn authorize_project_claim(
@@ -646,7 +682,7 @@ impl GitHubClient {
         repository: &Path,
         source: &SourceConfig,
         task: &Task,
-        ledger: &mut Ledger,
+        _ledger: &mut Ledger,
         cancellation: &CancellationToken,
     ) -> Result<()> {
         let payload = task
@@ -677,26 +713,14 @@ impl GitHubClient {
         }
         let current_expected_option = resolved
             .options
-            .get(&expected.expected_state)
+            .get(&expected.expected_status)
             .context("queued expected state is no longer configured")?;
-        let current_active_option = resolved
-            .options
-            .get(&expected.active_state)
-            .context("queued active state is no longer configured")?;
         if resolved.project_id != expected.project_id
             || resolved.status_field_id != expected.status_field_id
             || current_expected_option != &expected.expected_option_id
-            || current_active_option != &expected.active_option_id
         {
             bail!("project source configuration changed after this task was queued");
         }
-        let evidence = ProjectClaimEvidence {
-            project_id: &expected.project_id,
-            project_item_id: &expected.project_item_id,
-            status_field_id: &expected.status_field_id,
-            expected_option_id: &expected.expected_option_id,
-            active_option_id: &expected.active_option_id,
-        };
         let current = self
             .project_item(
                 repository,
@@ -706,39 +730,58 @@ impl GitHubClient {
             )
             .await?
             .context("project item no longer exists or is not an issue")?;
-        if current
-            .field_value
-            .as_ref()
-            .is_some_and(|status| status.option_id == expected.active_option_id)
+        validate_project_item(&current, &expected, &expected.expected_option_id)
+    }
+
+    pub async fn authorize_label_claim(
+        &self,
+        repository: &Path,
+        source: &SourceConfig,
+        expected_label: &str,
+        task: &Task,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        let payload = task
+            .payload
+            .as_deref()
+            .context("label task has no source payload")?;
+        let expected: LabelTicketContext =
+            serde_json::from_str(payload).context("label task source payload is invalid")?;
+        let source_item = task
+            .source_item
+            .as_deref()
+            .context("label task has no issue number")?;
+        if source_item != expected.number.to_string()
+            || task.repository != expected.repository
+            || expected.expected_label != expected_label
         {
-            if !ledger.project_claim_matches(task.id, &evidence)? {
-                bail!("project item is active without a durable claim for this task");
-            }
-            validate_project_item(&current, &expected, &expected.active_option_id)?;
-            return Ok(());
+            bail!("label task payload does not match its durable identity");
         }
-        validate_project_item(&current, &expected, &expected.expected_option_id)?;
-        ledger.record_project_claim(task.id, &evidence)?;
-        self.set_project_status(
-            repository,
-            &expected.project_id,
-            &expected.project_item_id,
-            &expected.status_field_id,
-            &expected.active_option_id,
-            cancellation,
-        )
-        .await?;
-        let claimed = self
-            .project_item(
-                repository,
-                &expected.project_item_id,
-                &expected.status_field_id,
-                cancellation,
-            )
-            .await?
-            .context("project item disappeared after status transition")?;
-        validate_project_item(&claimed, &expected, &expected.active_option_id)
-            .context("project item changed concurrently while Factory claimed it")?;
+        let repository_name = self.validate_repository(repository, cancellation).await?;
+        if repository_name != task.repository {
+            bail!("label task repository no longer matches the configured checkout");
+        }
+        let trusted = self
+            .trusted_source_numeric_user_ids(repository, source, cancellation)
+            .await?;
+        let issue = self
+            .issue(repository, &task.repository, expected.number, cancellation)
+            .await?;
+        if issue.state != "open"
+            || issue.author_id != expected.author_id
+            || issue.author_login != expected.author_login
+            || issue.url != expected.url
+            || !trusted.contains_key(&issue.author_id)
+            || !issue.labels.iter().any(|label| label == expected_label)
+        {
+            bail!("issue author, state, URL, or label changed before claim");
+        }
+        let timeline = self
+            .issue_timeline(repository, &task.repository, expected.number, cancellation)
+            .await?;
+        if latest_label_event_id(&timeline, expected_label) != Some(expected.label_event_id) {
+            bail!("issue label entry changed before claim");
+        }
         Ok(())
     }
 
@@ -818,28 +861,26 @@ impl GitHubClient {
             );
         }
         let mut options = HashMap::new();
-        for (state, name) in configured_states(&source.states) {
-            let mut matching_options = field.options.iter().filter(|option| option.name == name);
-            let option = matching_options.next().with_context(|| {
-                format!(
-                    "GitHub Project field {:?} has no option {:?} for {}",
-                    source.status_field, name, state
-                )
-            })?;
-            if matching_options.next().is_some() {
+        let mut option_ids = HashMap::new();
+        for option in field.options {
+            if options
+                .insert(option.name.clone(), option.id.clone())
+                .is_some()
+            {
                 bail!(
                     "GitHub Project field {:?} contains more than one option named {:?}",
                     source.status_field,
-                    name
+                    option.name
                 );
             }
-            if options.insert(state, option.id.clone()).is_some() {
-                bail!("pipeline state {state} is configured more than once");
+            if let Some(previous_name) = option_ids.insert(option.id, option.name.clone()) {
+                bail!(
+                    "GitHub Project field {:?} must use a distinct project option ID for {:?} and {:?}",
+                    source.status_field,
+                    previous_name,
+                    option.name
+                );
             }
-        }
-        let distinct = options.values().collect::<std::collections::HashSet<_>>();
-        if distinct.len() != options.len() {
-            bail!("every configured pipeline state must map to a distinct project option");
         }
         Ok(ResolvedProjectSource {
             project_id: project.id,
@@ -861,6 +902,20 @@ impl GitHubClient {
                 .node_id
                 .with_context(|| format!("GitHub user {:?} has no stable node ID", user.login))?;
             users.insert(node_id, user.login);
+        }
+        Ok(users)
+    }
+
+    async fn trusted_source_numeric_user_ids(
+        &self,
+        repository: &Path,
+        source: &SourceConfig,
+        cancellation: &CancellationToken,
+    ) -> Result<HashMap<u64, String>> {
+        let mut users = HashMap::new();
+        for login in &source.trusted_users {
+            let user = self.user(repository, login, cancellation).await?;
+            users.insert(user.id, user.login);
         }
         Ok(users)
     }
@@ -951,35 +1006,6 @@ impl GitHubClient {
         }))
     }
 
-    async fn set_project_status(
-        &self,
-        repository: &Path,
-        project_id: &str,
-        item_id: &str,
-        field_id: &str,
-        option_id: &str,
-        cancellation: &CancellationToken,
-    ) -> Result<()> {
-        self.run(
-            Some(repository),
-            &[
-                "project",
-                "item-edit",
-                "--id",
-                item_id,
-                "--project-id",
-                project_id,
-                "--field-id",
-                field_id,
-                "--single-select-option-id",
-                option_id,
-            ],
-            cancellation,
-        )
-        .await?;
-        Ok(())
-    }
-
     pub async fn poll_once(
         &self,
         config: &Config,
@@ -998,29 +1024,57 @@ impl GitHubClient {
         cancellation: CancellationToken,
     ) -> Result<PollReport> {
         self.validate_global(&cancellation).await?;
-        let label_workflows = label_workflows(catalog, &config.github.ready_label);
-        let state_workflows = state_workflows(catalog);
+        let label_workflows = label_workflows(catalog);
+        let status_workflows = status_workflows(catalog);
         let mut repositories = Vec::with_capacity(config.repositories.len());
         for repository in &config.repositories {
-            let result = if let Some(source) = &config.source {
-                self.poll_project_repository(
-                    repository,
-                    state_workflows.get(repository),
-                    source,
-                    ledger,
-                    &cancellation,
-                )
-                .await
-            } else {
-                self.poll_repository(
-                    repository,
-                    label_workflows.get(repository),
-                    &config.github,
-                    ledger,
-                    &cancellation,
-                )
-                .await
-            };
+            let result: Result<RepositoryPoll> = async {
+                let source = config
+                    .source
+                    .as_ref()
+                    .context("ticket triggers require a configured source")?;
+                let mut report = RepositoryPoll {
+                    repository: repository.clone(),
+                    name_with_owner: None,
+                    issues_seen: 0,
+                    tasks_created: 0,
+                    error: None,
+                };
+                if let Some(workflows) = status_workflows.get(repository) {
+                    let status = self
+                        .poll_project_repository(
+                            repository,
+                            Some(workflows),
+                            source,
+                            ledger,
+                            &cancellation,
+                        )
+                        .await?;
+                    report.name_with_owner = status.name_with_owner;
+                    report.issues_seen = report.issues_seen.max(status.issues_seen);
+                    report.tasks_created += status.tasks_created;
+                }
+                if let Some(workflows) = label_workflows.get(repository) {
+                    let labels = self
+                        .poll_label_repository(
+                            repository,
+                            Some(workflows),
+                            source,
+                            ledger,
+                            &cancellation,
+                        )
+                        .await?;
+                    report.name_with_owner = labels.name_with_owner;
+                    report.issues_seen = report.issues_seen.max(labels.issues_seen);
+                    report.tasks_created += labels.tasks_created;
+                }
+                if report.name_with_owner.is_none() {
+                    report.name_with_owner =
+                        Some(self.validate_repository(repository, &cancellation).await?);
+                }
+                Ok(report)
+            }
+            .await;
             repositories.push(match result {
                 Ok(report) => report,
                 Err(error) => RepositoryPoll {
@@ -1068,20 +1122,15 @@ impl GitHubClient {
             .count();
         let mut tasks_created = 0;
         for workflow in workflows.into_iter().flatten() {
-            let Trigger::State(expected_state) =
+            let Trigger::Status(expected_status) =
                 workflow.trigger.as_ref().expect("filtered workflow")
             else {
                 unreachable!();
             };
-            let active_state = active_state_for(*expected_state)?;
             let expected_option_id = resolved
                 .options
-                .get(expected_state)
-                .context("expected state was not resolved")?;
-            let active_option_id = resolved
-                .options
-                .get(&active_state)
-                .context("active state was not resolved")?;
+                .get(expected_status)
+                .context("trigger status was not found in the configured project field")?;
             let mut observations = Vec::new();
             for item in &items {
                 let Some(issue) = &item.content else {
@@ -1114,10 +1163,8 @@ impl GitHubClient {
                     author_id: author_id.to_owned(),
                     author_login: author.login.clone(),
                     repository: name.clone(),
-                    expected_state: *expected_state,
+                    expected_status: expected_status.clone(),
                     expected_option_id: expected_option_id.clone(),
-                    active_state,
-                    active_option_id: active_option_id.clone(),
                     status_updated_at: status.updated_at.clone(),
                 };
                 observations.push(ObservedTicket {
@@ -1174,11 +1221,11 @@ impl GitHubClient {
         }
     }
 
-    async fn poll_repository(
+    async fn poll_label_repository(
         &self,
         repository: &Path,
         workflows: Option<&Vec<&WorkflowEntry>>,
-        github_config: &GitHubConfig,
+        source: &SourceConfig,
         ledger: &mut Ledger,
         cancellation: &CancellationToken,
     ) -> Result<RepositoryPoll> {
@@ -1194,8 +1241,8 @@ impl GitHubClient {
             .into_iter()
             .filter(|issue| issue.pull_request.is_none())
             .collect::<Vec<_>>();
-        let trusted_approvers = self
-            .trusted_approver_ids(repository, github_config, cancellation)
+        let trusted_users = self
+            .trusted_source_numeric_user_ids(repository, source, cancellation)
             .await?;
         let mut tasks_created = 0;
         for workflow in workflows.into_iter().flatten() {
@@ -1206,35 +1253,39 @@ impl GitHubClient {
             let mut observations = Vec::with_capacity(issues.len());
             for issue in &issues {
                 let label_present = issue.labels.iter().any(|item| item.name == *label);
-                let approval_reserved = ledger.issue_approval_is_reserved(&name, issue.number)?;
-                let approved = if label_present && !approval_reserved {
-                    let comments = self
-                        .issue_comments(repository, &name, issue.number, cancellation)
-                        .await?;
+                let context = if label_present && trusted_users.contains_key(&issue.user.id) {
                     let timeline = self
                         .issue_timeline(repository, &name, issue.number, cancellation)
                         .await?;
-                    approved_ticket(
-                        issue,
-                        workflow,
-                        label,
-                        &comments,
-                        &timeline,
-                        &trusted_approvers,
-                        ledger,
-                    )?
+                    latest_label_event_id(&timeline, label).map(|label_event_id| {
+                        LabelTicketContext {
+                            number: issue.number,
+                            url: issue.html_url.clone(),
+                            title: issue.title.clone(),
+                            author_id: issue.user.id,
+                            author_login: issue.user.login.clone(),
+                            repository: name.clone(),
+                            expected_label: label.clone(),
+                            label_event_id,
+                        }
+                    })
                 } else {
                     None
                 };
-                let (eligible, revision, payload) = approved.map_or_else(
-                    || (false, issue.updated_at.clone(), None),
-                    |(revision, context)| (true, revision, Some(context)),
+                let revision = context.as_ref().map_or_else(
+                    || format!("issue:{}:label:{label}:absent", issue.number),
+                    |context| {
+                        format!(
+                            "issue:{}:label:{label}:event:{}",
+                            issue.number, context.label_event_id
+                        )
+                    },
                 );
                 observations.push(ObservedTicket {
                     source_item: issue.number.to_string(),
                     revision,
-                    eligible,
-                    payload: payload
+                    eligible: context.is_some(),
+                    payload: context
                         .map(|context| serde_json::to_string(&context))
                         .transpose()
                         .context("failed to serialize ticket context")?
@@ -1367,15 +1418,10 @@ impl GitHubClient {
     }
 }
 
-fn label_workflows<'a>(
-    catalog: &'a WorkflowCatalog,
-    ready_label: &str,
-) -> HashMap<PathBuf, Vec<&'a WorkflowEntry>> {
+fn label_workflows(catalog: &WorkflowCatalog) -> HashMap<PathBuf, Vec<&WorkflowEntry>> {
     let mut workflows = HashMap::<PathBuf, Vec<&WorkflowEntry>>::new();
     for workflow in &catalog.entries {
-        if workflow.errors.is_empty()
-            && matches!(workflow.trigger.as_ref(), Some(Trigger::Label(label)) if label == ready_label)
-        {
+        if workflow.errors.is_empty() && matches!(workflow.trigger, Some(Trigger::Label(_))) {
             workflows
                 .entry(workflow.repository.clone())
                 .or_default()
@@ -1385,16 +1431,25 @@ fn label_workflows<'a>(
     workflows
 }
 
-fn state_workflows(catalog: &WorkflowCatalog) -> HashMap<PathBuf, Vec<&WorkflowEntry>> {
+fn latest_label_event_id(events: &[ApiTimelineEvent], label: &str) -> Option<u64> {
+    events
+        .iter()
+        .filter(|event| {
+            event.event == "labeled"
+                && event
+                    .label
+                    .as_ref()
+                    .is_some_and(|event_label| event_label.name == label)
+        })
+        .map(|event| event.id)
+        .max()
+}
+
+fn status_workflows(catalog: &WorkflowCatalog) -> HashMap<PathBuf, Vec<&WorkflowEntry>> {
     let mut workflows = HashMap::<PathBuf, Vec<&WorkflowEntry>>::new();
     for workflow in &catalog.entries {
         if workflow.errors.is_empty()
-            && matches!(
-                workflow.trigger.as_ref(),
-                Some(Trigger::State(
-                    PipelineState::ReadyForSpec | PipelineState::ReadyToImplement
-                ))
-            )
+            && matches!(workflow.trigger.as_ref(), Some(Trigger::Status(_)))
         {
             workflows
                 .entry(workflow.repository.clone())
@@ -1403,25 +1458,6 @@ fn state_workflows(catalog: &WorkflowCatalog) -> HashMap<PathBuf, Vec<&WorkflowE
         }
     }
     workflows
-}
-
-fn active_state_for(state: PipelineState) -> Result<PipelineState> {
-    match state {
-        PipelineState::ReadyForSpec => Ok(PipelineState::CreatingSpec),
-        PipelineState::ReadyToImplement => Ok(PipelineState::Implementing),
-        _ => bail!("pipeline state {state} cannot trigger a v1 workflow"),
-    }
-}
-
-fn configured_states(states: &SourceStates) -> [(PipelineState, &str); 6] {
-    [
-        (PipelineState::ReadyForSpec, &states.ready_for_spec),
-        (PipelineState::CreatingSpec, &states.creating_spec),
-        (PipelineState::ReadyToImplement, &states.ready_to_implement),
-        (PipelineState::Implementing, &states.implementing),
-        (PipelineState::ReadyToReview, &states.ready_to_review),
-        (PipelineState::Done, &states.done),
-    ]
 }
 
 fn project_source_revision(item_id: &str, option_id: &str, status_updated_at: &str) -> String {
@@ -1621,82 +1657,6 @@ struct ProjectValueField {
     id: String,
 }
 
-fn approved_ticket(
-    issue: &ApiIssue,
-    workflow: &WorkflowEntry,
-    ready_label: &str,
-    comments: &[ApiComment],
-    timeline: &[ApiTimelineEvent],
-    trusted_approvers: &HashMap<u64, String>,
-    ledger: &Ledger,
-) -> Result<Option<(String, TicketContext)>> {
-    let workflow_hash = workflow_content_hash(workflow)?;
-    let Some(comment) = comments.iter().rev().find(|comment| {
-        comment
-            .body
-            .as_deref()
-            .is_some_and(|body| body.contains("<!-- factory-approval:"))
-    }) else {
-        return Ok(None);
-    };
-    let Some(artifact) = parse_approval(comment.body.as_deref().unwrap_or_default()) else {
-        return Ok(None);
-    };
-    if artifact.issue != issue.number
-        || artifact.workflow_id != workflow.id
-        || artifact.workflow_hash != workflow_hash
-        || artifact.approver_id != comment.user.id
-        || !trusted_approvers.contains_key(&comment.user.id)
-    {
-        return Ok(None);
-    }
-    if ledger.approval_is_consumed(comment.id)? {
-        return Ok(None);
-    }
-    let Some(event) = latest_ready_event(timeline, ready_label) else {
-        return Ok(None);
-    };
-    if event.actor.id != comment.user.id
-        || !trusted_approvers.contains_key(&event.actor.id)
-        || event.created_at < comment.created_at
-    {
-        return Ok(None);
-    }
-    if conflicting_claim(comments, comment.id, event.id, trusted_approvers).is_some() {
-        return Ok(None);
-    }
-    let body = issue.body.as_deref().unwrap_or_default();
-    let content_hash = approved_content_hash(
-        issue.number,
-        &issue.title,
-        body,
-        &workflow.id,
-        &workflow_hash,
-    )?;
-    if content_hash != artifact.approved_content_hash {
-        return Ok(None);
-    }
-    let revision = format!("approval:{}:label-event:{}", comment.id, event.id);
-    Ok(Some((
-        revision,
-        TicketContext {
-            number: issue.number,
-            url: issue.html_url.clone(),
-            title: issue.title.clone(),
-            body: body.to_owned(),
-            observed_revision: issue.updated_at.clone(),
-            approval: TicketApproval {
-                artifact_id: comment.id,
-                label_event_id: event.id,
-                approver_id: artifact.approver_id,
-                workflow_hash: artifact.workflow_hash,
-                approved_content_hash: artifact.approved_content_hash,
-                nonce: artifact.nonce,
-            },
-        },
-    )))
-}
-
 fn matching_claim<'a>(
     comments: &'a [ApiComment],
     artifact_id: u64,
@@ -1771,6 +1731,7 @@ struct ApiIssue {
     #[serde(default = "open_state")]
     state: String,
     pull_request: Option<serde_json::Value>,
+    user: ApiUser,
 }
 
 fn open_state() -> String {
@@ -1817,6 +1778,8 @@ impl From<ApiIssue> for IssueSnapshot {
             state: issue.state,
             labels: issue.labels.into_iter().map(|label| label.name).collect(),
             updated_at: issue.updated_at,
+            author_id: issue.user.id,
+            author_login: issue.user.login,
         }
     }
 }

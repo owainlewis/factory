@@ -15,9 +15,11 @@ use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
 use crate::clone::CloneManager;
-use crate::config::{Config, PipelineState, SourceConfig};
+use crate::config::{Config, SourceConfig};
 use crate::docker::{CloneMount, DockerRunFailure, DockerWorker};
-use crate::github::{GitHubClient, PollReport, ProjectTicketContext, TicketContext};
+use crate::github::{
+    GitHubClient, LabelTicketContext, PollReport, ProjectTicketContext, TicketContext,
+};
 use crate::runtime::{
     CodexRuntime, ExecutionResult, RuntimeCancelled, RuntimeObservation, Termination,
     observation_channel,
@@ -26,10 +28,8 @@ use crate::storage::{
     AUTOMATIC_DELIVERY_CLEANUP, Ledger, OPERATOR_CONFIRMED_CLEANUP, Run, RunContainer, RunOutcome,
     Task, TaskIdentity, TaskState, TaskWorkspace,
 };
-use crate::workflow::{
-    Trigger, WorkflowCatalog, WorkflowEntry, scheduled_workflow_fingerprint, workflow_content_hash,
-};
-use crate::workspace::{DeliveryReuse, WorkspaceKind, WorkspaceManager};
+use crate::workflow::{Trigger, WorkflowCatalog, WorkflowEntry, scheduled_workflow_fingerprint};
+use crate::workspace::{DeliveryReuse, WorkspaceManager};
 
 const HUMAN_MERGE_POLICY: &str = "Factory-created software pull requests must remain for human merge. Never merge or enable automatic merge.";
 const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -68,7 +68,6 @@ struct WorkflowTarget {
     runtime: String,
     timeout: Duration,
     trigger: Trigger,
-    content_hash: String,
 }
 
 struct ScheduledTarget {
@@ -229,7 +228,6 @@ impl FactoryDaemon {
                     &self.codex,
                     self.docker.as_ref(),
                     &self.github,
-                    &self.config.github,
                     self.config.source.as_ref(),
                     &self.config.workspace_root,
                     &mut retention_warning_shown,
@@ -403,9 +401,23 @@ impl FactoryDaemon {
                 .validate_repository(repository, cancellation)
                 .await?;
             if let Some(source) = &self.config.source {
+                let statuses = self
+                    .catalog
+                    .entries
+                    .iter()
+                    .filter_map(|entry| match entry.trigger.as_ref() {
+                        Some(Trigger::Status(status)) => Some(status.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
                 self.github
-                    .validate_project_source(repository, source, cancellation)
+                    .validate_issue_source(repository, source, cancellation)
                     .await?;
+                if !statuses.is_empty() {
+                    self.github
+                        .validate_project_source(repository, source, &statuses, cancellation)
+                        .await?;
+                }
             }
             let workflows = self
                 .catalog
@@ -615,28 +627,25 @@ fn automatic_cleanup_is_still_safe(
     if task.state != TaskState::Succeeded {
         return Ok(false);
     }
-    let run = ledger
-        .runs_for_task(task.id)?
-        .into_iter()
-        .next_back()
-        .context("successful task has no run history")?;
-    let handed_off = run
-        .result
-        .as_deref()
-        .is_some_and(|result| !result.trim().is_empty())
-        && run.pull_request.is_some();
     let clone_manager = CloneManager::new(
         workspace
             .path
             .parent()
             .context("workspace clone has no managed root")?,
     )?;
-    let clean = if workspace.backend == "clone" {
-        !clone_manager.preview_cleanup(&workspace.path)?.dirty
+    let preview = if workspace.backend == "clone" {
+        clone_manager.preview_cleanup(&workspace.path)?
     } else {
-        !manager.preview_cleanup(&workspace.path)?.dirty
+        manager.preview_cleanup(&workspace.path)?
     };
-    let published = match workspace.factory_branch.as_deref() {
+    if preview.dirty {
+        return Ok(false);
+    }
+    let head = current_commit(&workspace.path).context("failed to resolve task cleanup commit")?;
+    if head == workspace.base_sha {
+        return Ok(true);
+    }
+    let published = match preview.branch.as_deref() {
         Some(branch) if workspace.backend == "clone" => clone_manager.branch_is_pushed(
             &workspace.path,
             branch,
@@ -645,7 +654,7 @@ fn automatic_cleanup_is_still_safe(
         Some(branch) => manager.branch_is_pushed(branch)?,
         None => false,
     };
-    Ok(clean && published && handed_off)
+    Ok(published)
 }
 
 fn reconcile_terminal_workspaces(
@@ -725,16 +734,12 @@ fn resolve_workflow_target(entry: &WorkflowEntry) -> Option<(String, WorkflowTar
             runtime: entry.runtime.clone()?,
             timeout: entry.timeout?,
             trigger: entry.trigger.clone()?,
-            content_hash: workflow_content_hash(entry).ok()?,
         },
     ))
 }
 
 fn docker_clone_mount(trigger: &Trigger) -> CloneMount {
-    if matches!(
-        trigger,
-        Trigger::Label(_) | Trigger::State(PipelineState::ReadyToImplement)
-    ) {
+    if matches!(trigger, Trigger::Label(_) | Trigger::Status(_)) {
         CloneMount::ReadWrite
     } else {
         CloneMount::ReadOnly
@@ -753,7 +758,6 @@ fn dispatch_available(
     codex: &CodexRuntime,
     docker: Option<&DockerWorker>,
     github: &GitHubClient,
-    github_config: &crate::config::GitHubConfig,
     source_config: Option<&SourceConfig>,
     workspace_root: &Path,
     retention_warning_shown: &mut bool,
@@ -772,7 +776,7 @@ fn dispatch_available(
                 target.workflows.iter().map(|(workflow, target)| {
                     let task_kind = match target.trigger {
                         Trigger::Schedule { .. } => "scheduled",
-                        Trigger::Label(_) | Trigger::State(_) => "ticket",
+                        Trigger::Label(_) | Trigger::Status(_) => "ticket",
                     };
                     (
                         (repository.clone(), workflow.clone(), task_kind.to_owned()),
@@ -874,14 +878,13 @@ fn dispatch_available(
         let codex = codex.clone();
         let docker = docker.cloned();
         let github = github.clone();
-        let github_config = github_config.clone();
         let source_config = source_config.cloned();
         let workspace_root = workspace_root.to_owned();
         let finalization_ledger_path = ledger_path.to_owned();
         let cancellation = cancellation.clone();
         runs.spawn(async move {
             let authorization = match &workflow.trigger {
-                Trigger::State(_) => {
+                Trigger::Status(_) => {
                     let source = source_config
                         .as_ref()
                         .context("project workflow has no configured source");
@@ -900,23 +903,28 @@ fn dispatch_available(
                         Err(error) => Err(error),
                     }
                 }
-                Trigger::Label(_) => {
-                    github
-                        .authorize_claim(
-                            &target.path,
-                            &github_config,
-                            &task,
-                            &workflow.content_hash,
-                            &mut worker_ledger,
-                            &cancellation,
-                        )
-                        .await
-                }
+                Trigger::Label(label) => match source_config.as_ref() {
+                    Some(source) => {
+                        github
+                            .authorize_label_claim(
+                                &target.path,
+                                source,
+                                label,
+                                &task,
+                                &cancellation,
+                            )
+                            .await
+                    }
+                    None => Err(anyhow::anyhow!("label workflow has no configured source")),
+                },
                 Trigger::Schedule { .. } => Ok(()),
             };
             if let Err(error) = authorization {
                 let detail = format!("ticket authorization failed: {error:#}");
-                let finish = if matches!(workflow.trigger, Trigger::State(_)) {
+                let finish = if matches!(
+                    workflow.trigger,
+                    Trigger::Status(_) | Trigger::Label(_)
+                ) {
                     worker_ledger
                         .fail_prelaunch_and_requeue(run_id, &detail)
                         .map(|_| ())
@@ -1087,48 +1095,8 @@ async fn prepare_task_workspace(
                 "GitHub default branch changed from {base_branch:?} to {confirmed_branch:?} during workspace preparation"
             );
         }
-        let now = 0;
-        let candidate = if is_delivery_task(task, canonical_target)? {
-            let ticket = ticket_summary(task)?;
-            TaskWorkspace {
-                task_id: task.id,
-                kind: "delivery".to_owned(),
-                backend: if sandboxed { "clone" } else { "worktree" }.to_owned(),
-                repository: task.repository.clone(),
-                base_branch,
-                base_sha,
-                factory_branch: Some(WorkspaceManager::delivery_branch(
-                    ticket.number,
-                    &ticket.title,
-                )),
-                path: workspace_root.join(format!("issue-{}", ticket.number)),
-                state: "preparing".to_owned(),
-                status_summary: None,
-                created_at: now,
-                updated_at: now,
-                cleaned_at: None,
-            }
-        } else {
-            TaskWorkspace {
-                task_id: task.id,
-                kind: "proposal".to_owned(),
-                backend: if sandboxed { "clone" } else { "worktree" }.to_owned(),
-                repository: task.repository.clone(),
-                base_branch,
-                base_sha,
-                factory_branch: None,
-                path: workspace_root.join(if sandboxed {
-                    format!("triage-{}", task.id)
-                } else {
-                    format!("proposal-{}", task.id)
-                }),
-                state: "preparing".to_owned(),
-                status_summary: None,
-                created_at: now,
-                updated_at: now,
-                cleaned_at: None,
-            }
-        };
+        let candidate =
+            task_workspace_candidate(task, &workspace_root, sandboxed, base_branch, base_sha);
         ledger.reserve_task_workspace(&candidate)?
     };
     let expected_backend = if sandboxed { "clone" } else { "worktree" };
@@ -1143,7 +1111,7 @@ async fn prepare_task_workspace(
     if sandboxed {
         let token_env = github_token_env.context("sandboxed clone has no GitHub token source")?;
         let clone_manager = CloneManager::new(&workspace_root)?;
-        let clone = if workspace.kind == "delivery" {
+        let clone = if workspace.factory_branch.is_some() {
             let ticket = ticket_summary(task)?;
             clone_manager.prepare(
                 &task.repository,
@@ -1192,7 +1160,7 @@ async fn prepare_task_workspace(
             workflows: canonical_target.workflows.clone(),
         });
     }
-    let prepared = if workspace.kind == "delivery" {
+    let prepared = if workspace.factory_branch.is_some() {
         let ticket = ticket_summary(task)?;
         manager.prepare_delivery(
             ticket.number,
@@ -1221,15 +1189,44 @@ async fn prepare_task_workspace(
         &prepared.base_branch,
         &prepared.base_sha,
         prepared.branch.as_deref(),
-        match prepared.kind {
-            WorkspaceKind::Delivery => "delivery",
-            WorkspaceKind::Proposal => "proposal",
-        },
+        &workspace.kind,
     )?;
     Ok(RepositoryTarget {
         path: prepared.path,
         workflows: canonical_target.workflows.clone(),
     })
+}
+
+fn task_workspace_candidate(
+    task: &Task,
+    workspace_root: &Path,
+    sandboxed: bool,
+    base_branch: String,
+    base_sha: String,
+) -> TaskWorkspace {
+    TaskWorkspace {
+        task_id: task.id,
+        kind: if task.kind == "ticket" {
+            "delivery".to_owned()
+        } else {
+            "proposal".to_owned()
+        },
+        backend: if sandboxed { "clone" } else { "worktree" }.to_owned(),
+        repository: task.repository.clone(),
+        base_branch,
+        base_sha,
+        factory_branch: None,
+        path: workspace_root.join(if sandboxed {
+            format!("triage-{}", task.id)
+        } else {
+            format!("proposal-{}", task.id)
+        }),
+        state: "preparing".to_owned(),
+        status_summary: None,
+        created_at: 0,
+        updated_at: 0,
+        cleaned_at: None,
+    }
 }
 
 struct TicketSummary {
@@ -1248,6 +1245,12 @@ fn ticket_summary(task: &Task) -> Result<TicketSummary> {
             title: context.title,
         });
     }
+    if let Ok(context) = serde_json::from_str::<LabelTicketContext>(payload) {
+        return Ok(TicketSummary {
+            number: context.number,
+            title: context.title,
+        });
+    }
     let context: TicketContext =
         serde_json::from_str(payload).context("ticket task contains invalid source context")?;
     Ok(TicketSummary {
@@ -1256,26 +1259,12 @@ fn ticket_summary(task: &Task) -> Result<TicketSummary> {
     })
 }
 
-fn is_delivery_task(task: &Task, target: &RepositoryTarget) -> Result<bool> {
-    if task.kind != "ticket" {
-        return Ok(false);
-    }
-    let workflow = target
-        .workflows
-        .get(&task.workflow)
-        .context("ticket task workflow is not configured")?;
-    Ok(matches!(
-        workflow.trigger,
-        Trigger::Label(_) | Trigger::State(PipelineState::ReadyToImplement)
-    ))
-}
-
 fn finalize_task_workspace(
     ledger_path: &Path,
     canonical_repository: &Path,
     workspace_root: &Path,
     task_id: i64,
-    run_id: i64,
+    _run_id: i64,
     clone_token_env: Option<&str>,
 ) -> Result<()> {
     let ledger = Ledger::open(ledger_path)?;
@@ -1327,9 +1316,6 @@ fn finalize_task_workspace(
         )?;
         return Ok(());
     }
-    let run = ledger
-        .run(run_id)?
-        .with_context(|| format!("run {run_id} disappeared during workspace finalization"))?;
     let preview = match if workspace.backend == "clone" {
         clone_manager.preview_cleanup(&workspace.path)
     } else {
@@ -1345,34 +1331,35 @@ fn finalize_task_workspace(
             return Err(error.context("failed to inspect terminal delivery workspace"));
         }
     };
-    let published = match workspace.factory_branch.as_deref() {
-        Some(branch) => match if workspace.backend == "clone" {
-            clone_manager.branch_is_pushed(
-                &workspace.path,
-                branch,
-                clone_token_env.context("clone cleanup has no GitHub token source")?,
-            )
-        } else {
-            manager.branch_is_pushed(branch)
-        } {
-            Ok(published) => published,
-            Err(error) => {
-                ledger.update_task_workspace_state(
-                    task_id,
-                    "retained",
-                    Some("retained delivery because remote branch inspection failed"),
-                )?;
-                return Err(error.context("failed to inspect published delivery branch"));
-            }
-        },
-        None => false,
+    let head = current_commit(&workspace.path).context("failed to resolve terminal task commit")?;
+    let changed = head != workspace.base_sha;
+    let published = if !changed {
+        true
+    } else {
+        match preview.branch.as_deref() {
+            Some(branch) => match if workspace.backend == "clone" {
+                clone_manager.branch_is_pushed(
+                    &workspace.path,
+                    branch,
+                    clone_token_env.context("clone cleanup has no GitHub token source")?,
+                )
+            } else {
+                manager.branch_is_pushed(branch)
+            } {
+                Ok(published) => published,
+                Err(error) => {
+                    ledger.update_task_workspace_state(
+                        task_id,
+                        "retained",
+                        Some("retained delivery because remote branch inspection failed"),
+                    )?;
+                    return Err(error.context("failed to inspect published delivery branch"));
+                }
+            },
+            None => false,
+        }
     };
-    let handed_off = run
-        .result
-        .as_deref()
-        .is_some_and(|result| !result.trim().is_empty())
-        && run.pull_request.is_some();
-    if task.state == TaskState::Succeeded && !preview.dirty && published && handed_off {
+    if task.state == TaskState::Succeeded && !preview.dirty && published {
         ledger.update_task_workspace_state(
             task_id,
             "cleanup_pending",
@@ -1386,12 +1373,12 @@ fn finalize_task_workspace(
         ledger.update_task_workspace_state(
             task_id,
             "cleaned",
-            Some("delivery workspace removed"),
+            Some("successful ticket workspace removed"),
         )?;
     } else {
         let summary = format!(
-            "retained delivery: task={:?} dirty={} published={} handoff={}",
-            task.state, preview.dirty, published, handed_off
+            "retained ticket workspace: task={:?} dirty={} changed={} published={}",
+            task.state, preview.dirty, changed, published
         );
         ledger.update_task_workspace_state(task_id, "retained", Some(&summary))?;
     }
@@ -2225,10 +2212,10 @@ mod tests {
     }
 
     #[test]
-    fn docker_mounts_only_delivery_workflows_read_write() {
+    fn docker_mounts_ticket_workflows_read_write_and_schedules_read_only() {
         assert_eq!(
-            docker_clone_mount(&Trigger::State(PipelineState::ReadyForSpec)),
-            CloneMount::ReadOnly
+            docker_clone_mount(&Trigger::Status("Ready For Spec".to_owned())),
+            CloneMount::ReadWrite
         );
         assert_eq!(
             docker_clone_mount(&Trigger::Schedule {
@@ -2238,7 +2225,7 @@ mod tests {
             CloneMount::ReadOnly
         );
         assert_eq!(
-            docker_clone_mount(&Trigger::State(PipelineState::ReadyToImplement)),
+            docker_clone_mount(&Trigger::Status("Ready To Implement".to_owned())),
             CloneMount::ReadWrite
         );
         assert_eq!(
@@ -2298,7 +2285,6 @@ mod tests {
                             expression: expression.to_owned(),
                             timezone,
                         },
-                        content_hash: "test-workflow-hash".to_owned(),
                     },
                 )]),
             },
@@ -2599,6 +2585,116 @@ mod tests {
         assert!(prompt.contains("https://github.com/owainlewis/factory/pull/99"));
         assert!(prompt.contains("Codex event: item.completed"));
         assert!(prompt.contains("runtime interrupted"));
+    }
+
+    #[test]
+    fn successful_triage_cleanup_allows_implementation_for_the_same_issue() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repository");
+        let workspace_root = temp.path().join("worktrees");
+        std::fs::create_dir(&repository).unwrap();
+        std::fs::create_dir(&workspace_root).unwrap();
+        let git = |directory: &Path, arguments: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(arguments)
+                .current_dir(directory)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {} failed: {}",
+                arguments.join(" "),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&repository, &["init", "-b", "main"]);
+        git(
+            &repository,
+            &["config", "user.email", "factory@example.test"],
+        );
+        git(&repository, &["config", "user.name", "Factory Test"]);
+        std::fs::write(repository.join("README.md"), "fixture\n").unwrap();
+        git(&repository, &["add", "README.md"]);
+        git(&repository, &["commit", "-m", "fixture"]);
+        let remote = temp.path().join("origin.git");
+        git(
+            temp.path(),
+            &[
+                "clone",
+                "--bare",
+                repository.to_str().unwrap(),
+                remote.to_str().unwrap(),
+            ],
+        );
+        git(
+            &repository,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        let repository = repository.canonicalize().unwrap();
+        let workspace_root = workspace_root.canonicalize().unwrap();
+        let manager = WorkspaceManager::new(&repository, &workspace_root).unwrap();
+        let base_sha = manager.fetch_default_branch("main").unwrap();
+        let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+
+        let triage = ledger
+            .enqueue(&TaskIdentity::ticket("example/repo", "triage", "42", "status-1").unwrap())
+            .unwrap()
+            .task;
+        ledger.claim_next().unwrap().unwrap();
+        let triage_run = ledger.start_run(triage.id, "codex").unwrap();
+        let triage_workspace = task_workspace_candidate(
+            &triage,
+            &workspace_root,
+            false,
+            "main".to_owned(),
+            base_sha.clone(),
+        );
+        let prepared = manager
+            .prepare_proposal(triage.id, "main", &base_sha, DeliveryReuse::Reject)
+            .unwrap();
+        assert_eq!(triage_workspace.path, prepared.path);
+        ledger.reserve_task_workspace(&triage_workspace).unwrap();
+        ledger
+            .update_task_workspace_state(triage.id, "ready", None)
+            .unwrap();
+        ledger
+            .finish_run_and_task_terminal(
+                triage_run.id,
+                RunOutcome::Succeeded,
+                Some("ticket refined"),
+                None,
+                None,
+            )
+            .unwrap();
+        finalize_task_workspace(
+            ledger.path(),
+            &repository,
+            &workspace_root,
+            triage.id,
+            triage_run.id,
+            None,
+        )
+        .unwrap();
+        assert!(!prepared.path.exists());
+
+        let implementation = ledger
+            .enqueue(&TaskIdentity::ticket("example/repo", "implement", "42", "status-2").unwrap())
+            .unwrap()
+            .task;
+        let implementation_workspace = task_workspace_candidate(
+            &implementation,
+            &workspace_root,
+            false,
+            "main".to_owned(),
+            base_sha.clone(),
+        );
+        assert_ne!(triage_workspace.path, implementation_workspace.path);
+        assert!(implementation_workspace.factory_branch.is_none());
+        assert!(
+            manager
+                .prepare_proposal(implementation.id, "main", &base_sha, DeliveryReuse::Reject,)
+                .is_ok()
+        );
     }
 
     #[test]

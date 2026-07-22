@@ -1,30 +1,33 @@
 version = 1
-execution_mode = "docker"
 poll_every = "30s"
-default_runtime = "codex"
-default_timeout = "2h"
-maximum_timeout = "8h"
-max_concurrent_runs = 1
 
 [worker]
-kind = "docker"
+runtime = "codex"
+sandbox = "docker"
+timeout = "2h"
+maximum_timeout = "8h"
+max_concurrent = 1
 image = "factory-codex:dev"
 memory = "8g"
 cpus = 4
 pids = 512
-codex_auth = "~/.local/share/factory/codex/auth.json"
+codex_auth = "~/.codex/auth.json"
+github_token_env = "FACTORY_GITHUB_TOKEN"
 
 [source]
-kind = "github_project"
-owner = "owainlewis"
+type = "github"
+project_owner = "owainlewis"
 project_number = 16
 status_field = "Status"
 trusted_users = ["owainlewis"]
 
-[source.states]
-ready_for_spec = "Ready For Spec"
-creating_spec = "Creating Spec"
-ready_to_implement = "Ready To Implement"
-implementing = "Implementing"
-ready_to_review = "Reviewing"
-done = "Done"
+[trigger.triage]
+type = "status"
+status = "Ready For Spec"
+workflow = ".factory/workflows/triage/WORKFLOW.md"
+
+[trigger.implement]
+type = "status"
+status = "Ready To Implement"
+workflow = ".factory/workflows/implement/WORKFLOW.md"
+timeout = "4h"
