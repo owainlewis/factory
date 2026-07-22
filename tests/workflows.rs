@@ -166,9 +166,7 @@ workflow = ".factory/workflows/triage.md"
         .replace("runtime = \"claude\"", "runtime = \"codex\"")
         .replace("type = \"github\"", "type = \"jira\"");
     let fixture = Fixture::new(&config);
-    assert!(
-        format!("{:#}", fixture.config().unwrap_err()).contains("supported source types: github")
-    );
+    assert!(format!("{:#}", fixture.config().unwrap_err()).contains("use source.command"));
 }
 
 #[test]

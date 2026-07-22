@@ -54,6 +54,7 @@ impl Fixture {
         let workspace_root = temp.path().join("workspaces");
         fs::create_dir(&workspace_root).unwrap();
         let source = SourceConfig {
+            command: Vec::new(),
             owner: "owainlewis".to_owned(),
             project_number: 16,
             status_field: "Status".to_owned(),

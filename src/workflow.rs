@@ -60,8 +60,17 @@ pub struct WorkflowEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Trigger {
-    Schedule { expression: String, timezone: Tz },
+    Schedule {
+        expression: String,
+        timezone: Tz,
+    },
+    Source {
+        state: String,
+        labels: Vec<String>,
+    },
+    #[doc(hidden)]
     Label(String),
+    #[doc(hidden)]
     Status(String),
 }
 
@@ -167,6 +176,13 @@ impl fmt::Display for Trigger {
                 expression,
                 timezone,
             } => write!(formatter, "schedule {expression:?} ({timezone})"),
+            Self::Source { state, labels } => {
+                write!(formatter, "source state {state:?}")?;
+                if !labels.is_empty() {
+                    write!(formatter, " labels {labels:?}")?;
+                }
+                Ok(())
+            }
             Self::Label(label) => write!(formatter, "label {label:?}"),
             Self::Status(status) => write!(formatter, "status {status:?}"),
         }
@@ -179,6 +195,10 @@ fn load_trigger(
     config: &Config,
 ) -> WorkflowEntry {
     let trigger = match &configured.kind {
+        TriggerKind::Source { state, labels } => Some(Trigger::Source {
+            state: state.clone(),
+            labels: labels.clone(),
+        }),
         TriggerKind::Status(status) => Some(Trigger::Status(status.clone())),
         TriggerKind::Label(label) => Some(Trigger::Label(label.clone())),
         TriggerKind::Schedule {

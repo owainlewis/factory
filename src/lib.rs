@@ -11,6 +11,7 @@ pub mod github;
 pub mod init;
 pub mod inspection;
 pub mod runtime;
+pub mod source;
 pub mod storage;
 pub mod workflow;
 pub mod workspace;

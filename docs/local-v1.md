@@ -54,31 +54,36 @@ maximum_timeout = "8h"
 max_concurrent = 1
 
 [source]
-type = "github"
-project_owner = "owainlewis"
-project_number = 16
-status_field = "Status"
-trusted_users = ["owainlewis"]
+command = [
+  ".factory/sources/github",
+  "--project-owner", "owainlewis",
+  "--project-number", "16",
+  "--status-field", "Status",
+  "--trusted-user", "owainlewis",
+]
 
 [trigger.triage]
-type = "status"
-status = "Ready For Spec"
+type = "source"
+state = "Ready For Spec"
+labels = ["factory:ready"]
 workflow = ".factory/workflows/triage/WORKFLOW.md"
 
 [trigger.implement]
-type = "status"
-status = "Ready To Implement"
+type = "source"
+state = "Ready To Implement"
+labels = ["factory:ready"]
 workflow = ".factory/workflows/implement/WORKFLOW.md"
 timeout = "4h"
 ```
 
-The Project status names are values from your GitHub Project. They are not
-hard-coded pipeline roles. You can add a label trigger:
+The state and label names are passed to the repository's source adapter. They
+are not hard-coded pipeline roles. You can add another source trigger:
 
 ```toml
 [trigger.urgent-fix]
-type = "label"
-label = "agent:ready"
+type = "source"
+state = "Ready To Implement"
+labels = ["urgent", "factory:ready"]
 workflow = ".factory/workflows/urgent-fix/WORKFLOW.md"
 ```
 

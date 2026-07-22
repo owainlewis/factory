@@ -38,7 +38,13 @@ pub struct TriggerConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TriggerKind {
+    Source {
+        state: String,
+        labels: Vec<String>,
+    },
+    #[doc(hidden)]
     Status(String),
+    #[doc(hidden)]
     Label(String),
     Schedule {
         expression: String,
@@ -74,9 +80,14 @@ pub struct WorkerConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceConfig {
+    pub command: Vec<String>,
+    #[doc(hidden)]
     pub owner: String,
+    #[doc(hidden)]
     pub project_number: u64,
+    #[doc(hidden)]
     pub status_field: String,
+    #[doc(hidden)]
     pub trusted_users: Vec<String>,
 }
 
@@ -118,17 +129,25 @@ struct RawWorkerConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawSourceConfig {
+    command: Option<Vec<String>>,
     #[serde(rename = "type")]
-    provider: String,
-    project_owner: String,
-    project_number: u64,
-    status_field: String,
-    trusted_users: Vec<String>,
+    provider: Option<String>,
+    project_owner: Option<String>,
+    project_number: Option<u64>,
+    status_field: Option<String>,
+    trusted_users: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum RawTriggerConfig {
+    Source {
+        state: String,
+        #[serde(default)]
+        labels: Vec<String>,
+        workflow: String,
+        timeout: Option<String>,
+    },
     Status {
         status: String,
         workflow: String,
@@ -331,12 +350,7 @@ impl fmt::Display for Config {
             )?;
         }
         if let Some(source) = &self.source {
-            writeln!(
-                formatter,
-                "source: github {}/{}",
-                source.owner, source.project_number
-            )?;
-            writeln!(formatter, "status_field: {}", source.status_field)?;
+            writeln!(formatter, "source.command: {:?}", source.command)?;
         }
         for trigger in &self.triggers {
             writeln!(
@@ -359,6 +373,13 @@ impl fmt::Display for Config {
 impl fmt::Display for TriggerKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Source { state, labels } => {
+                write!(formatter, "source state {state:?}")?;
+                if !labels.is_empty() {
+                    write!(formatter, " labels {labels:?}")?;
+                }
+                Ok(())
+            }
             Self::Status(status) => write!(formatter, "status {status:?}"),
             Self::Label(label) => write!(formatter, "label {label:?}"),
             Self::Schedule {
@@ -382,6 +403,29 @@ fn resolve_triggers(
         .map(|(id, trigger)| {
             validate_trigger_id(&id)?;
             let (workflow, timeout, kind) = match trigger {
+                RawTriggerConfig::Source {
+                    state,
+                    labels,
+                    workflow,
+                    timeout,
+                } => {
+                    let state = validate_display_name(&format!("trigger.{id}.state"), state)?;
+                    let mut resolved_labels = Vec::with_capacity(labels.len());
+                    for label in labels {
+                        let label = validate_label(&format!("trigger.{id}.labels"), label)?;
+                        if !resolved_labels.iter().any(|existing| existing == &label) {
+                            resolved_labels.push(label);
+                        }
+                    }
+                    (
+                        workflow,
+                        timeout,
+                        TriggerKind::Source {
+                            state,
+                            labels: resolved_labels,
+                        },
+                    )
+                }
                 RawTriggerConfig::Status {
                     status,
                     workflow,
@@ -629,22 +673,70 @@ fn resolve_file_or_missing(name: &str, path: &Path) -> Result<PathBuf> {
 }
 
 fn resolve_source(raw: RawSourceConfig) -> Result<SourceConfig> {
-    if raw.provider != "github" {
-        bail!(
-            "source type {:?} is not supported by this build; supported source types: github",
-            raw.provider
-        );
+    if let Some(command) = raw.command {
+        if raw.provider.is_some()
+            || raw.project_owner.is_some()
+            || raw.project_number.is_some()
+            || raw.status_field.is_some()
+            || raw.trusted_users.is_some()
+        {
+            bail!("source.command cannot be combined with legacy GitHub source fields");
+        }
+        if command.is_empty() {
+            bail!("source.command must contain an executable");
+        }
+        if command.len() > 64 {
+            bail!("source.command must contain at most 64 arguments");
+        }
+        let command = command
+        .into_iter()
+        .enumerate()
+        .map(|(index, argument)| {
+            if argument.is_empty() || argument.chars().any(char::is_control) {
+                bail!("source.command argument {index} must not be empty or contain control characters");
+            }
+            Ok(argument)
+        })
+        .collect::<Result<Vec<_>>>()?;
+        return Ok(SourceConfig {
+            command,
+            owner: String::new(),
+            project_number: 0,
+            status_field: String::new(),
+            trusted_users: Vec::new(),
+        });
     }
-    let owner = validate_github_login("source.project_owner", raw.project_owner)?;
-    if raw.project_number == 0 {
+    match raw.provider.as_deref() {
+        Some("github") => {}
+        Some(provider) => bail!(
+            "source type {provider:?} is not supported by the legacy adapter; use source.command"
+        ),
+        None => bail!("source.command must contain an executable"),
+    }
+    let owner = validate_github_login(
+        "source.project_owner",
+        raw.project_owner
+            .context("source.project_owner is required")?,
+    )?;
+    let project_number = raw
+        .project_number
+        .context("source.project_number is required")?;
+    if project_number == 0 {
         bail!("source.project_number must be greater than zero");
     }
-    let status_field = validate_display_name("source.status_field", raw.status_field)?;
-    if raw.trusted_users.is_empty() {
+    let status_field = validate_display_name(
+        "source.status_field",
+        raw.status_field
+            .context("source.status_field is required")?,
+    )?;
+    let raw_users = raw
+        .trusted_users
+        .context("source.trusted_users is required")?;
+    if raw_users.is_empty() {
         bail!("source.trusted_users must contain at least one login");
     }
-    let mut trusted_users = Vec::with_capacity(raw.trusted_users.len());
-    for user in raw.trusted_users {
+    let mut trusted_users = Vec::new();
+    for user in raw_users {
         let user = validate_github_login("source.trusted_users", user)?;
         if !trusted_users
             .iter()
@@ -654,8 +746,9 @@ fn resolve_source(raw: RawSourceConfig) -> Result<SourceConfig> {
         }
     }
     Ok(SourceConfig {
+        command: Vec::new(),
         owner,
-        project_number: raw.project_number,
+        project_number,
         status_field,
         trusted_users,
     })

@@ -6,7 +6,7 @@ Status: implemented design for the first runnable Factory.
 
 Run a reliable, token-efficient automation loop inside one repository:
 
-> When a trusted ticket matches this condition, or this schedule becomes due,
+> When a ticket matches this condition, or this schedule becomes due,
 > run this agent prompt in a sandbox.
 
 GitHub is the source and control plane. Factory is the durable execution kernel.
@@ -15,15 +15,15 @@ The agent owns the engineering workflow and uses `gh` and `git` directly.
 ## Acceptance criteria
 
 - Factory is configured by one repository-owned `.factory/config.toml`.
-- The config has one `[worker]`, one GitHub `[source]`, and one or more explicit
+- The config has one `[worker]`, one command-backed `[source]`, and one or more explicit
   `[trigger.<id>]` tables.
-- Every trigger has exactly one tagged type: `status`, `label`, or `schedule`.
+- Every trigger has exactly one tagged type: `source` or `schedule`.
 - Every trigger names one plain Markdown workflow under `.factory/workflows`.
 - Workflow files have no frontmatter and cannot override execution config.
-- A status or label condition creates one task while continuously matched and is
+- A source condition creates one task while continuously matched and is
   rearmed only after the ticket leaves that condition.
 - A schedule creates at most one task for each due instant.
-- Only open issues from configured trusted GitHub users can start ticket work.
+- The source adapter returns only explicitly authorized work.
 - Factory starts no model when no trigger matches.
 - Workers run in a managed Git worktree or disposable Docker clone.
 - Factory survives restart without duplicating a durable task.
@@ -44,20 +44,24 @@ maximum_timeout = "8h"
 max_concurrent = 1
 
 [source]
-type = "github"
-project_owner = "owainlewis"
-project_number = 16
-status_field = "Status"
-trusted_users = ["owainlewis"]
+command = [
+  ".factory/sources/github",
+  "--project-owner", "owainlewis",
+  "--project-number", "16",
+  "--status-field", "Status",
+  "--trusted-user", "owainlewis",
+]
 
 [trigger.triage]
-type = "status"
-status = "Ready For Spec"
+type = "source"
+state = "Ready For Spec"
+labels = ["factory:ready"]
 workflow = ".factory/workflows/triage/WORKFLOW.md"
 
 [trigger.implement]
-type = "status"
-status = "Ready To Implement"
+type = "source"
+state = "Ready To Implement"
+labels = ["factory:ready"]
 workflow = ".factory/workflows/implement/WORKFLOW.md"
 timeout = "4h"
 
@@ -76,7 +80,7 @@ The top-level model is intentionally small:
 ```
 
 `type` is required on a trigger because the variant determines its other valid
-fields. Status requires `status`. Label requires `label`. Schedule requires both
+fields. Source requires `state` and accepts `labels`. Schedule requires both
 `schedule` and `timezone`. All variants require `workflow` and may override
 `timeout`. Unknown and mixed fields are errors.
 
@@ -85,8 +89,8 @@ workflow path must be repository-relative, end in `.md`, and remain below
 `.factory/workflows`. The referenced file must be a regular, non-symlinked,
 non-empty Markdown file with no frontmatter.
 
-GitHub is the only source type in v1. The config shape leaves a clear provider
-boundary for future sources, but unsupported provider names fail validation.
+The source command is the provider boundary. The generated adapter uses `gh`,
+but another repository can provide an adapter backed by Jira or Linear.
 
 The worker runtime is Codex in v1. `runtime` remains explicit so a later runtime
 adapter can add Claude or another agent without changing trigger semantics.
@@ -106,7 +110,7 @@ reconcile edge state and insert unique queued tasks
 atomically claim within concurrency limit
         |
         v
-revalidate live ticket condition and trust
+re-run source query and revalidate condition
         |
         v
 prepare sandbox -> run prompt -> record outcome -> clean up
@@ -116,10 +120,8 @@ Polling is deterministic and cheap. Agent execution is conditional and
 expensive. Keeping those two parts separate lets Factory run continuously
 without spending tokens when there is no work.
 
-For status triggers, Factory resolves the configured GitHub Project and Status
-field at startup. It matches exact option names. For label triggers, it matches
-exact labels on open repository issues. In both cases it checks the issue author
-against stable identities resolved from `trusted_users`.
+For source triggers, Factory passes the configured state and labels to the
+repository-owned adapter. The adapter returns normalized matching issues.
 
 Factory records whether each ticket currently matches each trigger. The first
 matching observation creates a task. Repeated polls do not. A non-matching
@@ -129,10 +131,9 @@ This supports review loops without polling duplicates.
 For schedules, the task key includes the cron instant in the configured IANA
 timezone. Restarting after an instant cannot enqueue it twice.
 
-Immediately before launch, Factory fetches live source state again. It rejects a
-closed issue, untrusted author, removed label, changed Project status, wrong
-repository, or mismatched task payload. This closes the gap between polling and
-claiming.
+Immediately before launch, Factory runs the same source query again. It rejects
+a ticket that is no longer returned or whose durable identity does not match.
+This closes the gap between polling and claiming.
 
 ## Prompt contract
 

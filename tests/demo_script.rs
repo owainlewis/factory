@@ -64,6 +64,7 @@ esac
 
         let calls = fs::read_to_string(log).unwrap();
         assert!(calls.contains("issue create --repo owainlewis/factory"));
+        assert!(calls.contains("--label factory:ready"));
         assert!(calls.contains("project item-add 16 --owner owainlewis"));
         assert!(calls.contains("project item-edit --id ITEM_ID --project-id PROJECT_ID"));
     }

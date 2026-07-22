@@ -112,9 +112,10 @@ fn init_creates_complete_repository_factory_without_overwriting() {
     assert!(config.contains("sandbox = \"worktree\""));
     assert!(config.contains("runtime = \"codex\""));
     assert!(config.contains("[source]"));
-    assert!(config.contains("type = \"github\""));
-    assert!(config.contains("project_owner = \"example\""));
-    assert!(config.contains("project_number = 16"));
+    assert!(config.contains("\".factory/sources/github\""));
+    assert!(config.contains("\"--project-owner\", \"example\""));
+    assert!(config.contains("\"--project-number\", \"16\""));
+    assert!(config.contains("\"--trusted-user\", \"example\""));
     assert!(config.contains("[worker]"));
     assert!(config.contains("max_concurrent = 1"));
     assert!(config.contains("[trigger.triage]"));
@@ -136,6 +137,19 @@ fn init_creates_complete_repository_factory_without_overwriting() {
         fs::read_to_string(fixture.workflows().join("implement/WORKFLOW.md")).unwrap(),
         include_str!("../.factory/workflows/implement/WORKFLOW.md")
     );
+    let source = fixture.repository.join(".factory/sources/github");
+    assert_eq!(
+        fs::read_to_string(&source).unwrap(),
+        include_str!("../.factory/sources/github")
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_ne!(
+            fs::metadata(source).unwrap().permissions().mode() & 0o111,
+            0
+        );
+    }
     assert!(!fixture.repository.join(".factory/Dockerfile").exists());
     assert!(!fixture.repository.join(".gh-calls").exists());
 

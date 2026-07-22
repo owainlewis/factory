@@ -11,7 +11,7 @@ use factory::config::{Config, ExecutionMode, repository_config_path, repository_
 use factory::daemon::FactoryDaemon;
 use factory::docker::DockerWorker;
 use factory::execution::ResolvedWorkflow;
-use factory::github::{GitHubClient, PollReport};
+use factory::github::GitHubClient;
 use factory::init::{InitOptions, initialize};
 use factory::inspection::{
     RunInspection, RunView, TaskView, print_inspection, print_runs, print_tasks,
@@ -19,6 +19,7 @@ use factory::inspection::{
 use factory::runtime::{
     CodexRuntime, RuntimeCancelled, Termination, write_stderr_best_effort, write_stdout_best_effort,
 };
+use factory::source::{PollReport, SourceClient};
 use factory::storage::{
     CancellationRequest, DATABASE_NAME, Ledger, OPERATOR_CONFIRMED_CLEANUP, TaskState,
     validate_data_directory,
@@ -218,22 +219,44 @@ async fn run_cli() -> Result<u8> {
             if let Some(source) = &config.source {
                 let github = GitHubClient::default();
                 github.validate_global(&cancellation).await?;
-                let statuses = catalog
-                    .entries
-                    .iter()
-                    .filter_map(|entry| match entry.trigger.as_ref() {
-                        Some(factory::workflow::Trigger::Status(status)) => Some(status.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
+                let source_client = SourceClient;
                 for repository in &config.repositories {
-                    github
-                        .validate_issue_source(repository, source, &cancellation)
-                        .await?;
-                    if !statuses.is_empty() {
+                    if source.command.is_empty() {
+                        let statuses = catalog
+                            .entries
+                            .iter()
+                            .filter_map(|entry| match entry.trigger.as_ref() {
+                                Some(factory::workflow::Trigger::Status(status)) => {
+                                    Some(status.clone())
+                                }
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>();
                         github
-                            .validate_project_source(repository, source, &statuses, &cancellation)
+                            .validate_issue_source(repository, source, &cancellation)
                             .await?;
+                        if !statuses.is_empty() {
+                            github
+                                .validate_project_source(
+                                    repository,
+                                    source,
+                                    &statuses,
+                                    &cancellation,
+                                )
+                                .await?;
+                        }
+                    } else {
+                        for workflow in catalog.entries.iter().filter(|workflow| {
+                            workflow.repository == *repository && workflow.errors.is_empty()
+                        }) {
+                            if let Some(factory::workflow::Trigger::Source { state, labels }) =
+                                &workflow.trigger
+                            {
+                                source_client
+                                    .validate(repository, source, state, labels, &cancellation)
+                                    .await?;
+                            }
+                        }
                     }
                 }
             }
@@ -549,7 +572,7 @@ async fn run_poller(
     );
     let ledger = Ledger::open_in(&data_directory)?;
     if once {
-        write_stderr_best_effort(b"Factory evaluating schedules and polling GitHub once...\n");
+        write_stderr_best_effort(b"Factory evaluating schedules and polling the source once...\n");
         let daemon = FactoryDaemon::new(config, catalog, ledger.path());
         let report = daemon.evaluate_once(CancellationToken::new()).await?;
         write_stdout_best_effort(
@@ -559,8 +582,8 @@ async fn run_poller(
             )
             .as_bytes(),
         );
-        print_poll_report(&report.github);
-        return Ok(u8::from(report.github.failures() > 0));
+        print_poll_report(&report.source);
+        return Ok(u8::from(report.source.failures() > 0));
     }
 
     let cancellation = CancellationToken::new();
