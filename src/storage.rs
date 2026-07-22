@@ -5,16 +5,73 @@ use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
-const DATABASE_NAME: &str = "factory.sqlite3";
-const SCHEMA_VERSION: i64 = 5;
+pub const DATABASE_NAME: &str = "factory.sqlite3";
+const SCHEMA_VERSION: i64 = 10;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION_ID_BYTES: usize = 1024;
 pub const MAX_ACTIVITY_BYTES: usize = 64 * 1024;
 pub const MAX_RECOVERY_ATTEMPTS: u32 = 2;
+pub const AUTOMATIC_DELIVERY_CLEANUP: &str =
+    "clean published delivery with recorded pull request and handoff";
+pub const OPERATOR_CONFIRMED_CLEANUP: &str = "operator-confirmed cleanup";
 const DAEMON_OWNER_LEASE_MILLIS: i64 = 10_000;
+const APPROVAL_RESERVATION_TTL_MILLIS: i64 = 10 * 60 * 1000;
+
+pub fn validate_data_directory(data_directory: &Path) -> Result<()> {
+    fs::create_dir_all(data_directory).with_context(|| {
+        format!(
+            "failed to create Factory data directory {}",
+            data_directory.display()
+        )
+    })?;
+    tempfile::NamedTempFile::new_in(data_directory).with_context(|| {
+        format!(
+            "Factory data directory is not writable: {}",
+            data_directory.display()
+        )
+    })?;
+
+    let database = data_directory.join(DATABASE_NAME);
+    if !database.exists() {
+        return Ok(());
+    }
+    let metadata = fs::symlink_metadata(&database)
+        .with_context(|| format!("failed to inspect Factory database {}", database.display()))?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        bail!(
+            "Factory database must be a regular non-symlink file: {}",
+            database.display()
+        );
+    }
+    if metadata.permissions().readonly() {
+        bail!(
+            "Factory database is read-only and cannot be opened read-write: {}",
+            database.display()
+        );
+    }
+    let connection = Connection::open_with_flags(
+        &database,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| {
+        format!(
+            "Factory database cannot be opened read-write: {}",
+            database.display()
+        )
+    })?;
+    connection
+        .execute_batch("BEGIN IMMEDIATE; ROLLBACK;")
+        .with_context(|| {
+            format!(
+                "Factory database cannot acquire a write transaction: {}",
+                database.display()
+            )
+        })?;
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
@@ -224,6 +281,58 @@ pub struct ObservedTicket {
     pub payload: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalEvidence<'a> {
+    pub artifact_id: u64,
+    pub label_event_id: u64,
+    pub approver_id: u64,
+    pub content_hash: &'a str,
+    pub workflow_hash: &'a str,
+    pub source_revision: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectClaimEvidence<'a> {
+    pub project_id: &'a str,
+    pub project_item_id: &'a str,
+    pub status_field_id: &'a str,
+    pub expected_option_id: &'a str,
+    pub active_option_id: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskWorkspace {
+    pub task_id: i64,
+    pub kind: String,
+    pub backend: String,
+    pub repository: String,
+    pub base_branch: String,
+    pub base_sha: String,
+    pub factory_branch: Option<String>,
+    pub path: PathBuf,
+    pub state: String,
+    pub status_summary: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub cleaned_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunContainer {
+    pub run_id: i64,
+    pub container_id: String,
+    pub instance_id: String,
+    pub image_ref: String,
+    pub image_id: String,
+    pub limits_json: String,
+    pub state: String,
+    pub exit_code: Option<i32>,
+    pub logs: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub removed_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunOutcome {
     Running,
@@ -268,6 +377,10 @@ pub struct Run {
     pub working_directory: Option<String>,
     pub recovery_of: Option<i64>,
     pub recovery_attempt: u32,
+    pub base_branch: Option<String>,
+    pub base_sha: Option<String>,
+    pub factory_branch: Option<String>,
+    pub workspace_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -297,6 +410,286 @@ pub struct Ledger {
 }
 
 impl Ledger {
+    pub fn project_claim_matches(
+        &self,
+        task_id: i64,
+        evidence: &ProjectClaimEvidence<'_>,
+    ) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM project_claims
+                    WHERE task_id = ?1 AND project_id = ?2 AND project_item_id = ?3
+                      AND status_field_id = ?4 AND expected_option_id = ?5
+                      AND active_option_id = ?6
+                 )",
+                params![
+                    task_id,
+                    evidence.project_id,
+                    evidence.project_item_id,
+                    evidence.status_field_id,
+                    evidence.expected_option_id,
+                    evidence.active_option_id,
+                ],
+                |row| row.get(0),
+            )
+            .context("failed to verify durable project claim")
+    }
+
+    pub fn record_project_claim(
+        &mut self,
+        task_id: i64,
+        evidence: &ProjectClaimEvidence<'_>,
+    ) -> Result<()> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin project claim transaction")?;
+        let running = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?1 AND state = 'running')",
+            [task_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !running {
+            bail!("task {task_id} must be running before its project claim is recorded");
+        }
+        transaction.execute(
+            "INSERT OR IGNORE INTO project_claims
+             (task_id, project_id, project_item_id, status_field_id, expected_option_id,
+              active_option_id, claimed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                task_id,
+                evidence.project_id,
+                evidence.project_item_id,
+                evidence.status_field_id,
+                evidence.expected_option_id,
+                evidence.active_option_id,
+                now_millis()?,
+            ],
+        )?;
+        let exact = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM project_claims
+                WHERE task_id = ?1 AND project_id = ?2 AND project_item_id = ?3
+                  AND status_field_id = ?4 AND expected_option_id = ?5
+                  AND active_option_id = ?6
+             )",
+            params![
+                task_id,
+                evidence.project_id,
+                evidence.project_item_id,
+                evidence.status_field_id,
+                evidence.expected_option_id,
+                evidence.active_option_id,
+            ],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !exact {
+            bail!("task {task_id} already has a different project claim");
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn approval_is_consumed(&self, artifact_id: u64) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM approval_consumptions WHERE artifact_id = ?1)",
+                [artifact_id],
+                |row| row.get(0),
+            )
+            .context("failed to check approval consumption")
+    }
+
+    pub fn task_has_consumed_approval(&self, task_id: i64) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM approval_consumptions WHERE task_id = ?1)",
+                [task_id],
+                |row| row.get(0),
+            )
+            .context("failed to check task approval consumption")
+    }
+
+    pub fn task_consumed_exact_approval(
+        &self,
+        task_id: i64,
+        evidence: &ApprovalEvidence<'_>,
+    ) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM approval_consumptions
+                    WHERE task_id = ?1 AND artifact_id = ?2 AND label_event_id = ?3
+                      AND approver_id = ?4 AND content_hash = ?5 AND workflow_hash = ?6
+                 )",
+                params![
+                    task_id,
+                    evidence.artifact_id,
+                    evidence.label_event_id,
+                    evidence.approver_id,
+                    evidence.content_hash,
+                    evidence.workflow_hash,
+                ],
+                |row| row.get(0),
+            )
+            .context("failed to verify consumed task approval")
+    }
+
+    pub fn has_active_ticket_task(&self, repository: &str, issue: u64) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM tasks
+                    WHERE repository = ?1 AND source_item = ?2
+                      AND kind = 'ticket' AND state IN ('queued', 'running')
+                 )",
+                params![repository, issue.to_string()],
+                |row| row.get(0),
+            )
+            .context("failed to check active ticket task")
+    }
+
+    pub fn reserve_issue_approval(
+        &mut self,
+        repository: &str,
+        issue: u64,
+        reservation_id: &str,
+    ) -> Result<()> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin issue approval reservation")?;
+        transaction.execute(
+            "DELETE FROM approval_reservations WHERE created_at < ?1",
+            [now_millis()? - APPROVAL_RESERVATION_TTL_MILLIS],
+        )?;
+        let active = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM tasks
+                WHERE repository = ?1 AND source_item = ?2
+                  AND kind = 'ticket' AND state IN ('queued', 'running')
+             )",
+            params![repository, issue.to_string()],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if active {
+            bail!("issue #{issue} has active Factory work; refusing to replace its approval");
+        }
+        transaction
+            .execute(
+                "INSERT INTO approval_reservations
+                 (repository, issue, reservation_id, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![repository, issue, reservation_id, now_millis()?],
+            )
+            .with_context(|| format!("issue #{issue} already has an approval operation"))?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn release_issue_approval(
+        &mut self,
+        repository: &str,
+        issue: u64,
+        reservation_id: &str,
+    ) -> Result<()> {
+        let deleted = self.connection.execute(
+            "DELETE FROM approval_reservations
+             WHERE repository = ?1 AND issue = ?2 AND reservation_id = ?3",
+            params![repository, issue, reservation_id],
+        )?;
+        if deleted != 1 {
+            bail!("issue #{issue} approval reservation was lost");
+        }
+        Ok(())
+    }
+
+    pub fn issue_approval_is_reserved(&self, repository: &str, issue: u64) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM approval_reservations
+                    WHERE repository = ?1 AND issue = ?2 AND created_at >= ?3
+                 )",
+                params![
+                    repository,
+                    issue,
+                    now_millis()? - APPROVAL_RESERVATION_TTL_MILLIS
+                ],
+                |row| row.get(0),
+            )
+            .context("failed to check issue approval reservation")
+    }
+
+    pub fn consume_task_approval(
+        &mut self,
+        task_id: i64,
+        evidence: &ApprovalEvidence<'_>,
+    ) -> Result<()> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin approval consumption transaction")?;
+        let running = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?1 AND state = 'running')",
+                [task_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .context("failed to validate approval task state")?;
+        if !running {
+            bail!("task {task_id} must be running before approval consumption");
+        }
+        let inserted = transaction
+            .execute(
+                "INSERT OR IGNORE INTO approval_consumptions
+                 (artifact_id, label_event_id, task_id, approver_id, content_hash,
+                  workflow_hash, source_revision, consumed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    evidence.artifact_id,
+                    evidence.label_event_id,
+                    task_id,
+                    evidence.approver_id,
+                    evidence.content_hash,
+                    evidence.workflow_hash,
+                    evidence.source_revision,
+                    now_millis()?,
+                ],
+            )
+            .context("failed to persist approval consumption")?
+            == 1;
+        if !inserted {
+            bail!(
+                "approval artifact {} or label event {} has already been consumed",
+                evidence.artifact_id,
+                evidence.label_event_id
+            );
+        }
+        transaction
+            .commit()
+            .context("failed to commit approval consumption")
+    }
+
+    pub fn existing_non_terminal_tasks_for_repository(
+        path: &Path,
+        repository: &str,
+    ) -> Result<usize> {
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("failed to inspect legacy database {}", path.display()))?;
+        let count = connection
+            .query_row(
+                "SELECT COUNT(*) FROM tasks
+                 WHERE lower(repository) = lower(?1)
+                   AND state IN ('queued', 'running')",
+                [repository],
+                |row| row.get::<_, i64>(0),
+            )
+            .context("failed to inspect non-terminal legacy Factory tasks")?;
+        usize::try_from(count).context("legacy task count is outside the supported range")
+    }
+
     pub fn open_in(data_directory: &Path) -> Result<Self> {
         fs::create_dir_all(data_directory).with_context(|| {
             format!(
@@ -393,13 +786,16 @@ impl Ledger {
         let previous = {
             let mut statement = transaction
                 .prepare(
-                    "SELECT source_item, eligible FROM trigger_observations
+                    "SELECT source_item, eligible, revision FROM trigger_observations
                      WHERE repository = ?1 AND workflow = ?2",
                 )
                 .context("failed to prepare prior ticket eligibility query")?;
             statement
                 .query_map(params![repository, workflow], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        (row.get::<_, bool>(1)?, row.get::<_, String>(2)?),
+                    ))
                 })
                 .context("failed to query prior ticket eligibility")?
                 .collect::<rusqlite::Result<HashMap<_, _>>>()
@@ -417,11 +813,12 @@ impl Ledger {
             if observation.source_item.trim().is_empty() || observation.revision.trim().is_empty() {
                 bail!("observed ticket source item and revision must not be empty");
             }
-            let was_eligible = previous
+            let (was_eligible, previous_revision) = previous
                 .get(&observation.source_item)
-                .copied()
-                .unwrap_or(false);
-            if observation.eligible && !was_eligible {
+                .map(|(eligible, revision)| (*eligible, Some(revision.as_str())))
+                .unwrap_or((false, None));
+            let approval_changed = previous_revision != Some(observation.revision.as_str());
+            if observation.eligible && (!was_eligible || approval_changed) {
                 let identity = TaskIdentity::ticket(
                     repository,
                     workflow,
@@ -496,6 +893,315 @@ impl Ledger {
 
     pub fn task(&self, id: i64) -> Result<Option<Task>> {
         query_task(&self.connection, id)
+    }
+
+    pub fn record_run_workspace(
+        &self,
+        run_id: i64,
+        working_directory: &Path,
+        base_branch: &str,
+        base_sha: &str,
+        factory_branch: Option<&str>,
+        workspace_kind: &str,
+    ) -> Result<()> {
+        let changed = self.connection.execute(
+            "UPDATE runs SET working_directory = ?1, base_branch = ?2, base_sha = ?3,
+                    factory_branch = ?4, workspace_kind = ?5
+             WHERE id = ?6 AND outcome = 'running'",
+            params![
+                working_directory.display().to_string(),
+                base_branch,
+                base_sha,
+                factory_branch,
+                workspace_kind,
+                run_id
+            ],
+        )?;
+        if changed != 1 {
+            bail!("running run {run_id} disappeared before workspace persistence");
+        }
+        Ok(())
+    }
+
+    pub fn task_workspace(&self, task_id: i64) -> Result<Option<TaskWorkspace>> {
+        self.connection
+            .query_row(
+                "SELECT task_id, kind, backend, repository, base_branch, base_sha, factory_branch, path,
+                        state, status_summary, created_at, updated_at, cleaned_at
+                 FROM task_workspaces WHERE task_id = ?1",
+                [task_id],
+                |row| {
+                    Ok(TaskWorkspace {
+                        task_id: row.get(0)?,
+                        kind: row.get(1)?,
+                        backend: row.get(2)?,
+                        repository: row.get(3)?,
+                        base_branch: row.get(4)?,
+                        base_sha: row.get(5)?,
+                        factory_branch: row.get(6)?,
+                        path: PathBuf::from(row.get::<_, String>(7)?),
+                        state: row.get(8)?,
+                        status_summary: row.get(9)?,
+                        created_at: row.get(10)?,
+                        updated_at: row.get(11)?,
+                        cleaned_at: row.get(12)?,
+                    })
+                },
+            )
+            .optional()
+            .context("failed to query task workspace")
+    }
+
+    pub fn reserve_task_workspace(&mut self, workspace: &TaskWorkspace) -> Result<TaskWorkspace> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin workspace reservation transaction")?;
+        let existing = query_task_workspace(&transaction, workspace.task_id)?;
+        if let Some(existing) = existing {
+            ensure_same_workspace(&existing, workspace)?;
+            transaction
+                .commit()
+                .context("failed to finish existing workspace reservation")?;
+            return Ok(existing);
+        }
+        if workspace.kind == "delivery" {
+            let retained: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM task_workspaces
+                     WHERE kind = 'delivery' AND state != 'cleaned'",
+                    [],
+                    |row| row.get(0),
+                )
+                .context("failed to count retained delivery workspaces")?;
+            if retained >= 10 {
+                bail!(
+                    "Factory retains at most ten delivery worktrees; run `factory cleanup <run-id>` for one of: {}",
+                    retained_delivery_run_ids(&transaction)?
+                );
+            }
+        }
+        let now = now_millis()?;
+        transaction
+            .execute(
+                "INSERT INTO task_workspaces
+                 (task_id, kind, backend, repository, base_branch, base_sha, factory_branch, path,
+                  state, status_summary, created_at, updated_at, cleaned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'preparing', NULL, ?9, ?9, NULL)",
+                params![
+                    workspace.task_id,
+                    workspace.kind,
+                    workspace.backend,
+                    workspace.repository,
+                    workspace.base_branch,
+                    workspace.base_sha,
+                    workspace.factory_branch,
+                    workspace.path.display().to_string(),
+                    now,
+                ],
+            )
+            .context("failed to reserve task workspace")?;
+        let reserved = query_task_workspace(&transaction, workspace.task_id)?
+            .context("reserved task workspace disappeared")?;
+        transaction
+            .commit()
+            .context("failed to commit workspace reservation")?;
+        Ok(reserved)
+    }
+
+    pub fn update_task_workspace_state(
+        &self,
+        task_id: i64,
+        state: &str,
+        status_summary: Option<&str>,
+    ) -> Result<()> {
+        if !matches!(
+            state,
+            "preparing" | "ready" | "retained" | "cleanup_pending" | "cleaned"
+        ) {
+            bail!("invalid task workspace state {state:?}");
+        }
+        let now = now_millis()?;
+        let cleaned_at = (state == "cleaned").then_some(now);
+        let changed = self.connection.execute(
+            "UPDATE task_workspaces SET state = ?1, status_summary = ?2, updated_at = ?3,
+                    cleaned_at = CASE WHEN ?1 = 'cleaned' THEN ?4 ELSE cleaned_at END
+             WHERE task_id = ?5",
+            params![state, status_summary, now, cleaned_at, task_id],
+        )?;
+        if changed != 1 {
+            bail!("task {task_id} has no workspace to update");
+        }
+        Ok(())
+    }
+
+    pub fn record_run_container(&self, container: &RunContainer) -> Result<()> {
+        let running = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runs WHERE id = ?1 AND outcome = 'running')",
+            [container.run_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !running {
+            bail!(
+                "run {} must be running before container persistence",
+                container.run_id
+            );
+        }
+        self.connection
+            .execute(
+                "INSERT INTO run_containers
+                 (run_id, container_id, instance_id, image_ref, image_id, limits_json,
+                  state, exit_code, logs, created_at, updated_at, removed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11)",
+                params![
+                    container.run_id,
+                    container.container_id,
+                    container.instance_id,
+                    container.image_ref,
+                    container.image_id,
+                    container.limits_json,
+                    container.state,
+                    container.exit_code,
+                    container.logs,
+                    container.created_at,
+                    container.removed_at,
+                ],
+            )
+            .context("failed to persist run container")?;
+        Ok(())
+    }
+
+    pub fn finish_run_container(
+        &self,
+        run_id: i64,
+        state: &str,
+        exit_code: Option<i32>,
+        logs: Option<&str>,
+        removed: bool,
+    ) -> Result<()> {
+        let logs = logs.map(|value| truncate_tail_utf8(value, MAX_ACTIVITY_BYTES));
+        let now = now_millis()?;
+        let changed = self.connection.execute(
+            "UPDATE run_containers SET state = ?1, exit_code = ?2,
+                    logs = COALESCE(?3, logs), updated_at = ?4,
+                    removed_at = CASE WHEN ?5 THEN ?4 ELSE removed_at END
+             WHERE run_id = ?6",
+            params![state, exit_code, logs, now, removed, run_id],
+        )?;
+        if changed != 1 {
+            bail!("run {run_id} has no persisted container");
+        }
+        Ok(())
+    }
+
+    pub fn run_container(&self, run_id: i64) -> Result<Option<RunContainer>> {
+        self.connection
+            .query_row(
+                "SELECT run_id, container_id, instance_id, image_ref, image_id, limits_json,
+                        state, exit_code, logs, created_at, updated_at, removed_at
+                 FROM run_containers WHERE run_id = ?1",
+                [run_id],
+                |row| {
+                    Ok(RunContainer {
+                        run_id: row.get(0)?,
+                        container_id: row.get(1)?,
+                        instance_id: row.get(2)?,
+                        image_ref: row.get(3)?,
+                        image_id: row.get(4)?,
+                        limits_json: row.get(5)?,
+                        state: row.get(6)?,
+                        exit_code: row.get(7)?,
+                        logs: row.get(8)?,
+                        created_at: row.get(9)?,
+                        updated_at: row.get(10)?,
+                        removed_at: row.get(11)?,
+                    })
+                },
+            )
+            .optional()
+            .context("failed to read run container")
+    }
+
+    pub fn retained_delivery_workspace_count(&self) -> Result<usize> {
+        let count = self.connection.query_row(
+            "SELECT COUNT(*) FROM task_workspaces
+             WHERE kind = 'delivery' AND state != 'cleaned'",
+            [],
+            |row| row.get::<_, usize>(0),
+        )?;
+        Ok(count)
+    }
+
+    pub fn retained_delivery_run_ids(&self) -> Result<Vec<i64>> {
+        let mut statement = self.connection.prepare(
+            "SELECT COALESCE(MAX(r.id), 0)
+             FROM task_workspaces w
+             LEFT JOIN runs r ON r.task_id = w.task_id
+             WHERE w.kind = 'delivery' AND w.state != 'cleaned'
+             GROUP BY w.task_id ORDER BY w.created_at, w.task_id",
+        )?;
+        Ok(statement
+            .query_map([], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|id| *id > 0)
+            .collect())
+    }
+
+    pub fn task_workspaces_in_state(&self, state: &str) -> Result<Vec<TaskWorkspace>> {
+        let mut statement = self.connection.prepare(
+            "SELECT task_id, kind, backend, repository, base_branch, base_sha, factory_branch, path,
+                    state, status_summary, created_at, updated_at, cleaned_at
+             FROM task_workspaces WHERE state = ?1 ORDER BY task_id",
+        )?;
+        statement
+            .query_map([state], |row| {
+                Ok(TaskWorkspace {
+                    task_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    backend: row.get(2)?,
+                    repository: row.get(3)?,
+                    base_branch: row.get(4)?,
+                    base_sha: row.get(5)?,
+                    factory_branch: row.get(6)?,
+                    path: PathBuf::from(row.get::<_, String>(7)?),
+                    state: row.get(8)?,
+                    status_summary: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                    cleaned_at: row.get(12)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read task workspaces")
+    }
+
+    pub fn active_task_workspaces(&self) -> Result<Vec<TaskWorkspace>> {
+        let mut statement = self.connection.prepare(
+            "SELECT task_id, kind, backend, repository, base_branch, base_sha, factory_branch, path,
+                    state, status_summary, created_at, updated_at, cleaned_at
+             FROM task_workspaces WHERE state != 'cleaned' ORDER BY task_id",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok(TaskWorkspace {
+                    task_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    backend: row.get(2)?,
+                    repository: row.get(3)?,
+                    base_branch: row.get(4)?,
+                    base_sha: row.get(5)?,
+                    factory_branch: row.get(6)?,
+                    path: PathBuf::from(row.get::<_, String>(7)?),
+                    state: row.get(8)?,
+                    status_summary: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                    cleaned_at: row.get(12)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read active task workspaces")
     }
 
     pub fn claim_next(&mut self) -> Result<Option<Task>> {
@@ -756,6 +1462,25 @@ impl Ledger {
         owner_pid: u32,
         working_directories: &HashMap<String, String>,
     ) -> Result<Option<ClaimedRun>> {
+        self.claim_and_start_run_with_workdirs_filtered(
+            available_repositories,
+            workflow_runtimes,
+            owner_id,
+            owner_pid,
+            working_directories,
+            true,
+        )
+    }
+
+    pub fn claim_and_start_run_with_workdirs_filtered(
+        &mut self,
+        available_repositories: &[String],
+        workflow_runtimes: &HashMap<(String, String, String), String>,
+        owner_id: &str,
+        owner_pid: u32,
+        working_directories: &HashMap<String, String>,
+        allow_new_ticket_tasks: bool,
+    ) -> Result<Option<ClaimedRun>> {
         if available_repositories.is_empty() {
             return Ok(None);
         }
@@ -804,6 +1529,31 @@ impl Ledger {
                 .collect::<rusqlite::Result<HashMap<_, _>>>()
                 .context("failed to read schedule ownership")?
         };
+        let tasks_with_workspaces = {
+            let mut statement = transaction
+                .prepare("SELECT task_id FROM task_workspaces WHERE state != 'cleaned'")
+                .context("failed to prepare workspace ownership query")?;
+            statement
+                .query_map([], |row| row.get::<_, i64>(0))
+                .context("failed to query workspace ownership")?
+                .collect::<rusqlite::Result<std::collections::HashSet<_>>>()
+                .context("failed to read workspace ownership")?
+        };
+        let running_ticket_sources = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT repository, source_item FROM tasks
+                     WHERE kind = 'ticket' AND state = 'running' AND source_item IS NOT NULL",
+                )
+                .context("failed to prepare running ticket source query")?;
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .context("failed to query running ticket sources")?
+                .collect::<rusqlite::Result<std::collections::HashSet<_>>>()
+                .context("failed to read running ticket sources")?
+        };
         let candidates = {
             let mut statement = transaction
                 .prepare(
@@ -819,6 +1569,19 @@ impl Ledger {
                 .context("failed to read queued tasks")?
         };
         let Some(task) = candidates.into_iter().find(|task| {
+            if task.kind == "ticket"
+                && task.source_item.as_ref().is_some_and(|source_item| {
+                    running_ticket_sources.contains(&(task.repository.clone(), source_item.clone()))
+                })
+            {
+                return false;
+            }
+            if task.kind == "ticket"
+                && !allow_new_ticket_tasks
+                && !tasks_with_workspaces.contains(&task.id)
+            {
+                return false;
+            }
             if !available.contains(&task.repository)
                 || !workflow_runtimes.contains_key(&(
                     task.repository.clone(),
@@ -1083,6 +1846,57 @@ impl Ledger {
         session_id: Option<&str>,
     ) -> Result<Run> {
         self.finish_run_and_task_with_recovery(id, outcome, result, error, session_id, false)
+    }
+
+    pub fn fail_prelaunch_and_requeue(&mut self, id: i64, error: &str) -> Result<Run> {
+        let error = truncate_utf8(
+            &crate::inspection::sanitize_for_storage(error),
+            MAX_ERROR_BYTES,
+        );
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin prelaunch recovery transaction")?;
+        let (task_id, recovery_attempt) = transaction
+            .query_row(
+                "SELECT task_id, recovery_attempt FROM runs
+                 WHERE id = ?1 AND outcome = 'running' AND process_id IS NULL",
+                [id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, u32>(1)?)),
+            )
+            .optional()?
+            .with_context(|| format!("run {id} is missing, terminal, or already launched"))?;
+        let now = now_millis()?;
+        let changed = transaction.execute(
+            "UPDATE runs SET outcome = 'failed', finished_at = ?1, error = ?2
+             WHERE id = ?3 AND outcome = 'running'",
+            params![now, error, id],
+        )?;
+        if changed != 1 {
+            bail!("run {id} changed during prelaunch recovery");
+        }
+        let changed = if recovery_attempt < MAX_RECOVERY_ATTEMPTS {
+            transaction.execute(
+                "UPDATE tasks SET state = 'queued', updated_at = ?1,
+                        recovery_source_run_id = ?2
+                 WHERE id = ?3 AND state = 'running'",
+                params![now, id, task_id],
+            )?
+        } else {
+            transaction.execute(
+                "UPDATE tasks SET state = 'failed', updated_at = ?1
+                 WHERE id = ?2 AND state = 'running'",
+                params![now, task_id],
+            )?
+        };
+        if changed != 1 {
+            bail!("task {task_id} changed during prelaunch recovery");
+        }
+        let run = query_run(&transaction, id)?.context("failed prelaunch run disappeared")?;
+        transaction
+            .commit()
+            .context("failed to commit prelaunch recovery")?;
+        Ok(run)
     }
 
     fn finish_run_and_task_with_recovery(
@@ -1568,6 +2382,21 @@ fn migrate(connection: &Connection) -> Result<()> {
         if version < 5 {
             migrate_v5(connection)?;
         }
+        if version < 6 {
+            migrate_v6(connection)?;
+        }
+        if version < 7 {
+            migrate_v7(connection)?;
+        }
+        if version < 8 {
+            migrate_v8(connection)?;
+        }
+        if version < 9 {
+            migrate_v9(connection)?;
+        }
+        if version < 10 {
+            migrate_v10(connection)?;
+        }
         Ok(())
     })();
     match result {
@@ -1713,11 +2542,226 @@ fn migrate_v5(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v6(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "CREATE TABLE approval_consumptions (
+                 artifact_id INTEGER PRIMARY KEY,
+                 label_event_id INTEGER NOT NULL UNIQUE,
+                 task_id INTEGER NOT NULL UNIQUE REFERENCES tasks(id),
+                 approver_id INTEGER NOT NULL,
+                 content_hash TEXT NOT NULL,
+                 workflow_hash TEXT NOT NULL,
+                 source_revision TEXT NOT NULL,
+                 consumed_at INTEGER NOT NULL
+             );
+             CREATE TABLE approval_reservations (
+                 repository TEXT NOT NULL,
+                 issue INTEGER NOT NULL,
+                 reservation_id TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 PRIMARY KEY(repository, issue),
+                 UNIQUE(reservation_id)
+             );
+             INSERT INTO schema_migrations(version, applied_at)
+                 VALUES (6, unixepoch('subsec') * 1000);
+             PRAGMA user_version = 6;",
+        )
+        .context("failed to migrate SQLite ledger to version 6")?;
+    Ok(())
+}
+
+fn migrate_v7(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "ALTER TABLE runs ADD COLUMN base_branch TEXT;
+             ALTER TABLE runs ADD COLUMN base_sha TEXT;
+             ALTER TABLE runs ADD COLUMN factory_branch TEXT;
+             ALTER TABLE runs ADD COLUMN workspace_kind TEXT;
+             CREATE TABLE task_workspaces (
+                 task_id INTEGER PRIMARY KEY REFERENCES tasks(id),
+                 kind TEXT NOT NULL CHECK (kind IN ('delivery', 'proposal')),
+                 repository TEXT NOT NULL,
+                 base_branch TEXT NOT NULL,
+                 base_sha TEXT NOT NULL,
+                 factory_branch TEXT,
+                 path TEXT NOT NULL,
+                 state TEXT NOT NULL CHECK (state IN
+                     ('preparing', 'ready', 'retained', 'cleanup_pending', 'cleaned')),
+                 status_summary TEXT,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 cleaned_at INTEGER
+             );
+             CREATE UNIQUE INDEX task_workspaces_active_branch_idx
+                 ON task_workspaces(factory_branch)
+                 WHERE factory_branch IS NOT NULL AND state != 'cleaned';
+             CREATE UNIQUE INDEX task_workspaces_active_path_idx
+                 ON task_workspaces(path) WHERE state != 'cleaned';
+             INSERT INTO schema_migrations(version, applied_at)
+                 VALUES (7, unixepoch('subsec') * 1000);
+             PRAGMA user_version = 7;",
+        )
+        .context("failed to migrate SQLite ledger to version 7")?;
+    Ok(())
+}
+
+fn migrate_v8(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "ALTER TABLE runs ADD COLUMN effect TEXT;
+             ALTER TABLE runs ADD COLUMN workflow_hash TEXT;
+             ALTER TABLE runs ADD COLUMN policy_json TEXT;
+             ALTER TABLE runs ADD COLUMN context_token_hash TEXT;
+             ALTER TABLE runs ADD COLUMN disposition TEXT;
+             ALTER TABLE runs ADD COLUMN handoff_json TEXT;
+             CREATE TABLE run_effects (
+                 id INTEGER PRIMARY KEY,
+                 requested_run_id INTEGER,
+                 run_id INTEGER REFERENCES runs(id),
+                 action TEXT NOT NULL,
+                 effect TEXT,
+                 idempotency_key TEXT,
+                 payload_version INTEGER,
+                 payload_hash TEXT,
+                 outcome TEXT NOT NULL CHECK (outcome IN ('pending', 'applied', 'rejected', 'failed')),
+                 external_ref TEXT,
+                 detail TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE INDEX run_effects_run_idx ON run_effects(run_id, id);
+             CREATE UNIQUE INDEX run_effects_idempotency_idx
+                 ON run_effects(run_id, action, idempotency_key)
+                 WHERE run_id IS NOT NULL AND idempotency_key IS NOT NULL
+                   AND outcome IN ('pending', 'applied');
+             INSERT INTO schema_migrations(version, applied_at)
+                 VALUES (8, unixepoch('subsec') * 1000);
+             PRAGMA user_version = 8;",
+        )
+        .context("failed to migrate SQLite ledger to version 8")?;
+    Ok(())
+}
+
+fn migrate_v9(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "CREATE TABLE project_claims (
+                 task_id INTEGER PRIMARY KEY REFERENCES tasks(id),
+                 project_id TEXT NOT NULL,
+                 project_item_id TEXT NOT NULL,
+                 status_field_id TEXT NOT NULL,
+                 expected_option_id TEXT NOT NULL,
+                 active_option_id TEXT NOT NULL,
+                 claimed_at INTEGER NOT NULL
+             );
+             INSERT INTO schema_migrations(version, applied_at)
+                 VALUES (9, unixepoch('subsec') * 1000);
+             PRAGMA user_version = 9;",
+        )
+        .context("failed to migrate SQLite ledger to version 9")?;
+    Ok(())
+}
+
+fn migrate_v10(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "ALTER TABLE task_workspaces ADD COLUMN backend TEXT NOT NULL DEFAULT 'worktree'
+                 CHECK (backend IN ('worktree', 'clone'));
+             CREATE TABLE run_containers (
+                 run_id INTEGER PRIMARY KEY REFERENCES runs(id),
+                 container_id TEXT NOT NULL UNIQUE,
+                 instance_id TEXT NOT NULL,
+                 image_ref TEXT NOT NULL,
+                 image_id TEXT NOT NULL,
+                 limits_json TEXT NOT NULL,
+                 state TEXT NOT NULL,
+                 exit_code INTEGER,
+                 logs TEXT,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 removed_at INTEGER
+             );
+             CREATE INDEX run_containers_instance_state_idx
+                 ON run_containers(instance_id, state, run_id);
+             INSERT INTO schema_migrations(version, applied_at)
+                 VALUES (10, unixepoch('subsec') * 1000);
+             PRAGMA user_version = 10;",
+        )
+        .context("failed to migrate SQLite ledger to version 10")?;
+    Ok(())
+}
+
 fn query_task(connection: &Connection, id: i64) -> Result<Option<Task>> {
     connection
         .query_row("SELECT * FROM tasks WHERE id = ?1", [id], row_to_task)
         .optional()
         .context("failed to query task")
+}
+
+fn query_task_workspace(connection: &Connection, task_id: i64) -> Result<Option<TaskWorkspace>> {
+    connection
+        .query_row(
+            "SELECT task_id, kind, backend, repository, base_branch, base_sha, factory_branch, path,
+                    state, status_summary, created_at, updated_at, cleaned_at
+             FROM task_workspaces WHERE task_id = ?1",
+            [task_id],
+            |row| {
+                Ok(TaskWorkspace {
+                    task_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    backend: row.get(2)?,
+                    repository: row.get(3)?,
+                    base_branch: row.get(4)?,
+                    base_sha: row.get(5)?,
+                    factory_branch: row.get(6)?,
+                    path: PathBuf::from(row.get::<_, String>(7)?),
+                    state: row.get(8)?,
+                    status_summary: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                    cleaned_at: row.get(12)?,
+                })
+            },
+        )
+        .optional()
+        .context("failed to query task workspace")
+}
+
+fn ensure_same_workspace(existing: &TaskWorkspace, requested: &TaskWorkspace) -> Result<()> {
+    if existing.kind != requested.kind
+        || existing.backend != requested.backend
+        || existing.repository != requested.repository
+        || existing.base_branch != requested.base_branch
+        || existing.base_sha != requested.base_sha
+        || existing.factory_branch != requested.factory_branch
+        || existing.path != requested.path
+    {
+        bail!(
+            "task {} already owns a different workspace; refusing to replace durable Git ownership",
+            requested.task_id
+        );
+    }
+    Ok(())
+}
+
+fn retained_delivery_run_ids(connection: &Connection) -> Result<String> {
+    let mut statement = connection.prepare(
+        "SELECT COALESCE(MAX(r.id), 0)
+         FROM task_workspaces w
+         LEFT JOIN runs r ON r.task_id = w.task_id
+         WHERE w.kind = 'delivery' AND w.state != 'cleaned'
+         GROUP BY w.task_id ORDER BY w.created_at, w.task_id",
+    )?;
+    let ids = statement
+        .query_map([], |row| row.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids
+        .into_iter()
+        .filter(|id| *id > 0)
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(", "))
 }
 
 fn query_task_by_key(connection: &Connection, key: &str) -> Result<Option<Task>> {
@@ -1787,6 +2831,10 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         working_directory: row.get("working_directory")?,
         recovery_of: row.get("recovery_of")?,
         recovery_attempt: row.get("recovery_attempt")?,
+        base_branch: row.get("base_branch")?,
+        base_sha: row.get("base_sha")?,
+        factory_branch: row.get("factory_branch")?,
+        workspace_kind: row.get("workspace_kind")?,
     })
 }
 

@@ -1,50 +1,231 @@
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::process::Command as ProcessCommand;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 
-fn valid_config() -> (tempfile::TempDir, std::path::PathBuf) {
+fn valid_config() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repository");
-    let workspace = temp.path().join("worktrees");
-    fs::create_dir(&repository).unwrap();
-    fs::create_dir(&workspace).unwrap();
-    let path = temp.path().join("config.toml");
+    let data_home = temp.path().join("data");
+    fs::create_dir_all(repository.join(".factory")).unwrap();
+    assert!(
+        ProcessCommand::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        ProcessCommand::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:example/repository.git"
+            ])
+            .current_dir(&repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    Command::cargo_bin("factory")
+        .unwrap()
+        .current_dir(&repository)
+        .env("FACTORY_DATA_HOME", &data_home)
+        .arg("init")
+        .assert()
+        .success();
+    fs::remove_dir_all(repository.join(".factory/workflows")).unwrap();
+    fs::create_dir(repository.join(".factory/workflows")).unwrap();
+    let path = repository.join(".factory/config.toml");
     fs::write(
         &path,
-        format!(
-            r#"repositories = ["{}"]
+        r#"version = 1
 poll_every = "30s"
 default_runtime = "codex"
 default_timeout = "2h"
 maximum_timeout = "8h"
 max_concurrent_runs = 2
-workspace_root = "{}"
+
+[github]
+trusted_approvers = ["owainlewis"]
+ready_label = "factory:ready"
+proposed_label = "factory:proposed"
+needs_review_label = "factory:needs-review"
 "#,
-            repository.display(),
-            workspace.display()
-        ),
     )
     .unwrap();
-    (temp, path)
+    (temp, path, repository, data_home)
 }
 
 #[test]
 fn validates_explicit_config() {
-    let (_temp, path) = valid_config();
+    let (_temp, path, _repository, data_home) = valid_config();
 
     Command::cargo_bin("factory")
         .unwrap()
         .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", data_home)
         .assert()
         .success()
         .stdout(predicate::str::contains("Configuration is valid."))
         .stdout(predicate::str::contains("default_runtime: codex"));
 }
 
+#[cfg(unix)]
+#[test]
+fn rejects_an_existing_database_that_is_not_writable() {
+    let (_temp, path, _repository, data_home) = valid_config();
+    Command::cargo_bin("factory")
+        .unwrap()
+        .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", &data_home)
+        .assert()
+        .success();
+    let state_directory = fs::read_dir(&data_home)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let database = state_directory.join("factory.sqlite3");
+    rusqlite::Connection::open(&database)
+        .unwrap()
+        .execute_batch("CREATE TABLE proof (id INTEGER);")
+        .unwrap();
+    let mut permissions = fs::metadata(&database).unwrap().permissions();
+    permissions.set_mode(0o400);
+    fs::set_permissions(&database, permissions).unwrap();
+
+    Command::cargo_bin("factory")
+        .unwrap()
+        .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", &data_home)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Factory database is read-only"));
+
+    let mut permissions = fs::metadata(&database).unwrap().permissions();
+    permissions.set_mode(0o600);
+    fs::set_permissions(database, permissions).unwrap();
+}
+
+#[test]
+fn validates_configurable_github_project_states() {
+    let (temp, path, repository, data_home) = valid_config();
+    let contents =
+        fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/config.toml")).unwrap();
+    let auth = temp.path().join("codex/auth.json");
+    fs::create_dir_all(auth.parent().unwrap()).unwrap();
+    fs::write(&auth, "{}").unwrap();
+    fs::write(
+        &path,
+        contents
+            .replace("Ready To Implement", "Queued for engineering")
+            .replace(
+                "~/.local/share/factory/codex/auth.json",
+                auth.to_str().unwrap(),
+            ),
+    )
+    .unwrap();
+    fs::write(
+        repository.join(".factory/workflows/triage-ticket.md"),
+        "+++\nstate = \"ready_for_spec\"\n+++\nTriage.\n",
+    )
+    .unwrap();
+    fs::write(
+        repository.join(".factory/workflows/implement-ready-ticket.md"),
+        "+++\nstate = \"ready_to_implement\"\n+++\nImplement.\n",
+    )
+    .unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let gh = bin.join("gh");
+    fs::write(
+        &gh,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then echo "gh version 2.80.0"; exit 0; fi
+if [ "$1" = "auth" ]; then exit 0; fi
+if [ "$1" = "repo" ]; then echo "example/repository"; exit 0; fi
+if [ "$1" = "api" ] && [ "$2" = "user" ] && [ "$GH_TOKEN" = "dedicated-test-token" ]; then echo '{"id":99,"login":"factory-bot"}'; exit 0; fi
+if [ "$1" = "api" ] && [ "$2" = "users/owainlewis" ]; then echo '{"id":1,"login":"owainlewis","node_id":"U_1"}'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "view" ]; then echo '{"id":"PVT_16"}'; exit 0; fi
+if [ "$1" = "project" ] && [ "$2" = "field-list" ]; then
+  echo '{"fields":[{"id":"STATUS","name":"Status","type":"ProjectV2SingleSelectField","options":[{"id":"1","name":"Ready For Spec"},{"id":"2","name":"Creating Spec"},{"id":"3","name":"Queued for engineering"},{"id":"4","name":"Implementing"},{"id":"5","name":"Reviewing"},{"id":"6","name":"Done"}]}]}'
+  exit 0
+fi
+exit 64
+"#,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&gh).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&gh, permissions).unwrap();
+    let docker = bin.join("docker");
+    fs::write(
+        &docker,
+        r#"#!/bin/sh
+if [ "$1" = "version" ]; then echo "27.0.0"; exit 0; fi
+if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then echo "sha256:abcdef"; exit 0; fi
+if [ "$1" = "run" ] && [ "$2" = "--rm" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+exit 64
+"#,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&docker).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&docker, permissions).unwrap();
+    let path_value = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    Command::cargo_bin("factory")
+        .unwrap()
+        .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", data_home)
+        .env("FACTORY_GITHUB_TOKEN", "dedicated-test-token")
+        .env("PATH", path_value)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Configuration is valid."));
+}
+
+#[test]
+fn rejects_invalid_github_project_source() {
+    let (_temp, path, _repository, data_home) = valid_config();
+    let contents =
+        fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/config.toml")).unwrap();
+    fs::write(
+        &path,
+        contents.replace("project_number = 16", "project_number = 0"),
+    )
+    .unwrap();
+
+    Command::cargo_bin("factory")
+        .unwrap()
+        .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", data_home)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "source.project_number must be greater than zero",
+        ));
+}
+
 #[test]
 fn reports_specific_validation_failures() {
-    let (_temp, path) = valid_config();
+    let (_temp, path, _repository, data_home) = valid_config();
     let contents = fs::read_to_string(&path).unwrap();
     fs::write(
         &path,
@@ -55,6 +236,7 @@ fn reports_specific_validation_failures() {
     Command::cargo_bin("factory")
         .unwrap()
         .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", data_home)
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -64,16 +246,14 @@ fn reports_specific_validation_failures() {
 
 #[test]
 fn uses_default_config_path() {
-    let (temp, path) = valid_config();
-    let home = temp.path().join("home");
-    let config_dir = home.join(".factory");
-    fs::create_dir_all(&config_dir).unwrap();
-    fs::copy(path, config_dir.join("config.toml")).unwrap();
+    let (_temp, _path, repository, data_home) = valid_config();
+    fs::create_dir_all(repository.join("nested/directory")).unwrap();
 
     Command::cargo_bin("factory")
         .unwrap()
         .arg("validate")
-        .env("HOME", home)
+        .current_dir(repository.join("nested/directory"))
+        .env("FACTORY_DATA_HOME", data_home)
         .assert()
         .success()
         .stdout(predicate::str::contains("Configuration is valid."));
@@ -81,34 +261,17 @@ fn uses_default_config_path() {
 
 #[test]
 fn resolves_relative_paths_from_config_directory() {
-    let temp = tempfile::tempdir().unwrap();
-    let config_dir = temp.path().join("configuration");
-    let repository = config_dir.join("repository");
-    let workspace = config_dir.join("worktrees");
-    let launch_dir = temp.path().join("launch");
-    fs::create_dir_all(&repository).unwrap();
-    fs::create_dir(&workspace).unwrap();
+    let (_temp, path, repository, data_home) = valid_config();
+    let launch_dir = repository.join("nested");
     fs::create_dir(&launch_dir).unwrap();
-    let path = config_dir.join("config.toml");
-    fs::write(
-        &path,
-        r#"repositories = ["repository"]
-poll_every = "30s"
-default_runtime = "codex"
-default_timeout = "2h"
-maximum_timeout = "8h"
-max_concurrent_runs = 2
-workspace_root = "worktrees"
-"#,
-    )
-    .unwrap();
 
     Command::cargo_bin("factory")
         .unwrap()
         .current_dir(launch_dir)
         .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", &data_home)
         .assert()
         .success()
         .stdout(predicate::str::contains(repository.to_str().unwrap()))
-        .stdout(predicate::str::contains(workspace.to_str().unwrap()));
+        .stdout(predicate::str::contains(data_home.to_str().unwrap()));
 }

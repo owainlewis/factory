@@ -1,5 +1,9 @@
 # Factory v1
 
+> **Superseded:** The active design is
+> [`single-repository-v1/design.md`](single-repository-v1/design.md). This
+> document is retained as the record of the earlier multi-repository design.
+
 **Status:** Draft
 **Author:** Owain Lewis  **Date:** 2026-07-18
 
@@ -234,7 +238,7 @@ Factory owns the reliability boundary:
 - run history and final outcome;
 - cleanup after terminal completion.
 
-The default implementation workflow remains active while CI runs so the agent can interpret failures and adapt in context. Human review may take hours or days, so a green pull request ends the run. Later ticket or review activity can create a new task that resumes the stored session when available. GitHub, Git, the prompt, and the run record remain enough to recover when a runtime session is lost.
+An implementation workflow remains active while CI runs so the agent can interpret failures and adapt in context. Human review may take hours or days, so a green pull request ends the run. Later ticket or review activity can create a new task that resumes the stored session when available. GitHub, Git, the prompt, and the run record remain enough to recover when a runtime session is lost.
 
 On an unexpected exit, Factory may resume the same agent or start a recovery run with current ticket, worktree, branch, pull request, CI, and previous-run context. Recovery asks the agent to reconcile real state rather than replaying deterministic steps.
 
@@ -255,9 +259,10 @@ V1 implements Codex completely and Claude Code second to prove portability. Runt
 The daemon runs as `factory run`, initially in a terminal and later under `launchd` or `systemd`. A small CLI exposes operational state:
 
 ```text
-factory init [--repository <path>] [--check] [--no-labels]
+factory init [--repository <path>] [--check]
 factory validate
 factory workflows
+factory workflow create <workflow-id> (--schedule <cron> --timezone <iana> | --label <label>) (--prompt <text> | --prompt-file <path>)
 factory workflow run <workflow-id> --repository <path>
 factory tasks
 factory runs [workflow]
@@ -267,11 +272,18 @@ factory cancel <run-id>
 
 SQLite lives under the Factory data directory. Workflows run against trusted repositories. An implementation agent may create its own worktree under the configured workspace root; Factory records the path reported by the agent or discovered from Git after the run.
 
-`factory init` is an explicit, idempotent setup mutation. It may install the
-bundled workflow, register the repository in local configuration, create the
-workspace directory, and create missing conventional GitHub labels. Daemon
-startup never performs these mutations, and initialization never commits,
-pushes, launches an agent, or enables pull-request merge.
+`factory init` is an explicit, idempotent setup mutation. It registers the
+repository in local configuration and creates the workspace and repository
+workflow directories. It does not install workflows or create GitHub labels.
+Daemon startup never performs setup mutations, and initialization never
+commits, pushes, launches an agent, or enables pull-request merge.
+
+`factory workflow create` creates one valid Markdown workflow from explicit
+command-line input. It never launches an editor. Exactly one schedule or label
+trigger and exactly one inline, file, or standard-input prompt are required.
+The command validates the complete generated workflow, refuses to overwrite an
+existing file, and creates a missing GitHub trigger label only for an explicit
+label-triggered workflow.
 
 The manual workflow command validates the selected repository and workflow,
 checks the configured runtime and authentication, streams runtime activity, and

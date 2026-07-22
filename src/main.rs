@@ -2,12 +2,15 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
-use factory::config::{Config, default_config_path};
+use factory::approve::approve_issue;
+use factory::clone::CloneManager;
+use factory::config::{Config, repository_config_path, repository_remote_identity};
 use factory::daemon::FactoryDaemon;
+use factory::docker::DockerWorker;
 use factory::execution::ResolvedWorkflow;
 use factory::github::{GitHubClient, PollReport};
 use factory::init::{InitOptions, initialize};
@@ -17,8 +20,13 @@ use factory::inspection::{
 use factory::runtime::{
     CodexRuntime, RuntimeCancelled, Termination, write_stderr_best_effort, write_stdout_best_effort,
 };
-use factory::storage::{CancellationRequest, Ledger};
+use factory::storage::{
+    CancellationRequest, DATABASE_NAME, Ledger, OPERATOR_CONFIRMED_CLEANUP, TaskState,
+    validate_data_directory,
+};
 use factory::workflow::WorkflowCatalog;
+use factory::workflow_create::{CreateWorkflowOptions, create_workflow};
+use factory::workspace::WorkspaceManager;
 
 #[derive(Debug, Parser)]
 #[command(name = "factory", version, about)]
@@ -34,20 +42,14 @@ enum Command {
         /// Repository to initialize. Defaults to the current directory.
         #[arg(long)]
         repository: Option<PathBuf>,
-        /// Skip GitHub label discovery and creation.
-        #[arg(long)]
-        no_labels: bool,
         /// Report required changes without writing anything.
         #[arg(long)]
         check: bool,
-        /// Replace a customized implementation workflow with the bundled version.
-        #[arg(long)]
-        update_workflow: bool,
     },
-    /// Poll configured repositories and persist eligible ticket tasks.
+    /// Poll this repository once and persist eligible tasks without executing them.
     Run {
-        /// Poll once and exit without waiting for the next interval.
-        #[arg(long)]
+        /// Required safety flag confirming this is a non-executing single evaluation.
+        #[arg(long, required = true)]
         once: bool,
         /// Path to the Factory configuration file.
         #[arg(long)]
@@ -56,7 +58,27 @@ enum Command {
         #[arg(long)]
         data_directory: Option<PathBuf>,
     },
-    /// Validate configuration without starting workers or network activity.
+    /// Continuously evaluate schedules, poll for work, and execute eligible tasks.
+    Daemon {
+        /// Path to the repository-local Factory configuration file.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Directory containing the durable Factory database.
+        #[arg(long)]
+        data_directory: Option<PathBuf>,
+    },
+    /// Approve the current issue title, body, and delivery workflow revision.
+    Approve {
+        /// GitHub issue number to approve.
+        issue: u64,
+        /// Path to the repository-local Factory configuration file.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Directory containing the durable Factory database.
+        #[arg(long)]
+        data_directory: Option<PathBuf>,
+    },
+    /// Validate configuration, workflows, and configured GitHub Project IDs.
     Validate {
         /// Path to the Factory configuration file.
         #[arg(long)]
@@ -125,17 +147,75 @@ enum Command {
         #[arg(long)]
         data_directory: Option<PathBuf>,
     },
+    /// Preview or confirm removal of one retained Factory worktree.
+    Cleanup {
+        run_id: i64,
+        /// Confirm removal after reviewing the preview. Dirty files are discarded.
+        #[arg(long)]
+        confirm: bool,
+        /// Path to the repository-local Factory configuration file.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Directory containing the durable Factory database.
+        #[arg(long)]
+        data_directory: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 enum WorkflowCommand {
+    /// Create a workflow from explicit trigger and prompt input.
+    #[command(group(
+        ArgGroup::new("trigger")
+            .required(true)
+            .args(["schedule", "label", "state"])
+    ))]
+    #[command(group(
+        ArgGroup::new("prompt_source")
+            .required(true)
+            .args(["prompt", "prompt_file"])
+    ))]
+    Create {
+        /// Lowercase kebab-case workflow ID.
+        workflow_id: String,
+        /// Five-field cron expression.
+        #[arg(long, requires = "timezone")]
+        schedule: Option<String>,
+        /// IANA timezone for a scheduled workflow.
+        #[arg(long, requires = "schedule")]
+        timezone: Option<String>,
+        /// GitHub label for a label-triggered workflow.
+        #[arg(long)]
+        label: Option<String>,
+        /// Semantic GitHub Project state for a state-triggered workflow.
+        #[arg(long)]
+        state: Option<String>,
+        /// Runtime override. Inherits the configured default when omitted.
+        #[arg(long)]
+        runtime: Option<String>,
+        /// Timeout override. Inherits the configured default when omitted.
+        #[arg(long)]
+        timeout: Option<String>,
+        /// Workflow prompt text.
+        #[arg(long)]
+        prompt: Option<String>,
+        /// Read workflow prompt text from this file, or from stdin with `-`.
+        #[arg(long, value_name = "PATH")]
+        prompt_file: Option<PathBuf>,
+        /// Configured repository to create the workflow in. Defaults to the current directory.
+        #[arg(long)]
+        repository: Option<PathBuf>,
+        /// Path to the Factory configuration file.
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
     /// Run one validated workflow against a configured repository.
     Run {
         /// Workflow ID, derived from its Markdown filename.
         workflow_id: String,
-        /// Configured repository to use as the workflow target.
+        /// Repository to use. Defaults to the enclosing Git repository.
         #[arg(long)]
-        repository: PathBuf,
+        repository: Option<PathBuf>,
         /// Path to the Factory configuration file.
         #[arg(long)]
         config: Option<PathBuf>,
@@ -167,25 +247,15 @@ async fn run_cli() -> Result<u8> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Init {
-            repository,
-            no_labels,
-            check,
-            update_workflow,
-        } => {
+        Command::Init { repository, check } => {
             let repository = repository
                 .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
-            let report = initialize(
-                InitOptions {
-                    repository,
-                    config_path: default_config_path(),
-                    no_labels,
-                    check,
-                    update_workflow,
-                },
-                &GitHubClient::default(),
-            )
-            .await?;
+            let repository = factory::init::discover_repository(&repository)?;
+            let report = initialize(InitOptions {
+                config_path: repository_config_path(&repository),
+                repository,
+                check,
+            })?;
             let exit_code = report.exit_code();
             print!("{report}");
             return Ok(exit_code);
@@ -195,15 +265,64 @@ async fn run_cli() -> Result<u8> {
             config,
             data_directory,
         } => {
-            return run_poller(config, data_directory, once).await;
+            debug_assert!(once);
+            return run_poller(config, data_directory, true).await;
+        }
+        Command::Daemon {
+            config,
+            data_directory,
+        } => {
+            return run_poller(config, data_directory, false).await;
+        }
+        Command::Approve {
+            issue,
+            config,
+            data_directory,
+        } => {
+            let path = resolve_config_path(config)?;
+            let config = Config::load(&path)?;
+            let catalog = WorkflowCatalog::load(&config)?;
+            catalog.validate_ticket_workflows()?;
+            let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
+            let mut ledger = Ledger::open_in(&data_directory)?;
+            let report = approve_issue(
+                &config,
+                &catalog,
+                &mut ledger,
+                issue,
+                &GitHubClient::default(),
+            )
+            .await?;
+            print!("{report}");
         }
         Command::Validate { config } => {
-            let path = config.unwrap_or_else(default_config_path);
+            let path = resolve_config_path(config)?;
             let config = Config::load(&path)?;
+            let catalog = WorkflowCatalog::load(&config)?;
+            catalog.validate_ticket_workflows()?;
+            validate_data_directory(&config.data_directory)?;
+            if let Some(source) = &config.source {
+                let github = GitHubClient::default();
+                let cancellation = CancellationToken::new();
+                github.validate_global(&cancellation).await?;
+                for repository in &config.repositories {
+                    github
+                        .validate_project_source(repository, source, &cancellation)
+                        .await?;
+                }
+            }
+            if let Some(worker) = &config.worker {
+                GitHubClient::default()
+                    .validate_token_env(&worker.github_token_env, &CancellationToken::new())
+                    .await?;
+                DockerWorker::new(worker.clone(), "validate")
+                    .validate(&CancellationToken::new())
+                    .await?;
+            }
             print!("{config}");
         }
         Command::Workflows { config } => {
-            let path = config.unwrap_or_else(default_config_path);
+            let path = resolve_config_path(config)?;
             let config = Config::load(&path)?;
             let catalog = WorkflowCatalog::load(&config)?;
             print!("{catalog}");
@@ -214,12 +333,52 @@ async fn run_cli() -> Result<u8> {
         }
         Command::Workflow {
             command:
+                WorkflowCommand::Create {
+                    workflow_id,
+                    schedule,
+                    timezone,
+                    label,
+                    state,
+                    runtime,
+                    timeout,
+                    prompt,
+                    prompt_file,
+                    repository,
+                    config,
+                },
+        } => {
+            let report = create_workflow(
+                CreateWorkflowOptions {
+                    id: workflow_id,
+                    repository: repository.unwrap_or(
+                        std::env::current_dir().context("failed to resolve current directory")?,
+                    ),
+                    config_path: resolve_config_path(config)?,
+                    schedule,
+                    timezone,
+                    label,
+                    state,
+                    runtime,
+                    timeout,
+                    prompt,
+                    prompt_file,
+                },
+                &GitHubClient::default(),
+            )
+            .await?;
+            print!("{report}");
+        }
+        Command::Workflow {
+            command:
                 WorkflowCommand::Run {
                     workflow_id,
                     repository,
                     config,
                 },
         } => {
+            let repository = repository
+                .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
+            let repository = factory::init::discover_repository(&repository)?;
             return run_workflow(&workflow_id, &repository, config).await;
         }
         Command::Tasks {
@@ -264,7 +423,8 @@ async fn run_cli() -> Result<u8> {
             let task = ledger
                 .task(run.task_id)?
                 .with_context(|| format!("task {} for run {run_id} does not exist", run.task_id))?;
-            let inspection = RunInspection::new(&run, &task);
+            let container = ledger.run_container(run_id)?;
+            let inspection = RunInspection::new(&run, &task, container.as_ref());
             if json {
                 print_json(&inspection)?;
             } else {
@@ -322,6 +482,109 @@ async fn run_cli() -> Result<u8> {
                 );
             }
         }
+        Command::Cleanup {
+            run_id,
+            confirm,
+            config,
+            data_directory,
+        } => {
+            let path = resolve_config_path(config)?;
+            let config = Config::load(&path)?;
+            let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
+            let ledger = Ledger::open_in(&data_directory)?;
+            let run = ledger
+                .run(run_id)?
+                .with_context(|| format!("run {run_id} does not exist"))?;
+            let task = ledger
+                .task(run.task_id)?
+                .with_context(|| format!("task {} for run {run_id} does not exist", run.task_id))?;
+            let workspace = ledger
+                .task_workspace(task.id)?
+                .with_context(|| format!("run {run_id} has no Factory-owned workspace"))?;
+            if workspace.state == "cleaned" {
+                println!("run: {run_id}");
+                println!("workspace: {}", workspace.path.display());
+                println!("branch preserved: true");
+                println!("action: workspace reservation is already cleaned; no changes made");
+                return Ok(0);
+            }
+            let manager = WorkspaceManager::new(&config.repositories[0], &config.workspace_root)?;
+            let clone_manager = CloneManager::new(&config.workspace_root)?;
+            if !workspace.path.exists() {
+                println!("run: {run_id}");
+                println!("workspace: {}", workspace.path.display());
+                println!(
+                    "branch: {}",
+                    workspace.factory_branch.as_deref().unwrap_or("detached")
+                );
+                println!("workspace exists: false");
+                println!("branch preserved: true");
+                if !confirm {
+                    println!(
+                        "action: preview only; rerun with --confirm to release the workspace reservation"
+                    );
+                } else {
+                    if matches!(task.state, TaskState::Queued | TaskState::Running) {
+                        bail!(
+                            "refusing to release workspace for {:?} task {}; cancel or finish it first",
+                            task.state,
+                            task.id
+                        );
+                    }
+                    ledger.update_task_workspace_state(
+                        task.id,
+                        "cleaned",
+                        Some("operator confirmed absent workspace; local branch preserved"),
+                    )?;
+                    println!("action: released workspace reservation; local branch preserved");
+                }
+                return Ok(0);
+            }
+            let preview = if workspace.backend == "clone" {
+                clone_manager.preview_cleanup(&workspace.path)?
+            } else {
+                manager.preview_cleanup(&workspace.path)?
+            };
+            println!("run: {run_id}");
+            println!("workspace: {}", preview.path.display());
+            println!(
+                "branch: {}",
+                preview.branch.as_deref().unwrap_or("detached")
+            );
+            println!("dirty: {}", preview.dirty);
+            println!("branch preserved: true");
+            if !confirm {
+                println!("action: preview only; rerun with --confirm to remove the workspace");
+            } else {
+                if matches!(task.state, TaskState::Queued | TaskState::Running) {
+                    bail!(
+                        "refusing to clean workspace for {:?} task {}; cancel or finish it first",
+                        task.state,
+                        task.id
+                    );
+                }
+                ledger.update_task_workspace_state(
+                    task.id,
+                    "cleanup_pending",
+                    Some(OPERATOR_CONFIRMED_CLEANUP),
+                )?;
+                if workspace.backend == "clone" {
+                    clone_manager.remove(&workspace.path)?;
+                } else {
+                    manager.cleanup(&workspace.path, true)?;
+                }
+                ledger.update_task_workspace_state(
+                    task.id,
+                    "cleaned",
+                    Some("operator-confirmed cleanup completed"),
+                )?;
+                if workspace.backend == "clone" {
+                    println!("action: removed clone; remote branch preserved");
+                } else {
+                    println!("action: removed worktree; local branch preserved");
+                }
+            }
+        }
     }
 
     Ok(0)
@@ -331,14 +594,21 @@ fn open_data_ledger(
     config_path: Option<PathBuf>,
     data_directory: Option<PathBuf>,
 ) -> Result<Ledger> {
-    let config_path = config_path.unwrap_or_else(default_config_path);
-    let data_directory = data_directory.unwrap_or_else(|| {
-        config_path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .to_path_buf()
-    });
-    Ledger::open_in(&data_directory)
+    if let Some(data_directory) = data_directory {
+        return Ledger::open_in(&data_directory);
+    }
+    let config_path = resolve_config_path(config_path)?;
+    let config = Config::load(&config_path)?;
+    Ledger::open_in(&config.data_directory)
+}
+
+fn resolve_config_path(config_path: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = config_path {
+        return Ok(path);
+    }
+    let current = std::env::current_dir().context("failed to resolve current directory")?;
+    let repository = factory::init::discover_repository(&current)?;
+    Ok(repository_config_path(&repository))
 }
 
 fn print_json(value: &impl serde::Serialize) -> Result<()> {
@@ -354,21 +624,27 @@ async fn run_poller(
     data_directory: Option<PathBuf>,
     once: bool,
 ) -> Result<u8> {
-    let path = config_path.unwrap_or_else(default_config_path);
+    let path = resolve_config_path(config_path)?;
+    let mode = if once { "once" } else { "continuous" };
+    write_stderr_best_effort(
+        format!("Factory starting: mode={mode} config={}\n", path.display()).as_bytes(),
+    );
     let config = Config::load(&path)?;
+    let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
+    ensure_legacy_cutover(&config, &data_directory)?;
     let catalog = WorkflowCatalog::load(&config)?;
     for repository in catalog.repositories_without_ready_workflow(&config) {
         write_stderr_best_effort(
             format!(
-                "No valid factory:ready implementation workflow found for {}; run factory init --repository {}\n",
-                repository.display(),
+                "No valid {:?} implementation workflow found for {}; create one with factory workflow create <workflow-id>\n",
+                config.github.ready_label,
                 repository.display()
             )
             .as_bytes(),
         );
     }
     let ticket_validation = catalog.validate_ticket_workflows();
-    if once || ticket_validation.is_err() {
+    if !once && ticket_validation.is_err() {
         for entry in catalog.invalid_scheduled_entries() {
             eprintln!(
                 "Factory skipped invalid scheduled workflow {}: {}",
@@ -378,17 +654,30 @@ async fn run_poller(
         }
     }
     ticket_validation?;
-    let data_directory = data_directory.unwrap_or_else(|| {
-        path.parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .to_path_buf()
-    });
-    let mut ledger = Ledger::open_in(&data_directory)?;
-    let github = GitHubClient::default();
+    write_stderr_best_effort(
+        format!(
+            "Factory loaded: repositories={} workflows={} data={} poll_every={}\n",
+            config.repositories.len(),
+            catalog.entries.len(),
+            data_directory.display(),
+            humantime::format_duration(config.poll_every)
+        )
+        .as_bytes(),
+    );
+    let ledger = Ledger::open_in(&data_directory)?;
     if once {
-        let report = github.poll_once(&config, &catalog, &mut ledger).await?;
-        print_poll_report(&report);
-        return Ok(u8::from(report.failures() > 0));
+        write_stderr_best_effort(b"Factory evaluating schedules and polling GitHub once...\n");
+        let daemon = FactoryDaemon::new(config, catalog, ledger.path());
+        let report = daemon.evaluate_once(CancellationToken::new()).await?;
+        write_stdout_best_effort(
+            format!(
+                "scheduled_tasks_created={}\n",
+                report.scheduled_tasks_created
+            )
+            .as_bytes(),
+        );
+        print_poll_report(&report.github);
+        return Ok(u8::from(report.github.failures() > 0));
     }
 
     let cancellation = CancellationToken::new();
@@ -401,7 +690,57 @@ async fn run_poller(
     let daemon = FactoryDaemon::new(config, catalog, ledger.path());
     daemon.run(cancellation).await?;
     signal_task.abort();
+    write_stderr_best_effort(b"Factory stopped.\n");
     Ok(0)
+}
+
+fn ensure_legacy_cutover(config: &Config, data_directory: &std::path::Path) -> Result<()> {
+    let legacy_directory = std::env::var_os("FACTORY_LEGACY_DATA_DIRECTORY")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".factory")))
+        .context("could not determine legacy Factory data directory")?;
+    let legacy_database = legacy_directory.join(DATABASE_NAME);
+    if !legacy_database.is_file() {
+        return Ok(());
+    }
+    if data_directory
+        .components()
+        .any(|component| component == std::path::Component::ParentDir)
+    {
+        bail!(
+            "Factory data directory must not contain parent traversal: {}",
+            data_directory.display()
+        );
+    }
+    let legacy_directory = legacy_directory
+        .canonicalize()
+        .context("failed to resolve legacy Factory data directory")?;
+    let effective_data_directory = if data_directory.exists() {
+        data_directory
+            .canonicalize()
+            .context("failed to resolve Factory data directory")?
+    } else if data_directory.is_absolute() {
+        data_directory.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("failed to resolve current directory")?
+            .join(data_directory)
+    };
+    if effective_data_directory == legacy_directory {
+        bail!(
+            "repository-local Factory cannot use the legacy data directory {}; choose the derived repository state directory and leave legacy history untouched",
+            legacy_directory.display()
+        );
+    }
+    let repository = repository_remote_identity(&config.repositories[0])?;
+    let active = Ledger::existing_non_terminal_tasks_for_repository(&legacy_database, &repository)?;
+    if active > 0 {
+        bail!(
+            "legacy Factory has {active} non-terminal task(s) for {repository}; stop the old daemon and finish or cancel that work before starting repository-local Factory. The legacy database was left unchanged at {}",
+            legacy_database.display()
+        );
+    }
+    Ok(())
 }
 
 fn print_poll_report(report: &PollReport) {
@@ -433,7 +772,7 @@ async fn run_workflow(
     repository: &std::path::Path,
     config_path: Option<PathBuf>,
 ) -> Result<u8> {
-    let path = config_path.unwrap_or_else(default_config_path);
+    let path = resolve_config_path(config_path)?;
     let config = Config::load(&path)?;
     let catalog = WorkflowCatalog::load(&config)?;
     let workflow = ResolvedWorkflow::resolve(&config, &catalog, workflow_id, repository)?;

@@ -3,17 +3,20 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
 use assert_cmd::Command as AssertCommand;
-use factory::config::Config;
+use factory::approval::{ApprovalArtifact, approved_content_hash, render};
+use factory::config::{Config, GitHubConfig};
 use factory::daemon::FactoryDaemon;
 use factory::github::GitHubClient;
 use factory::runtime::CodexRuntime;
 use factory::storage::{Ledger, TaskIdentity, TaskState};
-use factory::workflow::{Trigger, WorkflowCatalog, scheduled_workflow_fingerprint};
+use factory::workflow::{
+    Trigger, WorkflowCatalog, scheduled_workflow_fingerprint, workflow_content_hash,
+};
 use rusqlite::Connection;
 use tokio_util::sync::CancellationToken;
 
@@ -26,6 +29,7 @@ struct Fixture {
     gh: PathBuf,
     codex: PathBuf,
     runtime_dir: PathBuf,
+    data_home: PathBuf,
 }
 
 impl Fixture {
@@ -33,10 +37,58 @@ impl Fixture {
         let temp = tempfile::tempdir().unwrap();
         let runtime_dir = temp.path().join("runtime");
         fs::create_dir(&runtime_dir).unwrap();
+        let data_home = temp.path().join("factory-data");
         let mut repositories = Vec::new();
         for (index, issues) in issue_pages.iter().enumerate() {
             let repository = temp.path().join(format!("repo-{index}"));
             fs::create_dir_all(repository.join(".factory/workflows")).unwrap();
+            assert!(
+                Command::new("git")
+                    .args(["init", "--quiet", "-b", "main"])
+                    .current_dir(&repository)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            git(
+                &repository,
+                &["config", "user.email", "factory@example.test"],
+            );
+            git(&repository, &["config", "user.name", "Factory Tests"]);
+            fs::write(repository.join("README.md"), "fixture\n").unwrap();
+            git(&repository, &["add", "README.md"]);
+            git(&repository, &["commit", "-m", "fixture base"]);
+            let remote = temp.path().join(format!("remote-{index}.git"));
+            assert!(
+                Command::new("git")
+                    .args(["init", "--quiet", "--bare"])
+                    .arg(&remote)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let github_remote = format!("git@github.com:example/repo-{index}.git");
+            assert!(
+                Command::new("git")
+                    .args(["remote", "add", "origin", &github_remote])
+                    .current_dir(&repository)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            if index == 0 {
+                AssertCommand::cargo_bin("factory")
+                    .unwrap()
+                    .current_dir(&repository)
+                    .env("FACTORY_DATA_HOME", &data_home)
+                    .arg("init")
+                    .assert()
+                    .success();
+                fs::remove_file(repository.join(".factory/workflows/triage-ticket.md")).unwrap();
+            }
+            let rewrite = format!("url.file://{}.insteadOf", remote.display());
+            git(&repository, &["config", &rewrite, &github_remote]);
+            git(&repository, &["push", "-u", "origin", "main"]);
             fs::write(
                 repository.join(".factory/workflows/implement-ready-ticket.md"),
                 "+++\nlabel = \"factory:ready\"\nruntime = \"codex\"\ntimeout = \"10s\"\n+++\n\nCUSTOM WORKFLOW: deliver a green draft PR and never merge it.\n",
@@ -52,57 +104,162 @@ impl Fixture {
                 format!("[[{}]]", issues.join(",")),
             )
             .unwrap();
-            for issue in issues {
-                let number = issue_number(issue);
-                fs::write(
-                    repository.join(format!(".comments-{number}.json")),
-                    format!(
-                        r#"[[{{"id":{number},"html_url":"https://example/comments/{number}","user":{{"login":"reviewer"}},"body":"Discussion {number}","created_at":"a","updated_at":"b"}}]]"#
-                    ),
-                )
-                .unwrap();
-            }
-            repositories.push(repository);
+            repositories.push(repository.canonicalize().unwrap());
         }
         let workspace = temp.path().join("worktrees");
         fs::create_dir(&workspace).unwrap();
-        let config_path = temp.path().join("config.toml");
-        let repository_values = repositories
-            .iter()
-            .map(|path| format!("\"{}\"", path.display()))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let config_path = repositories[0].join(".factory/config.toml");
         fs::write(
             &config_path,
             format!(
-                "repositories = [{repository_values}]\npoll_every = \"20ms\"\ndefault_runtime = \"codex\"\ndefault_timeout = \"2h\"\nmaximum_timeout = \"8h\"\nmax_concurrent_runs = {global_limit}\nmax_concurrent_runs_per_repository = {repository_limit}\nworkspace_root = \"{}\"\n",
-                workspace.display()
+                "version = 1\npoll_every = \"20ms\"\ndefault_runtime = \"codex\"\ndefault_timeout = \"2h\"\nmaximum_timeout = \"8h\"\nmax_concurrent_runs = {global_limit}\n\n[github]\ntrusted_approvers = [\"owainlewis\"]\nready_label = \"factory:ready\"\nproposed_label = \"factory:proposed\"\nneeds_review_label = \"factory:needs-review\"\n"
             ),
         )
         .unwrap();
-        let config = Config::load(&config_path).unwrap();
+        let config = Config {
+            repositories,
+            poll_every: Duration::from_millis(20),
+            default_runtime: "codex".into(),
+            default_timeout: Duration::from_secs(2 * 60 * 60),
+            maximum_timeout: Duration::from_secs(8 * 60 * 60),
+            max_concurrent_runs: global_limit,
+            max_concurrent_runs_per_repository: repository_limit,
+            workspace_root: workspace,
+            data_directory: temp.path().join("data"),
+            worker: None,
+            source: None,
+            github: GitHubConfig {
+                trusted_approvers: vec!["owainlewis".into()],
+                ready_label: "factory:ready".into(),
+                proposed_label: "factory:proposed".into(),
+                needs_review_label: "factory:needs-review".into(),
+            },
+        };
         let catalog = WorkflowCatalog::load(&config).unwrap();
+        for (repository_index, issues) in issue_pages.iter().enumerate() {
+            let workflow = catalog
+                .entries
+                .iter()
+                .find(|entry| {
+                    entry.repository == config.repositories[repository_index]
+                        && entry.id == "implement-ready-ticket"
+                })
+                .unwrap();
+            let workflow_hash = workflow_content_hash(workflow).unwrap();
+            for issue_json in issues {
+                let number = issue_number(issue_json);
+                let artifact_id = 10_000 + number;
+                let event_id = 20_000 + number;
+                let artifact = ApprovalArtifact {
+                    version: 1,
+                    issue: number,
+                    workflow_id: workflow.id.clone(),
+                    workflow_hash: workflow_hash.clone(),
+                    approved_content_hash: approved_content_hash(
+                        number,
+                        &format!("Ticket {number}"),
+                        &format!("Body {number}"),
+                        &workflow.id,
+                        &workflow_hash,
+                    )
+                    .unwrap(),
+                    approver_id: 42,
+                    nonce: format!("nonce-{repository_index}-{number}"),
+                };
+                let repository = &config.repositories[repository_index];
+                fs::write(
+                    repository.join(format!(".comments-{number}.json")),
+                    serde_json::json!([[{
+                        "id": artifact_id,
+                        "html_url": format!("https://example/comments/{artifact_id}"),
+                        "user": {"id": 42, "login": "owainlewis"},
+                        "body": render(&artifact).unwrap(),
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:00:00Z"
+                    }]])
+                    .to_string(),
+                )
+                .unwrap();
+                fs::write(
+                    repository.join(format!(".timeline-{number}.json")),
+                    serde_json::json!([[{
+                        "id": event_id,
+                        "event": "labeled",
+                        "actor": {"id": 42, "login": "owainlewis"},
+                        "label": {"name": "factory:ready"},
+                        "created_at": "2026-01-01T00:00:01Z"
+                    }]])
+                    .to_string(),
+                )
+                .unwrap();
+                fs::write(repository.join(format!(".issue-{number}.json")), issue_json).unwrap();
+                let unlabelled =
+                    issue_json.replace(r#""labels":[{"name":"factory:ready"}]"#, r#""labels":[]"#);
+                fs::write(
+                    repository.join(format!(".issue-{number}-unlabelled.json")),
+                    unlabelled,
+                )
+                .unwrap();
+            }
+        }
         let gh = temp.path().join("gh");
         write_executable(
             &gh,
             r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "gh version 2.80.0"; exit 0; fi
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  if [ -f "$0.auth-block" ]; then
+    while [ ! -f "$0.auth-release" ]; do sleep 0.02; done
+  fi
   if [ -f "$0.auth-fail" ]; then echo "authentication expired" >&2; exit 1; fi
   echo "logged in"; exit 0
 fi
-if [ "$1" = "repo" ]; then cat .gh-name; exit 0; fi
+if [ "$1" = "repo" ]; then
+  case "$*" in *defaultBranchRef*) printf 'main\n' ;; *) cat .gh-name ;; esac
+  exit 0
+fi
+if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then
+  touch ".ready-removed-$3"
+  exit 0
+fi
 if [ "$1" = "api" ]; then
   if ! mkdir "$0.api-active" 2>/dev/null; then touch "$0.api-concurrent"; fi
   touch "$0.api-started"
   if [ -f "$0.api-block" ]; then
     while [ ! -f "$0.api-release" ]; do sleep 0.02; done
   fi
-  endpoint="$4"
+  if [ "$2" = "--paginate" ]; then endpoint="$4"
+  elif [ "$2" = "--method" ]; then endpoint="$4"
+  else endpoint="$2"
+  fi
   case "$endpoint" in
+    user|users/*) printf '{"id":42,"login":"owainlewis"}' ;;
+    repos/example/repo-[0-9]) printf '{"default_branch":"main"}' ;;
+    */timeline*)
+      number=$(printf '%s' "$endpoint" | sed -E 's#^.*/issues/([0-9]+)/timeline.*#\1#')
+      cat ".timeline-$number.json"
+      ;;
     */comments*)
       number=$(printf '%s' "$endpoint" | sed -E 's#^.*/issues/([0-9]+)/comments.*#\1#')
-      cat ".comments-$number.json"
+      if [ "$2" = "--method" ]; then
+        printf '%s' "${6#body=}" > ".claim-$number"
+        printf '99999\n'
+      elif [ -f ".claim-$number" ]; then
+        base=$(cat ".comments-$number.json")
+        base=${base%]}
+        escaped=$(sed 's|\\|\\\\|g; s|"|\\"|g' ".claim-$number")
+        printf '%s,[{"id":99999,"html_url":"https://example/comments/99999","user":{"id":42,"login":"owainlewis"},"body":"%s","created_at":"2026-01-01T00:00:02Z","updated_at":"2026-01-01T00:00:02Z"}]]' "$base" "$escaped"
+      else
+        cat ".comments-$number.json"
+      fi
+      ;;
+    */issues/[0-9]*)
+      number=$(printf '%s' "$endpoint" | sed -E 's#^.*/issues/([0-9]+).*#\1#')
+      if [ -f ".ready-removed-$number" ]; then
+        cat ".issue-$number-unlabelled.json"
+      else
+        cat ".issue-$number.json"
+      fi
       ;;
     *) cat .issues.json ;;
   esac
@@ -174,6 +331,7 @@ exit 0
             gh,
             codex,
             runtime_dir,
+            data_home,
         }
     }
 
@@ -189,6 +347,56 @@ exit 0
 
     fn open_gate(&self) {
         fs::write(self.runtime_dir.join("gate"), "go").unwrap();
+    }
+
+    fn refresh_approval(&self, issue: u64) {
+        let repository = self
+            .config
+            .repositories
+            .iter()
+            .find(|repository| repository.join(format!(".issue-{issue}.json")).exists())
+            .unwrap();
+        let workflow = self
+            .catalog
+            .entries
+            .iter()
+            .find(|entry| entry.repository == *repository && entry.id == "implement-ready-ticket")
+            .unwrap();
+        let workflow_hash = workflow_content_hash(workflow).unwrap();
+        let issue_json: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(repository.join(format!(".issue-{issue}.json"))).unwrap(),
+        )
+        .unwrap();
+        let artifact_id = 10_000 + issue;
+        let artifact = ApprovalArtifact {
+            version: 1,
+            issue,
+            workflow_id: workflow.id.clone(),
+            workflow_hash: workflow_hash.clone(),
+            approved_content_hash: approved_content_hash(
+                issue,
+                issue_json["title"].as_str().unwrap(),
+                issue_json["body"].as_str().unwrap(),
+                &workflow.id,
+                &workflow_hash,
+            )
+            .unwrap(),
+            approver_id: 42,
+            nonce: format!("refreshed-{issue}"),
+        };
+        fs::write(
+            repository.join(format!(".comments-{issue}.json")),
+            serde_json::json!([[{
+                "id": artifact_id,
+                "html_url": format!("https://example/comments/{artifact_id}"),
+                "user": {"id": 42, "login": "owainlewis"},
+                "body": render(&artifact).unwrap(),
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z"
+            }]])
+            .to_string(),
+        )
+        .unwrap();
     }
 
     fn add_scheduled_workflow(&mut self) {
@@ -265,11 +473,25 @@ fn write_executable(path: &Path, contents: &str) {
     fs::set_permissions(path, permissions).unwrap();
 }
 
+fn git(repository: &Path, arguments: &[&str]) {
+    let output = Command::new("git")
+        .args(arguments)
+        .current_dir(repository)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        arguments.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 async fn wait_for<F>(mut condition: F)
 where
     F: FnMut() -> bool,
 {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             if condition() {
                 return;
@@ -279,6 +501,193 @@ where
     })
     .await
     .unwrap();
+}
+
+fn spawn_daemon_cli(fixture: &Fixture, stderr_path: &Path) -> std::process::Child {
+    let stderr = fs::File::create(stderr_path).unwrap();
+    let search_path = std::env::join_paths(
+        std::iter::once(fixture.gh.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .as_deref()
+                .map(std::env::split_paths)
+                .into_iter()
+                .flatten(),
+        ),
+    )
+    .unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_factory"));
+    command
+        .args([
+            "daemon",
+            "--config",
+            fixture.config_path.to_str().unwrap(),
+            "--data-directory",
+            fixture.ledger_path.parent().unwrap().to_str().unwrap(),
+        ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
+        .env("PATH", search_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(stderr));
+    command.spawn().unwrap()
+}
+
+fn interrupt(child: &std::process::Child) {
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(i32::try_from(child.id()).unwrap()),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn cli_reports_live_startup_ready_and_shutdown_progress() {
+    let fixture = Fixture::new(&[vec![]], 1, 1);
+    fs::write(format!("{}.auth-block", fixture.gh.display()), "").unwrap();
+    let stderr_path = fixture._temp.path().join("factory.stderr");
+    let mut child = spawn_daemon_cli(&fixture, &stderr_path);
+
+    wait_for(|| {
+        fs::read_to_string(&stderr_path).is_ok_and(|contents| {
+            contents.contains("Factory checking authenticated GitHub and Codex CLIs...")
+        })
+    })
+    .await;
+    assert!(child.try_wait().unwrap().is_none());
+    let blocked_output = fs::read_to_string(&stderr_path).unwrap();
+    assert!(blocked_output.contains("Factory starting: mode=continuous"));
+    assert!(blocked_output.contains("Factory loaded: repositories=1 workflows=1"));
+    assert!(!blocked_output.contains("Factory ready:"));
+
+    fs::write(format!("{}.auth-release", fixture.gh.display()), "").unwrap();
+    wait_for(|| {
+        fs::read_to_string(&stderr_path)
+            .is_ok_and(|contents| contents.contains("Factory ready: watching 1 repositories"))
+    })
+    .await;
+    interrupt(&child);
+    assert!(child.wait().unwrap().success());
+    assert!(
+        fs::read_to_string(&stderr_path)
+            .unwrap()
+            .contains("Factory stopped.")
+    );
+}
+
+#[tokio::test]
+async fn daemon_discovers_repository_from_nested_directory_and_restarts_cleanly() {
+    let fixture = Fixture::new(&[vec![]], 1, 1);
+    let nested = fixture.config.repositories[0].join("nested/directory");
+    fs::create_dir_all(&nested).unwrap();
+    let legacy = fixture._temp.path().join("empty-legacy");
+    let search_path = std::env::join_paths(
+        std::iter::once(fixture.gh.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .as_deref()
+                .map(std::env::split_paths)
+                .into_iter()
+                .flatten(),
+        ),
+    )
+    .unwrap();
+
+    for attempt in 1..=2 {
+        let stderr_path = fixture
+            ._temp
+            .path()
+            .join(format!("nested-{attempt}.stderr"));
+        let mut child = Command::new(env!("CARGO_BIN_EXE_factory"))
+            .arg("daemon")
+            .current_dir(&nested)
+            .env("FACTORY_DATA_HOME", &fixture.data_home)
+            .env("FACTORY_LEGACY_DATA_DIRECTORY", &legacy)
+            .env("PATH", &search_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()))
+            .spawn()
+            .unwrap();
+        wait_for(|| {
+            fs::read_to_string(&stderr_path).is_ok_and(|output| {
+                assert!(!output.contains("Error:"), "daemon failed:\n{output}");
+                output.contains("Factory ready: watching 1 repositories")
+            })
+        })
+        .await;
+        interrupt(&child);
+        assert!(child.wait().unwrap().success());
+    }
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .args(["tasks", "--json"])
+        .current_dir(&nested)
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("[]"));
+}
+
+#[tokio::test]
+async fn cli_reports_ticket_and_runtime_lifecycle() {
+    let fixture = Fixture::new(&[vec![issue(42)]], 1, 1);
+    fixture.open_gate();
+    let stderr_path = fixture._temp.path().join("factory.stderr");
+    let mut child = spawn_daemon_cli(&fixture, &stderr_path);
+
+    wait_for(|| {
+        fs::read_to_string(&stderr_path)
+            .is_ok_and(|contents| contents.contains("Factory run finished: run=1"))
+    })
+    .await;
+    interrupt(&child);
+    assert!(child.wait().unwrap().success());
+
+    let output = fs::read_to_string(&stderr_path).unwrap();
+    assert!(
+        output.contains("Factory poll: repository=example/repo-0 issues_seen=1 tasks_queued=1")
+    );
+    assert!(output.contains(
+        "Factory task claimed: task=1 issue=#42 repository=example/repo-0 workflow=implement-ready-ticket run=1"
+    ));
+    assert!(output.contains("Factory runtime delegated: run=1 runtime=codex cwd="));
+    assert!(output.contains("worktrees/issue-42 worktree=factory-owned"));
+    assert!(output.contains("Factory run finished: run=1 outcome=succeeded duration="));
+    assert!(!output.contains("Factory poll failed"));
+}
+
+#[tokio::test]
+async fn cli_reports_failed_runtime_with_duration() {
+    let fixture = Fixture::new(&[vec![issue(43)]], 1, 1);
+    fs::write(fixture.runtime_dir.join("fail-all"), "").unwrap();
+    let stderr_path = fixture._temp.path().join("factory.stderr");
+    let mut child = spawn_daemon_cli(&fixture, &stderr_path);
+
+    wait_for(|| {
+        fs::read_to_string(&stderr_path).is_ok_and(|contents| {
+            contents.contains("Factory run finished: run=1 outcome=failed duration=")
+        })
+    })
+    .await;
+    interrupt(&child);
+    assert!(child.wait().unwrap().success());
+}
+
+#[tokio::test]
+async fn cli_reports_cancelled_runtime_with_duration() {
+    let fixture = Fixture::new(&[vec![issue(44)]], 1, 1);
+    let stderr_path = fixture._temp.path().join("factory.stderr");
+    let mut child = spawn_daemon_cli(&fixture, &stderr_path);
+
+    wait_for(|| {
+        fs::read_to_string(&stderr_path)
+            .is_ok_and(|contents| contents.contains("Factory runtime delegated: run=1"))
+    })
+    .await;
+    interrupt(&child);
+    assert!(child.wait().unwrap().success());
+
+    let output = fs::read_to_string(&stderr_path).unwrap();
+    assert!(output.contains("Factory run finished: run=1 outcome=cancelled duration="));
+    assert!(!output.contains("Factory poll failed"));
 }
 
 fn process_is_alive(process_id: u32) -> bool {
@@ -318,17 +727,38 @@ async fn discovers_claims_and_records_a_complete_codex_run() {
     assert_eq!(runs[0].outcome, "succeeded");
     assert_eq!(runs[0].session_id.as_deref(), Some("thread-1"));
     assert!(runs[0].result.as_deref().unwrap().contains("Draft PR"));
+    assert_eq!(runs[0].base_branch.as_deref(), Some("main"));
+    assert_eq!(runs[0].factory_branch.as_deref(), Some("factory/6"));
+    assert_eq!(runs[0].workspace_kind.as_deref(), Some("delivery"));
+    assert_ne!(
+        runs[0].working_directory.as_deref(),
+        Some(fixture.config.repositories[0].to_str().unwrap())
+    );
+    assert_eq!(
+        Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(&fixture.config.repositories[0])
+            .output()
+            .unwrap()
+            .stdout,
+        b"main\n"
+    );
     let prompt = fs::read_to_string(fixture.started_slots()[0].join("prompt")).unwrap();
     for expected in [
         "Factory-created software pull requests must remain for human merge",
         "Repository: example/repo-0",
-        "Ticket 6",
-        "Discussion 6",
+        "You are working on GitHub issue #6",
+        "Fetch the live issue, comments, labels, and linked pull requests with gh",
+        "Source issue: #6",
         "CUSTOM WORKFLOW",
         "Never merge",
     ] {
         assert!(prompt.contains(expected), "missing {expected:?} in prompt");
     }
+    assert!(!prompt.contains("Ticket 6"));
+    assert!(!prompt.contains("Body 6"));
+    assert!(!prompt.contains("Discussion"));
+    assert!(!prompt.contains("factory:ready"));
 }
 
 #[tokio::test]
@@ -340,6 +770,7 @@ async fn workflow_deadline_is_terminal_and_does_not_queue_recovery() {
     )
     .unwrap();
     fixture.catalog = WorkflowCatalog::load(&fixture.config).unwrap();
+    fixture.refresh_approval(28);
     let shutdown = CancellationToken::new();
     let daemon = Arc::new(fixture.daemon());
     let running = {
@@ -653,6 +1084,53 @@ async fn restart_recovers_one_orphan_by_resuming_its_live_observed_session() {
 }
 
 #[tokio::test]
+async fn recovery_revalidates_approved_content_before_launching_codex() {
+    let fixture = Fixture::new(&[vec![issue(32)]], 1, 1);
+    let first_daemon = Arc::new(fixture.daemon());
+    let first = {
+        let daemon = Arc::clone(&first_daemon);
+        tokio::spawn(async move { daemon.run(CancellationToken::new()).await })
+    };
+    wait_for(|| fixture.started_slots().len() == 1).await;
+    let owner_id = Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .runs(None)
+        .unwrap()[0]
+        .owner_id
+        .clone()
+        .unwrap();
+    first.abort();
+    let _ = first.await;
+    Ledger::open(&fixture.ledger_path)
+        .unwrap()
+        .remove_daemon_owner(&owner_id)
+        .unwrap();
+    let issue_path = fixture.config.repositories[0].join(".issue-32-unlabelled.json");
+    let changed = fs::read_to_string(&issue_path)
+        .unwrap()
+        .replace("Ticket 32", "Changed after approval");
+    fs::write(issue_path, changed).unwrap();
+
+    let shutdown = CancellationToken::new();
+    let second_daemon = Arc::new(fixture.daemon());
+    let second = {
+        let daemon = Arc::clone(&second_daemon);
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move { daemon.run(shutdown).await })
+    };
+    wait_for(|| {
+        Ledger::open(&fixture.ledger_path)
+            .and_then(|ledger| ledger.tasks())
+            .is_ok_and(|tasks| tasks[0].state == TaskState::Failed)
+    })
+    .await;
+
+    assert_eq!(fixture.started_slots().len(), 1);
+    shutdown.cancel();
+    second.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn subprocess_restart_kills_the_surviving_anchored_process_tree() {
     let fixture = Fixture::new(&[vec![issue(25)]], 1, 1);
     let search_path = std::env::join_paths(
@@ -668,12 +1146,13 @@ async fn subprocess_restart_kills_the_surviving_anchored_process_tree() {
     let mut first = Command::new(env!("CARGO_BIN_EXE_factory"));
     first
         .args([
-            "run",
+            "daemon",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
             fixture.ledger_path.parent().unwrap().to_str().unwrap(),
         ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .env("PATH", &search_path);
     let mut first = first.spawn().unwrap();
     wait_for(|| fixture.started_slots().len() == 1).await;
@@ -719,12 +1198,13 @@ async fn subprocess_restart_kills_the_surviving_anchored_process_tree() {
     let mut second = Command::new(env!("CARGO_BIN_EXE_factory"));
     second
         .args([
-            "run",
+            "daemon",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
             fixture.ledger_path.parent().unwrap().to_str().unwrap(),
         ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .env("PATH", &search_path);
     let mut second = second.spawn().unwrap();
     wait_for(|| fixture.started_slots().len() == 2).await;
@@ -1115,6 +1595,7 @@ async fn scheduled_tasks_use_the_same_worker_and_run_history() {
                 .success()
         );
     }
+    git(repository, &["push", "origin", "main"]);
     let inspected_commit = String::from_utf8(
         Command::new("git")
             .args(["rev-parse", "HEAD"])
@@ -1160,7 +1641,12 @@ async fn scheduled_tasks_use_the_same_worker_and_run_history() {
     let tasks = ledger.tasks().unwrap();
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].state, TaskState::Succeeded);
-    assert_eq!(ledger.runs_for_task(tasks[0].id).unwrap().len(), 1);
+    let runs = ledger.runs_for_task(tasks[0].id).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].workspace_kind.as_deref(), Some("proposal"));
+    let workspace = ledger.task_workspace(tasks[0].id).unwrap().unwrap();
+    assert_eq!(workspace.state, "cleaned");
+    assert!(!workspace.path.exists());
     let prompt = fs::read_to_string(fixture.started_slots()[0].join("prompt")).unwrap();
     assert!(prompt.contains("Scheduled occurrence: 2026-07-18T12:00:00Z"));
     assert!(prompt.contains("You may use the authenticated gh CLI"));
@@ -1255,12 +1741,13 @@ async fn invalid_scheduled_workflow_does_not_block_valid_ticket_workflow() {
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_factory"));
     daemon
         .args([
-            "run",
+            "daemon",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
             fixture.ledger_path.parent().unwrap().to_str().unwrap(),
         ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .env("PATH", search_path);
     let mut daemon = daemon.spawn().unwrap();
 
@@ -1309,12 +1796,13 @@ fn invalid_label_workflow_fails_daemon_startup() {
     AssertCommand::cargo_bin("factory")
         .unwrap()
         .args([
-            "run",
+            "daemon",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
             fixture.ledger_path.parent().unwrap().to_str().unwrap(),
         ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .env("PATH", search_path)
         .assert()
         .failure()
@@ -1352,12 +1840,13 @@ fn ambiguous_schedule_and_label_workflow_fails_daemon_startup() {
     AssertCommand::cargo_bin("factory")
         .unwrap()
         .args([
-            "run",
+            "daemon",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
             fixture.ledger_path.parent().unwrap().to_str().unwrap(),
         ])
+        .env("FACTORY_DATA_HOME", &fixture.data_home)
         .env("PATH", search_path)
         .assert()
         .failure()
@@ -1510,7 +1999,7 @@ async fn scheduled_and_ticket_tasks_share_concurrency_capacity() {
     assert!(
         prompts
             .iter()
-            .any(|prompt| prompt.contains("Current ticket and discussion"))
+            .any(|prompt| prompt.contains("You are working on GitHub issue #30"))
     );
     fixture.open_gate();
     wait_for(|| {

@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use regex::Regex;
 use serde::Serialize;
 
-use crate::storage::{Run, Task, TaskState};
+use crate::storage::{Run, RunContainer, Task, TaskState};
 
 const MAX_SUMMARY_BYTES: usize = 240;
 const MAX_DETAIL_BYTES: usize = 16 * 1024;
@@ -56,6 +56,10 @@ pub struct RunView {
     pub working_directory: Option<String>,
     pub recovery_of: Option<i64>,
     pub recovery_attempt: u32,
+    pub base_branch: Option<String>,
+    pub base_sha: Option<String>,
+    pub factory_branch: Option<String>,
+    pub workspace_kind: Option<String>,
 }
 
 impl From<&Run> for RunView {
@@ -90,6 +94,10 @@ impl From<&Run> for RunView {
             working_directory: run.working_directory.clone(),
             recovery_of: run.recovery_of,
             recovery_attempt: run.recovery_attempt,
+            base_branch: run.base_branch.clone(),
+            base_sha: run.base_sha.clone(),
+            factory_branch: run.factory_branch.clone(),
+            workspace_kind: run.workspace_kind.clone(),
         }
     }
 }
@@ -116,10 +124,23 @@ pub struct RunInspection {
     pub result: Option<BoundedText>,
     pub error: Option<BoundedText>,
     pub activity: Option<BoundedText>,
+    pub container: Option<ContainerView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ContainerView {
+    pub id: String,
+    pub instance_id: String,
+    pub image_ref: String,
+    pub image_id: String,
+    pub limits: String,
+    pub state: String,
+    pub exit_code: Option<i32>,
+    pub removed_at: Option<i64>,
 }
 
 impl RunInspection {
-    pub fn new(run: &Run, task: &Task) -> Self {
+    pub fn new(run: &Run, task: &Task, container: Option<&RunContainer>) -> Self {
         Self {
             run: RunView::from(run),
             task: TaskView::from(task),
@@ -127,6 +148,16 @@ impl RunInspection {
             result: run.result.as_deref().map(BoundedText::new),
             error: run.error.as_deref().map(BoundedText::new),
             activity: run.activity.as_deref().map(BoundedText::new),
+            container: container.map(|container| ContainerView {
+                id: container.container_id.clone(),
+                instance_id: container.instance_id.clone(),
+                image_ref: container.image_ref.clone(),
+                image_id: container.image_id.clone(),
+                limits: container.limits_json.clone(),
+                state: container.state.clone(),
+                exit_code: container.exit_code,
+                removed_at: container.removed_at,
+            }),
         }
     }
 }
@@ -195,6 +226,19 @@ pub fn print_inspection(inspection: &RunInspection) {
         safe_text(inspection.run.working_directory.as_deref().unwrap_or("-"))
     );
     println!(
+        "Workspace kind: {}",
+        safe_text(inspection.run.workspace_kind.as_deref().unwrap_or("-"))
+    );
+    println!(
+        "Base: {} @ {}",
+        safe_text(inspection.run.base_branch.as_deref().unwrap_or("-")),
+        safe_text(inspection.run.base_sha.as_deref().unwrap_or("-"))
+    );
+    println!(
+        "Factory branch: {}",
+        safe_text(inspection.run.factory_branch.as_deref().unwrap_or("-"))
+    );
+    println!(
         "Pull request: {}",
         safe_text(inspection.run.pull_request.as_deref().unwrap_or("-"))
     );
@@ -224,6 +268,12 @@ pub fn print_inspection(inspection: &RunInspection) {
         "Session: {}",
         safe_text(inspection.session_id.as_deref().unwrap_or("-"))
     );
+    if let Some(container) = &inspection.container {
+        println!("Container: {}", safe_text(&container.id));
+        println!("Container state: {}", safe_text(&container.state));
+        println!("Container image: {}", safe_text(&container.image_id));
+        println!("Container limits: {}", safe_text(&container.limits));
+    }
     print_detail("Result", inspection.result.as_ref());
     print_detail("Error", inspection.error.as_ref());
     print_detail("Activity", inspection.activity.as_ref());

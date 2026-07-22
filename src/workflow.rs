@@ -13,6 +13,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::config::Config;
+use crate::config::PipelineState;
 
 const WORKFLOW_DIRECTORY: &str = ".factory/workflows";
 
@@ -32,6 +33,19 @@ pub fn scheduled_workflow_fingerprint(
         prompt,
     ))?;
     Ok(format!("v2:{:x}", Sha256::digest(definition)))
+}
+
+pub fn workflow_content_hash(entry: &WorkflowEntry) -> Result<String> {
+    let definition = serde_json::to_vec(&(
+        &entry.id,
+        entry.trigger.as_ref().map(ToString::to_string),
+        entry.runtime.as_deref(),
+        entry
+            .timeout
+            .map(|timeout| (timeout.as_secs(), timeout.subsec_nanos())),
+        entry.prompt.as_deref(),
+    ))?;
+    Ok(format!("v1:{:x}", Sha256::digest(definition)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +70,7 @@ pub struct WorkflowEntry {
 pub enum Trigger {
     Schedule { expression: String, timezone: Tz },
     Label(String),
+    State(PipelineState),
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,6 +79,7 @@ struct Frontmatter {
     schedule: Option<String>,
     timezone: Option<String>,
     label: Option<String>,
+    state: Option<String>,
     runtime: Option<String>,
     timeout: Option<String>,
 }
@@ -75,6 +91,7 @@ impl WorkflowCatalog {
             entries.extend(load_repository(repository, config));
         }
         mark_duplicate_ids(&mut entries);
+        enforce_source_workflows(&mut entries, config);
         entries.sort_by(|left, right| {
             (&left.repository, &left.id, &left.path).cmp(&(
                 &right.repository,
@@ -124,7 +141,13 @@ impl WorkflowCatalog {
                     && entry.errors.is_empty()
                     && matches!(
                         entry.trigger.as_ref(),
-                        Some(Trigger::Label(label)) if label == "factory:ready"
+                        Some(Trigger::Label(label)) if config.source.is_none() && label == &config.github.ready_label
+                    )
+                    || &entry.repository == *repository
+                    && entry.errors.is_empty()
+                    && matches!(
+                        entry.trigger.as_ref(),
+                        Some(Trigger::State(PipelineState::ReadyToImplement)) if config.source.is_some()
                     )
             })
         })
@@ -183,6 +206,7 @@ impl fmt::Display for Trigger {
                 timezone,
             } => write!(formatter, "schedule {expression:?} ({timezone})"),
             Self::Label(label) => write!(formatter, "label {label:?}"),
+            Self::State(state) => write!(formatter, "state {state}"),
         }
     }
 }
@@ -393,9 +417,11 @@ fn load_file(repository: &Path, path: &Path, config: &Config) -> WorkflowEntry {
     entry.is_schedule_workflow = toml::from_str::<toml::Value>(&frontmatter)
         .ok()
         .and_then(|value| {
-            value
-                .as_table()
-                .map(|table| table.contains_key("schedule") && !table.contains_key("label"))
+            value.as_table().map(|table| {
+                table.contains_key("schedule")
+                    && !table.contains_key("label")
+                    && !table.contains_key("state")
+            })
         })
         .unwrap_or_else(|| declares_only_schedule(&frontmatter));
     let raw: Frontmatter = match toml::from_str(&frontmatter) {
@@ -411,6 +437,7 @@ fn load_file(repository: &Path, path: &Path, config: &Config) -> WorkflowEntry {
         schedule,
         timezone,
         label,
+        state,
         runtime,
         timeout,
     } = raw;
@@ -421,7 +448,7 @@ fn load_file(repository: &Path, path: &Path, config: &Config) -> WorkflowEntry {
         config.maximum_timeout,
         &mut entry.errors,
     );
-    entry.trigger = resolve_trigger(schedule, timezone, label, &mut entry.errors);
+    entry.trigger = resolve_trigger(schedule, timezone, label, state, &mut entry.errors);
     entry
 }
 
@@ -496,6 +523,7 @@ fn missing_frontmatter_declares_only_schedule(contents: &str) -> bool {
 fn declares_only_schedule(frontmatter: &str) -> bool {
     let mut schedule = false;
     let mut label = false;
+    let mut state = false;
     let mut multiline_delimiter = None;
     for line in frontmatter.lines() {
         let line = line.trim_start();
@@ -513,6 +541,7 @@ fn declares_only_schedule(frontmatter: &str) -> bool {
         }
         schedule |= line_declares_key(line, "schedule");
         label |= line_declares_key(line, "label");
+        state |= line_declares_key(line, "state");
         let Some((_, value)) = line.split_once('=') else {
             return false;
         };
@@ -531,7 +560,7 @@ fn declares_only_schedule(frontmatter: &str) -> bool {
             }
         }
     }
-    schedule && !label && multiline_delimiter.is_none()
+    schedule && !label && !state && multiline_delimiter.is_none()
 }
 
 fn line_declares_key(line: &str, expected: &str) -> bool {
@@ -756,18 +785,24 @@ fn resolve_trigger(
     schedule: Option<String>,
     timezone: Option<String>,
     label: Option<String>,
+    state: Option<String>,
     errors: &mut Vec<String>,
 ) -> Option<Trigger> {
-    match (schedule, label) {
-        (Some(_), Some(_)) => {
-            errors.push("workflow must declare exactly one trigger, not schedule and label".into());
+    let trigger_count = usize::from(schedule.is_some())
+        + usize::from(label.is_some())
+        + usize::from(state.is_some());
+    if trigger_count > 1 {
+        errors.push("workflow must declare exactly one trigger: schedule, label, or state".into());
+        return None;
+    }
+    match (schedule, label, state) {
+        (None, None, None) => {
+            errors.push(
+                "workflow must declare exactly one trigger: schedule, label, or state".into(),
+            );
             None
         }
-        (None, None) => {
-            errors.push("workflow must declare exactly one trigger: schedule or label".into());
-            None
-        }
-        (Some(schedule), None) => {
+        (Some(schedule), None, None) => {
             let error_count = errors.len();
             let timezone = match timezone {
                 Some(timezone) => match Tz::from_str(timezone.trim()) {
@@ -796,7 +831,7 @@ fn resolve_trigger(
                 None
             }
         }
-        (None, Some(label)) => {
+        (None, Some(label), None) => {
             let error_count = errors.len();
             if timezone.is_some() {
                 errors.push("timezone is only valid with a schedule trigger".to_owned());
@@ -811,6 +846,83 @@ fn resolve_trigger(
                 Some(Trigger::Label(label))
             } else {
                 None
+            }
+        }
+        (None, None, Some(state)) => {
+            if timezone.is_some() {
+                errors.push("timezone is only valid with a schedule trigger".to_owned());
+                return None;
+            }
+            match state.parse::<PipelineState>() {
+                Ok(state) => Some(Trigger::State(state)),
+                Err(_) => {
+                    errors.push(format!(
+                        "state must be one of ready_for_spec, creating_spec, ready_to_implement, implementing, ready_to_review, or done; got {state:?}"
+                    ));
+                    None
+                }
+            }
+        }
+        _ => unreachable!("multiple triggers were handled above"),
+    }
+}
+
+fn enforce_source_workflows(entries: &mut Vec<WorkflowEntry>, config: &Config) {
+    let Some(_) = &config.source else {
+        for entry in entries {
+            if matches!(entry.trigger, Some(Trigger::State(_))) {
+                entry
+                    .errors
+                    .push("state triggers require a [source] configuration".to_owned());
+            }
+        }
+        return;
+    };
+
+    for repository in &config.repositories {
+        for entry in entries
+            .iter_mut()
+            .filter(|entry| &entry.repository == repository && !entry.is_schedule_workflow)
+        {
+            match entry.trigger {
+                Some(Trigger::Label(_)) => entry.errors.push(
+                    "label triggers are not supported when [source] is configured".to_owned(),
+                ),
+                Some(Trigger::State(
+                    PipelineState::ReadyForSpec | PipelineState::ReadyToImplement,
+                )) => {}
+                Some(Trigger::State(state)) => entry.errors.push(format!(
+                    "state {state} is an output state; workflows may only trigger on ready_for_spec or ready_to_implement"
+                )),
+                _ => {}
+            }
+        }
+
+        for required in [PipelineState::ReadyForSpec, PipelineState::ReadyToImplement] {
+            let matching = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    &entry.repository == repository
+                        && matches!(entry.trigger, Some(Trigger::State(state)) if state == required)
+                })
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            match matching.as_slice() {
+                [] => entries.push(invalid_entry(
+                    repository,
+                    &repository.join(WORKFLOW_DIRECTORY),
+                    &format!("<missing-{required}-workflow>"),
+                    &format!("source mode requires exactly one {required} workflow"),
+                )),
+                [_] => {}
+                _ => {
+                    for index in matching {
+                        entries[index].errors.push(format!(
+                            "source mode requires exactly one {required} workflow"
+                        ));
+                    }
+                }
             }
         }
     }

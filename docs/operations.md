@@ -1,58 +1,119 @@
-# Factory operation
+# Operate Factory v1
 
-`factory run` validates `gh` and Codex subscription authentication, evaluates
-scheduled workflows, polls all configured repositories, and dispatches durable
-scheduled and ready-ticket tasks. Global and
-per-repository concurrency are controlled by `max_concurrent_runs` and
-`max_concurrent_runs_per_repository`. The per-repository value defaults to 1.
+Factory is always watching, not always spending tokens. The daemon polls one
+configured GitHub Project and starts a Docker worker only for a trusted item in
+`ready_for_spec` or `ready_to_implement`.
 
-Factory requires the conventional `factory:ready` and
-`factory:needs-review` labels. The explicit `factory init` setup command creates
-missing label definitions without changing existing ones. The daemon does not
-create, remove, or otherwise mutate labels itself. The delegated workflow owns
-ticket and pull-request updates.
+## Normal operation
 
-Five-field cron schedules are evaluated in the IANA timezone declared by the
-workflow. Factory stores the next occurrence and atomically advances that
-cursor when it creates the durable task, so repeated ticks, restarts, and
-multiple daemon loops cannot duplicate one UTC scheduled instant. Startup moves
-an overdue cursor to the next future occurrence instead of replaying work missed
-while Factory was offline. Disabled workflows are not evaluated. Invalid or
-failing scheduled workflows are reported and isolated from ready-ticket
-polling. A scheduled prompt receives its UTC occurrence, repository path,
-inspected commit, and previous successful run time when available. The agent may
-use its authenticated `gh` CLI to create or update tickets; Factory does not
-hard-code those effects.
+Start from anywhere inside the configured repository:
 
-Every active run records the Factory owner, a durable supervisor anchor that
-owns the Codex process group, the anchor's process-start identity, Codex session
-ID as soon as it is observed, working
-directory, pull-request URL when safely recognized, start time, and latest
-structural runtime activity. Raw event text is not stored. A workflow timeout is
-the maximum deadline for one execution.
-There is no short fixed idle timeout, so an active agent can keep working until
-that configured deadline. Explicit cancellation and deadline expiry terminate
-the complete Codex process group.
+```sh
+factory validate
+factory daemon
+```
 
-At startup and periodically while running, Factory checks every database run
-still marked `running`. It leaves a run alone when its owning daemon lease and
-process are live. The supervisor anchor remains the group leader if Codex exits
-while descendants are still running. Otherwise Factory verifies the anchor's
-recorded process-start identity, stops the matching orphan process group, closes
-the interrupted run, and queues one recovery attempt. Recovery first resumes
-the stored Codex session. If that
-session cannot be resumed, Factory starts one fresh fallback within the same
-execution deadline. The recovery prompt includes the current ticket,
-repository, Git worktree and branch inventory, pull-request URL when found, and
-bounded previous evidence, and tells Codex to inspect current reality before continuing.
-Factory permits at most two durable recovery attempts. Repeated failure leaves
-the task failed and inspectable. Terminal runs are never recovered.
+Startup validates all external dependencies before claiming work. Lifecycle
+events report polls, claims, container delegation, and terminal outcomes. Use
+the supported inspection commands instead of reading SQLite directly:
 
-On Ctrl-C, Factory stops polling and claiming immediately, cancels active
-Codex process trees, waits for the workers to record `cancelled`, and exits.
-Queued tasks remain durable for the next start. Failed and cancelled runs keep
-their bounded output, error, session, ticket, branch, and pull-request context
-for inspection. Factory never merges software pull requests.
+```sh
+factory tasks [--json]
+factory runs [WORKFLOW] [--json]
+factory inspect RUN_ID [--json]
+```
 
-`factory run --once` performs one discovery poll and exits without claiming or
-launching tasks. It is intended for setup checks and safe polling smoke tests.
+Each Project transition is level-triggered and durable. Repeated polls and
+normal restarts do not create another task for the same state generation. A
+review-to-implementation transition creates one new generation and reuses the
+title-independent `factory/<issue-number>` branch and linked pull request.
+
+## Worker boundary
+
+Every Project task gets a disposable container and a standalone HTTPS clone.
+Triage mounts its clone read-only. Implementation mounts its clone read-write.
+The canonical checkout, Factory database, Docker socket, host credentials, and
+unrelated repositories are not mounted.
+
+The worker runs as the clone owner with a read-only root filesystem, dropped
+Linux capabilities, bounded CPU, memory and processes, and a temporary `/tmp`.
+Only the dedicated Codex auth file and task clone are writable. Factory records
+the exact image ID and limits before starting the container and captures bounded
+stdout and stderr. Containers are removed after their terminal evidence is
+durable.
+
+Docker is not a VM. It shares the host kernel, permits outbound network access,
+and receives long-lived credentials for Codex and GitHub. Run only trusted
+authors' issues. Treat all issue, comment, attachment, and review text as
+untrusted input. Use a dedicated GitHub identity and protected branches so the
+worker cannot merge or bypass review.
+
+## Prove an idle poll
+
+When no configured Project item is ready and no scheduled workflow is due,
+capture the task list before and after one poll and list all Factory-managed
+containers:
+
+```sh
+factory tasks --json
+factory run --once
+factory tasks --json
+docker ps --all --filter label=dev.factory.managed=true
+```
+
+The two task listings should show zero new tasks, and the Docker listing should
+show zero Factory containers. This proves the empty poll persisted and launched
+nothing.
+
+Before first repository-local startup, Factory reads the old
+`~/.factory/factory.sqlite3` database without modifying it. If that database
+contains queued or running work for this repository, startup stops with
+instructions to stop the old daemon and finish or cancel the work. Terminal
+legacy history is not imported.
+
+## Cancellation and recovery
+
+Request cancellation with:
+
+```sh
+factory cancel RUN_ID
+```
+
+Ctrl-C stops new polling and claims, cancels active workers, records terminal
+outcomes, and leaves queued work durable. On startup Factory reconciles durable
+container ownership before stopping or removing only containers labelled for
+that exact Factory instance. It captures the recovered logs and exit state,
+then permits bounded recovery. Repeated failure remains inspectable and never
+turns into an automatic merge.
+
+## Clone retention and cleanup
+
+Successful clean implementation clones are removed only after the branch is
+pushed and a pull-request handoff is recorded. Failed, cancelled, dirty,
+unpublished, or incomplete implementation clones are retained for recovery,
+up to ten.
+
+Preview a retained clone before removal:
+
+```sh
+factory cleanup RUN_ID
+factory cleanup RUN_ID --confirm
+```
+
+Confirmed cleanup removes only the recorded managed clone. The remote branch
+and pull request remain. Triage clones are disposable and are removed at a
+terminal outcome.
+
+## Troubleshooting
+
+- `factory init --check` reports missing repository assets without writing.
+- `factory validate` reports invalid state mappings, trusted users, worker
+  tokens, auth files, images, Docker availability, and data-path permissions.
+- `factory run --once` proves polling without launching a model or container.
+- `factory inspect RUN_ID` shows bounded task, container, branch, pull-request,
+  and error evidence.
+- If old global Factory work is active, stop the old daemon and finish or cancel
+  it. Repository-local Factory never mutates or imports the legacy database.
+
+Scheduled workflows remain a separate host-run feature in v1. They do not use
+the two-state Project pipeline or Docker worker path described here.

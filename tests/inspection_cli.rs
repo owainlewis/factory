@@ -177,8 +177,11 @@ fn runs_filters_by_workflow_and_includes_bounded_summaries() {
     assert_eq!(
         keys,
         [
+            "base_branch",
+            "base_sha",
             "cancellation_requested_at",
             "duration_ms",
+            "factory_branch",
             "finished_at",
             "id",
             "last_activity_at",
@@ -198,6 +201,7 @@ fn runs_filters_by_workflow_and_includes_bounded_summaries() {
             "task_id",
             "workflow",
             "working_directory",
+            "workspace_kind",
         ]
     );
 }
@@ -257,7 +261,15 @@ fn inspect_resolves_task_context_bounds_detail_and_escapes_terminal_controls() {
         .collect::<Vec<_>>();
     assert_eq!(
         keys,
-        ["activity", "error", "result", "run", "session_id", "task"]
+        [
+            "activity",
+            "container",
+            "error",
+            "result",
+            "run",
+            "session_id",
+            "task",
+        ]
     );
 }
 

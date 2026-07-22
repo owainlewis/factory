@@ -1,202 +1,173 @@
-# Reliable local v1
+# Run the single-repository Factory v1
 
-This guide takes a trusted GitHub issue from `factory:ready` to one green draft
-pull request through one authenticated local Codex run. Factory never merges
-the pull request.
+Factory watches one GitHub Project and reacts only when trusted work enters one
+of two configured states. Triage runs from a read-only clone. Implementation
+runs from a writable clone, pushes one stable issue branch, and leaves one pull
+request for human review and merge.
 
-## Supported environment
+## Requirements
 
-Factory v1 requires a Unix-like operating system because process supervision
-uses Unix process groups. Install:
-
-- Rust and Cargo on the current stable toolchain;
-- Git;
-- GitHub CLI (`gh`);
-- Codex CLI authenticated with a ChatGPT subscription.
-
-Confirm authentication before installing Factory:
+Install Rust, Git, GitHub CLI, Docker, and Codex CLI on a Unix-like host. Docker
+must be running. Authenticate the host GitHub CLI:
 
 ```sh
+gh auth login
 gh auth status
-codex --version
-codex login status
 ```
 
-Factory rejects API-key Codex authentication. Do not configure `OPENAI_API_KEY`
-for Factory runs.
-
-## Install from a clean checkout
+Install Factory from a clean checkout:
 
 ```sh
 git clone https://github.com/owainlewis/factory.git
 cd factory
 cargo install --path .
-factory --version
 ```
 
-Re-run `cargo install --path . --force` after updating the checkout.
+## Initialize one repository
 
-## Initialize a trusted repository
-
-Run the explicit initializer from the repository Factory should manage:
+Run Factory inside the trusted repository it will manage:
 
 ```sh
-cd /absolute/path/to/trusted/repository
 factory init
 ```
 
-The command creates the implementation workflow, creates or updates
-`~/.factory/config.toml`, creates the default `~/.factory/workspaces` directory,
-and creates missing `factory:ready` and `factory:needs-review` labels. It does
-not change existing label definitions, commit files, start the daemon, launch
-Codex, or merge pull requests.
+This creates, only when missing:
 
-Initialization is idempotent. Preview it without writes with:
-
-```sh
-factory init --check
+```text
+.factory/config.toml
+.factory/Dockerfile
+.factory/workflows/triage-ticket.md
+.factory/workflows/implement-ready-ticket.md
 ```
 
-Use `factory init --no-labels` for offline local setup. A customized workflow is
-never overwritten by default; `factory init --update-workflow` is the explicit
-replacement operation. To initialize a repository without changing directory,
-use `factory init --repository /absolute/path/to/repository`.
+It also creates the repository-specific Factory data directory outside the
+checkout. Re-running the command preserves every existing file. Preview missing
+resources without writing with `factory init --check`.
 
-Review and commit the installed policy in the target repository:
+Edit `.factory/config.toml` with the GitHub Project owner and number, the exact
+Status field values, and trusted issue authors. Status names are local policy,
+so Jira-style or team-specific names are valid when mapped to all six semantic
+states.
+
+Review the two workflow prompts. They are the adaptive part of the factory.
+Review `.factory/Dockerfile` and add the repository toolchain needed by tests
+and builds, then build the configured image:
 
 ```sh
-git add .factory/workflows/implement-ready-ticket.md
-git commit -m "chore: configure Factory"
+docker build --file .factory/Dockerfile --tag factory-codex:dev .
 ```
 
-Validate the machine-specific configuration without network or runtime work:
+Create a dedicated writable Codex login for the worker:
+
+```sh
+mkdir -p "$HOME/.local/share/factory/codex"
+CODEX_HOME="$HOME/.local/share/factory/codex" codex login
+```
+
+Set `worker.codex_auth` to that `auth.json` path. Export a dedicated GitHub
+token through the environment named by `worker.github_token_env`:
+
+```sh
+export FACTORY_GITHUB_TOKEN='...'
+```
+
+Use a bot or narrowly scoped identity that can read and write the repository
+and Project but cannot bypass protected-branch review. Factory does not make a
+personal owner token safe.
+
+## Validate and start
 
 ```sh
 factory validate
-```
-
-The workflow is versioned policy: Codex owns
-ticket updates, worktree and branch creation, implementation, tests, diff
-review, draft pull-request creation, CI repair, and handoff. Factory owns the
-durable task, one claim, concurrency, supervision, cancellation, inspection,
-deduplication, and recovery.
-
-Check the resolved workflow catalog:
-
-```sh
 factory workflows
+factory run --once
+factory daemon
 ```
 
-## Start and prove one ticket
+Validation checks the repository, all configured Project states, trusted users,
+Docker daemon, exact image, authenticated Codex session inside that image, live worker GitHub token, and
+writable Factory data path. `run --once` polls and records matching work but
+does not claim tasks or launch containers. With no matching Project item,
+Factory starts no container and invokes no model.
 
-Write one complete issue with a bounded outcome, acceptance criteria, and
-verification. Ensure there is no existing implementation or pull request, then
-apply the ready label:
+The continuous daemon reacts to two states:
 
-```sh
-gh issue edit ISSUE_NUMBER --add-label factory:ready
-factory run
-```
+1. `ready_for_spec` moves to `creating_spec`. The triage agent investigates the
+   issue, improves its acceptance criteria, and either moves it to
+   `ready_to_implement` or posts a precise blocker.
+2. `ready_to_implement` moves to `implementing`. The implementation agent uses
+   normal `gh` and `git`, tests the change, obtains independent review, pushes
+   `factory/<issue-number>`, opens or updates one pull request, waits for CI,
+   and moves the item to `ready_to_review`.
 
-Keep the terminal open. The daemon polls GitHub, persists one task, atomically
-claims it, and launches the authenticated Codex CLI. The workflow removes the
-ready label when it takes ownership.
+Humans review the specification and the pull request. Feedback is given through
+the issue, review, Project state, and CI. Moving reviewed work back to
+`ready_to_implement` creates one continuation run on the same branch and pull
+request. Factory never merges or enables auto-merge.
 
-Use a second terminal to inspect durable state:
+## Observe a run
 
 ```sh
 factory tasks
-factory runs implement-ready-ticket
+factory runs
 factory inspect RUN_ID
 ```
 
-Exactly one task and run should represent the triggering issue revision. A
-normal daemon restart must not create another implementation or pull request.
-To exercise restart deduplication after the run is terminal, stop Factory with
-Ctrl-C, start `factory run` again, wait through at least one poll, and confirm
-the task/run counts and linked pull request remain unchanged.
+JSON output is available with `--json`. A successful implementation handoff
+records the issue, task, run, container, image, limits, clone, branch, pull
+request, bounded logs, and result. Restart the daemon and wait through another
+poll to confirm the task, branch, and pull-request counts remain unchanged.
 
-Success means:
+See [operations.md](operations.md) for cancellation, recovery, cleanup, trust,
+and Docker limitations.
 
-- one Codex run produced one ticket-numbered branch or worktree;
-- one linked draft pull request contains a useful summary and verification;
-- required CI and automated review are complete with no actionable feedback;
-- the issue has `factory:needs-review` and a useful handoff comment;
-- the pull request remains open, draft, and unmerged for a human.
+## Project 16 self-hosting evidence
 
-## Inspect, cancel, and recover
+Factory v1 was exercised against the public
+[Factory Project](https://github.com/users/owainlewis/projects/16) on 22 July
+2026 from a clean standalone clone of commit `f15a919`. `factory init` created
+the missing repository config without changing the checked-in workflows or
+Dockerfile. The image built as `factory-codex:dev` with digest
+`sha256:af5b2c31afc1e06d809a96d8c675bd7470532a4f1e30b0de118cab046fd3a52e`.
+`factory validate` resolved all six Project states, the trusted user, live
+worker token, Docker daemon and image, and a dedicated Codex login verified
+inside the hardened worker container.
 
-List and inspect work without reading raw SQLite state:
+Before adding ready work, `factory run --once` saw seven repository issues and
+created zero tasks. `factory tasks --json` returned `[]`, and Docker listed no
+container for the Factory instance. This is the no-work, no-model path.
 
-```sh
-factory tasks --json
-factory runs --json
-factory inspect RUN_ID --json
-```
+The implementation proof used [issue #54](https://github.com/owainlewis/factory/issues/54).
+Factory moved it from Ready To Implement to Implementing, created task 1 and
+run 1, cloned commit `eeb3858`, checked out `factory/54`, and launched container
+`1bb173253992` with a read-only root, 4 CPUs, 8 GB memory, and 512 PIDs. The
+agent used `gh` and `git`, changed only `docs/operations.md`, recorded review
+and verification limitations, pushed commit `5733d47`, and opened
+[PR #55](https://github.com/owainlewis/factory/pull/55). GitHub CI passed in
+1m37s. The agent marked the PR ready, moved the issue to Reviewing, posted the
+[handoff comment](https://github.com/owainlewis/factory/issues/54#issuecomment-5040193067),
+and left merge and auto-merge untouched. Run 1 succeeded in 463,624 ms, stored
+the PR link and exact image evidence, then removed its container and clean
+clone.
 
-Request cancellation of a running Factory-owned process tree:
+After stopping and restarting the daemon, the ledger still contained one
+succeeded task and one succeeded run for issue #54. GitHub still contained one
+open `factory/54` branch and one PR, and Docker contained no Factory container.
+The restart created no duplicate work.
 
-```sh
-factory cancel RUN_ID
-```
+The triage proof used [issue #56](https://github.com/owainlewis/factory/issues/56).
+Factory moved it from Ready For Spec to Creating Spec, created task 2 and run 2,
+and launched the same image against a separate read-only `triage-2` clone. The
+agent inspected the startup path and rewrote the vague issue into a bounded
+goal, scope, acceptance criteria, verification plan, and explicit exclusions,
+then moved it to Ready To Implement. Run 2 succeeded in 112,535 ms and produced
+no branch or pull request.
 
-Ctrl-C stops polling and claiming, cancels active Codex process groups, records
-cancelled outcomes, and leaves queued tasks durable. On restart Factory inspects
-non-terminal runs. It leaves live owned work alone, otherwise stops a matching
-orphan process group, closes the interrupted attempt, and permits at most two
-durable recovery attempts. Recovery first resumes the stored Codex session and
-falls back once to a fresh session with current issue, Git, worktree, pull
-request, CI, and bounded prior evidence. Repeated failure remains inspectable;
-Factory never merges as part of recovery.
-
-## Troubleshooting
-
-- Authentication errors: rerun `gh auth status` and `codex login status`.
-- Invalid configuration: run `factory validate` and correct the reported path
-  or concurrency constraint.
-- Missing setup: run `factory init --check`, then `factory init` to create only
-  the missing resources.
-- Invalid workflows: run `factory workflows`; ticket workflow errors fail fast,
-  while invalid scheduled workflows are reported and isolated.
-- No task: confirm the issue is open, has `factory:ready`, belongs to the
-  configured GitHub repository, and has changed since any earlier completed
-  trigger.
-- Failed run: use `factory inspect RUN_ID`; preserve the issue, branch, PR, and
-  worktree so recovery or a human can reconcile current state.
-
-## V1 acceptance evidence
-
-The M3 exercise ran on 18 July 2026 from a clean clone of commit
-`c0804e58e4159b7230116b8262ede837bb7973b2` on the pushed #10 branch. From that
-checkout, `cargo install --path .` installed `factory 0.1.0` into an isolated
-prefix. `factory validate` reported a valid configuration and `factory
-workflows` resolved `implement-ready-ticket` as a valid `factory:ready` Codex
-workflow with a four-hour timeout. Factory was started with local ChatGPT Codex
-authentication and with `OPENAI_API_KEY` removed from its environment.
-
-The real trigger was [issue #23](https://github.com/owainlewis/factory/issues/23).
-The ledger was empty before the label was applied. Factory created task 1 and
-run 1, with Codex session
-`019f76f8-577d-7313-b421-a8680b6eeda7`. The run succeeded in 552,487 ms and
-recorded [draft PR #24](https://github.com/owainlewis/factory/pull/24) at commit
-`68d0a2efeb7b416923d6cc6aa51d0350d6ae4ab8`. The PR remained open, draft, and
-unmerged. Its GitHub Actions `check` job passed, all requested local checks
-passed, and a fresh independent Codex subagent review reported no actionable
-findings. Issue #23 ended with only `factory:needs-review` and a handoff comment
-linking the PR, summary, checks, review state, and limitations.
-
-Restart deduplication was exercised after the terminal run. Before restart the
-ledger contained one succeeded task and one succeeded run linked to PR #24.
-After stopping the daemon, restarting it, and waiting through a five-second
-poll, those counts and the linked PR were unchanged. GitHub still contained
-one open PR for issue #23, so the restart created neither another Codex run nor
-another implementation.
-
-Observed limitations: the pre-merge proof necessarily checked out the pushed
-#10 branch rather than released `main`; the same commit became the candidate
-for the implementation PR. Isolated install, data, configuration, repository,
-and workspace paths lived under a temporary macOS directory whose canonical
-form was `/private/tmp`. GitHub had no submitted review on acceptance PR #24;
-the required automated diff review was the fresh Codex subagent inside the one
-supervised run. No model API key was used. PR #24 is intentionally left for a
-human and must not be merged as part of the milestone closeout.
+Two limitations were recorded. The proof used the operator's broad GitHub token,
+so it demonstrated the warning and human workflow but not least-privilege bot
+enforcement. Also, the daemon observed issue #56 become ready immediately after
+triage and queued its implementation generation before shutdown. Shutdown
+cancelled authorization before any implementation container launched. This is
+expected pipeline behavior, and it shows why a demo operator should stop or
+park a triaged ticket before the next poll when only the triage phase is being
+demonstrated.
