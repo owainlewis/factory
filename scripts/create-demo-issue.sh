@@ -6,6 +6,7 @@ project_owner="owainlewis"
 project_number="16"
 status_field="Status"
 ready_status="Ready For Spec"
+ready_label="factory:ready"
 trusted_user="owainlewis"
 
 usage() {
@@ -58,7 +59,8 @@ fi
 issue_url=$(gh issue create \
   --repo "$repository" \
   --title "$title" \
-  --body "$body")
+  --body "$body" \
+  --label "$ready_label")
 
 if ! item_id=$(gh project item-add "$project_number" \
   --owner "$project_owner" \
@@ -81,6 +83,7 @@ fi
 echo "Demo issue: ${issue_url}"
 echo "Project: https://github.com/users/${project_owner}/projects/${project_number}"
 echo "Status: ${ready_status}"
+echo "Label: ${ready_label}"
 echo
 echo "Next:"
 echo "  1. Run: cargo run -- run"

@@ -84,6 +84,7 @@ workflows live with the code:
 ```text
 .factory/
   config.toml
+  sources/github
   workflows/
     triage/WORKFLOW.md
     implement/WORKFLOW.md
@@ -103,31 +104,35 @@ maximum_timeout = "8h"
 max_concurrent = 1
 
 [source]
-type = "github"
-project_owner = "owainlewis"
-project_number = 16
-status_field = "Status"
-trusted_users = ["owainlewis"]
+command = [
+  ".factory/sources/github",
+  "--project-owner", "owainlewis",
+  "--project-number", "16",
+  "--status-field", "Status",
+  "--trusted-user", "owainlewis",
+]
 
 [trigger.triage]
-type = "status"
-status = "Ready For Spec"
+type = "source"
+state = "Ready For Spec"
+labels = ["factory:ready"]
 workflow = ".factory/workflows/triage/WORKFLOW.md"
 
 [trigger.implement]
-type = "status"
-status = "Ready To Implement"
+type = "source"
+state = "Ready To Implement"
+labels = ["factory:ready"]
 workflow = ".factory/workflows/implement/WORKFLOW.md"
 timeout = "4h"
 ```
 
 Every trigger has an explicit type:
 
-- `status` runs when a trusted open issue enters a configured Project status.
-- `label` runs when a trusted open issue has a configured label.
+- `source` runs when the source command finds an issue matching every configured
+  condition.
 - `schedule` runs once for each due cron instant.
 
-Status and label triggers run once during one continuous visit to the condition.
+Source triggers run once during one continuous visit to the condition.
 Leaving and later re-entering rearms the trigger, which gives humans a simple
 way to request another agent pass. Schedule triggers run once per scheduled
 instant.
@@ -136,6 +141,19 @@ Workflow files contain instructions only. They have no frontmatter and cannot
 change the trigger, runtime, sandbox, or timeout. A workflow may tell the agent
 to read repository-local skills such as `.agents/skills/verify-behavior`, but
 Factory does not install, load, or assign special meaning to skills.
+
+For each source trigger, Factory appends `--state <state>` and one `--label
+<label>` argument per configured label. The command must print one JSON object:
+
+```json
+{"issues":[{"key":"#56","title":"Fix the daemon","description":"What is broken and why","state":"Ready To Implement","labels":["factory:ready"],"url":"https://github.com/example/repo/issues/56","author":"owainlewis"}]}
+```
+
+The generated GitHub adapter is a small shell script that uses your existing
+authenticated `gh` CLI. It searches the exact Project owner and number,
+paginates matching issues, and returns only issues created by a configured
+trusted user. A Jira repository can replace it with a script backed by
+`jiractrl` without changing Factory's core.
 
 ## Run it
 
@@ -163,9 +181,8 @@ factory workflows
 
 For a first demonstration:
 
-1. Create an issue as one of `source.trusted_users` and add it to the configured
-   GitHub Project.
-2. Give it the status configured by `trigger.triage`.
+1. Create an issue and add it to the configured GitHub Project.
+2. Give it the state and every label configured by `trigger.triage`.
 3. Start Factory:
 
 ```sh

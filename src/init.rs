@@ -12,6 +12,7 @@ use crate::config::{Config, ExecutionMode, repository_remote_identity};
 
 const TRIAGE_WORKFLOW: &str = include_str!("../.factory/workflows/triage/WORKFLOW.md");
 const IMPLEMENT_WORKFLOW: &str = include_str!("../.factory/workflows/implement/WORKFLOW.md");
+const GITHUB_SOURCE: &str = include_str!("../.factory/sources/github");
 const WORKER_DOCKERFILE: &str = include_str!("../.factory/Dockerfile");
 
 #[derive(Debug, Clone)]
@@ -137,6 +138,7 @@ struct FilePlan {
     action: PlannedAction,
     contents: &'static str,
     detail: &'static str,
+    executable: bool,
 }
 
 struct ConfigPlan {
@@ -406,6 +408,11 @@ fn plan_default_assets(repository: &Path, execution_mode: ExecutionMode) -> Resu
             TRIAGE_WORKFLOW,
             "triage workflow",
         )?,
+        plan_executable_file(
+            factory.join("sources/github"),
+            GITHUB_SOURCE,
+            "GitHub source adapter",
+        )?,
         plan_file(
             factory.join("workflows/implement/WORKFLOW.md"),
             IMPLEMENT_WORKFLOW,
@@ -423,6 +430,23 @@ fn plan_default_assets(repository: &Path, execution_mode: ExecutionMode) -> Resu
 }
 
 fn plan_file(path: PathBuf, contents: &'static str, detail: &'static str) -> Result<FilePlan> {
+    plan_file_with_mode(path, contents, detail, false)
+}
+
+fn plan_executable_file(
+    path: PathBuf,
+    contents: &'static str,
+    detail: &'static str,
+) -> Result<FilePlan> {
+    plan_file_with_mode(path, contents, detail, true)
+}
+
+fn plan_file_with_mode(
+    path: PathBuf,
+    contents: &'static str,
+    detail: &'static str,
+    executable: bool,
+) -> Result<FilePlan> {
     if let Some(parent) = path.parent() {
         validate_optional_directory(parent)?;
     }
@@ -441,6 +465,7 @@ fn plan_file(path: PathBuf, contents: &'static str, detail: &'static str) -> Res
         action,
         contents,
         detail,
+        executable,
     })
 }
 
@@ -545,19 +570,29 @@ fn default_config(execution_mode: ExecutionMode, owner: &str) -> String {
         document["worker"]["pids"] = value(512);
     }
     document["source"] = Item::Table(Table::new());
-    document["source"]["type"] = value("github");
-    document["source"]["project_owner"] = value(owner);
-    document["source"]["project_number"] = value(16);
-    document["source"]["status_field"] = value("Status");
-    document["source"]["trusted_users"] = toml_edit::value(toml_edit::Array::from_iter([owner]));
+    document["source"]["command"] = toml_edit::value(toml_edit::Array::from_iter([
+        ".factory/sources/github",
+        "--project-owner",
+        owner,
+        "--project-number",
+        "16",
+        "--status-field",
+        "Status",
+        "--trusted-user",
+        owner,
+    ]));
     document["trigger"] = Item::Table(Table::new());
     document["trigger"]["triage"] = Item::Table(Table::new());
-    document["trigger"]["triage"]["type"] = value("status");
-    document["trigger"]["triage"]["status"] = value("Ready For Spec");
+    document["trigger"]["triage"]["type"] = value("source");
+    document["trigger"]["triage"]["state"] = value("Ready For Spec");
+    document["trigger"]["triage"]["labels"] =
+        toml_edit::value(toml_edit::Array::from_iter(["factory:ready"]));
     document["trigger"]["triage"]["workflow"] = value(".factory/workflows/triage/WORKFLOW.md");
     document["trigger"]["implement"] = Item::Table(Table::new());
-    document["trigger"]["implement"]["type"] = value("status");
-    document["trigger"]["implement"]["status"] = value("Ready To Implement");
+    document["trigger"]["implement"]["type"] = value("source");
+    document["trigger"]["implement"]["state"] = value("Ready To Implement");
+    document["trigger"]["implement"]["labels"] =
+        toml_edit::value(toml_edit::Array::from_iter(["factory:ready"]));
     document["trigger"]["implement"]["workflow"] =
         value(".factory/workflows/implement/WORKFLOW.md");
     document["trigger"]["implement"]["timeout"] = value("4h");
@@ -678,6 +713,13 @@ fn apply_file(plan: &FilePlan) -> Result<()> {
         .as_file_mut()
         .sync_all()
         .with_context(|| format!("failed to sync {}", plan.path.display()))?;
+    if plan.executable {
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("failed to make {} executable", plan.path.display()))?;
+    }
     temporary
         .persist_noclobber(&plan.path)
         .map_err(|error| error.error)

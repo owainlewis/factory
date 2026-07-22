@@ -12,6 +12,7 @@ use crate::approval::{
     ClaimArtifact, approved_content_hash, parse as parse_approval, parse_claim, render_claim,
 };
 use crate::config::{Config, GitHubConfig, SourceConfig};
+pub use crate::source::{PollReport, RepositoryPoll};
 use crate::storage::{ApprovalEvidence, Ledger, ObservedTicket, Task};
 use crate::workflow::{Trigger, WorkflowCatalog, WorkflowEntry};
 
@@ -97,36 +98,6 @@ pub struct LabelTicketContext {
 #[derive(Debug, Deserialize)]
 struct ApiRepository {
     default_branch: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RepositoryPoll {
-    pub repository: PathBuf,
-    pub name_with_owner: Option<String>,
-    pub issues_seen: usize,
-    pub tasks_created: usize,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PollReport {
-    pub repositories: Vec<RepositoryPoll>,
-}
-
-impl PollReport {
-    pub fn tasks_created(&self) -> usize {
-        self.repositories
-            .iter()
-            .map(|item| item.tasks_created)
-            .sum()
-    }
-
-    pub fn failures(&self) -> usize {
-        self.repositories
-            .iter()
-            .filter(|item| item.error.is_some())
-            .count()
-    }
 }
 
 #[derive(Debug, Clone)]

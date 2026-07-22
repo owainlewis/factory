@@ -194,15 +194,15 @@ fn rejects_an_existing_database_that_is_not_writable() {
 }
 
 #[test]
-fn validates_a_configurable_github_project_status_trigger() {
+fn validates_a_configurable_source_state_trigger() {
     let (temp, path, repository, data_home) = valid_config();
     let contents =
         fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/config.toml")).unwrap();
     fs::write(
         &path,
         contents.replace(
-            "status = \"Ready For Spec\"",
-            "status = \"Queued for engineering\"",
+            "state = \"Ready For Spec\"",
+            "state = \"Queued for engineering\"",
         ),
     )
     .unwrap();
@@ -227,6 +227,8 @@ fn validates_a_configurable_github_project_status_trigger() {
 if [ "$1" = "--version" ]; then echo "gh version 2.80.0"; exit 0; fi
 if [ "$1" = "auth" ]; then exit 0; fi
 if [ "$1" = "repo" ]; then echo "example/repository"; exit 0; fi
+if [ "$1" = "issue" ] && [ "$2" = "list" ]; then echo '{"issues":[]}'; exit 0; fi
+if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then exit 0; fi
 if [ "$1" = "api" ] && [ "$2" = "user" ] && [ "$GH_TOKEN" = "dedicated-test-token" ]; then echo '{"id":99,"login":"factory-bot"}'; exit 0; fi
 if [ "$1" = "api" ] && [ "$2" = "users/owainlewis" ]; then echo '{"id":1,"login":"owainlewis","node_id":"U_1"}'; exit 0; fi
 if [ "$1" = "project" ] && [ "$2" = "view" ]; then echo '{"id":"PVT_16"}'; exit 0; fi
@@ -271,13 +273,22 @@ exit 64
 }
 
 #[test]
-fn rejects_invalid_github_project_source() {
+fn rejects_an_empty_source_command() {
     let (_temp, path, _repository, data_home) = valid_config();
     let contents =
         fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/config.toml")).unwrap();
     fs::write(
         &path,
-        contents.replace("project_number = 16", "project_number = 0"),
+        contents.replace(
+            r#"command = [
+  ".factory/sources/github",
+  "--project-owner", "owainlewis",
+  "--project-number", "16",
+  "--status-field", "Status",
+  "--trusted-user", "owainlewis",
+]"#,
+            "command = []",
+        ),
     )
     .unwrap();
 
@@ -288,7 +299,7 @@ fn rejects_invalid_github_project_source() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "source.project_number must be greater than zero",
+            "source.command must contain an executable",
         ));
 }
 

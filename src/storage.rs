@@ -819,11 +819,22 @@ impl Ledger {
                 .unwrap_or((false, None));
             let approval_changed = previous_revision != Some(observation.revision.as_str());
             if observation.eligible && (!was_eligible || approval_changed) {
+                let task_revision =
+                    if !was_eligible && previous_revision == Some(observation.revision.as_str()) {
+                        let next_task_id = transaction
+                            .query_row("SELECT COALESCE(MAX(id), 0) + 1 FROM tasks", [], |row| {
+                                row.get::<_, i64>(0)
+                            })
+                            .context("failed to allocate a ticket visit generation")?;
+                        format!("{}:visit:{next_task_id}", observation.revision)
+                    } else {
+                        observation.revision.clone()
+                    };
                 let identity = TaskIdentity::ticket(
                     repository,
                     workflow,
                     &observation.source_item,
-                    &observation.revision,
+                    task_revision,
                 )?;
                 let active_exists = transaction
                     .query_row(

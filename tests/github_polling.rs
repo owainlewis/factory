@@ -66,6 +66,7 @@ impl Fixture {
                 kind: TriggerKind::Label("agent:ready".to_owned()),
             }],
             source: Some(SourceConfig {
+                command: Vec::new(),
                 owner: "example".to_owned(),
                 project_number: 16,
                 status_field: "Status".to_owned(),

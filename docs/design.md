@@ -42,20 +42,24 @@ maximum_timeout = "8h"
 max_concurrent = 1
 
 [source]
-type = "github"
-project_owner = "owainlewis"
-project_number = 16
-status_field = "Status"
-trusted_users = ["owainlewis"]
+command = [
+  ".factory/sources/github",
+  "--project-owner", "owainlewis",
+  "--project-number", "16",
+  "--status-field", "Status",
+  "--trusted-user", "owainlewis",
+]
 
 [trigger.triage]
-type = "status"
-status = "Ready For Spec"
+type = "source"
+state = "Ready For Spec"
+labels = ["factory:ready"]
 workflow = ".factory/workflows/triage/WORKFLOW.md"
 
 [trigger.implement]
-type = "label"
-label = "agent:ready"
+type = "source"
+state = "Ready To Implement"
+labels = ["factory:ready"]
 workflow = ".factory/workflows/implement/WORKFLOW.md"
 timeout = "4h"
 
@@ -84,8 +88,8 @@ one agent's skill format.
 
 Factory owns mechanisms that must be consistent:
 
-- poll timing and provider authentication;
-- source validation and trusted-author checks;
+- poll timing and source command execution;
+- validation of the provider-neutral source output;
 - event detection and edge rearming;
 - durable task identity and atomic claims;
 - concurrency and time limits;
@@ -110,18 +114,13 @@ state machine.
 
 ## Trigger semantics
 
-### Status
+### Source
 
-A status trigger selects trusted open issues whose Project item has the exact
-configured value. It runs once for one continuous visit to that value. Leaving
-the value rearms the trigger. Returning later can create a new task, which is
-useful for human review loops.
-
-### Label
-
-A label trigger selects trusted open issues with the exact label. It has the
-same run-once and rearm behavior as a status trigger. Factory rechecks live issue
-state immediately before a claim so stale poll results do not start work.
+A source trigger asks the configured adapter for issues matching one exact
+state and every configured label. It runs once for one continuous visit to that
+condition. Leaving the condition rearms the trigger. Returning later creates a
+new task, which is useful for human review loops. Factory reruns the same source
+query immediately before launch so stale poll results do not start work.
 
 ### Schedule
 
