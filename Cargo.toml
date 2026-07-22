@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "A local-first supervisor for agent workflows"
+repository = "https://github.com/owainlewis/factory"
+homepage = "https://github.com/owainlewis/factory"
+readme = "README.md"
+keywords = ["agents", "automation", "cli", "github", "workflow"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1.0"
