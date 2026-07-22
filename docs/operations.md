@@ -30,7 +30,10 @@ agent to find and continue an existing branch or pull request when appropriate.
 
 Factory stores durable state and managed worktrees below
 `~/.factory/<repository-hash>/`. Set `FACTORY_DATA_HOME` to override the
-`~/.factory` root.
+`~/.factory` root. When upgrading an installation that already has state below
+the previous platform data directory, Factory refuses to select the new default
+while the previous ledger remains and reports the `FACTORY_DATA_HOME` value that
+continues using that state.
 
 ## Worker boundary
 
