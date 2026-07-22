@@ -52,14 +52,16 @@ for implementation.
 A useful team workflow looks like this:
 
 ```text
-Ready For Spec -> Creating Spec -> Ready To Implement
-                                         |
-                                         v
-                              Implementing -> Reviewing -> Done
-                                                  |
-                                      CI and human feedback
-                                                  |
-                                      another agent pass if needed
+Ready For Spec -> Creating Spec
+                       |
+                  human approval
+                       |
+                       v
+              Ready To Implement -> Implementing -> Reviewing -> Done
+                                                        |
+                                            CI and human feedback
+                                                        |
+                                            another agent pass if needed
 ```
 
 These names are not built into Factory. They are ordinary GitHub Project status
@@ -188,6 +190,22 @@ factory run
 Factory will poll continuously, but it starts an agent only when work becomes
 eligible. Use `factory run --once` to poll and record eligible work without
 launching an agent.
+
+This repository includes a repeatable setup script for the complete two-flow
+demo. It creates a real issue, adds it to GitHub Project 16, and moves it to
+`Ready For Spec`:
+
+```sh
+./scripts/create-demo-issue.sh \
+  "Remove the unreachable legacy configuration test module" \
+  "src/config.rs contains a large test module guarded by cfg(all(test, any())), so it can never compile or run. Remove the unreachable module without changing active configuration behaviour."
+```
+
+Then run `cargo run -- run`. The specification agent refines the idea and stops
+in `Creating Spec`. Review the ticket on the board and move it to
+`Ready To Implement`. The same Factory process starts the implementation agent,
+which writes the code, opens a pull request, waits for CI and review, and moves
+the ticket to `Reviewing`. Use a fresh idea each time you repeat the demo.
 
 Inspect and operate the durable queue with:
 
