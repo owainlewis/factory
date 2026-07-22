@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use assert_cmd::Command;
+use factory::storage::{Ledger, TaskIdentity};
 use predicates::prelude::*;
 
 struct Fixture {
@@ -56,6 +57,14 @@ impl Fixture {
 
     fn workflows(&self) -> PathBuf {
         self.repository.join(".factory/workflows")
+    }
+
+    fn previous_data_home(&self) -> PathBuf {
+        if cfg!(target_os = "macos") {
+            self.home.join("Library/Application Support/factory")
+        } else {
+            self.home.join(".local/share/factory")
+        }
     }
 }
 
@@ -160,6 +169,136 @@ fn init_creates_complete_repository_factory_without_overwriting() {
         .success()
         .stdout(predicate::str::contains("unchanged:"));
     assert_eq!(fs::read_to_string(fixture.config_path()).unwrap(), config);
+}
+
+#[test]
+fn init_uses_dot_factory_as_the_default_data_home() {
+    let fixture = Fixture::new();
+
+    fixture
+        .command()
+        .env_remove("FACTORY_DATA_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .arg("init")
+        .assert()
+        .success();
+
+    let data_home = fixture.home.join(".factory");
+    let state_directories = fs::read_dir(&data_home)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(state_directories.len(), 1);
+    assert!(state_directories[0].join("worktrees").is_dir());
+}
+
+#[test]
+fn init_refuses_to_abandon_state_at_the_previous_default() {
+    let fixture = Fixture::new();
+    let previous_data_home = fixture.previous_data_home();
+
+    fixture
+        .command()
+        .env("FACTORY_DATA_HOME", &previous_data_home)
+        .arg("init")
+        .assert()
+        .success();
+
+    let previous_state_directory = fs::read_dir(&previous_data_home)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut previous_ledger = Ledger::open_in(&previous_state_directory).unwrap();
+    previous_ledger
+        .enqueue(
+            &TaskIdentity::ticket("example/repository", "implement", "1", "revision-1").unwrap(),
+        )
+        .unwrap();
+    drop(previous_ledger);
+    let new_state_directory = fixture
+        .home
+        .join(".factory")
+        .join(previous_state_directory.file_name().unwrap());
+    drop(Ledger::open_in(&new_state_directory).unwrap());
+
+    fixture
+        .command()
+        .env_remove("FACTORY_DATA_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("refused to use"))
+        .stderr(predicate::str::contains(
+            previous_data_home.to_str().unwrap(),
+        ));
+}
+
+#[test]
+fn init_ignores_a_previous_default_without_a_ledger() {
+    let fixture = Fixture::new();
+    let previous_data_home = fixture.previous_data_home();
+
+    fixture
+        .command()
+        .env("FACTORY_DATA_HOME", previous_data_home)
+        .arg("init")
+        .assert()
+        .success();
+
+    fixture
+        .command()
+        .env_remove("FACTORY_DATA_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .arg("init")
+        .assert()
+        .success();
+}
+
+#[test]
+fn run_refuses_to_overlap_a_global_ledger() {
+    let fixture = Fixture::new();
+    fixture.command().arg("init").assert().success();
+
+    let global_database = fixture.home.join(".factory/factory.sqlite3");
+    let mut global_ledger = Ledger::open(&global_database).unwrap();
+    global_ledger
+        .enqueue(
+            &TaskIdentity::ticket("example/repository", "implement", "1", "revision-1").unwrap(),
+        )
+        .unwrap();
+    drop(global_ledger);
+
+    fixture
+        .command()
+        .args(["run", "--once"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("global ledger"))
+        .stderr(predicate::str::contains(global_database.to_str().unwrap()));
+}
+
+#[test]
+fn run_refuses_an_override_root_containing_an_unscoped_ledger() {
+    let fixture = Fixture::new();
+    let data_home = fixture.data_home.clone();
+    fixture.command().arg("init").assert().success();
+
+    let unscoped_database = data_home.join("factory.sqlite3");
+    drop(Ledger::open(&unscoped_database).unwrap());
+
+    fixture
+        .command()
+        .env("FACTORY_DATA_HOME", data_home)
+        .args(["run", "--once"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unscoped ledger"))
+        .stderr(predicate::str::contains(
+            unscoped_database.to_str().unwrap(),
+        ));
 }
 
 #[test]

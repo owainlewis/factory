@@ -7,7 +7,7 @@ use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 use factory::clone::CloneManager;
-use factory::config::{Config, ExecutionMode, repository_config_path, repository_remote_identity};
+use factory::config::{Config, ExecutionMode, repository_config_path};
 use factory::daemon::FactoryDaemon;
 use factory::docker::DockerWorker;
 use factory::execution::ResolvedWorkflow;
@@ -546,8 +546,8 @@ async fn run_poller(
         format!("Factory starting: mode={mode} config={}\n", path.display()).as_bytes(),
     );
     let config = Config::load(&path)?;
+    ensure_no_unscoped_ledger_overlap()?;
     let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
-    ensure_legacy_cutover(&config, &data_directory)?;
     let catalog = WorkflowCatalog::load(&config)?;
     let ticket_validation = catalog.validate_ticket_workflows();
     if !once && ticket_validation.is_err() {
@@ -600,50 +600,33 @@ async fn run_poller(
     Ok(0)
 }
 
-fn ensure_legacy_cutover(config: &Config, data_directory: &std::path::Path) -> Result<()> {
-    let legacy_directory = std::env::var_os("FACTORY_LEGACY_DATA_DIRECTORY")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".factory")))
-        .context("could not determine legacy Factory data directory")?;
-    let legacy_database = legacy_directory.join(DATABASE_NAME);
-    if !legacy_database.is_file() {
-        return Ok(());
-    }
-    if data_directory
-        .components()
-        .any(|component| component == std::path::Component::ParentDir)
-    {
+fn ensure_no_unscoped_ledger_overlap() -> Result<()> {
+    let default_base = dirs::home_dir()
+        .map(|home| home.join(".factory"))
+        .context("could not determine Factory data directory")?;
+    let global_database = default_base.join(DATABASE_NAME);
+    if global_database.exists() {
         bail!(
-            "Factory data directory must not contain parent traversal: {}",
-            data_directory.display()
+            "Factory found a global ledger at {} and refused to start repository-scoped state because old queued or running work could overlap; stop the old Factory process, finish or cancel its work, then archive the global ledger before continuing",
+            global_database.display()
         );
     }
-    let legacy_directory = legacy_directory
-        .canonicalize()
-        .context("failed to resolve legacy Factory data directory")?;
-    let effective_data_directory = if data_directory.exists() {
-        data_directory
-            .canonicalize()
-            .context("failed to resolve Factory data directory")?
-    } else if data_directory.is_absolute() {
-        data_directory.to_path_buf()
+
+    let Some(configured_base) = std::env::var_os("FACTORY_DATA_HOME").map(PathBuf::from) else {
+        return Ok(());
+    };
+    let configured_base = if configured_base.is_absolute() {
+        configured_base
     } else {
         std::env::current_dir()
             .context("failed to resolve current directory")?
-            .join(data_directory)
+            .join(configured_base)
     };
-    if effective_data_directory == legacy_directory {
+    let unscoped_database = configured_base.join(DATABASE_NAME);
+    if unscoped_database.exists() {
         bail!(
-            "repository-local Factory cannot use the legacy data directory {}; choose the derived repository state directory and leave legacy history untouched",
-            legacy_directory.display()
-        );
-    }
-    let repository = repository_remote_identity(&config.repositories[0])?;
-    let active = Ledger::existing_non_terminal_tasks_for_repository(&legacy_database, &repository)?;
-    if active > 0 {
-        bail!(
-            "legacy Factory has {active} non-terminal task(s) for {repository}; stop the old daemon and finish or cancel that work before starting repository-local Factory. The legacy database was left unchanged at {}",
-            legacy_database.display()
+            "Factory found an unscoped ledger at {} and refused to start repository-scoped state because old queued or running work could overlap; stop the old Factory process, finish or cancel its work, then archive the unscoped ledger before using this data root",
+            unscoped_database.display()
         );
     }
     Ok(())

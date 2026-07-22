@@ -11,6 +11,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::storage::DATABASE_NAME;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub repositories: Vec<PathBuf>,
@@ -804,10 +806,33 @@ pub fn repository_data_directory(repository: &Path) -> Result<PathBuf> {
     hasher.update(b"\0");
     hasher.update(repository.as_os_str().as_encoded_bytes());
     let digest = format!("{:x}", hasher.finalize());
-    let base = env::var_os("FACTORY_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs::data_local_dir().map(|path| path.join("factory")))
-        .context("could not determine Factory data directory")?;
+    let digest = &digest[..20];
+    let configured_base = env::var_os("FACTORY_DATA_HOME").map(PathBuf::from);
+    let base = match configured_base.as_ref() {
+        Some(base) => resolve_data_base(base.clone())?,
+        None => dirs::home_dir()
+            .map(|path| path.join(".factory"))
+            .context("could not determine Factory data directory")?,
+    };
+    let data_directory = base.join(digest);
+    if configured_base.is_some() {
+        return Ok(data_directory);
+    }
+    if let Some(previous_base) = dirs::data_local_dir().map(|path| path.join("factory")) {
+        let previous_directory = previous_base.join(digest);
+        if previous_directory.join(DATABASE_NAME).exists() {
+            bail!(
+                "Factory found repository state at the previous default {} and refused to use {} because abandoning the previous ledger could repeat durable work; set FACTORY_DATA_HOME={} to keep using the existing state, or archive the previous ledger before choosing the new default",
+                previous_directory.display(),
+                data_directory.display(),
+                previous_base.display()
+            );
+        }
+    }
+    Ok(data_directory)
+}
+
+fn resolve_data_base(base: PathBuf) -> Result<PathBuf> {
     let base = if base.is_absolute() {
         base
     } else {
@@ -815,7 +840,7 @@ pub fn repository_data_directory(repository: &Path) -> Result<PathBuf> {
             .context("failed to resolve current directory")?
             .join(base)
     };
-    Ok(base.join(&digest[..20]))
+    Ok(base)
 }
 
 pub fn repository_remote_identity(repository: &Path) -> Result<String> {
