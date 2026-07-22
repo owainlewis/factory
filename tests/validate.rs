@@ -67,12 +67,35 @@ needs_review_label = "factory:needs-review"
     (temp, path, repository, data_home)
 }
 
+#[cfg(unix)]
+fn command_with_healthy_codex(temp: &tempfile::TempDir) -> Command {
+    let bin = temp.path().join("healthy-bin");
+    fs::create_dir_all(&bin).unwrap();
+    let codex = bin.join("codex");
+    fs::write(
+        &codex,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'codex 1.0.0'; exit 0; fi\nif [ \"$1 $2\" = \"login status\" ]; then echo 'Logged in using ChatGPT'; exit 0; fi\nexit 64\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&codex).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(codex, permissions).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut command = Command::cargo_bin("factory").unwrap();
+    command.env("PATH", path);
+    command
+}
+
+#[cfg(unix)]
 #[test]
 fn validates_explicit_config() {
-    let (_temp, path, _repository, data_home) = valid_config();
+    let (temp, path, _repository, data_home) = valid_config();
 
-    Command::cargo_bin("factory")
-        .unwrap()
+    command_with_healthy_codex(&temp)
         .args(["validate", "--config", path.to_str().unwrap()])
         .env("FACTORY_DATA_HOME", data_home)
         .assert()
@@ -83,10 +106,36 @@ fn validates_explicit_config() {
 
 #[cfg(unix)]
 #[test]
-fn rejects_an_existing_database_that_is_not_writable() {
-    let (_temp, path, _repository, data_home) = valid_config();
+fn worktree_validation_requires_a_healthy_host_codex_cli() {
+    let (temp, path, _repository, data_home) = valid_config();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let codex = bin.join("codex");
+    fs::write(&codex, "#!/bin/sh\necho broken codex >&2\nexit 64\n").unwrap();
+    let mut permissions = fs::metadata(&codex).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&codex, permissions).unwrap();
+    let path_value = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
     Command::cargo_bin("factory")
         .unwrap()
+        .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", data_home)
+        .env("PATH", path_value)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Codex CLI health check failed"));
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_an_existing_database_that_is_not_writable() {
+    let (temp, path, _repository, data_home) = valid_config();
+    command_with_healthy_codex(&temp)
         .args(["validate", "--config", path.to_str().unwrap()])
         .env("FACTORY_DATA_HOME", &data_home)
         .assert()
@@ -244,13 +293,13 @@ fn reports_specific_validation_failures() {
         ));
 }
 
+#[cfg(unix)]
 #[test]
 fn uses_default_config_path() {
-    let (_temp, _path, repository, data_home) = valid_config();
+    let (temp, _path, repository, data_home) = valid_config();
     fs::create_dir_all(repository.join("nested/directory")).unwrap();
 
-    Command::cargo_bin("factory")
-        .unwrap()
+    command_with_healthy_codex(&temp)
         .arg("validate")
         .current_dir(repository.join("nested/directory"))
         .env("FACTORY_DATA_HOME", data_home)
@@ -259,14 +308,14 @@ fn uses_default_config_path() {
         .stdout(predicate::str::contains("Configuration is valid."));
 }
 
+#[cfg(unix)]
 #[test]
 fn resolves_relative_paths_from_config_directory() {
-    let (_temp, path, repository, data_home) = valid_config();
+    let (temp, path, repository, data_home) = valid_config();
     let launch_dir = repository.join("nested");
     fs::create_dir(&launch_dir).unwrap();
 
-    Command::cargo_bin("factory")
-        .unwrap()
+    command_with_healthy_codex(&temp)
         .current_dir(launch_dir)
         .args(["validate", "--config", path.to_str().unwrap()])
         .env("FACTORY_DATA_HOME", &data_home)

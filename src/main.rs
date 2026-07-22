@@ -309,9 +309,9 @@ async fn run_cli() -> Result<u8> {
             let catalog = WorkflowCatalog::load(&config)?;
             catalog.validate_ticket_workflows()?;
             validate_data_directory(&config.data_directory)?;
+            let cancellation = CancellationToken::new();
             if let Some(source) = &config.source {
                 let github = GitHubClient::default();
-                let cancellation = CancellationToken::new();
                 github.validate_global(&cancellation).await?;
                 for repository in &config.repositories {
                     github
@@ -321,10 +321,14 @@ async fn run_cli() -> Result<u8> {
             }
             if let Some(worker) = &config.worker {
                 GitHubClient::default()
-                    .validate_token_env(&worker.github_token_env, &CancellationToken::new())
+                    .validate_token_env(&worker.github_token_env, &cancellation)
                     .await?;
                 DockerWorker::new(worker.clone(), "validate")
-                    .validate(&CancellationToken::new())
+                    .validate(&cancellation)
+                    .await?;
+            } else {
+                CodexRuntime::default()
+                    .health_check_with_cancellation(cancellation)
                     .await?;
             }
             print!("{config}");

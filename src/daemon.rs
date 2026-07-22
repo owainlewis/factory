@@ -140,6 +140,7 @@ impl FactoryDaemon {
             Err(error) => return Err(error),
         };
         let mut ledger = Ledger::open(&self.ledger_path)?;
+        validate_workspace_backends(&ledger, self.docker.is_some())?;
         if let Some(docker) = &self.docker {
             reconcile_docker_workers(docker, &mut ledger, &cancellation).await?;
         }
@@ -505,6 +506,23 @@ async fn reconcile_docker_workers(
 fn docker_instance_id(data_directory: &Path) -> String {
     let digest = Sha256::digest(data_directory.as_os_str().as_encoded_bytes());
     format!("{:x}", digest)[..20].to_owned()
+}
+
+fn validate_workspace_backends(ledger: &Ledger, docker_mode: bool) -> Result<()> {
+    let expected = if docker_mode { "clone" } else { "worktree" };
+    let incompatible = ledger
+        .active_task_workspaces()?
+        .into_iter()
+        .filter(|workspace| workspace.backend != expected)
+        .map(|workspace| format!("task {} ({})", workspace.task_id, workspace.backend))
+        .collect::<Vec<_>>();
+    if !incompatible.is_empty() {
+        bail!(
+            "configured execution mode requires {expected} workspaces, but active work uses {}; finish or clean up those tasks before changing execution_mode",
+            incompatible.join(", ")
+        );
+    }
+    Ok(())
 }
 
 fn reconcile_pending_cleanup(
@@ -2227,6 +2245,38 @@ mod tests {
             docker_clone_mount(&Trigger::Label("factory:ready".to_owned())),
             CloneMount::ReadWrite
         );
+    }
+
+    #[test]
+    fn startup_rejects_active_workspaces_from_another_execution_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+        let task = ledger
+            .enqueue(&TaskIdentity::ticket("example/repo", "triage", "42", "approval").unwrap())
+            .unwrap()
+            .task;
+        ledger
+            .reserve_task_workspace(&TaskWorkspace {
+                task_id: task.id,
+                kind: "proposal".into(),
+                backend: "clone".into(),
+                repository: task.repository,
+                base_branch: "main".into(),
+                base_sha: "0123456789012345678901234567890123456789".into(),
+                factory_branch: None,
+                path: temp.path().join("triage-1"),
+                state: "ready".into(),
+                status_summary: None,
+                created_at: 0,
+                updated_at: 0,
+                cleaned_at: None,
+            })
+            .unwrap();
+
+        validate_workspace_backends(&ledger, true).unwrap();
+        let error = validate_workspace_backends(&ledger, false).unwrap_err();
+        assert!(error.to_string().contains("task 1 (clone)"));
+        assert!(error.to_string().contains("before changing execution_mode"));
     }
 
     fn scheduled_targets(
