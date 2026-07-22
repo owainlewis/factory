@@ -32,8 +32,13 @@ and report the conflict.
 
 Implement the smallest cohesive change that satisfies every acceptance
 criterion. Follow existing repository patterns and avoid unrelated cleanup. Add
-useful tests, then run the repository's formatting, linting, test, and build
-checks that cover the change.
+useful tests, then choose verification in proportion to the change. Always run
+the checks required by the ticket and repository. For documentation-only or
+other low-risk changes, prefer focused checks such as diff validation, link
+validation, rendering, and verification of any documented commands. For code,
+configuration, security-sensitive, shared-interface, or uncertain changes, run
+the wider formatting, linting, test, and build checks that cover the affected
+behavior. Do not run unrelated repository-wide checks solely by habit.
 
 If issue-specific product or technical specifications exist, compare the final
 implementation against them. If the repository provides a spec-validation
@@ -42,8 +47,15 @@ flow and capture useful screenshot, video, or equivalent evidence when the
 available environment supports it. If the repository provides a behavioural
 verification skill, follow it. Unit tests alone do not prove visible behaviour.
 
-Review the complete diff with a fresh agent. Fix valid correctness, security,
-regression, and maintainability findings, then rerun affected checks.
+Review the complete diff with a fresh agent. Give the reviewer the ticket,
+acceptance criteria, diff, and verification evidence. Keep the review scoped to
+the change and the surrounding behavior needed to prove it wrong. Do not ask
+the reviewer to repeat triage, audit the whole repository, or inspect unrelated
+history. Scale review depth to risk: low-risk documentation should receive
+focused accuracy, claim, link, and rendering checks, while code, configuration,
+security-sensitive, shared-interface, or uncertain changes require deeper
+correctness, security, regression, and maintainability analysis. Fix valid
+findings, then rerun affected checks.
 
 ## Publish and close the loop
 

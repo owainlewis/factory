@@ -14,8 +14,11 @@ factory run
 ```
 
 Startup validates the configured execution backend before claiming work.
-Lifecycle events report polls, claims, worker delegation, and terminal outcomes. Use
-the supported inspection commands instead of reading SQLite directly:
+Lifecycle events report polls, claims, worker delegation, safe Codex progress,
+and terminal outcomes. Progress distinguishes work such as reasoning, commands,
+file changes, web searches, and subtask coordination. Factory deliberately does
+not print prompts, reasoning content, command arguments, or raw tool output.
+Use the supported inspection commands instead of reading SQLite directly:
 
 ```sh
 factory tasks [--json]
