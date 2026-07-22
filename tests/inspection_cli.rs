@@ -1,5 +1,5 @@
 use assert_cmd::Command;
-use factory::storage::{Ledger, RunOutcome, TaskIdentity};
+use factory::storage::{Ledger, RunOutcome, RunSandbox, TaskIdentity};
 use predicates::prelude::*;
 
 struct Fixture {
@@ -21,6 +21,22 @@ impl Fixture {
         let running_task = enqueue(&mut ledger, "running", "implement-ready-ticket");
         claim(&mut ledger, running_task);
         let running_run_id = ledger.start_run(running_task, "codex").unwrap().id;
+        ledger
+            .record_run_sandbox(&RunSandbox {
+                run_id: running_run_id,
+                sandbox_name: format!("factory-test-{running_run_id}"),
+                instance_id: "test".into(),
+                template_ref: "docker/sandbox-templates:codex".into(),
+                sbx_version: "sbx version 0.35.0".into(),
+                limits_json: r#"{"memory":"8g","cpus":4}"#.into(),
+                state: "created".into(),
+                exit_code: None,
+                logs: None,
+                created_at: 100,
+                updated_at: 100,
+                removed_at: None,
+            })
+            .unwrap();
 
         let failed_task = enqueue(&mut ledger, "failed", "implement-ready-ticket");
         claim(&mut ledger, failed_task);
@@ -267,10 +283,24 @@ fn inspect_resolves_task_context_bounds_detail_and_escapes_terminal_controls() {
             "error",
             "result",
             "run",
+            "sandbox",
             "session_id",
             "task",
         ]
     );
+
+    let running_output = command(
+        &fixture,
+        &["inspect", &fixture.running_run_id.to_string(), "--json"],
+    )
+    .output()
+    .unwrap();
+    let running: serde_json::Value = serde_json::from_slice(&running_output.stdout).unwrap();
+    assert_eq!(
+        running["sandbox"]["template_ref"],
+        "docker/sandbox-templates:codex"
+    );
+    assert_eq!(running["sandbox"]["state"], "created");
 }
 
 #[test]

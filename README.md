@@ -207,9 +207,9 @@ ticket with `jiractrl`; `git` and `gh` remain responsible for code and pull
 requests.
 
 The Jira demo currently uses `sandbox = "worktree"`, so the worker inherits the
-host's `jiractrl` binary and Jira environment variables. A Docker worker would
-also need `jiractrl` in its image and an explicit Jira credential mount or
-environment policy; that is not included in this demo path.
+host's `jiractrl` binary and Jira environment variables. A Docker Sandbox
+worker would need a custom template containing `jiractrl` plus an appropriate
+proxy-managed credential; that is not included in this demo path.
 
 ## Run it
 
@@ -288,15 +288,15 @@ process boundary. Use it only for trusted work.
 For stronger local isolation, initialize with:
 
 ```sh
-factory init --execution-mode docker
+factory init --execution-mode docker-sandbox
 ```
 
-Docker workers use a standalone clone, a read-only root filesystem, resource
-limits, a dedicated Codex authentication file, and an explicitly named GitHub
-token. The auth file is writable inside the container because Codex may refresh
-OAuth credentials. Keep it separate from your normal login and make it easy to
-revoke. Docker is still not a VM and the worker still has network access and
-repository credentials.
+Docker Sandbox workers create a private in-VM clone from Factory's standalone
+clone. The agent gets a separate Linux kernel, an isolated Docker daemon,
+explicit resource limits, deny-by-default networking, and proxy-managed Codex
+and GitHub credentials. Before removal, Factory snapshots the private workspace
+inside the VM and fetches it into trusted host Git metadata. A sandbox is
+retained if that handoff fails.
 
 Factory limits ticket triggers to configured issue authors and revalidates live
 source state immediately before execution. Ticket bodies, comments, linked pull
@@ -310,7 +310,7 @@ V1 intentionally supports:
 
 - one repository and one GitHub source;
 - status, label, and schedule triggers;
-- Codex workers in managed worktrees or Docker clones;
+- Codex workers in managed worktrees or Docker Sandboxes;
 - explicit Markdown workflows;
 - durable queueing, supervision, history, cancellation, and recovery.
 

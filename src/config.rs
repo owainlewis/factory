@@ -58,25 +58,23 @@ pub enum TriggerKind {
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionMode {
     Worktree,
-    Docker,
+    DockerSandbox,
 }
 
 impl fmt::Display for ExecutionMode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Worktree => "worktree",
-            Self::Docker => "docker",
+            Self::DockerSandbox => "docker_sandbox",
         })
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerConfig {
-    pub image: String,
+    pub template: String,
     pub memory: String,
     pub cpus: u32,
-    pub pids: u32,
-    pub codex_auth: PathBuf,
     pub github_token_env: String,
 }
 
@@ -120,11 +118,9 @@ struct RawWorkerConfig {
     timeout: String,
     maximum_timeout: Option<String>,
     max_concurrent: usize,
-    image: Option<String>,
+    template: Option<String>,
     memory: Option<String>,
     cpus: Option<u32>,
-    pids: Option<u32>,
-    codex_auth: Option<String>,
     github_token_env: Option<String>,
 }
 
@@ -244,9 +240,6 @@ impl Config {
         }
         let max_concurrent = raw.worker.max_concurrent;
         let execution_mode = raw.worker.sandbox;
-        if execution_mode == ExecutionMode::Docker && raw.worker.max_concurrent != 1 {
-            bail!("Docker workers require worker.max_concurrent = 1");
-        }
         let source = resolve_source(raw.source)?;
         let default_runtime = raw.worker.runtime.trim().to_owned();
         if default_runtime != "codex" {
@@ -269,12 +262,10 @@ impl Config {
         let data_directory = repository_data_directory(&repository)?;
         let worker = match execution_mode {
             ExecutionMode::Worktree => {
-                reject_docker_options(&raw.worker)?;
+                reject_sandbox_options(&raw.worker)?;
                 None
             }
-            ExecutionMode::Docker => {
-                Some(resolve_worker(raw.worker, &repository, &data_directory)?)
-            }
+            ExecutionMode::DockerSandbox => Some(resolve_worker(raw.worker)?),
         };
         let workspace_candidate = data_directory.join("worktrees");
         let workspace_root = if allow_missing_workspace {
@@ -335,16 +326,10 @@ impl fmt::Display for Config {
         )?;
         writeln!(formatter, "worker.sandbox: {}", self.execution_mode)?;
         if let Some(worker) = &self.worker {
-            writeln!(formatter, "worker: docker")?;
-            writeln!(formatter, "worker.image: {}", worker.image)?;
+            writeln!(formatter, "worker: docker_sandbox")?;
+            writeln!(formatter, "worker.template: {}", worker.template)?;
             writeln!(formatter, "worker.memory: {}", worker.memory)?;
             writeln!(formatter, "worker.cpus: {}", worker.cpus)?;
-            writeln!(formatter, "worker.pids: {}", worker.pids)?;
-            writeln!(
-                formatter,
-                "worker.codex_auth: {}",
-                worker.codex_auth.display()
-            )?;
             writeln!(
                 formatter,
                 "worker.github_token_env: {}",
@@ -544,48 +529,47 @@ fn display_repository_path(repository: &Path, path: &Path) -> String {
         .to_string()
 }
 
-fn reject_docker_options(raw: &RawWorkerConfig) -> Result<()> {
-    if raw.image.is_some()
+fn reject_sandbox_options(raw: &RawWorkerConfig) -> Result<()> {
+    if raw.template.is_some()
         || raw.memory.is_some()
         || raw.cpus.is_some()
-        || raw.pids.is_some()
-        || raw.codex_auth.is_some()
         || raw.github_token_env.is_some()
     {
-        bail!("worker sandbox \"worktree\" does not accept Docker-only settings");
+        bail!("worker sandbox \"worktree\" does not accept Docker Sandbox settings");
     }
     Ok(())
 }
 
-fn resolve_worker(
-    raw: RawWorkerConfig,
-    repository: &Path,
-    data_directory: &Path,
-) -> Result<WorkerConfig> {
-    let image = raw
-        .image
+fn resolve_worker(raw: RawWorkerConfig) -> Result<WorkerConfig> {
+    let template = raw
+        .template
         .as_deref()
-        .context("worker.image is required when worker.sandbox is \"docker\"")?;
-    let image = image.trim();
-    if image.is_empty()
-        || image.chars().count() > 255
-        || !image.chars().all(|character| {
+        .unwrap_or("docker/sandbox-templates:codex")
+        .trim();
+    if template.is_empty()
+        || template.chars().count() > 255
+        || !template.chars().all(|character| {
             character.is_ascii_alphanumeric()
                 || matches!(character, '.' | '_' | '/' | ':' | '@' | '-')
         })
-        || !image
+        || !template
             .chars()
             .next()
             .is_some_and(|character| character.is_ascii_alphanumeric())
-        || (!image.rsplit('/').next().unwrap_or(image).contains(':') && !image.contains('@'))
+        || (!template
+            .rsplit('/')
+            .next()
+            .unwrap_or(template)
+            .contains(':')
+            && !template.contains('@'))
     {
-        bail!("worker.image must be a valid, explicitly tagged Docker image reference");
+        bail!("worker.template must be a valid, explicitly tagged sandbox template reference");
     }
 
     let memory = raw
         .memory
         .as_deref()
-        .context("worker.memory is required when worker.sandbox is \"docker\"")?
+        .unwrap_or("8g")
         .trim()
         .to_ascii_lowercase();
     let suffix_start = memory
@@ -600,31 +584,11 @@ fn resolve_worker(
             "" | "b" | "k" | "kb" | "m" | "mb" | "g" | "gb" | "t" | "tb"
         )
     {
-        bail!("worker.memory must be a positive Docker memory limit such as \"8g\"");
+        bail!("worker.memory must be a positive sandbox memory limit such as \"8g\"");
     }
-    let cpus = raw
-        .cpus
-        .context("worker.cpus is required when worker.sandbox is \"docker\"")?;
-    let pids = raw
-        .pids
-        .context("worker.pids is required when worker.sandbox is \"docker\"")?;
+    let cpus = raw.cpus.unwrap_or(4);
     if cpus == 0 {
         bail!("worker.cpus must be greater than zero");
-    }
-    if pids == 0 {
-        bail!("worker.pids must be greater than zero");
-    }
-
-    let codex_auth = match raw.codex_auth {
-        Some(path) => expand_path(Path::new(path.trim()), repository)?,
-        None => data_directory.join("codex/auth.json"),
-    };
-    if codex_auth.file_name().and_then(|name| name.to_str()) != Some("auth.json") {
-        bail!("worker.codex_auth must name an auth.json file");
-    }
-    let codex_auth = resolve_file_or_missing("worker.codex_auth", &codex_auth)?;
-    if codex_auth.starts_with(repository) {
-        bail!("worker.codex_auth must be outside the repository");
     }
     let github_token_env = raw
         .github_token_env
@@ -641,37 +605,12 @@ fn resolve_worker(
     {
         bail!("worker.github_token_env must be a valid environment variable name");
     }
-
     Ok(WorkerConfig {
-        image: image.to_owned(),
+        template: template.to_owned(),
         memory,
         cpus,
-        pids,
-        codex_auth,
         github_token_env: github_token_env.to_owned(),
     })
-}
-
-fn resolve_file_or_missing(name: &str, path: &Path) -> Result<PathBuf> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                bail!("{name} must be a regular file: {}", path.display());
-            }
-            path.canonicalize()
-                .with_context(|| format!("failed to resolve {name}: {}", path.display()))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let parent = path
-                .parent()
-                .with_context(|| format!("{name} has no parent directory"))?;
-            let parent = canonical_directory_or_missing(name, parent, parent)?;
-            Ok(parent.join("auth.json"))
-        }
-        Err(error) => {
-            Err(error).with_context(|| format!("failed to inspect {name}: {}", path.display()))
-        }
-    }
 }
 
 fn resolve_source(raw: RawSourceConfig) -> Result<SourceConfig> {

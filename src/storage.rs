@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 pub const DATABASE_NAME: &str = "factory.sqlite3";
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION_ID_BYTES: usize = 1024;
@@ -324,6 +324,22 @@ pub struct RunContainer {
     pub instance_id: String,
     pub image_ref: String,
     pub image_id: String,
+    pub limits_json: String,
+    pub state: String,
+    pub exit_code: Option<i32>,
+    pub logs: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub removed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunSandbox {
+    pub run_id: i64,
+    pub sandbox_name: String,
+    pub instance_id: String,
+    pub template_ref: String,
+    pub sbx_version: String,
     pub limits_json: String,
     pub state: String,
     pub exit_code: Option<i32>,
@@ -1113,6 +1129,121 @@ impl Ledger {
             )
             .optional()
             .context("failed to read run container")
+    }
+
+    pub fn record_run_sandbox(&self, sandbox: &RunSandbox) -> Result<()> {
+        let running = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runs WHERE id = ?1 AND outcome = 'running')",
+            [sandbox.run_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !running {
+            bail!(
+                "run {} must be running before sandbox persistence",
+                sandbox.run_id
+            );
+        }
+        self.connection
+            .execute(
+                "INSERT INTO run_sandboxes
+                 (run_id, sandbox_name, instance_id, template_ref, sbx_version, limits_json,
+                  state, exit_code, logs, created_at, updated_at, removed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11)",
+                params![
+                    sandbox.run_id,
+                    sandbox.sandbox_name,
+                    sandbox.instance_id,
+                    sandbox.template_ref,
+                    sandbox.sbx_version,
+                    sandbox.limits_json,
+                    sandbox.state,
+                    sandbox.exit_code,
+                    sandbox.logs,
+                    sandbox.created_at,
+                    sandbox.removed_at,
+                ],
+            )
+            .context("failed to persist run sandbox")?;
+        Ok(())
+    }
+
+    pub fn finish_run_sandbox(
+        &self,
+        run_id: i64,
+        state: &str,
+        exit_code: Option<i32>,
+        logs: Option<&str>,
+        removed: bool,
+    ) -> Result<()> {
+        let logs = logs.map(|value| truncate_tail_utf8(value, MAX_ACTIVITY_BYTES));
+        let now = now_millis()?;
+        let changed = self.connection.execute(
+            "UPDATE run_sandboxes SET state = ?1, exit_code = ?2,
+                    logs = COALESCE(?3, logs), updated_at = ?4,
+                    removed_at = CASE WHEN ?5 THEN ?4 ELSE removed_at END
+             WHERE run_id = ?6",
+            params![state, exit_code, logs, now, removed, run_id],
+        )?;
+        if changed != 1 {
+            bail!("run {run_id} has no persisted sandbox");
+        }
+        Ok(())
+    }
+
+    pub fn run_sandbox(&self, run_id: i64) -> Result<Option<RunSandbox>> {
+        self.connection
+            .query_row(
+                "SELECT run_id, sandbox_name, instance_id, template_ref, sbx_version,
+                        limits_json, state, exit_code, logs, created_at, updated_at, removed_at
+                 FROM run_sandboxes WHERE run_id = ?1",
+                [run_id],
+                |row| {
+                    Ok(RunSandbox {
+                        run_id: row.get(0)?,
+                        sandbox_name: row.get(1)?,
+                        instance_id: row.get(2)?,
+                        template_ref: row.get(3)?,
+                        sbx_version: row.get(4)?,
+                        limits_json: row.get(5)?,
+                        state: row.get(6)?,
+                        exit_code: row.get(7)?,
+                        logs: row.get(8)?,
+                        created_at: row.get(9)?,
+                        updated_at: row.get(10)?,
+                        removed_at: row.get(11)?,
+                    })
+                },
+            )
+            .optional()
+            .context("failed to read run sandbox")
+    }
+
+    pub fn unremoved_run_sandboxes(&self, instance_id: &str) -> Result<Vec<RunSandbox>> {
+        let mut statement = self.connection.prepare(
+            "SELECT run_id, sandbox_name, instance_id, template_ref, sbx_version,
+                    limits_json, state, exit_code, logs, created_at, updated_at, removed_at
+             FROM run_sandboxes
+             WHERE instance_id = ?1 AND removed_at IS NULL
+             ORDER BY run_id",
+        )?;
+        let rows = statement.query_map([instance_id], |row| {
+            Ok(RunSandbox {
+                run_id: row.get(0)?,
+                sandbox_name: row.get(1)?,
+                instance_id: row.get(2)?,
+                template_ref: row.get(3)?,
+                sbx_version: row.get(4)?,
+                limits_json: row.get(5)?,
+                state: row.get(6)?,
+                exit_code: row.get(7)?,
+                logs: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
+                removed_at: row.get(11)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read unremoved run sandboxes")
     }
 
     pub fn retained_delivery_workspace_count(&self) -> Result<usize> {
@@ -2390,6 +2521,9 @@ fn migrate(connection: &Connection) -> Result<()> {
         if version < 10 {
             migrate_v10(connection)?;
         }
+        if version < 11 {
+            migrate_v11(connection)?;
+        }
         Ok(())
     })();
     match result {
@@ -2682,6 +2816,33 @@ fn migrate_v10(connection: &Connection) -> Result<()> {
              PRAGMA user_version = 10;",
         )
         .context("failed to migrate SQLite ledger to version 10")?;
+    Ok(())
+}
+
+fn migrate_v11(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "CREATE TABLE run_sandboxes (
+                 run_id INTEGER PRIMARY KEY REFERENCES runs(id),
+                 sandbox_name TEXT NOT NULL UNIQUE,
+                 instance_id TEXT NOT NULL,
+                 template_ref TEXT NOT NULL,
+                 sbx_version TEXT NOT NULL,
+                 limits_json TEXT NOT NULL,
+                 state TEXT NOT NULL,
+                 exit_code INTEGER,
+                 logs TEXT,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 removed_at INTEGER
+             );
+             CREATE INDEX run_sandboxes_instance_state_idx
+                 ON run_sandboxes(instance_id, state, run_id);
+             INSERT INTO schema_migrations(version, applied_at)
+                 VALUES (11, unixepoch('subsec') * 1000);
+             PRAGMA user_version = 11;",
+        )
+        .context("failed to migrate SQLite ledger to version 11")?;
     Ok(())
 }
 

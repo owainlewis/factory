@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,15 +16,15 @@ use tokio_util::sync::CancellationToken;
 
 use crate::clone::CloneManager;
 use crate::config::{Config, SourceConfig};
-use crate::docker::{CloneMount, DockerRunFailure, DockerWorker};
 use crate::github::{GitHubClient, LabelTicketContext, ProjectTicketContext, TicketContext};
 use crate::runtime::{
     CodexRuntime, ExecutionResult, RuntimeCancelled, RuntimeObservation, Termination,
     observation_channel,
 };
+use crate::sandbox::{SandboxRunFailure, SandboxWorker};
 use crate::source::{PollReport, SourceClient, SourceTicketContext};
 use crate::storage::{
-    AUTOMATIC_DELIVERY_CLEANUP, Ledger, OPERATOR_CONFIRMED_CLEANUP, Run, RunContainer, RunOutcome,
+    AUTOMATIC_DELIVERY_CLEANUP, Ledger, OPERATOR_CONFIRMED_CLEANUP, Run, RunOutcome, RunSandbox,
     Task, TaskIdentity, TaskState, TaskWorkspace,
 };
 use crate::workflow::{Trigger, WorkflowCatalog, WorkflowEntry, scheduled_workflow_fingerprint};
@@ -85,7 +85,7 @@ pub struct FactoryDaemon {
     github: GitHubClient,
     source: SourceClient,
     codex: CodexRuntime,
-    docker: Option<DockerWorker>,
+    sandbox: Option<SandboxWorker>,
 }
 
 pub struct OneShotReport {
@@ -111,8 +111,8 @@ impl FactoryDaemon {
         github: GitHubClient,
         codex: CodexRuntime,
     ) -> Self {
-        let docker = config.worker.clone().map(|worker| {
-            DockerWorker::new(worker, docker_instance_id(&config.data_directory))
+        let sandbox = config.worker.clone().map(|worker| {
+            SandboxWorker::new(worker, sandbox_instance_id(&config.data_directory))
                 .with_activity_streaming(false)
         });
         Self {
@@ -122,7 +122,7 @@ impl FactoryDaemon {
             github,
             source: SourceClient,
             codex: codex.with_activity_streaming(false),
-            docker,
+            sandbox,
         }
     }
 
@@ -140,16 +140,16 @@ impl FactoryDaemon {
             Err(error) => return Err(error),
         };
         let mut ledger = Ledger::open(&self.ledger_path)?;
-        validate_workspace_backends(&ledger, self.docker.is_some())?;
-        if let Some(docker) = &self.docker {
-            reconcile_docker_workers(docker, &mut ledger, &cancellation).await?;
+        validate_workspace_backends(&ledger, self.sandbox.is_some())?;
+        if let Some(sandbox) = &self.sandbox {
+            reconcile_sandbox_workers(sandbox, &mut ledger, &cancellation).await?;
         }
         if let Err(error) = reconcile_recovery_state(
             &mut ledger,
             &self.ledger_path,
             &self.config.repositories[0],
             &self.config.workspace_root,
-            self.docker.as_ref().map(DockerWorker::github_token_env),
+            self.sandbox.as_ref().map(SandboxWorker::github_token_env),
         ) {
             eprintln!("Factory workspace startup reconciliation failed: {error:#}");
             return Err(error);
@@ -245,7 +245,7 @@ impl FactoryDaemon {
                     self.config.max_concurrent_runs_per_repository,
                     &self.ledger_path,
                     &self.codex,
-                    self.docker.as_ref(),
+                    self.sandbox.as_ref(),
                     &self.github,
                     &self.source,
                     self.config.source.as_ref(),
@@ -264,7 +264,7 @@ impl FactoryDaemon {
                             &self.ledger_path,
                             &self.config.repositories[0],
                             &self.config.workspace_root,
-                            self.docker.as_ref().map(DockerWorker::github_token_env),
+                            self.sandbox.as_ref().map(SandboxWorker::github_token_env),
                         )?;
                     }
                     _ = schedule_interval.tick() => {
@@ -411,10 +411,13 @@ impl FactoryDaemon {
         }
         self.catalog.validate_ticket_workflows()?;
         self.github.validate_global(cancellation).await?;
-        if let Some(docker) = &self.docker {
-            docker.validate(cancellation).await?;
+        if let Some(sandbox) = &self.sandbox {
+            self.github
+                .validate_token_env(sandbox.github_token_env(), cancellation)
+                .await?;
+            sandbox.validate(cancellation).await?;
         }
-        if self.docker.is_some() {
+        if self.sandbox.is_some() {
             return Ok(());
         }
         match self
@@ -513,53 +516,92 @@ fn reconcile_recovery_state(
     )
 }
 
-async fn reconcile_docker_workers(
-    docker: &DockerWorker,
+async fn reconcile_sandbox_workers(
+    sandbox: &SandboxWorker,
     ledger: &mut Ledger,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    for identity in docker.owned_containers(cancellation).await? {
-        let Some(recorded) = ledger.run_container(identity.run_id)? else {
+    let owned = sandbox.owned_sandboxes(cancellation).await?;
+    let owned_names = owned
+        .iter()
+        .map(|identity| identity.name.as_str())
+        .collect::<HashSet<_>>();
+    for recorded in ledger.unremoved_run_sandboxes(sandbox.instance_id())? {
+        if recorded.state == "removing" && !owned_names.contains(recorded.sandbox_name.as_str()) {
+            ledger.finish_run_sandbox(
+                recorded.run_id,
+                "removed",
+                recorded.exit_code,
+                recorded.logs.as_deref(),
+                true,
+            )?;
+        }
+    }
+    for identity in owned {
+        let Some(recorded) = ledger.run_sandbox(identity.run_id)? else {
             bail!(
-                "owned container {} has no durable Factory record",
-                identity.id
+                "owned sandbox {} has no durable Factory record",
+                identity.name
             );
         };
-        if recorded.container_id != identity.id
-            || recorded.instance_id != identity.instance_id
-            || recorded.image_id != identity.image_id
-        {
-            bail!("owned Docker container does not match its durable record");
+        if recorded.sandbox_name != identity.name || recorded.instance_id != identity.instance_id {
+            bail!("owned Docker Sandbox does not match its durable record");
         }
-        let recovered = docker.recover_container(&identity, cancellation).await?;
-        if ledger
-            .run(recovered.identity.run_id)?
-            .is_some_and(|run| run.outcome == "running")
-        {
+        let run = ledger
+            .run(identity.run_id)?
+            .with_context(|| format!("run {} for owned sandbox disappeared", identity.run_id))?;
+        let workspace = ledger
+            .task_workspace(run.task_id)?
+            .with_context(|| format!("task {} for owned sandbox has no workspace", run.task_id))?;
+        let recovered = sandbox.recover_sandbox(&identity, cancellation).await?;
+        if recorded.state == "retained" {
+            continue;
+        }
+        if run.outcome == "running" {
             ledger.observe_run(
                 recovered.identity.run_id,
                 None,
                 None,
                 None,
                 None,
-                Some(&format!(
-                    "Recovered Docker container state={}: {}",
-                    recovered.state, recovered.logs
-                )),
+                Some(&format!("Recovered Docker Sandbox: {}", recovered.logs)),
             )?;
         }
-        ledger.finish_run_container(
+        ledger.finish_run_sandbox(
             recovered.identity.run_id,
             "recovered",
-            recovered.exit_code,
+            None,
             Some(&recovered.logs),
             false,
         )?;
-        docker.remove_container(&recovered.identity.id).await?;
-        ledger.finish_run_container(
+        if let Err(error) = sandbox
+            .preserve_workspace(&recovered.identity.name, &workspace.path)
+            .await
+        {
+            let _ = sandbox.stop_sandbox(&recovered.identity.name).await;
+            ledger.finish_run_sandbox(
+                recovered.identity.run_id,
+                "retained",
+                None,
+                Some(&format!(
+                    "workspace preservation failed; sandbox retained: {error:#}"
+                )),
+                false,
+            )?;
+            continue;
+        }
+        ledger.finish_run_sandbox(
+            recovered.identity.run_id,
+            "removing",
+            None,
+            Some(&recovered.logs),
+            false,
+        )?;
+        sandbox.remove_sandbox(&recovered.identity.name).await?;
+        ledger.finish_run_sandbox(
             recovered.identity.run_id,
             "recovered",
-            recovered.exit_code,
+            None,
             Some(&recovered.logs),
             true,
         )?;
@@ -567,13 +609,13 @@ async fn reconcile_docker_workers(
     Ok(())
 }
 
-fn docker_instance_id(data_directory: &Path) -> String {
+fn sandbox_instance_id(data_directory: &Path) -> String {
     let digest = Sha256::digest(data_directory.as_os_str().as_encoded_bytes());
     format!("{:x}", digest)[..20].to_owned()
 }
 
-fn validate_workspace_backends(ledger: &Ledger, docker_mode: bool) -> Result<()> {
-    let expected = if docker_mode { "clone" } else { "worktree" };
+fn validate_workspace_backends(ledger: &Ledger, sandbox_mode: bool) -> Result<()> {
+    let expected = if sandbox_mode { "clone" } else { "worktree" };
     let incompatible = ledger
         .active_task_workspaces()?
         .into_iter()
@@ -790,17 +832,6 @@ fn resolve_workflow_target(entry: &WorkflowEntry) -> Option<(String, WorkflowTar
     ))
 }
 
-fn docker_clone_mount(trigger: &Trigger) -> CloneMount {
-    if matches!(
-        trigger,
-        Trigger::Source { .. } | Trigger::Label(_) | Trigger::Status(_)
-    ) {
-        CloneMount::ReadWrite
-    } else {
-        CloneMount::ReadOnly
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn dispatch_available(
     ledger: &mut Ledger,
@@ -811,7 +842,7 @@ fn dispatch_available(
     repository_limit: usize,
     ledger_path: &Path,
     codex: &CodexRuntime,
-    docker: Option<&DockerWorker>,
+    sandbox: Option<&SandboxWorker>,
     github: &GitHubClient,
     source_client: &SourceClient,
     source_config: Option<&SourceConfig>,
@@ -932,7 +963,7 @@ fn dispatch_available(
         );
         *active.entry(repository.clone()).or_default() += 1;
         let codex = codex.clone();
-        let docker = docker.cloned();
+        let sandbox = sandbox.cloned();
         let github = github.clone();
         let source_client = source_client.clone();
         let source_config = source_config.cloned();
@@ -1013,7 +1044,7 @@ fn dispatch_available(
                 );
                 return (repository, Ok(()));
             }
-            let sandboxed = docker.is_some();
+            let sandboxed = sandbox.is_some();
             let execution_target = match prepare_task_workspace(
                 &mut worker_ledger,
                 &github,
@@ -1022,7 +1053,7 @@ fn dispatch_available(
                 &task,
                 run_id,
                 sandboxed,
-                docker.as_ref().map(|worker| worker.github_token_env()),
+                sandbox.as_ref().map(|worker| worker.github_token_env()),
                 &cancellation,
             )
             .await
@@ -1072,7 +1103,7 @@ fn dispatch_available(
             };
             if sandboxed {
                 eprintln!(
-                    "Factory runtime delegated: run={run_id} runtime={} cwd={} backend=docker-clone",
+                    "Factory runtime delegated: run={run_id} runtime={} cwd={} backend=docker-sandbox",
                     workflow.runtime,
                     execution_target.path.display(),
                 );
@@ -1084,14 +1115,14 @@ fn dispatch_available(
                 );
             }
             let result = if sandboxed {
-                let docker = docker.as_ref().expect("Docker tasks have a Docker worker");
-                let mount = docker_clone_mount(&workflow.trigger);
-                execute_docker_task(
+                let sandbox = sandbox
+                    .as_ref()
+                    .expect("sandboxed tasks have a Docker Sandbox worker");
+                execute_sandbox_task(
                     worker_ledger,
                     &execution_target,
                     &workflow,
-                    docker,
-                    mount,
+                    sandbox,
                     run_id,
                     prompt,
                     cancellation,
@@ -1116,7 +1147,7 @@ fn dispatch_available(
                 &workspace_root,
                 task.id,
                 run_id,
-                docker.as_ref().map(DockerWorker::github_token_env),
+                sandbox.as_ref().map(SandboxWorker::github_token_env),
             ) {
                 eprintln!("Factory workspace finalization failed for run {run_id}: {error:#}");
             }
@@ -1513,12 +1544,11 @@ async fn execute_task(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn execute_docker_task(
+async fn execute_sandbox_task(
     mut ledger: Ledger,
     repository: &RepositoryTarget,
     workflow: &WorkflowTarget,
-    docker: &DockerWorker,
-    mount: CloneMount,
+    sandbox: &SandboxWorker,
     run_id: i64,
     prompt: String,
     cancellation: CancellationToken,
@@ -1533,33 +1563,36 @@ async fn execute_docker_task(
         run_cancellation.clone(),
         observation_receiver,
     );
-    let image_ref = docker.image().to_owned();
-    let limits_json = docker.limits_json(&repository.path)?;
-    let execution = docker
+    let template_ref = sandbox.template().to_owned();
+    let limits_json = sandbox.limits_json();
+    let execution = sandbox
         .run(
             run_id,
             &repository.path,
-            mount,
             &prompt,
             workflow.timeout,
             run_cancellation,
             observations.clone(),
-            move |identity| {
+            move |identity, state| {
                 let ledger = Ledger::open(&ledger_path)?;
-                ledger.record_run_container(&RunContainer {
-                    run_id,
-                    container_id: identity.id.clone(),
-                    instance_id: identity.instance_id.clone(),
-                    image_ref,
-                    image_id: identity.image_id.clone(),
-                    limits_json,
-                    state: "created".to_owned(),
-                    exit_code: None,
-                    logs: None,
-                    created_at: Utc::now().timestamp_millis(),
-                    updated_at: Utc::now().timestamp_millis(),
-                    removed_at: None,
-                })
+                if state == "creating" {
+                    ledger.record_run_sandbox(&RunSandbox {
+                        run_id,
+                        sandbox_name: identity.name.clone(),
+                        instance_id: identity.instance_id.clone(),
+                        template_ref: template_ref.clone(),
+                        sbx_version: identity.sbx_version.clone(),
+                        limits_json: limits_json.clone(),
+                        state: state.to_owned(),
+                        exit_code: None,
+                        logs: None,
+                        created_at: Utc::now().timestamp_millis(),
+                        updated_at: Utc::now().timestamp_millis(),
+                        removed_at: None,
+                    })
+                } else {
+                    ledger.finish_run_sandbox(run_id, state, None, None, false)
+                }
             },
         )
         .await;
@@ -1578,32 +1611,63 @@ async fn execute_docker_task(
     }
     match execution {
         Ok((result, identity)) => {
-            let container_state = match result.termination {
+            let sandbox_state = match result.termination {
                 Termination::Exited => "exited",
                 Termination::TimedOut => "timed_out",
                 Termination::Cancelled => "cancelled",
             };
-            let container_logs = docker
-                .container_logs(&identity.id)
+            let sandbox_logs = sandbox
+                .sandbox_logs(&identity.name)
                 .await
                 .unwrap_or_default();
-            ledger.finish_run_container(
+            ledger.finish_run_sandbox(
                 run_id,
-                container_state,
+                sandbox_state,
                 result.status.code(),
-                Some(&container_logs),
+                Some(&sandbox_logs),
                 false,
             )?;
-            record_execution(&mut ledger, run_id, &result)?;
-            docker
-                .remove_container(&identity.id)
+            if let Err(error) = sandbox
+                .preserve_workspace(&identity.name, &repository.path)
                 .await
-                .context("completed Docker worker could not be removed")?;
-            ledger.finish_run_container(
+            {
+                let _ = sandbox.stop_sandbox(&identity.name).await;
+                let detail = format!(
+                    "Docker Sandbox workspace preservation failed; sandbox retained: {error:#}"
+                );
+                ledger.finish_run_sandbox(
+                    run_id,
+                    "retained",
+                    result.status.code(),
+                    Some(&detail),
+                    false,
+                )?;
+                ledger.finish_run_and_task(
+                    run_id,
+                    RunOutcome::Failed,
+                    None,
+                    Some(&detail),
+                    None,
+                )?;
+                return Err(error.context(detail));
+            }
+            record_execution(&mut ledger, run_id, &result)?;
+            ledger.finish_run_sandbox(
                 run_id,
-                container_state,
+                "removing",
                 result.status.code(),
-                Some(&container_logs),
+                Some(&sandbox_logs),
+                false,
+            )?;
+            sandbox
+                .remove_sandbox(&identity.name)
+                .await
+                .context("completed Docker Sandbox could not be removed")?;
+            ledger.finish_run_sandbox(
+                run_id,
+                sandbox_state,
+                result.status.code(),
+                Some(&sandbox_logs),
                 true,
             )?;
             eprintln!(
@@ -1619,46 +1683,67 @@ async fn execute_docker_task(
         }
         Err(error) => {
             let identity = error
-                .downcast_ref::<DockerRunFailure>()
+                .downcast_ref::<SandboxRunFailure>()
                 .map(|failure| failure.identity.clone());
             let mut cleanup_error = None;
-            if ledger.run_container(run_id)?.is_some() {
+            if let Some(recorded) = ledger.run_sandbox(run_id)? {
                 let logs = if let Some(identity) = &identity {
-                    docker
-                        .container_logs(&identity.id)
+                    sandbox
+                        .sandbox_logs(&identity.name)
                         .await
                         .unwrap_or_default()
                 } else {
                     String::new()
                 };
-                let container_evidence = if logs.is_empty() {
+                let sandbox_evidence = if logs.is_empty() {
                     format!("{error:#}")
                 } else {
                     logs
                 };
-                ledger.finish_run_container(
-                    run_id,
-                    "error",
-                    None,
-                    Some(&container_evidence),
-                    false,
-                )?;
+                ledger.finish_run_sandbox(run_id, "error", None, Some(&sandbox_evidence), false)?;
                 if let Some(identity) = &identity {
-                    match docker.remove_container(&identity.id).await {
-                        Ok(()) => ledger.finish_run_container(
+                    if recorded.state == "created"
+                        && let Err(preserve_error) = sandbox
+                            .preserve_workspace(&identity.name, &repository.path)
+                            .await
+                    {
+                        let _ = sandbox.stop_sandbox(&identity.name).await;
+                        let detail = format!(
+                            "{sandbox_evidence}; workspace preservation failed; sandbox retained: {preserve_error:#}"
+                        );
+                        ledger.finish_run_sandbox(
                             run_id,
-                            "error",
+                            "retained",
                             None,
-                            Some(&container_evidence),
-                            true,
-                        )?,
-                        Err(remove_error) => cleanup_error = Some(remove_error),
+                            Some(&detail),
+                            false,
+                        )?;
+                        cleanup_error = Some(preserve_error);
+                    }
+                    if cleanup_error.is_none() {
+                        ledger.finish_run_sandbox(
+                            run_id,
+                            "removing",
+                            None,
+                            Some(&sandbox_evidence),
+                            false,
+                        )?;
+                        match sandbox.remove_sandbox(&identity.name).await {
+                            Ok(()) => ledger.finish_run_sandbox(
+                                run_id,
+                                "error",
+                                None,
+                                Some(&sandbox_evidence),
+                                true,
+                            )?,
+                            Err(remove_error) => cleanup_error = Some(remove_error),
+                        }
                     }
                 }
             }
             let detail = cleanup_error.as_ref().map_or_else(
                 || format!("{error:#}"),
-                |cleanup| format!("{error:#}; container cleanup failed: {cleanup:#}"),
+                |cleanup| format!("{error:#}; sandbox cleanup failed: {cleanup:#}"),
             );
             ledger.finish_run_and_task(run_id, RunOutcome::Failed, None, Some(&detail), None)?;
             match cleanup_error {
@@ -2356,29 +2441,6 @@ mod tests {
             assert!(prompt.contains(HUMAN_MERGE_POLICY));
             assert!(!prompt.contains("unless the validated scheduled workflow explicitly"));
         }
-    }
-
-    #[test]
-    fn docker_mounts_ticket_workflows_read_write_and_schedules_read_only() {
-        assert_eq!(
-            docker_clone_mount(&Trigger::Status("Ready For Spec".to_owned())),
-            CloneMount::ReadWrite
-        );
-        assert_eq!(
-            docker_clone_mount(&Trigger::Schedule {
-                expression: "0 9 * * 1".to_owned(),
-                timezone: chrono_tz::UTC,
-            }),
-            CloneMount::ReadOnly
-        );
-        assert_eq!(
-            docker_clone_mount(&Trigger::Status("Ready To Implement".to_owned())),
-            CloneMount::ReadWrite
-        );
-        assert_eq!(
-            docker_clone_mount(&Trigger::Label("factory:ready".to_owned())),
-            CloneMount::ReadWrite
-        );
     }
 
     #[test]

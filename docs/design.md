@@ -188,10 +188,12 @@ repository and Project being managed. Branch protection should prevent the
 worker identity from bypassing required review.
 
 Worktrees isolate Git state from the canonical checkout but share the host,
-network, credentials, and processes. Docker mode gives each run a standalone
-clone, read-only root, resource limits, and narrower mounts. It still has network
-access and GitHub credentials, so it is a useful local sandbox, not a complete
-defence against hostile code.
+network, credentials, and processes. Docker Sandbox mode gives each run a
+separate microVM, private clone, isolated Docker daemon, deny-by-default network,
+and proxy-managed credentials. Factory snapshots the VM workspace and fetches it
+into trusted host Git metadata before removal. Allowed network services and
+repository writes remain external effects governed by narrow identities and
+branch protection.
 
 ## V1 boundaries
 
@@ -199,7 +201,7 @@ V1 includes:
 
 - one repository and one GitHub source;
 - GitHub Project status, issue label, and scheduled triggers;
-- Codex workers in worktree or Docker sandboxes;
+- Codex workers in worktrees or Docker Sandboxes;
 - explicit workflow paths and strict config validation;
 - durable queueing, supervision, history, cancellation, and recovery.
 
