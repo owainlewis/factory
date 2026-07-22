@@ -1,88 +1,117 @@
-# Run the single-repository Factory v1
+# Run Factory in one repository
 
-Factory watches one GitHub Project and reacts only when trusted work enters one
-of two configured states. It can run in fast local worktrees or isolated Docker
-clones. Implementation pushes one stable issue branch and leaves one pull
-request for human review and merge.
+Factory v1 runs from the repository it manages. One GitHub source acts as the
+ticket queue and control plane. Explicit triggers connect source conditions to
+plain Markdown agent prompts.
 
-## Requirements
+## Install
 
-Install Rust, Git, GitHub CLI, and Codex CLI on a Unix-like host. Install and
-start Docker as well when using Docker mode. Authenticate the host GitHub CLI:
+Install Rust, Git, GitHub CLI, and Codex CLI on a Unix-like host. Docker is also
+required for Docker workers.
 
 ```sh
 gh auth login
 gh auth status
-```
-
-Install Factory from a clean checkout:
-
-```sh
+codex login
 git clone https://github.com/owainlewis/factory.git
 cd factory
-cargo install --path .
+cargo install --path . --locked
 ```
 
-## Initialize one repository
+## Initialize a repository
 
-Run Factory inside the trusted repository it will manage:
+Change to the trusted repository Factory will manage:
 
 ```sh
 factory init
 ```
 
-This creates, only when missing:
+Initialization creates missing files without overwriting existing ones:
 
 ```text
 .factory/config.toml
-.factory/workflows/triage-ticket.md
-.factory/workflows/implement-ready-ticket.md
+.factory/workflows/triage/WORKFLOW.md
+.factory/workflows/implement/WORKFLOW.md
 ```
 
-It also creates the repository-specific Factory data directory outside the
-checkout. Re-running the command preserves every existing file. Preview missing
-resources without writing with `factory init --check`.
+Use `factory init --check` to preview the changes. The default sandbox is a Git
+worktree. Use `factory init --execution-mode docker` to generate Docker settings
+and `.factory/Dockerfile` instead.
 
-This selects `execution_mode = "worktree"`. Worktrees are quick for trusted
-local development but are not a security boundary. To select Docker and create
-the worker Dockerfile instead, run:
+## Configure the control plane
 
-```sh
-factory init --execution-mode docker
+Edit `.factory/config.toml`:
+
+```toml
+version = 1
+poll_every = "30s"
+
+[worker]
+runtime = "codex"
+sandbox = "worktree"
+timeout = "2h"
+maximum_timeout = "8h"
+max_concurrent = 1
+
+[source]
+type = "github"
+project_owner = "owainlewis"
+project_number = 16
+status_field = "Status"
+trusted_users = ["owainlewis"]
+
+[trigger.triage]
+type = "status"
+status = "Ready For Spec"
+workflow = ".factory/workflows/triage/WORKFLOW.md"
+
+[trigger.implement]
+type = "status"
+status = "Ready To Implement"
+workflow = ".factory/workflows/implement/WORKFLOW.md"
+timeout = "4h"
 ```
 
-Edit `.factory/config.toml` with the GitHub Project owner and number, the exact
-Status field values, and trusted issue authors. Status names are local policy,
-so Jira-style or team-specific names are valid when mapped to all six semantic
-states.
+The Project status names are values from your GitHub Project. They are not
+hard-coded pipeline roles. You can add a label trigger:
 
-Review the two workflow prompts. They are the adaptive part of the factory.
-In Docker mode, review `.factory/Dockerfile` and add the repository toolchain
-needed by tests and builds, then build the configured image:
-
-```sh
-docker build --file .factory/Dockerfile --tag factory-codex:dev .
+```toml
+[trigger.urgent-fix]
+type = "label"
+label = "agent:ready"
+workflow = ".factory/workflows/urgent-fix/WORKFLOW.md"
 ```
 
-Create a dedicated writable Codex login for the worker:
+Or a scheduled job:
 
-```sh
-mkdir -p "$HOME/.local/share/factory/codex"
-CODEX_HOME="$HOME/.local/share/factory/codex" codex login
+```toml
+[trigger.security-review]
+type = "schedule"
+schedule = "0 8 * * *"
+timezone = "Europe/London"
+workflow = ".factory/workflows/security-review/WORKFLOW.md"
+timeout = "1h"
 ```
 
-Set `worker.codex_auth` to that `auth.json` path. Export a dedicated GitHub
-token through the environment named by `worker.github_token_env`:
+Create the referenced workflow file yourself. It is ordinary Markdown with no
+frontmatter. For example:
 
-```sh
-export FACTORY_GITHUB_TOKEN='...'
+```markdown
+# Implement a ready issue
+
+You are working on the GitHub issue supplied by Factory.
+
+Use `gh` to fetch the current issue and Project context. Treat the issue as the
+specification. Check for existing branches and pull requests before changing
+anything. Implement the acceptance criteria, run the relevant checks, open or
+update one pull request, wait for CI, respond to actionable feedback, and post a
+concise handoff on the issue. Do not merge the pull request.
 ```
 
-Use a bot or narrowly scoped identity that can read and write the repository
-and Project but cannot bypass protected-branch review. Factory does not make a
-personal owner token safe.
+Factory supplies the ticket identity and execution context. The agent rereads
+live GitHub state and owns the adaptive GitHub and engineering actions.
 
-## Validate and start
+## Validate and run
 
 ```sh
 factory validate
@@ -91,91 +120,59 @@ factory run --once
 factory run
 ```
 
-Validation checks the repository, all configured Project states, trusted users,
-and writable Factory data path. Worktree mode validates the host Codex CLI.
-Docker mode validates the Docker daemon, exact image, authenticated Codex
-session inside that image, and live worker GitHub token. `run --once` polls and
-records matching work but does not claim tasks or launch workers. With no
-matching Project item, Factory invokes no model.
+Validation checks the repository, source, configured Project statuses, trusted
+users, workflow paths, worker runtime, and sandbox requirements. The one-shot
+command records matching tasks but launches no workers. The continuous command
+polls cheaply and starts a worker only when work is eligible.
 
-The continuous daemon reacts to two states:
+Status and label events are edge-triggered. One continuous match creates one
+task. Moving the issue out of the condition rearms it, so moving it back later
+can create a continuation task. Scheduled jobs create one task per due instant.
+Durable task keys and atomic claims prevent duplicate workers after restarts.
 
-1. `ready_for_spec` moves to `creating_spec`. The triage agent investigates the
-   issue, improves its acceptance criteria, and either moves it to
-   `ready_to_implement` or posts a precise blocker.
-2. `ready_to_implement` moves to `implementing`. The implementation agent uses
-   normal `gh` and `git`, tests the change, obtains independent review, pushes
-   `factory/<issue-number>`, opens or updates one pull request, waits for CI,
-   and moves the item to `ready_to_review`.
+## Use Docker workers
 
-Humans review the specification and the pull request. Feedback is given through
-the issue, review, Project state, and CI. Moving reviewed work back to
-`ready_to_implement` creates one continuation run on the same branch and pull
-request. Factory never merges or enables auto-merge.
-
-## Observe a run
+Review the generated Dockerfile and build the configured image:
 
 ```sh
-factory tasks
-factory runs
-factory inspect RUN_ID
+docker build --file .factory/Dockerfile --tag factory-codex:dev .
 ```
 
-JSON output is available with `--json`. A successful implementation handoff
-records the issue, task, run, container, image, limits, clone, branch, pull
-request, bounded logs, and result. Restart the daemon and wait through another
-poll to confirm the task, branch, and pull-request counts remain unchanged.
+Create a dedicated Codex login outside the repository and set its `auth.json`
+path in `worker.codex_auth`. Export a dedicated GitHub token through the variable
+named by `worker.github_token_env`.
 
-See [operations.md](operations.md) for cancellation, recovery, cleanup, trust,
-and Docker limitations.
+A complete Docker worker section is:
 
-## Project 16 self-hosting evidence
+```toml
+[worker]
+runtime = "codex"
+sandbox = "docker"
+timeout = "2h"
+maximum_timeout = "8h"
+max_concurrent = 1
+image = "factory-codex:dev"
+memory = "8g"
+cpus = 4
+pids = 512
+codex_auth = "/absolute/path/to/factory-codex/auth.json"
+github_token_env = "FACTORY_GITHUB_TOKEN"
+```
 
-Factory v1 was exercised against the public
-[Factory Project](https://github.com/users/owainlewis/projects/16) on 22 July
-2026 from a clean standalone clone of commit `f15a919`. `factory init` created
-the missing repository config without changing the checked-in workflows or
-Dockerfile. The image built as `factory-codex:dev` with digest
-`sha256:af5b2c31afc1e06d809a96d8c675bd7470532a4f1e30b0de118cab046fd3a52e`.
-`factory validate` resolved all six Project states, the trusted user, live
-worker token, Docker daemon and image, and a dedicated Codex login verified
-inside the hardened worker container.
+The container gets a standalone clone and no Docker socket or canonical checkout
+mount. Worktree mode is simpler and faster, but it is not a security boundary.
 
-Before adding ready work, `factory run --once` saw seven repository issues and
-created zero tasks. `factory tasks --json` returned `[]`, and Docker listed no
-container for the Factory instance. This is the no-work, no-model path.
+## Observe and recover
 
-The implementation proof used [issue #54](https://github.com/owainlewis/factory/issues/54).
-Factory moved it from Ready To Implement to Implementing, created task 1 and
-run 1, cloned commit `eeb3858`, checked out `factory/54`, and launched container
-`1bb173253992` with a read-only root, 4 CPUs, 8 GB memory, and 512 PIDs. The
-agent used `gh` and `git`, changed only `docs/operations.md`, recorded review
-and verification limitations, pushed commit `5733d47`, and opened
-[PR #55](https://github.com/owainlewis/factory/pull/55). GitHub CI passed in
-1m37s. The agent marked the PR ready, moved the issue to Reviewing, posted the
-[handoff comment](https://github.com/owainlewis/factory/issues/54#issuecomment-5040193067),
-and left merge and auto-merge untouched. Run 1 succeeded in 463,624 ms, stored
-the PR link and exact image evidence, then removed its container and clean
-clone.
+```sh
+factory tasks --json
+factory runs --json
+factory inspect RUN_ID
+factory cancel RUN_ID
+```
 
-After stopping and restarting the daemon, the ledger still contained one
-succeeded task and one succeeded run for issue #54. GitHub still contained one
-open `factory/54` branch and one PR, and Docker contained no Factory container.
-The restart created no duplicate work.
-
-The triage proof used [issue #56](https://github.com/owainlewis/factory/issues/56).
-Factory moved it from Ready For Spec to Creating Spec, created task 2 and run 2,
-and launched the same image against a separate read-only `triage-2` clone. The
-agent inspected the startup path and rewrote the vague issue into a bounded
-goal, scope, acceptance criteria, verification plan, and explicit exclusions,
-then moved it to Ready To Implement. Run 2 succeeded in 112,535 ms and produced
-no branch or pull request.
-
-Two limitations were recorded. The proof used the operator's broad GitHub token,
-so it demonstrated the warning and human workflow but not least-privilege bot
-enforcement. Also, the daemon observed issue #56 become ready immediately after
-triage and queued its implementation generation before shutdown. Shutdown
-cancelled authorization before any implementation container launched. This is
-expected pipeline behavior, and it shows why a demo operator should stop or
-park a triaged ticket before the next poll when only the triage phase is being
-demonstrated.
+Factory stores task identity, source revision, attempts, bounded logs, outcomes,
+and sandbox metadata outside the repository. On restart it reconciles durable
+state before claiming new work. Agents are instructed to inspect current GitHub
+state before acting, which makes a recovery run reconcile rather than blindly
+repeat Git and pull request operations.

@@ -2,11 +2,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use clap::{ArgGroup, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
-use factory::approve::approve_issue;
 use factory::clone::CloneManager;
 use factory::config::{Config, ExecutionMode, repository_config_path, repository_remote_identity};
 use factory::daemon::FactoryDaemon;
@@ -25,7 +24,6 @@ use factory::storage::{
     validate_data_directory,
 };
 use factory::workflow::WorkflowCatalog;
-use factory::workflow_create::{CreateWorkflowOptions, create_workflow};
 use factory::workspace::WorkspaceManager;
 
 #[derive(Debug, Parser)]
@@ -55,17 +53,6 @@ enum Command {
         #[arg(long)]
         once: bool,
         /// Path to the Factory configuration file.
-        #[arg(long)]
-        config: Option<PathBuf>,
-        /// Directory containing the durable Factory database.
-        #[arg(long)]
-        data_directory: Option<PathBuf>,
-    },
-    /// Approve the current issue title, body, and delivery workflow revision.
-    Approve {
-        /// GitHub issue number to approve.
-        issue: u64,
-        /// Path to the repository-local Factory configuration file.
         #[arg(long)]
         config: Option<PathBuf>,
         /// Directory containing the durable Factory database.
@@ -158,51 +145,6 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum WorkflowCommand {
-    /// Create a workflow from explicit trigger and prompt input.
-    #[command(group(
-        ArgGroup::new("trigger")
-            .required(true)
-            .args(["schedule", "label", "state"])
-    ))]
-    #[command(group(
-        ArgGroup::new("prompt_source")
-            .required(true)
-            .args(["prompt", "prompt_file"])
-    ))]
-    Create {
-        /// Lowercase kebab-case workflow ID.
-        workflow_id: String,
-        /// Five-field cron expression.
-        #[arg(long, requires = "timezone")]
-        schedule: Option<String>,
-        /// IANA timezone for a scheduled workflow.
-        #[arg(long, requires = "schedule")]
-        timezone: Option<String>,
-        /// GitHub label for a label-triggered workflow.
-        #[arg(long)]
-        label: Option<String>,
-        /// Semantic GitHub Project state for a state-triggered workflow.
-        #[arg(long)]
-        state: Option<String>,
-        /// Runtime override. Inherits the configured default when omitted.
-        #[arg(long)]
-        runtime: Option<String>,
-        /// Timeout override. Inherits the configured default when omitted.
-        #[arg(long)]
-        timeout: Option<String>,
-        /// Workflow prompt text.
-        #[arg(long)]
-        prompt: Option<String>,
-        /// Read workflow prompt text from this file, or from stdin with `-`.
-        #[arg(long, value_name = "PATH")]
-        prompt_file: Option<PathBuf>,
-        /// Configured repository to create the workflow in. Defaults to the current directory.
-        #[arg(long)]
-        repository: Option<PathBuf>,
-        /// Path to the Factory configuration file.
-        #[arg(long)]
-        config: Option<PathBuf>,
-    },
     /// Run one validated workflow against a configured repository.
     Run {
         /// Workflow ID, derived from its Markdown filename.
@@ -266,41 +208,33 @@ async fn run_cli() -> Result<u8> {
         } => {
             return run_poller(config, data_directory, once).await;
         }
-        Command::Approve {
-            issue,
-            config,
-            data_directory,
-        } => {
-            let path = resolve_config_path(config)?;
-            let config = Config::load(&path)?;
-            let catalog = WorkflowCatalog::load(&config)?;
-            catalog.validate_ticket_workflows()?;
-            let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
-            let mut ledger = Ledger::open_in(&data_directory)?;
-            let report = approve_issue(
-                &config,
-                &catalog,
-                &mut ledger,
-                issue,
-                &GitHubClient::default(),
-            )
-            .await?;
-            print!("{report}");
-        }
         Command::Validate { config } => {
             let path = resolve_config_path(config)?;
             let config = Config::load(&path)?;
             let catalog = WorkflowCatalog::load(&config)?;
-            catalog.validate_ticket_workflows()?;
+            catalog.validate_all()?;
             validate_data_directory(&config.data_directory)?;
             let cancellation = CancellationToken::new();
             if let Some(source) = &config.source {
                 let github = GitHubClient::default();
                 github.validate_global(&cancellation).await?;
+                let statuses = catalog
+                    .entries
+                    .iter()
+                    .filter_map(|entry| match entry.trigger.as_ref() {
+                        Some(factory::workflow::Trigger::Status(status)) => Some(status.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
                 for repository in &config.repositories {
                     github
-                        .validate_project_source(repository, source, &cancellation)
+                        .validate_issue_source(repository, source, &cancellation)
                         .await?;
+                    if !statuses.is_empty() {
+                        github
+                            .validate_project_source(repository, source, &statuses, &cancellation)
+                            .await?;
+                    }
                 }
             }
             if let Some(worker) = &config.worker {
@@ -326,43 +260,6 @@ async fn run_cli() -> Result<u8> {
             if invalid > 0 {
                 anyhow::bail!("workflow catalog contains {invalid} invalid workflow(s)");
             }
-        }
-        Command::Workflow {
-            command:
-                WorkflowCommand::Create {
-                    workflow_id,
-                    schedule,
-                    timezone,
-                    label,
-                    state,
-                    runtime,
-                    timeout,
-                    prompt,
-                    prompt_file,
-                    repository,
-                    config,
-                },
-        } => {
-            let report = create_workflow(
-                CreateWorkflowOptions {
-                    id: workflow_id,
-                    repository: repository.unwrap_or(
-                        std::env::current_dir().context("failed to resolve current directory")?,
-                    ),
-                    config_path: resolve_config_path(config)?,
-                    schedule,
-                    timezone,
-                    label,
-                    state,
-                    runtime,
-                    timeout,
-                    prompt,
-                    prompt_file,
-                },
-                &GitHubClient::default(),
-            )
-            .await?;
-            print!("{report}");
         }
         Command::Workflow {
             command:
@@ -629,16 +526,6 @@ async fn run_poller(
     let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
     ensure_legacy_cutover(&config, &data_directory)?;
     let catalog = WorkflowCatalog::load(&config)?;
-    for repository in catalog.repositories_without_ready_workflow(&config) {
-        write_stderr_best_effort(
-            format!(
-                "No valid {:?} implementation workflow found for {}; create one with factory workflow create <workflow-id>\n",
-                config.github.ready_label,
-                repository.display()
-            )
-            .as_bytes(),
-        );
-    }
     let ticket_validation = catalog.validate_ticket_workflows();
     if !once && ticket_validation.is_err() {
         for entry in catalog.invalid_scheduled_entries() {

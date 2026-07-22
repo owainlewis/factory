@@ -7,9 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use factory::config::{
-    Config, ExecutionMode, GitHubConfig, PipelineState, SourceConfig, SourceStates,
-};
+use factory::config::{Config, ExecutionMode, SourceConfig, TriggerConfig, TriggerKind};
 use factory::github::{GitHubClient, ProjectTicketContext};
 use factory::storage::{Ledger, RunOutcome};
 use factory::workflow::WorkflowCatalog;
@@ -28,7 +26,8 @@ impl Fixture {
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
         let repository = temp.path().join("repo");
-        fs::create_dir_all(repository.join(".factory/workflows")).unwrap();
+        fs::create_dir_all(repository.join(".factory/workflows/triage")).unwrap();
+        fs::create_dir_all(repository.join(".factory/workflows/implement")).unwrap();
         assert!(
             Command::new("git")
                 .args(["init", "--quiet", "-b", "main"])
@@ -38,13 +37,13 @@ impl Fixture {
                 .success()
         );
         fs::write(
-            repository.join(".factory/workflows/triage-ticket.md"),
-            "+++\nstate = \"ready_for_spec\"\n+++\n\nTriage issue.\n",
+            repository.join(".factory/workflows/triage/WORKFLOW.md"),
+            "Triage issue.\n",
         )
         .unwrap();
         fs::write(
-            repository.join(".factory/workflows/implement-ready-ticket.md"),
-            "+++\nstate = \"ready_to_implement\"\n+++\n\nImplement issue.\n",
+            repository.join(".factory/workflows/implement/WORKFLOW.md"),
+            "Implement issue.\n",
         )
         .unwrap();
         fs::write(repository.join(".status-option"), "rfs").unwrap();
@@ -59,14 +58,6 @@ impl Fixture {
             project_number: 16,
             status_field: "Status".to_owned(),
             trusted_users: vec!["owainlewis".to_owned()],
-            states: SourceStates {
-                ready_for_spec: "Ready For Spec".to_owned(),
-                creating_spec: "Creating Spec".to_owned(),
-                ready_to_implement: "Ready To Implement".to_owned(),
-                implementing: "Implementing".to_owned(),
-                ready_to_review: "Reviewing".to_owned(),
-                done: "Done".to_owned(),
-            },
         };
         let config = Config {
             repositories: vec![repository.canonicalize().unwrap()],
@@ -80,13 +71,21 @@ impl Fixture {
             data_directory: temp.path().join("data"),
             execution_mode: ExecutionMode::Worktree,
             worker: None,
+            triggers: vec![
+                TriggerConfig {
+                    id: "triage".to_owned(),
+                    workflow: repository.join(".factory/workflows/triage/WORKFLOW.md"),
+                    timeout: Duration::from_secs(120),
+                    kind: TriggerKind::Status("Ready For Spec".to_owned()),
+                },
+                TriggerConfig {
+                    id: "implement".to_owned(),
+                    workflow: repository.join(".factory/workflows/implement/WORKFLOW.md"),
+                    timeout: Duration::from_secs(120),
+                    kind: TriggerKind::Status("Ready To Implement".to_owned()),
+                },
+            ],
             source: Some(source),
-            github: GitHubConfig {
-                trusted_approvers: vec!["owainlewis".to_owned()],
-                ready_label: "factory:ready".to_owned(),
-                proposed_label: "factory:proposed".to_owned(),
-                needs_review_label: "factory:needs-review".to_owned(),
-            },
         };
         let catalog = WorkflowCatalog::load(&config).unwrap();
         let gh = temp.path().join("gh");
@@ -173,7 +172,7 @@ exit 64
 }
 
 #[tokio::test]
-async fn dispatches_both_ready_states_and_claims_their_active_states() {
+async fn dispatches_and_authorizes_both_configured_statuses_without_mutating_them() {
     let fixture = Fixture::new();
     let (report, mut ledger) = fixture.poll().await;
     assert_eq!(report.tasks_created(), 1);
@@ -184,7 +183,7 @@ async fn dispatches_both_ready_states_and_claims_their_active_states() {
         (
             (
                 "example/repo".to_owned(),
-                "triage-ticket".to_owned(),
+                "triage".to_owned(),
                 "ticket".to_owned(),
             ),
             "codex".to_owned(),
@@ -192,7 +191,7 @@ async fn dispatches_both_ready_states_and_claims_their_active_states() {
         (
             (
                 "example/repo".to_owned(),
-                "implement-ready-ticket".to_owned(),
+                "implement".to_owned(),
                 "ticket".to_owned(),
             ),
             "codex".to_owned(),
@@ -210,7 +209,7 @@ async fn dispatches_both_ready_states_and_claims_their_active_states() {
     let triage = triage_claim.task.clone();
     let context: ProjectTicketContext =
         serde_json::from_str(triage.payload.as_deref().unwrap()).unwrap();
-    assert_eq!(context.expected_state, PipelineState::ReadyForSpec);
+    assert_eq!(context.expected_status, "Ready For Spec");
     GitHubClient::new(&fixture.gh)
         .authorize_project_claim(
             &fixture.repository,
@@ -223,7 +222,7 @@ async fn dispatches_both_ready_states_and_claims_their_active_states() {
         .unwrap();
     assert_eq!(
         fs::read_to_string(fixture.repository.join(".status-option")).unwrap(),
-        "cs"
+        "rfs"
     );
     GitHubClient::new(&fixture.gh)
         .authorize_project_claim(
@@ -273,7 +272,7 @@ async fn dispatches_both_ready_states_and_claims_their_active_states() {
         .unwrap();
     assert_eq!(
         fs::read_to_string(fixture.repository.join(".status-option")).unwrap(),
-        "impl"
+        "rti"
     );
 }
 
@@ -288,7 +287,7 @@ async fn deduplicates_restarts_and_rearms_after_leaving_the_ready_state() {
     let runtimes = HashMap::from([(
         (
             "example/repo".to_owned(),
-            "triage-ticket".to_owned(),
+            "triage".to_owned(),
             "ticket".to_owned(),
         ),
         "codex".to_owned(),
@@ -329,7 +328,7 @@ async fn review_reentry_creates_one_new_implementation_generation() {
     let runtimes = HashMap::from([(
         (
             "example/repo".to_owned(),
-            "implement-ready-ticket".to_owned(),
+            "implement".to_owned(),
             "ticket".to_owned(),
         ),
         "codex".to_owned(),
@@ -370,9 +369,11 @@ async fn review_reentry_creates_one_new_implementation_generation() {
     assert_eq!(reentry_report.tasks_created(), 1);
     let tasks = ledger.tasks().unwrap();
     assert_eq!(tasks.len(), 2);
-    assert!(tasks.iter().all(|task| {
-        task.workflow == "implement-ready-ticket" && task.source_item.as_deref() == Some("41")
-    }));
+    assert!(
+        tasks.iter().all(|task| {
+            task.workflow == "implement" && task.source_item.as_deref() == Some("41")
+        })
+    );
     assert_ne!(tasks[0].identity_key, tasks[1].identity_key);
 
     assert_eq!(fixture.poll().await.0.tasks_created(), 0);
@@ -412,6 +413,7 @@ async fn validation_rejects_missing_fields_and_duplicate_provider_options() {
         .validate_project_source(
             &fixture.repository,
             fixture.config.source.as_ref().unwrap(),
+            &["Ready For Spec".to_owned(), "Ready To Implement".to_owned()],
             &CancellationToken::new(),
         )
         .await
@@ -423,6 +425,7 @@ async fn validation_rejects_missing_fields_and_duplicate_provider_options() {
         .validate_project_source(
             &fixture.repository,
             fixture.config.source.as_ref().unwrap(),
+            &["Ready For Spec".to_owned(), "Ready To Implement".to_owned()],
             &CancellationToken::new(),
         )
         .await
@@ -440,7 +443,7 @@ async fn queued_task_cannot_mutate_a_different_configured_project() {
     let runtimes = HashMap::from([(
         (
             "example/repo".to_owned(),
-            "triage-ticket".to_owned(),
+            "triage".to_owned(),
             "ticket".to_owned(),
         ),
         "codex".to_owned(),
@@ -474,67 +477,39 @@ async fn queued_task_cannot_mutate_a_different_configured_project() {
 }
 
 #[tokio::test]
-async fn project_transition_failures_recover_before_and_after_remote_apply() {
-    for failure_marker in [".edit-fail-before", ".edit-fail-after"] {
-        let fixture = Fixture::new();
-        let (_, mut ledger) = fixture.poll().await;
-        ledger
-            .register_daemon_owner("owner", std::process::id())
-            .unwrap();
-        let runtimes = HashMap::from([(
-            (
-                "example/repo".to_owned(),
-                "triage-ticket".to_owned(),
-                "ticket".to_owned(),
-            ),
-            "codex".to_owned(),
-        )]);
-        let first = ledger
-            .claim_and_start_run(
-                &["example/repo".to_owned()],
-                &runtimes,
-                "owner",
-                std::process::id(),
-            )
-            .unwrap()
-            .unwrap();
-        fs::write(fixture.repository.join(failure_marker), "").unwrap();
-        GitHubClient::new(&fixture.gh)
-            .authorize_project_claim(
-                &fixture.repository,
-                fixture.config.source.as_ref().unwrap(),
-                &first.task,
-                &mut ledger,
-                &CancellationToken::new(),
-            )
-            .await
-            .unwrap_err();
-        ledger
-            .fail_prelaunch_and_requeue(first.run.id, "ambiguous project transition")
-            .unwrap();
-        fs::remove_file(fixture.repository.join(failure_marker)).unwrap();
-        let recovery = ledger
-            .claim_and_start_run(
-                &["example/repo".to_owned()],
-                &runtimes,
-                "owner",
-                std::process::id(),
-            )
-            .unwrap()
-            .unwrap();
-        GitHubClient::new(&fixture.gh)
-            .authorize_project_claim(
-                &fixture.repository,
-                fixture.config.source.as_ref().unwrap(),
-                &recovery.task,
-                &mut ledger,
-                &CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            fs::read_to_string(fixture.repository.join(".status-option")).unwrap(),
-            "cs"
-        );
-    }
+async fn authorization_rejects_a_ticket_that_left_the_trigger_status() {
+    let fixture = Fixture::new();
+    let (_, mut ledger) = fixture.poll().await;
+    ledger
+        .register_daemon_owner("owner", std::process::id())
+        .unwrap();
+    let runtimes = HashMap::from([(
+        (
+            "example/repo".to_owned(),
+            "triage".to_owned(),
+            "ticket".to_owned(),
+        ),
+        "codex".to_owned(),
+    )]);
+    let claimed = ledger
+        .claim_and_start_run(
+            &["example/repo".to_owned()],
+            &runtimes,
+            "owner",
+            std::process::id(),
+        )
+        .unwrap()
+        .unwrap();
+    fixture.set_state("cs", "2026-07-21T10:01:00Z");
+    let error = GitHubClient::new(&fixture.gh)
+        .authorize_project_claim(
+            &fixture.repository,
+            fixture.config.source.as_ref().unwrap(),
+            &claimed.task,
+            &mut ledger,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("status changed"));
 }

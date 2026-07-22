@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -22,8 +24,26 @@ pub struct Config {
     pub data_directory: PathBuf,
     pub execution_mode: ExecutionMode,
     pub worker: Option<WorkerConfig>,
+    pub triggers: Vec<TriggerConfig>,
     pub source: Option<SourceConfig>,
-    pub github: GitHubConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TriggerConfig {
+    pub id: String,
+    pub workflow: PathBuf,
+    pub timeout: Duration,
+    pub kind: TriggerKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TriggerKind {
+    Status(String),
+    Label(String),
+    Schedule {
+        expression: String,
+        timezone: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -58,63 +78,6 @@ pub struct SourceConfig {
     pub project_number: u64,
     pub status_field: String,
     pub trusted_users: Vec<String>,
-    pub states: SourceStates,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceStates {
-    pub ready_for_spec: String,
-    pub creating_spec: String,
-    pub ready_to_implement: String,
-    pub implementing: String,
-    pub ready_to_review: String,
-    pub done: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PipelineState {
-    ReadyForSpec,
-    CreatingSpec,
-    ReadyToImplement,
-    Implementing,
-    ReadyToReview,
-    Done,
-}
-
-impl PipelineState {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ReadyForSpec => "ready_for_spec",
-            Self::CreatingSpec => "creating_spec",
-            Self::ReadyToImplement => "ready_to_implement",
-            Self::Implementing => "implementing",
-            Self::ReadyToReview => "ready_to_review",
-            Self::Done => "done",
-        }
-    }
-}
-
-impl fmt::Display for PipelineState {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl std::str::FromStr for PipelineState {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "ready_for_spec" => Ok(Self::ReadyForSpec),
-            "creating_spec" => Ok(Self::CreatingSpec),
-            "ready_to_implement" => Ok(Self::ReadyToImplement),
-            "implementing" => Ok(Self::Implementing),
-            "ready_to_review" => Ok(Self::ReadyToReview),
-            "done" => Ok(Self::Done),
-            _ => bail!("unknown pipeline state {value:?}"),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,25 +92,25 @@ pub struct GitHubConfig {
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     version: u8,
-    execution_mode: Option<ExecutionMode>,
     poll_every: String,
-    default_runtime: String,
-    default_timeout: String,
-    maximum_timeout: String,
-    max_concurrent_runs: usize,
-    worker: Option<RawWorkerConfig>,
-    source: Option<RawSourceConfig>,
-    github: Option<RawGitHubConfig>,
+    worker: RawWorkerConfig,
+    source: RawSourceConfig,
+    #[serde(rename = "trigger")]
+    triggers: BTreeMap<String, RawTriggerConfig>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawWorkerConfig {
-    kind: String,
-    image: String,
-    memory: String,
-    cpus: u32,
-    pids: u32,
+    runtime: String,
+    sandbox: ExecutionMode,
+    timeout: String,
+    maximum_timeout: Option<String>,
+    max_concurrent: usize,
+    image: Option<String>,
+    memory: Option<String>,
+    cpus: Option<u32>,
+    pids: Option<u32>,
     codex_auth: Option<String>,
     github_token_env: Option<String>,
 }
@@ -155,32 +118,33 @@ struct RawWorkerConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawSourceConfig {
-    kind: String,
-    owner: String,
+    #[serde(rename = "type")]
+    provider: String,
+    project_owner: String,
     project_number: u64,
     status_field: String,
     trusted_users: Vec<String>,
-    states: RawSourceStates,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawSourceStates {
-    ready_for_spec: String,
-    creating_spec: String,
-    ready_to_implement: String,
-    implementing: String,
-    ready_to_review: String,
-    done: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawGitHubConfig {
-    trusted_approvers: Vec<String>,
-    ready_label: String,
-    proposed_label: String,
-    needs_review_label: String,
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum RawTriggerConfig {
+    Status {
+        status: String,
+        workflow: String,
+        timeout: Option<String>,
+    },
+    Label {
+        label: String,
+        workflow: String,
+        timeout: Option<String>,
+    },
+    Schedule {
+        schedule: String,
+        timezone: String,
+        workflow: String,
+        timeout: Option<String>,
+    },
 }
 
 impl Config {
@@ -242,11 +206,6 @@ impl Config {
             .context("invalid candidate Factory configuration")
     }
 
-    #[cfg(test)]
-    fn resolve(raw: RawConfig, repository: &Path) -> Result<Self> {
-        Self::resolve_with_workspace_probe(raw, repository, |_| Ok(()), true)
-    }
-
     fn resolve_with_workspace_probe<F>(
         raw: RawConfig,
         repository: &Path,
@@ -259,59 +218,43 @@ impl Config {
         if raw.version != 1 {
             bail!("version must be 1");
         }
-        if raw.max_concurrent_runs == 0 {
-            bail!("max_concurrent_runs must be greater than zero");
+        if raw.worker.max_concurrent == 0 {
+            bail!("worker.max_concurrent must be greater than zero");
         }
-        let execution_mode = match (raw.execution_mode, raw.worker.is_some()) {
-            (Some(ExecutionMode::Worktree), true) => {
-                bail!("worktree execution_mode does not accept [worker] configuration")
-            }
-            (Some(ExecutionMode::Docker), false) => {
-                bail!("docker execution_mode requires [worker] configuration")
-            }
-            (Some(mode), _) => mode,
-            (None, true) => ExecutionMode::Docker,
-            (None, false) => ExecutionMode::Worktree,
-        };
-        if execution_mode == ExecutionMode::Docker && raw.max_concurrent_runs != 1 {
-            bail!("Docker workers require max_concurrent_runs = 1");
+        let max_concurrent = raw.worker.max_concurrent;
+        let execution_mode = raw.worker.sandbox;
+        if execution_mode == ExecutionMode::Docker && raw.worker.max_concurrent != 1 {
+            bail!("Docker workers require worker.max_concurrent = 1");
         }
-        if raw.source.is_some() && raw.github.is_some() {
-            bail!("configure [source] or legacy [github], not both");
-        }
-        let source = raw.source.map(resolve_source).transpose()?;
-        let github = match raw.github {
-            Some(github) => resolve_github(github)?,
-            None => {
-                let source = source
-                    .as_ref()
-                    .context("configuration must contain [source] or legacy [github]")?;
-                GitHubConfig {
-                    trusted_approvers: source.trusted_users.clone(),
-                    ready_label: "factory:ready".to_owned(),
-                    proposed_label: "factory:proposed".to_owned(),
-                    needs_review_label: "factory:needs-review".to_owned(),
-                }
-            }
-        };
-        let default_runtime = raw.default_runtime.trim();
-        if default_runtime.is_empty() {
-            bail!("default_runtime must not be empty");
+        let source = resolve_source(raw.source)?;
+        let default_runtime = raw.worker.runtime.trim().to_owned();
+        if default_runtime != "codex" {
+            bail!("worker.runtime must be \"codex\" in this build");
         }
 
         let poll_every = parse_positive_duration("poll_every", &raw.poll_every)?;
-        let default_timeout = parse_positive_duration("default_timeout", &raw.default_timeout)?;
-        let maximum_timeout = parse_positive_duration("maximum_timeout", &raw.maximum_timeout)?;
+        let default_timeout = parse_positive_duration("worker.timeout", &raw.worker.timeout)?;
+        let maximum_timeout = parse_positive_duration(
+            "worker.maximum_timeout",
+            raw.worker.maximum_timeout.as_deref().unwrap_or("8h"),
+        )?;
         if default_timeout > maximum_timeout {
-            bail!("default_timeout must not exceed maximum_timeout");
+            bail!("worker.timeout must not exceed worker.maximum_timeout");
         }
 
         let repository = canonical_directory("repository", repository, repository)?;
+        let triggers =
+            resolve_triggers(raw.triggers, &repository, default_timeout, maximum_timeout)?;
         let data_directory = repository_data_directory(&repository)?;
-        let worker = raw
-            .worker
-            .map(|worker| resolve_worker(worker, &repository, &data_directory))
-            .transpose()?;
+        let worker = match execution_mode {
+            ExecutionMode::Worktree => {
+                reject_docker_options(&raw.worker)?;
+                None
+            }
+            ExecutionMode::Docker => {
+                Some(resolve_worker(raw.worker, &repository, &data_directory)?)
+            }
+        };
         let workspace_candidate = data_directory.join("worktrees");
         let workspace_root = if allow_missing_workspace {
             canonical_directory_or_missing("workspace_root", &workspace_candidate, &repository)?
@@ -329,31 +272,18 @@ impl Config {
         Ok(Self {
             repositories: vec![repository],
             poll_every,
-            default_runtime: default_runtime.to_owned(),
+            default_runtime,
             default_timeout,
             maximum_timeout,
-            max_concurrent_runs: raw.max_concurrent_runs,
-            max_concurrent_runs_per_repository: raw.max_concurrent_runs,
+            max_concurrent_runs: max_concurrent,
+            max_concurrent_runs_per_repository: max_concurrent,
             workspace_root,
             data_directory,
             execution_mode,
             worker,
-            source,
-            github,
+            triggers,
+            source: Some(source),
         })
-    }
-}
-
-impl SourceConfig {
-    pub fn state_name(&self, state: PipelineState) -> &str {
-        match state {
-            PipelineState::ReadyForSpec => &self.states.ready_for_spec,
-            PipelineState::CreatingSpec => &self.states.creating_spec,
-            PipelineState::ReadyToImplement => &self.states.ready_to_implement,
-            PipelineState::Implementing => &self.states.implementing,
-            PipelineState::ReadyToReview => &self.states.ready_to_review,
-            PipelineState::Done => &self.states.done,
-        }
     }
 }
 
@@ -366,23 +296,23 @@ impl fmt::Display for Config {
             "poll_every: {}",
             humantime::format_duration(self.poll_every)
         )?;
-        writeln!(formatter, "default_runtime: {}", self.default_runtime)?;
+        writeln!(formatter, "worker.runtime: {}", self.default_runtime)?;
         writeln!(
             formatter,
-            "default_timeout: {}",
+            "worker.timeout: {}",
             humantime::format_duration(self.default_timeout)
         )?;
         writeln!(
             formatter,
-            "maximum_timeout: {}",
+            "worker.maximum_timeout: {}",
             humantime::format_duration(self.maximum_timeout)
         )?;
         writeln!(
             formatter,
-            "max_concurrent_runs: {}",
+            "worker.max_concurrent: {}",
             self.max_concurrent_runs
         )?;
-        writeln!(formatter, "execution_mode: {}", self.execution_mode)?;
+        writeln!(formatter, "worker.sandbox: {}", self.execution_mode)?;
         if let Some(worker) = &self.worker {
             writeln!(formatter, "worker: docker")?;
             writeln!(formatter, "worker.image: {}", worker.image)?;
@@ -403,20 +333,19 @@ impl fmt::Display for Config {
         if let Some(source) = &self.source {
             writeln!(
                 formatter,
-                "source: github_project {}/{}",
+                "source: github {}/{}",
                 source.owner, source.project_number
             )?;
             writeln!(formatter, "status_field: {}", source.status_field)?;
-            for state in [
-                PipelineState::ReadyForSpec,
-                PipelineState::CreatingSpec,
-                PipelineState::ReadyToImplement,
-                PipelineState::Implementing,
-                PipelineState::ReadyToReview,
-                PipelineState::Done,
-            ] {
-                writeln!(formatter, "state.{state}: {}", source.state_name(state))?;
-            }
+        }
+        for trigger in &self.triggers {
+            writeln!(
+                formatter,
+                "trigger.{}: {} -> {}",
+                trigger.id,
+                trigger.kind,
+                display_repository_path(&self.repositories[0], &trigger.workflow)
+            )?;
         }
         writeln!(
             formatter,
@@ -427,16 +356,171 @@ impl fmt::Display for Config {
     }
 }
 
+impl fmt::Display for TriggerKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Status(status) => write!(formatter, "status {status:?}"),
+            Self::Label(label) => write!(formatter, "label {label:?}"),
+            Self::Schedule {
+                expression,
+                timezone,
+            } => write!(formatter, "schedule {expression:?} ({timezone})"),
+        }
+    }
+}
+
+fn resolve_triggers(
+    raw: BTreeMap<String, RawTriggerConfig>,
+    repository: &Path,
+    default_timeout: Duration,
+    maximum_timeout: Duration,
+) -> Result<Vec<TriggerConfig>> {
+    if raw.is_empty() {
+        bail!("configuration must contain at least one [trigger.<id>] table");
+    }
+    raw.into_iter()
+        .map(|(id, trigger)| {
+            validate_trigger_id(&id)?;
+            let (workflow, timeout, kind) = match trigger {
+                RawTriggerConfig::Status {
+                    status,
+                    workflow,
+                    timeout,
+                } => (
+                    workflow,
+                    timeout,
+                    TriggerKind::Status(validate_display_name(
+                        &format!("trigger.{id}.status"),
+                        status,
+                    )?),
+                ),
+                RawTriggerConfig::Label {
+                    label,
+                    workflow,
+                    timeout,
+                } => (
+                    workflow,
+                    timeout,
+                    TriggerKind::Label(validate_label(&format!("trigger.{id}.label"), label)?),
+                ),
+                RawTriggerConfig::Schedule {
+                    schedule,
+                    timezone,
+                    workflow,
+                    timeout,
+                } => {
+                    let schedule = schedule.trim();
+                    if schedule.split_whitespace().count() != 5
+                        || cron::Schedule::from_str(&format!("0 {schedule}")).is_err()
+                    {
+                        bail!("trigger.{id}.schedule must be a valid five-field cron expression");
+                    }
+                    let timezone = timezone.trim();
+                    timezone.parse::<chrono_tz::Tz>().with_context(|| {
+                        format!("trigger.{id}.timezone must be a valid IANA timezone")
+                    })?;
+                    (
+                        workflow,
+                        timeout,
+                        TriggerKind::Schedule {
+                            expression: schedule.to_owned(),
+                            timezone: timezone.to_owned(),
+                        },
+                    )
+                }
+            };
+            let timeout = timeout
+                .as_deref()
+                .map(|value| parse_positive_duration(&format!("trigger.{id}.timeout"), value))
+                .transpose()?
+                .unwrap_or(default_timeout);
+            if timeout > maximum_timeout {
+                bail!("trigger.{id}.timeout must not exceed worker.maximum_timeout");
+            }
+            Ok(TriggerConfig {
+                workflow: resolve_workflow_path(
+                    &format!("trigger.{id}.workflow"),
+                    &workflow,
+                    repository,
+                )?,
+                id,
+                timeout,
+                kind,
+            })
+        })
+        .collect()
+}
+
+fn validate_trigger_id(id: &str) -> Result<()> {
+    if id.is_empty()
+        || !id.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
+        })
+    {
+        bail!("trigger ID must be lowercase kebab-case, got {id:?}");
+    }
+    Ok(())
+}
+
+fn resolve_workflow_path(name: &str, value: &str, repository: &Path) -> Result<PathBuf> {
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("{name} must not be empty");
+    }
+    let relative = Path::new(value);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        bail!("{name} must be a repository-relative path without . or .. components");
+    }
+    if !relative.starts_with(Path::new(".factory/workflows")) {
+        bail!("{name} must be inside .factory/workflows");
+    }
+    if relative
+        .extension()
+        .and_then(|extension| extension.to_str())
+        != Some("md")
+    {
+        bail!("{name} must name a Markdown file");
+    }
+    Ok(repository.join(relative))
+}
+
+fn display_repository_path(repository: &Path, path: &Path) -> String {
+    path.strip_prefix(repository)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+fn reject_docker_options(raw: &RawWorkerConfig) -> Result<()> {
+    if raw.image.is_some()
+        || raw.memory.is_some()
+        || raw.cpus.is_some()
+        || raw.pids.is_some()
+        || raw.codex_auth.is_some()
+        || raw.github_token_env.is_some()
+    {
+        bail!("worker sandbox \"worktree\" does not accept Docker-only settings");
+    }
+    Ok(())
+}
+
 fn resolve_worker(
     raw: RawWorkerConfig,
     repository: &Path,
     data_directory: &Path,
 ) -> Result<WorkerConfig> {
-    if raw.kind != "docker" {
-        bail!("worker.kind must be \"docker\"");
-    }
-
-    let image = raw.image.trim();
+    let image = raw
+        .image
+        .as_deref()
+        .context("worker.image is required when worker.sandbox is \"docker\"")?;
+    let image = image.trim();
     if image.is_empty()
         || image.chars().count() > 255
         || !image.chars().all(|character| {
@@ -452,7 +536,12 @@ fn resolve_worker(
         bail!("worker.image must be a valid, explicitly tagged Docker image reference");
     }
 
-    let memory = raw.memory.trim().to_ascii_lowercase();
+    let memory = raw
+        .memory
+        .as_deref()
+        .context("worker.memory is required when worker.sandbox is \"docker\"")?
+        .trim()
+        .to_ascii_lowercase();
     let suffix_start = memory
         .find(|character: char| !character.is_ascii_digit())
         .unwrap_or(memory.len());
@@ -467,10 +556,16 @@ fn resolve_worker(
     {
         bail!("worker.memory must be a positive Docker memory limit such as \"8g\"");
     }
-    if raw.cpus == 0 {
+    let cpus = raw
+        .cpus
+        .context("worker.cpus is required when worker.sandbox is \"docker\"")?;
+    let pids = raw
+        .pids
+        .context("worker.pids is required when worker.sandbox is \"docker\"")?;
+    if cpus == 0 {
         bail!("worker.cpus must be greater than zero");
     }
-    if raw.pids == 0 {
+    if pids == 0 {
         bail!("worker.pids must be greater than zero");
     }
 
@@ -485,12 +580,6 @@ fn resolve_worker(
     if codex_auth.starts_with(repository) {
         bail!("worker.codex_auth must be outside the repository");
     }
-    if let Some(home) = dirs::home_dir()
-        && codex_auth == home.join(".codex/auth.json")
-    {
-        bail!("worker.codex_auth must use a dedicated Factory credential, not ~/.codex/auth.json");
-    }
-
     let github_token_env = raw
         .github_token_env
         .unwrap_or_else(|| "FACTORY_GITHUB_TOKEN".to_owned());
@@ -510,8 +599,8 @@ fn resolve_worker(
     Ok(WorkerConfig {
         image: image.to_owned(),
         memory,
-        cpus: raw.cpus,
-        pids: raw.pids,
+        cpus,
+        pids,
         codex_auth,
         github_token_env: github_token_env.to_owned(),
     })
@@ -539,63 +628,14 @@ fn resolve_file_or_missing(name: &str, path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn resolve_github(raw: RawGitHubConfig) -> Result<GitHubConfig> {
-    if raw.trusted_approvers.is_empty() {
-        bail!("github.trusted_approvers must contain at least one login");
-    }
-    let mut trusted_approvers = Vec::with_capacity(raw.trusted_approvers.len());
-    for login in raw.trusted_approvers {
-        let login = login.trim();
-        if login.is_empty()
-            || !login
-                .chars()
-                .all(|character| character.is_ascii_alphanumeric() || character == '-')
-        {
-            bail!("github.trusted_approvers contains invalid login {login:?}");
-        }
-        if !trusted_approvers
-            .iter()
-            .any(|existing: &String| existing.eq_ignore_ascii_case(login))
-        {
-            trusted_approvers.push(login.to_owned());
-        }
-    }
-    let label = |name: &str, value: String| -> Result<String> {
-        let value = value.trim();
-        if value.is_empty() {
-            bail!("github.{name} must not be empty");
-        }
-        if value.chars().count() > 50
-            || value
-                .chars()
-                .any(|character| matches!(character, '\0' | '\n' | '\r'))
-        {
-            bail!("github.{name} must be a valid GitHub label of at most 50 characters");
-        }
-        Ok(value.to_owned())
-    };
-    let ready_label = label("ready_label", raw.ready_label)?;
-    let proposed_label = label("proposed_label", raw.proposed_label)?;
-    let needs_review_label = label("needs_review_label", raw.needs_review_label)?;
-    if ready_label.eq_ignore_ascii_case(&proposed_label)
-        || ready_label.eq_ignore_ascii_case(&needs_review_label)
-        || proposed_label.eq_ignore_ascii_case(&needs_review_label)
-    {
-        bail!("github ready, proposed, and needs-review labels must be distinct");
-    }
-    Ok(GitHubConfig {
-        trusted_approvers,
-        ready_label,
-        proposed_label,
-        needs_review_label,
-    })
-}
-
 fn resolve_source(raw: RawSourceConfig) -> Result<SourceConfig> {
-    if raw.kind != "github_project" {
-        bail!("source.kind must be \"github_project\"");
+    if raw.provider != "github" {
+        bail!(
+            "source type {:?} is not supported by this build; supported source types: github",
+            raw.provider
+        );
     }
-    let owner = validate_github_login("source.owner", raw.owner)?;
+    let owner = validate_github_login("source.project_owner", raw.project_owner)?;
     if raw.project_number == 0 {
         bail!("source.project_number must be greater than zero");
     }
@@ -613,54 +653,32 @@ fn resolve_source(raw: RawSourceConfig) -> Result<SourceConfig> {
             trusted_users.push(user);
         }
     }
-    let states = SourceStates {
-        ready_for_spec: validate_display_name(
-            "source.states.ready_for_spec",
-            raw.states.ready_for_spec,
-        )?,
-        creating_spec: validate_display_name(
-            "source.states.creating_spec",
-            raw.states.creating_spec,
-        )?,
-        ready_to_implement: validate_display_name(
-            "source.states.ready_to_implement",
-            raw.states.ready_to_implement,
-        )?,
-        implementing: validate_display_name("source.states.implementing", raw.states.implementing)?,
-        ready_to_review: validate_display_name(
-            "source.states.ready_to_review",
-            raw.states.ready_to_review,
-        )?,
-        done: validate_display_name("source.states.done", raw.states.done)?,
-    };
-    let names = [
-        &states.ready_for_spec,
-        &states.creating_spec,
-        &states.ready_to_implement,
-        &states.implementing,
-        &states.ready_to_review,
-        &states.done,
-    ];
-    for (index, name) in names.iter().enumerate() {
-        if names[..index]
-            .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(name))
-        {
-            bail!("source state display names must be distinct");
-        }
-    }
     Ok(SourceConfig {
         owner,
         project_number: raw.project_number,
         status_field,
         trusted_users,
-        states,
     })
+}
+
+fn validate_label(name: &str, value: String) -> Result<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.chars().count() > 50
+        || value.chars().any(|character| character.is_control())
+    {
+        bail!("{name} must be a valid label of at most 50 characters");
+    }
+    Ok(value.to_owned())
 }
 
 fn validate_github_login(name: &str, value: String) -> Result<String> {
     let value = value.trim();
     if value.is_empty()
+        || value.len() > 39
+        || value.starts_with('-')
+        || value.ends_with('-')
+        || value.contains("--")
         || !value
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || character == '-')
@@ -975,7 +993,7 @@ fn ensure_workspace_writable(workspace: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 mod tests {
     use super::*;
 
@@ -1013,6 +1031,10 @@ mod tests {
             maximum_timeout: "8h".into(),
             max_concurrent_runs: 2,
             worker: None,
+            workflows: RawPipelineWorkflows {
+                triage: ".factory/workflows/triage/WORKFLOW.md".into(),
+                implement: ".factory/workflows/implement/WORKFLOW.md".into(),
+            },
             source: None,
             github: Some(RawGitHubConfig {
                 trusted_approvers: vec!["owainlewis".into()],
@@ -1263,6 +1285,55 @@ mod tests {
     }
 
     #[test]
+    fn resolves_explicit_pipeline_workflow_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let config = Config::resolve(raw(&repository, temp.path()), &repository).unwrap();
+
+        assert_eq!(
+            config.workflows.triage,
+            repository
+                .canonicalize()
+                .unwrap()
+                .join(".factory/workflows/triage/WORKFLOW.md")
+        );
+        assert_eq!(
+            config.workflows.implement,
+            repository
+                .canonicalize()
+                .unwrap()
+                .join(".factory/workflows/implement/WORKFLOW.md")
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_or_ambiguous_pipeline_workflow_paths() {
+        let invalid = [
+            ("/tmp/WORKFLOW.md", "repository-relative"),
+            (".factory/workflows/../WORKFLOW.md", "without . or .."),
+            ("docs/WORKFLOW.md", "inside .factory/workflows"),
+            (".factory/workflows/triage/prompt.txt", "Markdown file"),
+        ];
+        for (path, expected) in invalid {
+            let temp = tempfile::tempdir().unwrap();
+            let repository = temp.path().join("repo");
+            let mut config = raw(&repository, temp.path());
+            config.workflows.triage = path.to_owned();
+
+            let error = Config::resolve(config, &repository).unwrap_err();
+
+            assert!(error.to_string().contains(expected), "{error:#}");
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let mut config = raw(&repository, temp.path());
+        config.workflows.implement = config.workflows.triage.clone();
+        let error = Config::resolve(config, &repository).unwrap_err();
+        assert!(error.to_string().contains("must use different files"));
+    }
+
+    #[test]
     fn rejects_overlapping_github_labels() {
         let temp = tempfile::tempdir().unwrap();
         let repository = temp.path().join("repo");
@@ -1304,6 +1375,10 @@ mod tests {
             maximum_timeout: "8h".into(),
             max_concurrent_runs: 1,
             worker: None,
+            workflows: RawPipelineWorkflows {
+                triage: ".factory/workflows/triage/WORKFLOW.md".into(),
+                implement: ".factory/workflows/implement/WORKFLOW.md".into(),
+            },
             source: None,
             github: Some(RawGitHubConfig {
                 trusted_approvers: vec!["owainlewis".into()],

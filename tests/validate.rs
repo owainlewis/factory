@@ -44,23 +44,30 @@ fn valid_config() -> (
         .arg("init")
         .assert()
         .success();
-    fs::remove_dir_all(repository.join(".factory/workflows")).unwrap();
-    fs::create_dir(repository.join(".factory/workflows")).unwrap();
     let path = repository.join(".factory/config.toml");
     fs::write(
         &path,
         r#"version = 1
 poll_every = "30s"
-default_runtime = "codex"
-default_timeout = "2h"
-maximum_timeout = "8h"
-max_concurrent_runs = 2
 
-[github]
-trusted_approvers = ["owainlewis"]
-ready_label = "factory:ready"
-proposed_label = "factory:proposed"
-needs_review_label = "factory:needs-review"
+[worker]
+runtime = "codex"
+sandbox = "worktree"
+timeout = "2h"
+maximum_timeout = "8h"
+max_concurrent = 2
+
+[source]
+type = "github"
+project_owner = "example"
+project_number = 16
+status_field = "Status"
+trusted_users = ["example"]
+
+[trigger.implement]
+type = "label"
+label = "agent:ready"
+workflow = ".factory/workflows/implement/WORKFLOW.md"
 "#,
     )
     .unwrap();
@@ -80,6 +87,15 @@ fn command_with_healthy_codex(temp: &tempfile::TempDir) -> Command {
     let mut permissions = fs::metadata(&codex).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(codex, permissions).unwrap();
+    let gh = bin.join("gh");
+    fs::write(
+        &gh,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'gh version 2.80.0'; exit 0; fi\nif [ \"$1\" = \"auth\" ]; then exit 0; fi\nif [ \"$1\" = \"repo\" ]; then echo 'example/repository'; exit 0; fi\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"users/example\" ]; then echo '{\"id\":1,\"login\":\"example\",\"node_id\":\"U_1\"}'; exit 0; fi\nexit 64\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&gh).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(gh, permissions).unwrap();
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -101,7 +117,7 @@ fn validates_explicit_config() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Configuration is valid."))
-        .stdout(predicate::str::contains("default_runtime: codex"));
+        .stdout(predicate::str::contains("worker.runtime: codex"));
 }
 
 #[cfg(unix)]
@@ -115,6 +131,15 @@ fn worktree_validation_requires_a_healthy_host_codex_cli() {
     let mut permissions = fs::metadata(&codex).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&codex, permissions).unwrap();
+    let gh = bin.join("gh");
+    fs::write(
+        &gh,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'gh version 2.80.0'; exit 0; fi\nif [ \"$1\" = \"auth\" ]; then exit 0; fi\nif [ \"$1\" = \"repo\" ]; then echo 'example/repository'; exit 0; fi\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"users/example\" ]; then echo '{\"id\":1,\"login\":\"example\",\"node_id\":\"U_1\"}'; exit 0; fi\nexit 64\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&gh).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(gh, permissions).unwrap();
     let path_value = format!(
         "{}:{}",
         bin.display(),
@@ -169,31 +194,34 @@ fn rejects_an_existing_database_that_is_not_writable() {
 }
 
 #[test]
-fn validates_configurable_github_project_states() {
+fn validates_a_configurable_github_project_status_trigger() {
     let (temp, path, repository, data_home) = valid_config();
     let contents =
         fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/config.toml")).unwrap();
-    let auth = temp.path().join("codex/auth.json");
-    fs::create_dir_all(auth.parent().unwrap()).unwrap();
-    fs::write(&auth, "{}").unwrap();
     fs::write(
         &path,
-        contents
-            .replace("Ready To Implement", "Queued for engineering")
-            .replace(
-                "~/.local/share/factory/codex/auth.json",
-                auth.to_str().unwrap(),
-            ),
+        contents.replace(
+            "status = \"Ready For Spec\"",
+            "status = \"Queued for engineering\"",
+        ),
+    )
+    .unwrap();
+    fs::create_dir_all(repository.join(".factory/workflows/triage")).unwrap();
+    fs::create_dir_all(repository.join(".factory/workflows/implement")).unwrap();
+    fs::create_dir_all(repository.join(".factory/workflows/maintenance")).unwrap();
+    fs::write(
+        repository.join(".factory/workflows/triage/WORKFLOW.md"),
+        "Triage.\n",
     )
     .unwrap();
     fs::write(
-        repository.join(".factory/workflows/triage-ticket.md"),
-        "+++\nstate = \"ready_for_spec\"\n+++\nTriage.\n",
+        repository.join(".factory/workflows/implement/WORKFLOW.md"),
+        "Implement.\n",
     )
     .unwrap();
     fs::write(
-        repository.join(".factory/workflows/implement-ready-ticket.md"),
-        "+++\nstate = \"ready_to_implement\"\n+++\nImplement.\n",
+        repository.join(".factory/workflows/maintenance/WORKFLOW.md"),
+        "Maintain.\n",
     )
     .unwrap();
     let bin = temp.path().join("bin");
@@ -219,20 +247,19 @@ exit 64
     let mut permissions = fs::metadata(&gh).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&gh, permissions).unwrap();
-    let docker = bin.join("docker");
+    let codex = bin.join("codex");
     fs::write(
-        &docker,
+        &codex,
         r#"#!/bin/sh
-if [ "$1" = "version" ]; then echo "27.0.0"; exit 0; fi
-if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then echo "sha256:abcdef"; exit 0; fi
-if [ "$1" = "run" ] && [ "$2" = "--rm" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+if [ "$1" = "--version" ]; then echo "codex 1.0.0"; exit 0; fi
+if [ "$1" = "login" ] && [ "$2" = "status" ]; then echo "Logged in using ChatGPT"; exit 0; fi
 exit 64
 "#,
     )
     .unwrap();
-    let mut permissions = fs::metadata(&docker).unwrap().permissions();
+    let mut permissions = fs::metadata(&codex).unwrap().permissions();
     permissions.set_mode(0o755);
-    fs::set_permissions(&docker, permissions).unwrap();
+    fs::set_permissions(&codex, permissions).unwrap();
     let path_value = format!(
         "{}:{}",
         bin.display(),
@@ -243,7 +270,6 @@ exit 64
         .unwrap()
         .args(["validate", "--config", path.to_str().unwrap()])
         .env("FACTORY_DATA_HOME", data_home)
-        .env("FACTORY_GITHUB_TOKEN", "dedicated-test-token")
         .env("PATH", path_value)
         .assert()
         .success()
@@ -278,7 +304,7 @@ fn reports_specific_validation_failures() {
     let contents = fs::read_to_string(&path).unwrap();
     fs::write(
         &path,
-        contents.replace("max_concurrent_runs = 2", "max_concurrent_runs = 0"),
+        contents.replace("max_concurrent = 2", "max_concurrent = 0"),
     )
     .unwrap();
 
@@ -289,7 +315,7 @@ fn reports_specific_validation_failures() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "max_concurrent_runs must be greater than zero",
+            "worker.max_concurrent must be greater than zero",
         ));
 }
 

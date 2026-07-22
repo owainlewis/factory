@@ -1,34 +1,34 @@
 # Copy this file to <repository>/.factory/config.toml.
-# Repository identity and external state paths are derived from the Git root.
 version = 1
-execution_mode = "docker"
-
 poll_every = "30s"
-default_runtime = "codex"
-default_timeout = "2h"
-maximum_timeout = "8h"
-max_concurrent_runs = 1
 
 [worker]
-kind = "docker"
-image = "factory-codex:dev"
-memory = "8g"
-cpus = 4
-pids = 512
-codex_auth = "~/.local/share/factory/codex/auth.json"
-github_token_env = "FACTORY_GITHUB_TOKEN"
+runtime = "codex"
+sandbox = "worktree"
+timeout = "2h"
+maximum_timeout = "8h"
+max_concurrent = 1
 
 [source]
-kind = "github_project"
-owner = "owainlewis"
+type = "github"
+project_owner = "owainlewis"
 project_number = 16
 status_field = "Status"
 trusted_users = ["owainlewis"]
 
-[source.states]
-ready_for_spec = "Ready For Spec"
-creating_spec = "Creating Spec"
-ready_to_implement = "Ready To Implement"
-implementing = "Implementing"
-ready_to_review = "Reviewing"
-done = "Done"
+[trigger.triage]
+type = "status"
+status = "Ready For Spec"
+workflow = ".factory/workflows/triage/WORKFLOW.md"
+
+[trigger.implement]
+type = "label"
+label = "agent:ready"
+workflow = ".factory/workflows/implement/WORKFLOW.md"
+timeout = "4h"
+
+[trigger.maintenance]
+type = "schedule"
+schedule = "*/10 * * * *"
+timezone = "Europe/London"
+workflow = ".factory/workflows/maintenance/WORKFLOW.md"

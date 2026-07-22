@@ -8,10 +8,10 @@ use anyhow::{Context, Result, bail};
 use tempfile::NamedTempFile;
 use toml_edit::{DocumentMut, Item, Table, value};
 
-use crate::config::{Config, ExecutionMode};
+use crate::config::{Config, ExecutionMode, repository_remote_identity};
 
-const TRIAGE_WORKFLOW: &str = include_str!("../.factory/workflows/triage-ticket.md");
-const IMPLEMENT_WORKFLOW: &str = include_str!("../.factory/workflows/implement-ready-ticket.md");
+const TRIAGE_WORKFLOW: &str = include_str!("../.factory/workflows/triage/WORKFLOW.md");
+const IMPLEMENT_WORKFLOW: &str = include_str!("../.factory/workflows/implement/WORKFLOW.md");
 const WORKER_DOCKERFILE: &str = include_str!("../.factory/Dockerfile");
 
 #[derive(Debug, Clone)]
@@ -402,12 +402,12 @@ fn plan_default_assets(repository: &Path, execution_mode: ExecutionMode) -> Resu
     let factory = repository.join(".factory");
     let mut assets = vec![
         plan_file(
-            factory.join("workflows/triage-ticket.md"),
+            factory.join("workflows/triage/WORKFLOW.md"),
             TRIAGE_WORKFLOW,
             "triage workflow",
         )?,
         plan_file(
-            factory.join("workflows/implement-ready-ticket.md"),
+            factory.join("workflows/implement/WORKFLOW.md"),
             IMPLEMENT_WORKFLOW,
             "implementation workflow",
         )?,
@@ -423,6 +423,9 @@ fn plan_default_assets(repository: &Path, execution_mode: ExecutionMode) -> Resu
 }
 
 fn plan_file(path: PathBuf, contents: &'static str, detail: &'static str) -> Result<FilePlan> {
+    if let Some(parent) = path.parent() {
+        validate_optional_directory(parent)?;
+    }
     let action = match fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
             bail!("setup path must be a regular file: {}", path.display())
@@ -487,7 +490,12 @@ fn plan_config(
             })
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let candidate = default_config(requested_mode);
+            let identity = repository_remote_identity(repository)?;
+            let owner = identity
+                .split_once('/')
+                .map(|(owner, _)| owner)
+                .context("GitHub repository identity has no owner")?;
+            let candidate = default_config(requested_mode, owner);
             let validated = Config::validate_candidate(&candidate, repository)
                 .context("generated configuration is invalid")?;
             let workspace = validated.workspace_root;
@@ -520,37 +528,39 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn default_config(execution_mode: ExecutionMode) -> String {
+fn default_config(execution_mode: ExecutionMode, owner: &str) -> String {
     let mut document = DocumentMut::new();
     document["version"] = value(1);
-    document["execution_mode"] = value(execution_mode.to_string());
     document["poll_every"] = value("30s");
-    document["default_runtime"] = value("codex");
-    document["default_timeout"] = value("2h");
-    document["maximum_timeout"] = value("8h");
-    document["max_concurrent_runs"] = value(1);
+    document["worker"] = Item::Table(Table::new());
+    document["worker"]["runtime"] = value("codex");
+    document["worker"]["sandbox"] = value(execution_mode.to_string());
+    document["worker"]["timeout"] = value("2h");
+    document["worker"]["maximum_timeout"] = value("8h");
+    document["worker"]["max_concurrent"] = value(1);
     if execution_mode == ExecutionMode::Docker {
-        document["worker"] = Item::Table(Table::new());
-        document["worker"]["kind"] = value("docker");
         document["worker"]["image"] = value("factory-codex:dev");
         document["worker"]["memory"] = value("8g");
         document["worker"]["cpus"] = value(4);
         document["worker"]["pids"] = value(512);
     }
     document["source"] = Item::Table(Table::new());
-    document["source"]["kind"] = value("github_project");
-    document["source"]["owner"] = value("owainlewis");
+    document["source"]["type"] = value("github");
+    document["source"]["project_owner"] = value(owner);
     document["source"]["project_number"] = value(16);
     document["source"]["status_field"] = value("Status");
-    document["source"]["trusted_users"] =
-        toml_edit::value(toml_edit::Array::from_iter(["owainlewis"]));
-    document["source"]["states"] = Item::Table(Table::new());
-    document["source"]["states"]["ready_for_spec"] = value("Ready For Spec");
-    document["source"]["states"]["creating_spec"] = value("Creating Spec");
-    document["source"]["states"]["ready_to_implement"] = value("Ready To Implement");
-    document["source"]["states"]["implementing"] = value("Implementing");
-    document["source"]["states"]["ready_to_review"] = value("Reviewing");
-    document["source"]["states"]["done"] = value("Done");
+    document["source"]["trusted_users"] = toml_edit::value(toml_edit::Array::from_iter([owner]));
+    document["trigger"] = Item::Table(Table::new());
+    document["trigger"]["triage"] = Item::Table(Table::new());
+    document["trigger"]["triage"]["type"] = value("status");
+    document["trigger"]["triage"]["status"] = value("Ready For Spec");
+    document["trigger"]["triage"]["workflow"] = value(".factory/workflows/triage/WORKFLOW.md");
+    document["trigger"]["implement"] = Item::Table(Table::new());
+    document["trigger"]["implement"]["type"] = value("status");
+    document["trigger"]["implement"]["status"] = value("Ready To Implement");
+    document["trigger"]["implement"]["workflow"] =
+        value(".factory/workflows/implement/WORKFLOW.md");
+    document["trigger"]["implement"]["timeout"] = value("4h");
     document.to_string()
 }
 
@@ -654,6 +664,11 @@ fn apply_file(plan: &FilePlan) -> Result<()> {
         return Ok(());
     }
     let parent = plan.path.parent().context("setup file has no parent")?;
+    if !parent.exists() {
+        fs::create_dir(parent)
+            .with_context(|| format!("failed to create setup directory {}", parent.display()))?;
+        sync_parent(parent.parent().context("setup directory has no parent")?)?;
+    }
     let mut temporary = NamedTempFile::new_in(parent)
         .with_context(|| format!("failed to create temporary file in {}", parent.display()))?;
     temporary
