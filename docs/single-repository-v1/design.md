@@ -429,6 +429,7 @@ under a bounded cleanup policy.
 
 ```toml
 version = 1
+execution_mode = "docker"
 poll_every = "30s"
 max_concurrent_runs = 1
 default_runtime = "codex"
@@ -464,11 +465,12 @@ and workflows only from the canonical checkout, never from an agent branch.
 
 ### Bootstrap the local proof
 
-`factory init` creates `.factory/Dockerfile` and the two workflow files when
-they are missing and never overwrites them. The documented first run is:
+`factory init --execution-mode docker` creates `.factory/Dockerfile` and the
+two workflow files when they are missing and never overwrites them. The
+documented first run is:
 
 ```sh
-factory init
+factory init --execution-mode docker
 docker build --file .factory/Dockerfile --tag factory-codex:dev .
 
 mkdir -p "$HOME/.local/share/factory/codex"
@@ -498,7 +500,7 @@ dedicated bot plus repository rules.
 The existing CLI remains the user interface:
 
 ```text
-factory init
+factory init --execution-mode docker
 factory validate
 factory daemon
 factory run --once
@@ -575,8 +577,6 @@ and error.
 
 - Multiple repositories.
 - Jira, GitLab, and pull requests as first-class triggers.
-- Scheduled workflows. They can remain a separate subsystem and do not need to
-  share this issue pipeline in v1.
 - A general trigger language, workflow graph, effect model, or provider command
   abstraction.
 - Automatic merge, deployment, or production credentials.

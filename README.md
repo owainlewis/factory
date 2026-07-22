@@ -93,10 +93,10 @@ runs triage. An item in the ready-to-implement state runs implementation and
 advances to review. Only items from configured trusted users can be claimed.
 All six status names are configurable.
 
-`execution_mode = "worktree"` runs every workflow with the host Codex CLI in a
-Factory-owned Git worktree. It is fast, but it is not a security boundary and
+`execution_mode = "worktree"` runs every daemon task with the host Codex CLI in
+a Factory-owned Git worktree. It is fast, but it is not a security boundary and
 should be used only for trusted local work. `execution_mode = "docker"` runs
-every workflow in a disposable container backed by a standalone clone. The
+every daemon task in a disposable container backed by a standalone clone. The
 container has a read-only root, no added Linux capabilities, bounded CPU,
 memory and processes, and no Docker socket or canonical repository mount.
 
