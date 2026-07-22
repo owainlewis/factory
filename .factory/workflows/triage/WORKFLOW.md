@@ -35,16 +35,18 @@ solves the stated problem.
 
 ## Route the ticket
 
-Move the item to `Ready To Implement` only when the desired behaviour is clear,
-the scope is bounded, every acceptance criterion is testable, and no material
-product or technical decision remains.
+Leave the item in `Creating Spec` when the specification is complete. Comment
+that it is ready for human approval and summarize the scope, acceptance
+criteria, verification plan, and any meaningful risks. A human owns the gate:
+only a human moves the item to `Ready To Implement` after reviewing the refined
+ticket.
 
-If information or a decision is missing, leave the item in `Creating Spec` and
-comment with the smallest set of focused questions needed to unblock it. If the
-issue is a duplicate, unsafe, already implemented, or inconsistent with the
-repository, leave it in `Creating Spec` and explain the evidence and recommended
-next action instead of forcing it forward.
+If information or a decision is missing, comment with the smallest set of
+focused questions needed to unblock it. If the issue is a duplicate, unsafe,
+already implemented, or inconsistent with the repository, explain the evidence
+and recommended next action instead of forcing it forward.
 
 Finish with one concise issue comment containing the routing decision, the
-evidence used, and the next action. Never claim that work is implementation-ready
-unless the refined ticket contains the specification described above.
+evidence used, and the next human action. Never move the item to
+`Ready To Implement`, implement the change, or open a pull request in this
+workflow.

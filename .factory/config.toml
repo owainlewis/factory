@@ -3,16 +3,10 @@ poll_every = "30s"
 
 [worker]
 runtime = "codex"
-sandbox = "docker"
+sandbox = "worktree"
 timeout = "2h"
 maximum_timeout = "8h"
 max_concurrent = 1
-image = "factory-codex:dev"
-memory = "8g"
-cpus = 4
-pids = 512
-codex_auth = "~/.codex/auth.json"
-github_token_env = "FACTORY_GITHUB_TOKEN"
 
 [source]
 type = "github"

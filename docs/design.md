@@ -142,22 +142,24 @@ it:
 New idea or bug
       |
       v
-Ready For Spec --triage prompt--> clear ticket / human question
-      |                                  |
-      +<---------------------------------+
-      |
-      v
-Ready To Implement --implementation prompt--> pull request
+Ready For Spec --triage prompt--> Creating Spec
+                                        |
+                                 human reviews ticket
+                                        |
+                                        v
+Ready To Implement --implementation prompt--> Reviewing
       ^                                             |
       |                                             v
       +-------- human review, CI, agent feedback ---+
 ```
 
 Triage turns vague work into an executable ticket with context, scope,
-acceptance criteria, constraints, and verification. Implementation treats that
-ticket as the spec, makes the change, and produces review evidence. Humans still
-choose work and remain accountable for quality. Their feedback goes through the
-issue, review, CI, or Project state so the next agent run can continue the loop.
+acceptance criteria, constraints, and verification, then stops. A human reviews
+the ticket and moves it to the implementation trigger. Implementation treats
+the approved ticket as the spec, makes the change, and produces review evidence.
+Humans still choose work and remain accountable for quality. Their feedback
+goes through the issue, review, CI, or Project state so the next agent run can
+continue the loop.
 
 The exact names and transitions belong to the team's GitHub Project and prompts.
 Another repository could use `Todo`, `Agent Ready`, or a label instead.
