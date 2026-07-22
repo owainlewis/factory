@@ -1,4 +1,4 @@
-# Copy this file to <repository>/.factory/config.toml.
+# Run `factory init`, then adapt the generated .factory/config.toml like this.
 version = 1
 poll_every = "30s"
 
@@ -22,13 +22,7 @@ status = "Ready For Spec"
 workflow = ".factory/workflows/triage/WORKFLOW.md"
 
 [trigger.implement]
-type = "label"
-label = "agent:ready"
+type = "status"
+status = "Ready To Implement"
 workflow = ".factory/workflows/implement/WORKFLOW.md"
 timeout = "4h"
-
-[trigger.maintenance]
-type = "schedule"
-schedule = "*/10 * * * *"
-timezone = "Europe/London"
-workflow = ".factory/workflows/maintenance/WORKFLOW.md"
