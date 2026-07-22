@@ -303,6 +303,10 @@ source state immediately before execution. Ticket bodies, comments, linked pull
 requests, and attachments remain untrusted input. Use narrow credentials and
 protected branches that the worker cannot bypass. The default implementation
 workflow leaves pull requests for human review and never merges them.
+Scheduled workflows also default to no merge. A trusted, repository-owned
+scheduled workflow may explicitly authorize a merge, but it must define narrow
+eligibility and per-run limits. Branch protection and required checks remain the
+final enforcement boundary.
 
 ## V1 scope
 

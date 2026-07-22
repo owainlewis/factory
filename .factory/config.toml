@@ -29,3 +29,10 @@ state = "Ready To Implement"
 labels = ["factory:ready"]
 workflow = ".factory/workflows/implement/WORKFLOW.md"
 timeout = "4h"
+
+[trigger.dependabot-merge]
+type = "schedule"
+schedule = "*/10 * * * *"
+timezone = "Europe/London"
+workflow = ".factory/workflows/dependabot-merge/WORKFLOW.md"
+timeout = "30m"
