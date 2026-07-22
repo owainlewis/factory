@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="540" viewBox="0 0 1280 540" role="img" aria-labelledby="title desc">
+  <title id="title">Factory execution loop</title>
+  <desc id="desc">A trusted ticket or schedule enters a matching trigger, becomes a durable task, runs in a managed worker, and produces a reviewable pull request. CI and human feedback can re-enter the trigger to create a new bounded task.</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#172033" flood-opacity=".09"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 10 5 0 10z" fill="#71809d"/>
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 10 5 0 10z" fill="#7457d6"/>
+    </marker>
+    <style>
+      .text{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;fill:#172033}
+      .eyebrow{font-size:14px;font-weight:750;letter-spacing:1.2px;fill:#5f6c84}
+      .label{font-size:19px;font-weight:720}
+      .detail{font-size:15px;fill:#5f6c84}
+      .card{fill:#fff;stroke:#dce2ee;stroke-width:2}
+      .flow{fill:none;stroke:#71809d;stroke-width:3;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1280" height="540" rx="28" fill="#f7f8fc"/>
+  <text class="text eyebrow" x="64" y="64">FROM INTENT TO EVIDENCE</text>
+  <text class="text label" x="64" y="101" font-size="28">A controlled loop keeps agent work moving</text>
+
+  <g filter="url(#shadow)">
+    <rect class="card" x="64" y="168" width="208" height="136" rx="20"/>
+    <rect class="card" x="310" y="168" width="208" height="136" rx="20"/>
+    <rect class="card" x="556" y="168" width="208" height="136" rx="20"/>
+    <rect class="card" x="802" y="168" width="208" height="136" rx="20"/>
+    <rect x="1048" y="168" width="168" height="136" rx="20" fill="#e5f6f1" stroke="#9dd9c8" stroke-width="2"/>
+  </g>
+
+  <g class="text" text-anchor="middle">
+    <circle cx="168" cy="205" r="16" fill="#eaf1ff"/><text x="168" y="211" font-size="15" font-weight="750" fill="#2e5cc2">1</text>
+    <text class="label" x="168" y="246">Trusted input</text><text class="detail" x="168" y="274">ticket or schedule</text>
+    <circle cx="414" cy="205" r="16" fill="#eaf1ff"/><text x="414" y="211" font-size="15" font-weight="750" fill="#2e5cc2">2</text>
+    <text class="label" x="414" y="246">Match trigger</text><text class="detail" x="414" y="274">status, label, or cron</text>
+    <circle cx="660" cy="205" r="16" fill="#eaf1ff"/><text x="660" y="211" font-size="15" font-weight="750" fill="#2e5cc2">3</text>
+    <text class="label" x="660" y="246">Durable task</text><text class="detail" x="660" y="274">claimed and recoverable</text>
+    <circle cx="906" cy="205" r="16" fill="#eaf1ff"/><text x="906" y="211" font-size="15" font-weight="750" fill="#2e5cc2">4</text>
+    <text class="label" x="906" y="246">Managed worker</text><text class="detail" x="906" y="274">workflow + agent + limits</text>
+    <circle cx="1132" cy="205" r="16" fill="#d5efe7"/><text x="1132" y="211" font-size="15" font-weight="750" fill="#087a5d">5</text>
+    <text class="label" x="1132" y="246">Review</text><text class="detail" x="1132" y="274">issue or PR</text>
+  </g>
+
+  <path class="flow" d="M272 236h38M518 236h38M764 236h38M1010 236h38"/>
+
+  <rect x="310" y="385" width="700" height="76" rx="18" fill="#f1ecff" stroke="#cec0f4" stroke-width="2"/>
+  <circle cx="354" cy="423" r="15" fill="#7457d6"/>
+  <path d="M347 423l5 5 10-12" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text class="text label" x="386" y="416">CI and human feedback</text>
+  <text class="text detail" x="386" y="441">Evidence closes the task, or re-enters the trigger for another bounded pass.</text>
+  <path d="M1132 304v119h-122" fill="none" stroke="#7457d6" stroke-width="3" marker-end="url(#arrow-purple)"/>
+  <path d="M414 385V304" fill="none" stroke="#7457d6" stroke-width="3" marker-end="url(#arrow-purple)"/>
+</svg>

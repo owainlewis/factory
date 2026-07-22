@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-labelledby="title desc">
+  <title id="title">Example ticket workflow</title>
+  <desc id="desc">A ticket moves from Ready For Spec to Creating Spec. Human approval moves it to Ready To Implement, then it moves through Implementing and Reviewing to Done. CI and human feedback can return the ticket through Ready To Implement for a new pass.</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
+      <feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#172033" flood-opacity=".08"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 10 5 0 10z" fill="#71809d"/>
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 10 5 0 10z" fill="#7457d6"/>
+    </marker>
+    <style>
+      .text{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;fill:#172033}
+      .eyebrow{font-size:14px;font-weight:750;letter-spacing:1.2px}
+      .label{font-size:17px;font-weight:720}
+      .detail{font-size:14px;fill:#5f6c84}
+      .card{fill:#fff;stroke:#dce2ee;stroke-width:2}
+      .flow{fill:none;stroke:#71809d;stroke-width:3;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1280" height="520" rx="28" fill="#f7f8fc"/>
+
+  <text class="text eyebrow" x="64" y="58" fill="#2e5cc2">DEFINE THE WORK</text>
+  <rect x="52" y="80" width="580" height="166" rx="22" fill="#eef4ff" stroke="#c5d5f7" stroke-width="2"/>
+  <g filter="url(#shadow)">
+    <rect class="card" x="72" y="112" width="126" height="102" rx="17"/>
+    <rect class="card" x="214" y="112" width="126" height="102" rx="17"/>
+    <rect x="356" y="112" width="126" height="102" rx="17" fill="#fff2de" stroke="#f0c982" stroke-width="2"/>
+    <rect x="498" y="112" width="126" height="102" rx="17" fill="#e5f6f1" stroke="#9dd9c8" stroke-width="2"/>
+  </g>
+  <g class="text" text-anchor="middle">
+    <text class="label" x="135" y="143">Ready For</text><text class="label" x="135" y="166">Spec</text><text class="detail" x="135" y="194">human intent</text>
+    <text class="label" x="277" y="143">Creating</text><text class="label" x="277" y="166">Spec</text><text class="detail" x="277" y="194">agent clarifies</text>
+    <text class="label" x="419" y="143">Human</text><text class="label" x="419" y="166">approval</text><text class="detail" x="419" y="194">review intent</text>
+    <text class="label" x="561" y="143">Ready To</text><text class="label" x="561" y="166">Implement</text><text class="detail" x="561" y="194">clear contract</text>
+  </g>
+  <path class="flow" d="M198 163h16M340 163h16M482 163h16"/>
+
+  <text class="text eyebrow" x="676" y="58" fill="#6042b4">BUILD AND PROVE</text>
+  <rect x="652" y="80" width="576" height="166" rx="22" fill="#f3efff" stroke="#d3c7f5" stroke-width="2"/>
+  <g filter="url(#shadow)">
+    <rect class="card" x="678" y="112" width="160" height="102" rx="17"/>
+    <rect class="card" x="862" y="112" width="160" height="102" rx="17"/>
+    <rect x="1046" y="112" width="156" height="102" rx="17" fill="#e5f6f1" stroke="#9dd9c8" stroke-width="2"/>
+  </g>
+  <g class="text" text-anchor="middle">
+    <text class="label" x="758" y="151">Implementing</text><text class="detail" x="758" y="180">change + tests</text>
+    <text class="label" x="942" y="151">Reviewing</text><text class="detail" x="942" y="180">CI + humans</text>
+    <text class="label" x="1124" y="151">Done</text><text class="detail" x="1124" y="180">human decision</text>
+  </g>
+  <path class="flow" d="M838 163h24M1022 163h24"/>
+  <path class="flow" d="M624 163h54"/>
+
+  <rect x="262" y="330" width="760" height="96" rx="20" fill="#fff" stroke="#dce2ee" stroke-width="2"/>
+  <circle cx="310" cy="378" r="18" fill="#7457d6"/>
+  <path d="M301 378h18M310 369v18" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+  <text class="text label" x="346" y="369">Feedback can request another pass</text>
+  <text class="text detail" x="346" y="397">The ticket re-enters the configured trigger, creating a new bounded implementation task.</text>
+  <path d="M942 214v116" fill="none" stroke="#7457d6" stroke-width="3" marker-end="url(#arrow-purple)"/>
+  <path d="M561 330V214" fill="none" stroke="#7457d6" stroke-width="3" marker-end="url(#arrow-purple)"/>
+  <text class="text detail" x="640" y="474" text-anchor="middle">Status names are repository-owned policy, not hard-coded Factory behavior.</text>
+</svg>

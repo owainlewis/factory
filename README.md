@@ -1,5 +1,8 @@
 # Factory
 
+[![CI](https://github.com/owainlewis/factory/actions/workflows/ci.yml/badge.svg)](https://github.com/owainlewis/factory/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-2f6feb.svg)](LICENSE)
+
 Factory keeps coding agents working on a repository without making a human
 orchestrate every step from a terminal.
 
@@ -8,14 +11,7 @@ creates a durable task, prepares an isolated workspace, and gives one Markdown
 workflow to an agent. The agent uses normal tools such as `gh` and `git` to do
 the work. When nothing matches, Factory does nothing and spends no model tokens.
 
-```text
-ticket or schedule
-        |
-        v
-matching trigger -> durable task -> sandboxed agent -> issue / pull request
-        ^                                                |
-        +----------- CI and human feedback --------------+
-```
+![Factory turns trusted triggers into durable, reviewable agent work](docs/assets/readme/factory-loop.svg)
 
 ## Why Factory exists
 
@@ -51,18 +47,7 @@ for implementation.
 
 A useful team workflow looks like this:
 
-```text
-Ready For Spec -> Creating Spec
-                       |
-                  human approval
-                       |
-                       v
-              Ready To Implement -> Implementing -> Reviewing -> Done
-                                                        |
-                                            CI and human feedback
-                                                        |
-                                            another agent pass if needed
-```
+![A ticket moves from specification through implementation and review](docs/assets/readme/ticket-workflow.svg)
 
 These names are not built into Factory. They are ordinary GitHub Project status
 values and repository-owned prompts.
@@ -266,8 +251,16 @@ and [the operations guide](docs/operations.md).
 
 ## Development
 
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
+scope, and pull request guidance. Report security issues privately according to
+[SECURITY.md](SECURITY.md).
+
 ```sh
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
 ```
+
+## License
+
+Factory is available under the [MIT License](LICENSE).
