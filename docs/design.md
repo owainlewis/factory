@@ -74,6 +74,12 @@ Workflow files contain only instructions. They have no metadata or frontmatter.
 Config owns when and how the prompt runs. The Markdown file owns what the agent
 should achieve.
 
+Repository-local skills are optional prompt context, not a Factory abstraction.
+A workflow may instruct the agent to read a skill for reusable behaviour such
+as browser verification or code review. Factory does not install, load, version,
+or interpret those skills. This keeps the execution kernel independent of any
+one agent's skill format.
+
 ## Responsibility boundary
 
 Factory owns mechanisms that must be consistent:

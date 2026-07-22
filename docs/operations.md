@@ -42,10 +42,11 @@ unrelated repositories are not mounted.
 
 The worker runs as the clone owner with a read-only root filesystem, dropped
 Linux capabilities, bounded CPU, memory and processes, and a temporary `/tmp`.
-The Codex auth file is mounted read-only. Factory records
-the exact image ID and limits before starting the container and captures bounded
-stdout and stderr. Containers are removed after their terminal evidence is
-durable.
+The dedicated Codex auth file is mounted writable because OAuth refresh may
+update it. Keep it separate from normal interactive credentials and make it
+revocable. Factory records the exact image ID and limits before starting the
+container and captures bounded stdout and stderr. Containers are removed after
+their terminal evidence is durable.
 
 Docker is not a VM. It shares the host kernel, permits outbound network access,
 and receives long-lived credentials for Codex and GitHub. Run only trusted

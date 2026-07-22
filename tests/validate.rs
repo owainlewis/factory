@@ -208,7 +208,6 @@ fn validates_a_configurable_github_project_status_trigger() {
     .unwrap();
     fs::create_dir_all(repository.join(".factory/workflows/triage")).unwrap();
     fs::create_dir_all(repository.join(".factory/workflows/implement")).unwrap();
-    fs::create_dir_all(repository.join(".factory/workflows/maintenance")).unwrap();
     fs::write(
         repository.join(".factory/workflows/triage/WORKFLOW.md"),
         "Triage.\n",
@@ -217,11 +216,6 @@ fn validates_a_configurable_github_project_status_trigger() {
     fs::write(
         repository.join(".factory/workflows/implement/WORKFLOW.md"),
         "Implement.\n",
-    )
-    .unwrap();
-    fs::write(
-        repository.join(".factory/workflows/maintenance/WORKFLOW.md"),
-        "Maintain.\n",
     )
     .unwrap();
     let bin = temp.path().join("bin");
@@ -237,7 +231,7 @@ if [ "$1" = "api" ] && [ "$2" = "user" ] && [ "$GH_TOKEN" = "dedicated-test-toke
 if [ "$1" = "api" ] && [ "$2" = "users/owainlewis" ]; then echo '{"id":1,"login":"owainlewis","node_id":"U_1"}'; exit 0; fi
 if [ "$1" = "project" ] && [ "$2" = "view" ]; then echo '{"id":"PVT_16"}'; exit 0; fi
 if [ "$1" = "project" ] && [ "$2" = "field-list" ]; then
-  echo '{"fields":[{"id":"STATUS","name":"Status","type":"ProjectV2SingleSelectField","options":[{"id":"1","name":"Ready For Spec"},{"id":"2","name":"Creating Spec"},{"id":"3","name":"Queued for engineering"},{"id":"4","name":"Implementing"},{"id":"5","name":"Reviewing"},{"id":"6","name":"Done"}]}]}'
+  echo '{"fields":[{"id":"STATUS","name":"Status","type":"ProjectV2SingleSelectField","options":[{"id":"1","name":"Ready For Spec"},{"id":"2","name":"Creating Spec"},{"id":"3","name":"Queued for engineering"},{"id":"4","name":"Ready To Implement"},{"id":"5","name":"Implementing"},{"id":"6","name":"Reviewing"},{"id":"7","name":"Done"}]}]}'
   exit 0
 fi
 exit 64

@@ -189,7 +189,7 @@ Docker mode prepares a standalone clone and starts the configured image with:
 - bounded CPU, memory, and process count;
 - a writable clone and required temporary storage;
 - no Docker socket and no canonical repository mount;
-- a dedicated Codex `auth.json` mounted read-only;
+- a dedicated, revocable Codex `auth.json` mounted writable for OAuth refresh;
 - one GitHub token passed through the configured environment variable.
 
 Docker-specific config is explicit:
