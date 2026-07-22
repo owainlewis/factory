@@ -117,7 +117,7 @@ impl fmt::Display for InitReport {
                 )?;
             }
             writeln!(formatter, "  factory validate")?;
-            writeln!(formatter, "  factory daemon")
+            writeln!(formatter, "  factory run")
         } else {
             writeln!(
                 formatter,

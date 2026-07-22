@@ -10,7 +10,7 @@ Start from anywhere inside the configured repository:
 
 ```sh
 factory validate
-factory daemon
+factory run
 ```
 
 Startup validates the configured execution backend before claiming work.

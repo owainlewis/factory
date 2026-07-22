@@ -9,7 +9,7 @@
 Factory is a repo-local daemon that turns GitHub issues into agent-ready tasks
 and agent-ready tasks into reviewed pull requests.
 
-V1 manages one repository. Running `factory daemon` inside that repository
+V1 manages one repository. Running `factory run` inside that repository
 watches for tickets in two configured source states, then starts an agent only
 when useful work exists. The agent receives the ticket as a prompt, uses `gh`
 and `git` directly, follows the repository workflow, and moves the ticket to the
@@ -38,7 +38,7 @@ operator's whole machine.
 
 ## Requirements
 
-- `factory daemon` discovers the enclosing Git root and loads
+- `factory run` discovers the enclosing Git root and loads
   `.factory/config.toml`.
 - V1 manages exactly one GitHub repository and runs at most one agent at a time.
 - Factory polls cheaply and starts no agent when no issue matches a trigger.
@@ -479,7 +479,7 @@ CODEX_HOME="$HOME/.local/share/factory/codex" codex login
 
 export FACTORY_GITHUB_TOKEN="<dedicated-bot-token>"
 factory validate
-factory daemon
+factory run
 ```
 
 `factory validate` confirms the enclosing repository, Project and Status field,
@@ -502,7 +502,7 @@ The existing CLI remains the user interface:
 ```text
 factory init --execution-mode docker
 factory validate
-factory daemon
+factory run
 factory run --once
 factory workflows
 factory tasks

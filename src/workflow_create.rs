@@ -53,7 +53,7 @@ impl fmt::Display for CreateWorkflowReport {
             )
         )?;
         writeln!(formatter, "  factory workflows")?;
-        writeln!(formatter, "  factory daemon")
+        writeln!(formatter, "  factory run")
     }
 }
 

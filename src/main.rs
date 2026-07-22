@@ -49,21 +49,12 @@ enum Command {
         #[arg(long, value_enum, default_value_t = ExecutionMode::Worktree)]
         execution_mode: ExecutionMode,
     },
-    /// Poll this repository once and persist eligible tasks without executing them.
+    /// Continuously evaluate work and execute tasks, or poll once without executing.
     Run {
-        /// Required safety flag confirming this is a non-executing single evaluation.
-        #[arg(long, required = true)]
+        /// Evaluate schedules and poll once without executing eligible tasks.
+        #[arg(long)]
         once: bool,
         /// Path to the Factory configuration file.
-        #[arg(long)]
-        config: Option<PathBuf>,
-        /// Directory containing the durable Factory database.
-        #[arg(long)]
-        data_directory: Option<PathBuf>,
-    },
-    /// Continuously evaluate schedules, poll for work, and execute eligible tasks.
-    Daemon {
-        /// Path to the repository-local Factory configuration file.
         #[arg(long)]
         config: Option<PathBuf>,
         /// Directory containing the durable Factory database.
@@ -273,14 +264,7 @@ async fn run_cli() -> Result<u8> {
             config,
             data_directory,
         } => {
-            debug_assert!(once);
-            return run_poller(config, data_directory, true).await;
-        }
-        Command::Daemon {
-            config,
-            data_directory,
-        } => {
-            return run_poller(config, data_directory, false).await;
+            return run_poller(config, data_directory, once).await;
         }
         Command::Approve {
             issue,
