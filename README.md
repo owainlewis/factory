@@ -14,7 +14,7 @@ dedicated Codex login. It does not use model API keys.
 
 1. Install Rust, Docker, `git`, `gh`, and Codex CLI.
 2. Authenticate the host with `gh auth login`.
-3. Clone Factory and run `cargo install --path .`.
+3. Clone Factory and run `cargo install --path . --locked`.
 4. In a trusted target repository, run `factory init`.
 5. Configure the GitHub Project, trusted users, and status names in
    `.factory/config.toml`.
@@ -38,6 +38,27 @@ dedicated Codex login. It does not use model API keys.
 
 9. Export `FACTORY_GITHUB_TOKEN` for a dedicated GitHub identity, then run
    `factory validate`, `factory workflows`, and `factory daemon`.
+
+Run the install command from the Factory repository, then verify the command:
+
+```sh
+cargo install --path . --locked
+factory --help
+```
+
+Cargo normally installs the binary at `~/.cargo/bin/factory`. If zsh cannot
+find it, add Cargo's binary directory to your path:
+
+```sh
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+Reinstall after local development changes:
+
+```sh
+cargo install --path . --locked --force
+```
 
 `factory init --check` previews setup without writes. Initialization creates
 `.factory/config.toml`, external machine state and workspace storage, and the
