@@ -672,24 +672,6 @@ impl Ledger {
             .context("failed to commit approval consumption")
     }
 
-    pub fn existing_non_terminal_tasks_for_repository(
-        path: &Path,
-        repository: &str,
-    ) -> Result<usize> {
-        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .with_context(|| format!("failed to inspect legacy database {}", path.display()))?;
-        let count = connection
-            .query_row(
-                "SELECT COUNT(*) FROM tasks
-                 WHERE lower(repository) = lower(?1)
-                   AND state IN ('queued', 'running')",
-                [repository],
-                |row| row.get::<_, i64>(0),
-            )
-            .context("failed to inspect non-terminal legacy Factory tasks")?;
-        usize::try_from(count).context("legacy task count is outside the supported range")
-    }
-
     pub fn open_in(data_directory: &Path) -> Result<Self> {
         fs::create_dir_all(data_directory).with_context(|| {
             format!(

@@ -28,6 +28,10 @@ another task while the issue remains in the same status or label entry. Leaving
 and re-entering creates one new task-scoped sandbox. The workflow tells the
 agent to find and continue an existing branch or pull request when appropriate.
 
+Factory stores durable state and managed worktrees below
+`~/.factory/<repository-hash>/`. Set `FACTORY_DATA_HOME` to override the
+`~/.factory` root.
+
 ## Worker boundary
 
 Worktree mode runs the host Codex CLI in a Factory-owned Git worktree. It is
@@ -70,12 +74,6 @@ The two task listings should show zero new tasks. In Docker mode, also run
 Factory container was created. This proves the empty poll persisted and
 launched nothing.
 
-Before first repository-local startup, Factory reads the old
-`~/.factory/factory.sqlite3` database without modifying it. If that database
-contains queued or running work for this repository, startup stops with
-instructions to stop the old daemon and finish or cancel the work. Terminal
-legacy history is not imported.
-
 ## Cancellation and recovery
 
 Request cancellation with:
@@ -117,7 +115,5 @@ disposable and are removed at a terminal outcome.
 - `factory run --once` proves polling without launching a model or worker.
 - `factory inspect RUN_ID` shows bounded task, workspace, optional container,
   branch, pull-request, and error evidence.
-- If old global Factory work is active, stop the old daemon and finish or cancel
-  it. Repository-local Factory never mutates or imports the legacy database.
 
 Scheduled workflows use the same configured worker as ticket workflows.

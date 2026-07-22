@@ -7,7 +7,7 @@ use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 use factory::clone::CloneManager;
-use factory::config::{Config, ExecutionMode, repository_config_path, repository_remote_identity};
+use factory::config::{Config, ExecutionMode, repository_config_path};
 use factory::daemon::FactoryDaemon;
 use factory::docker::DockerWorker;
 use factory::execution::ResolvedWorkflow;
@@ -21,8 +21,7 @@ use factory::runtime::{
 };
 use factory::source::{PollReport, SourceClient};
 use factory::storage::{
-    CancellationRequest, DATABASE_NAME, Ledger, OPERATOR_CONFIRMED_CLEANUP, TaskState,
-    validate_data_directory,
+    CancellationRequest, Ledger, OPERATOR_CONFIRMED_CLEANUP, TaskState, validate_data_directory,
 };
 use factory::workflow::WorkflowCatalog;
 use factory::workspace::WorkspaceManager;
@@ -547,7 +546,6 @@ async fn run_poller(
     );
     let config = Config::load(&path)?;
     let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
-    ensure_legacy_cutover(&config, &data_directory)?;
     let catalog = WorkflowCatalog::load(&config)?;
     let ticket_validation = catalog.validate_ticket_workflows();
     if !once && ticket_validation.is_err() {
@@ -598,55 +596,6 @@ async fn run_poller(
     signal_task.abort();
     write_stderr_best_effort(b"Factory stopped.\n");
     Ok(0)
-}
-
-fn ensure_legacy_cutover(config: &Config, data_directory: &std::path::Path) -> Result<()> {
-    let legacy_directory = std::env::var_os("FACTORY_LEGACY_DATA_DIRECTORY")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".factory")))
-        .context("could not determine legacy Factory data directory")?;
-    let legacy_database = legacy_directory.join(DATABASE_NAME);
-    if !legacy_database.is_file() {
-        return Ok(());
-    }
-    if data_directory
-        .components()
-        .any(|component| component == std::path::Component::ParentDir)
-    {
-        bail!(
-            "Factory data directory must not contain parent traversal: {}",
-            data_directory.display()
-        );
-    }
-    let legacy_directory = legacy_directory
-        .canonicalize()
-        .context("failed to resolve legacy Factory data directory")?;
-    let effective_data_directory = if data_directory.exists() {
-        data_directory
-            .canonicalize()
-            .context("failed to resolve Factory data directory")?
-    } else if data_directory.is_absolute() {
-        data_directory.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .context("failed to resolve current directory")?
-            .join(data_directory)
-    };
-    if effective_data_directory == legacy_directory {
-        bail!(
-            "repository-local Factory cannot use the legacy data directory {}; choose the derived repository state directory and leave legacy history untouched",
-            legacy_directory.display()
-        );
-    }
-    let repository = repository_remote_identity(&config.repositories[0])?;
-    let active = Ledger::existing_non_terminal_tasks_for_repository(&legacy_database, &repository)?;
-    if active > 0 {
-        bail!(
-            "legacy Factory has {active} non-terminal task(s) for {repository}; stop the old daemon and finish or cancel that work before starting repository-local Factory. The legacy database was left unchanged at {}",
-            legacy_database.display()
-        );
-    }
-    Ok(())
 }
 
 fn print_poll_report(report: &PollReport) {

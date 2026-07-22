@@ -163,6 +163,26 @@ fn init_creates_complete_repository_factory_without_overwriting() {
 }
 
 #[test]
+fn init_uses_dot_factory_as_the_default_data_home() {
+    let fixture = Fixture::new();
+
+    fixture
+        .command()
+        .env_remove("FACTORY_DATA_HOME")
+        .arg("init")
+        .assert()
+        .success();
+
+    let data_home = fixture.home.join(".factory");
+    let state_directories = fs::read_dir(&data_home)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(state_directories.len(), 1);
+    assert!(state_directories[0].join("worktrees").is_dir());
+}
+
+#[test]
 fn init_docker_mode_creates_worker_configuration_and_dockerfile() {
     let fixture = Fixture::new();
 

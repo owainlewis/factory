@@ -806,7 +806,7 @@ pub fn repository_data_directory(repository: &Path) -> Result<PathBuf> {
     let digest = format!("{:x}", hasher.finalize());
     let base = env::var_os("FACTORY_DATA_HOME")
         .map(PathBuf::from)
-        .or_else(|| dirs::data_local_dir().map(|path| path.join("factory")))
+        .or_else(|| dirs::home_dir().map(|path| path.join(".factory")))
         .context("could not determine Factory data directory")?;
     let base = if base.is_absolute() {
         base
