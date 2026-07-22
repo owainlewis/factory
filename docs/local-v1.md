@@ -88,7 +88,7 @@ personal owner token safe.
 factory validate
 factory workflows
 factory run --once
-factory daemon
+factory run
 ```
 
 Validation checks the repository, all configured Project states, trusted users,

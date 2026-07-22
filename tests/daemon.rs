@@ -17,6 +17,7 @@ use factory::storage::{Ledger, TaskIdentity, TaskState};
 use factory::workflow::{
     Trigger, WorkflowCatalog, scheduled_workflow_fingerprint, workflow_content_hash,
 };
+use predicates::prelude::PredicateBooleanExt;
 use rusqlite::Connection;
 use tokio_util::sync::CancellationToken;
 
@@ -30,6 +31,26 @@ struct Fixture {
     codex: PathBuf,
     runtime_dir: PathBuf,
     data_home: PathBuf,
+}
+
+#[test]
+fn help_advertises_run_and_rejects_the_removed_daemon_command() {
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\n  run "))
+        .stdout(predicates::str::contains("\n  daemon ").not());
+
+    AssertCommand::cargo_bin("factory")
+        .unwrap()
+        .arg("daemon")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "unrecognized subcommand 'daemon'",
+        ));
 }
 
 impl Fixture {
@@ -519,7 +540,7 @@ fn spawn_daemon_cli(fixture: &Fixture, stderr_path: &Path) -> std::process::Chil
     let mut command = Command::new(env!("CARGO_BIN_EXE_factory"));
     command
         .args([
-            "daemon",
+            "run",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
@@ -597,7 +618,7 @@ async fn daemon_discovers_repository_from_nested_directory_and_restarts_cleanly(
             .path()
             .join(format!("nested-{attempt}.stderr"));
         let mut child = Command::new(env!("CARGO_BIN_EXE_factory"))
-            .arg("daemon")
+            .arg("run")
             .current_dir(&nested)
             .env("FACTORY_DATA_HOME", &fixture.data_home)
             .env("FACTORY_LEGACY_DATA_DIRECTORY", &legacy)
@@ -1147,7 +1168,7 @@ async fn subprocess_restart_kills_the_surviving_anchored_process_tree() {
     let mut first = Command::new(env!("CARGO_BIN_EXE_factory"));
     first
         .args([
-            "daemon",
+            "run",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
@@ -1199,7 +1220,7 @@ async fn subprocess_restart_kills_the_surviving_anchored_process_tree() {
     let mut second = Command::new(env!("CARGO_BIN_EXE_factory"));
     second
         .args([
-            "daemon",
+            "run",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
@@ -1742,7 +1763,7 @@ async fn invalid_scheduled_workflow_does_not_block_valid_ticket_workflow() {
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_factory"));
     daemon
         .args([
-            "daemon",
+            "run",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
@@ -1797,7 +1818,7 @@ fn invalid_label_workflow_fails_daemon_startup() {
     AssertCommand::cargo_bin("factory")
         .unwrap()
         .args([
-            "daemon",
+            "run",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",
@@ -1841,7 +1862,7 @@ fn ambiguous_schedule_and_label_workflow_fails_daemon_startup() {
     AssertCommand::cargo_bin("factory")
         .unwrap()
         .args([
-            "daemon",
+            "run",
             "--config",
             fixture.config_path.to_str().unwrap(),
             "--data-directory",

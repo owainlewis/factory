@@ -20,7 +20,7 @@ resource-bounded execution. Factory does not use model API keys.
 5. Configure the GitHub Project, trusted users, and status names in
    `.factory/config.toml`.
 6. Review the generated triage and implementation workflows.
-7. Run `factory validate`, `factory workflows`, and `factory daemon`.
+7. Run `factory validate`, `factory workflows`, and `factory run`.
 
 For Docker execution, initialize with `factory init --execution-mode docker`,
 adapt the generated `.factory/Dockerfile`, and build the worker image:
@@ -83,7 +83,7 @@ prompt from standard input. Label-triggered workflows create their missing
 trigger label explicitly; scheduled workflows do not mutate labels during
 creation.
 
-`factory daemon` runs until Ctrl-C. `factory run --once` evaluates schedules
+`factory run` runs until Ctrl-C. `factory run --once` evaluates schedules
 and polls once, persists eligible tasks, and exits without launching Codex.
 If no schedule or issue matches, Factory launches no agent and uses no model
 tokens.
