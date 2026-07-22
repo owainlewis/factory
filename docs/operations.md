@@ -35,7 +35,9 @@ the previous platform data directory, Factory refuses to select the new default
 while the previous ledger remains and reports the `FACTORY_DATA_HOME` value that
 continues using that state. Factory also refuses to start while the older global
 `~/.factory/factory.sqlite3` ledger remains, preventing overlap with work owned
-by an old Factory process, including when `FACTORY_DATA_HOME=~/.factory` is set.
+by an old Factory process regardless of the `FACTORY_DATA_HOME` setting. These
+overlap guards run when `factory run` starts; inspection and cleanup commands
+remain available.
 
 ## Worker boundary
 

@@ -814,13 +814,6 @@ pub fn repository_data_directory(repository: &Path) -> Result<PathBuf> {
             .map(|path| path.join(".factory"))
             .context("could not determine Factory data directory")?,
     };
-    let global_database = base.join(DATABASE_NAME);
-    if global_database.exists() {
-        bail!(
-            "Factory found an unscoped ledger at {} and refused to start repository-scoped state because old queued or running work could overlap; stop the old Factory process, finish or cancel its work, then archive the unscoped ledger before using this data root",
-            global_database.display()
-        );
-    }
     let data_directory = base.join(digest);
     if configured_base.is_some() {
         return Ok(data_directory);

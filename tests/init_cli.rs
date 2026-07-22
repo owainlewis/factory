@@ -258,8 +258,10 @@ fn init_ignores_a_previous_default_without_a_ledger() {
 }
 
 #[test]
-fn init_refuses_to_overlap_a_global_ledger() {
+fn run_refuses_to_overlap_a_global_ledger() {
     let fixture = Fixture::new();
+    fixture.command().arg("init").assert().success();
+
     let global_database = fixture.home.join(".factory/factory.sqlite3");
     let mut global_ledger = Ledger::open(&global_database).unwrap();
     global_ledger
@@ -271,30 +273,32 @@ fn init_refuses_to_overlap_a_global_ledger() {
 
     fixture
         .command()
-        .env_remove("FACTORY_DATA_HOME")
-        .env_remove("XDG_DATA_HOME")
-        .arg("init")
+        .args(["run", "--once"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("unscoped ledger"))
+        .stderr(predicate::str::contains("global ledger"))
         .stderr(predicate::str::contains(global_database.to_str().unwrap()));
 }
 
 #[test]
-fn init_refuses_an_override_root_containing_an_unscoped_ledger() {
+fn run_refuses_an_override_root_containing_an_unscoped_ledger() {
     let fixture = Fixture::new();
-    let data_home = fixture.home.join(".factory");
-    let global_database = data_home.join("factory.sqlite3");
-    drop(Ledger::open(&global_database).unwrap());
+    let data_home = fixture.data_home.clone();
+    fixture.command().arg("init").assert().success();
+
+    let unscoped_database = data_home.join("factory.sqlite3");
+    drop(Ledger::open(&unscoped_database).unwrap());
 
     fixture
         .command()
         .env("FACTORY_DATA_HOME", data_home)
-        .arg("init")
+        .args(["run", "--once"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("unscoped ledger"))
-        .stderr(predicate::str::contains(global_database.to_str().unwrap()));
+        .stderr(predicate::str::contains(
+            unscoped_database.to_str().unwrap(),
+        ));
 }
 
 #[test]

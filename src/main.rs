@@ -21,7 +21,8 @@ use factory::runtime::{
 };
 use factory::source::{PollReport, SourceClient};
 use factory::storage::{
-    CancellationRequest, Ledger, OPERATOR_CONFIRMED_CLEANUP, TaskState, validate_data_directory,
+    CancellationRequest, DATABASE_NAME, Ledger, OPERATOR_CONFIRMED_CLEANUP, TaskState,
+    validate_data_directory,
 };
 use factory::workflow::WorkflowCatalog;
 use factory::workspace::WorkspaceManager;
@@ -545,6 +546,7 @@ async fn run_poller(
         format!("Factory starting: mode={mode} config={}\n", path.display()).as_bytes(),
     );
     let config = Config::load(&path)?;
+    ensure_no_unscoped_ledger_overlap()?;
     let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
     let catalog = WorkflowCatalog::load(&config)?;
     let ticket_validation = catalog.validate_ticket_workflows();
@@ -596,6 +598,38 @@ async fn run_poller(
     signal_task.abort();
     write_stderr_best_effort(b"Factory stopped.\n");
     Ok(0)
+}
+
+fn ensure_no_unscoped_ledger_overlap() -> Result<()> {
+    let default_base = dirs::home_dir()
+        .map(|home| home.join(".factory"))
+        .context("could not determine Factory data directory")?;
+    let global_database = default_base.join(DATABASE_NAME);
+    if global_database.exists() {
+        bail!(
+            "Factory found a global ledger at {} and refused to start repository-scoped state because old queued or running work could overlap; stop the old Factory process, finish or cancel its work, then archive the global ledger before continuing",
+            global_database.display()
+        );
+    }
+
+    let Some(configured_base) = std::env::var_os("FACTORY_DATA_HOME").map(PathBuf::from) else {
+        return Ok(());
+    };
+    let configured_base = if configured_base.is_absolute() {
+        configured_base
+    } else {
+        std::env::current_dir()
+            .context("failed to resolve current directory")?
+            .join(configured_base)
+    };
+    let unscoped_database = configured_base.join(DATABASE_NAME);
+    if unscoped_database.exists() {
+        bail!(
+            "Factory found an unscoped ledger at {} and refused to start repository-scoped state because old queued or running work could overlap; stop the old Factory process, finish or cancel its work, then archive the unscoped ledger before using this data root",
+            unscoped_database.display()
+        );
+    }
+    Ok(())
 }
 
 fn print_poll_report(report: &PollReport) {
