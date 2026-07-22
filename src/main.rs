@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
@@ -22,7 +23,7 @@ use factory::runtime::{
 use factory::source::{PollReport, SourceClient};
 use factory::storage::{
     CancellationRequest, DATABASE_NAME, Ledger, OPERATOR_CONFIRMED_CLEANUP, TaskState,
-    validate_data_directory,
+    acquire_state_reset_lock, inspect_reset_state, validate_data_directory,
 };
 use factory::workflow::{Trigger, WorkflowCatalog};
 use factory::workspace::WorkspaceManager;
@@ -141,6 +142,18 @@ enum Command {
         #[arg(long)]
         config: Option<PathBuf>,
         /// Directory containing the durable Factory database.
+        #[arg(long)]
+        data_directory: Option<PathBuf>,
+    },
+    /// Preview or confirm removal of durable state for the current repository.
+    Reset {
+        /// Remove state after reviewing the preview.
+        #[arg(long)]
+        confirm: bool,
+        /// Path to the repository-local Factory configuration file.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Directory containing the repository-scoped Factory database.
         #[arg(long)]
         data_directory: Option<PathBuf>,
     },
@@ -514,9 +527,157 @@ async fn run_cli() -> Result<u8> {
                 }
             }
         }
+        Command::Reset {
+            confirm,
+            config,
+            data_directory,
+        } => {
+            let path = resolve_config_path(config)?;
+            let config = Config::load_for_inspection(&path)?;
+            let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
+            let mut databases = vec![("repository", data_directory.join(DATABASE_NAME))];
+            let global = dirs::home_dir()
+                .context("could not determine Factory data directory")?
+                .join(".factory")
+                .join(DATABASE_NAME);
+            push_reset_target(&mut databases, "legacy-global", global);
+            if let Some(configured_global) = configured_unscoped_database_path()? {
+                push_reset_target(&mut databases, "configured-global", configured_global);
+            }
+            let _reset_locks = confirm
+                .then(|| {
+                    databases
+                        .iter()
+                        .map(|(_, database)| acquire_state_reset_lock(database))
+                        .collect::<Result<Vec<_>>>()
+                })
+                .transpose()?;
+            let mut existing = Vec::new();
+            for (kind, database) in databases {
+                if database_has_state(&database)? {
+                    existing.push((kind, database));
+                }
+            }
+            if existing.is_empty() {
+                println!("action: no Factory state exists; no changes made");
+                return Ok(0);
+            }
+            for (kind, database) in &existing {
+                for artifact in database_state_files(database) {
+                    if state_file_exists(&artifact)? {
+                        validate_regular_state_file(&artifact)?;
+                    }
+                }
+                let summary = if state_file_exists(database)? {
+                    inspect_reset_state(database)?
+                } else {
+                    Default::default()
+                };
+                println!("target: {kind}");
+                println!("database: {}", database.display());
+                println!("tasks: {}", summary.tasks);
+                println!("runs: {}", summary.runs);
+                println!("active tasks: {}", summary.active_tasks);
+                println!("active runs: {}", summary.active_runs);
+                println!("managed containers: {}", summary.managed_containers);
+                println!("live daemons: {}", summary.live_daemons);
+                for repository in &summary.repositories {
+                    println!("repository: {repository}");
+                }
+                println!("retained workspaces: {}", summary.retained_workspaces.len());
+                for workspace in &summary.retained_workspaces {
+                    println!("retained workspace: {}", workspace.display());
+                }
+                if confirm
+                    && (summary.active_tasks > 0
+                        || summary.active_runs > 0
+                        || summary.managed_containers > 0
+                        || summary.live_daemons > 0
+                        || !summary.retained_workspaces.is_empty())
+                {
+                    bail!(
+                        "refusing to reset {kind} state while it owns active work or retained resources; stop Factory, finish or cancel active work, and clean retained runs first"
+                    );
+                }
+            }
+            if !confirm {
+                println!("action: preview only; rerun with --confirm to remove durable state");
+                return Ok(0);
+            }
+            for (_, database) in existing {
+                remove_database_files(&database)?;
+            }
+            println!("action: removed durable state; configuration and worktrees preserved");
+        }
     }
 
     Ok(0)
+}
+
+fn remove_database_files(database: &Path) -> Result<()> {
+    for path in database_state_files(database) {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to remove Factory state file {}", path.display())
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn database_state_files(database: &Path) -> [PathBuf; 4] {
+    let with_suffix = |suffix: &str| {
+        let mut value = database.as_os_str().to_os_string();
+        value.push(suffix);
+        PathBuf::from(value)
+    };
+    [
+        database.to_path_buf(),
+        with_suffix("-wal"),
+        with_suffix("-shm"),
+        with_suffix("-journal"),
+    ]
+}
+
+fn database_has_state(database: &Path) -> Result<bool> {
+    database_state_files(database)
+        .iter()
+        .try_fold(false, |found, path| Ok(found || state_file_exists(path)?))
+}
+
+fn state_file_exists(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to inspect Factory state {}", path.display())),
+    }
+}
+
+fn push_reset_target(
+    databases: &mut Vec<(&'static str, PathBuf)>,
+    kind: &'static str,
+    database: PathBuf,
+) {
+    if !databases.iter().any(|(_, existing)| existing == &database) {
+        databases.push((kind, database));
+    }
+}
+
+fn validate_regular_state_file(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect Factory state file {}", path.display()))?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        bail!(
+            "refusing to use non-regular Factory state file {}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 fn open_data_ledger(
@@ -625,8 +786,21 @@ fn ensure_no_unscoped_ledger_overlap() -> Result<()> {
         );
     }
 
-    let Some(configured_base) = std::env::var_os("FACTORY_DATA_HOME").map(PathBuf::from) else {
+    let Some(unscoped_database) = configured_unscoped_database_path()? else {
         return Ok(());
+    };
+    if unscoped_database.exists() {
+        bail!(
+            "Factory found an unscoped ledger at {} and refused to start repository-scoped state because old queued or running work could overlap; stop the old Factory process, finish or cancel its work, then archive the unscoped ledger before using this data root",
+            unscoped_database.display()
+        );
+    }
+    Ok(())
+}
+
+fn configured_unscoped_database_path() -> Result<Option<PathBuf>> {
+    let Some(configured_base) = std::env::var_os("FACTORY_DATA_HOME").map(PathBuf::from) else {
+        return Ok(None);
     };
     let configured_base = if configured_base.is_absolute() {
         configured_base
@@ -635,14 +809,7 @@ fn ensure_no_unscoped_ledger_overlap() -> Result<()> {
             .context("failed to resolve current directory")?
             .join(configured_base)
     };
-    let unscoped_database = configured_base.join(DATABASE_NAME);
-    if unscoped_database.exists() {
-        bail!(
-            "Factory found an unscoped ledger at {} and refused to start repository-scoped state because old queued or running work could overlap; stop the old Factory process, finish or cancel its work, then archive the unscoped ledger before using this data root",
-            unscoped_database.display()
-        );
-    }
-    Ok(())
+    Ok(Some(configured_base.join(DATABASE_NAME)))
 }
 
 fn print_poll_report(report: &PollReport) {
@@ -673,6 +840,38 @@ fn print_poll_report(report: &PollReport) {
 enum WorkflowRunMode {
     Any,
     ScheduledOnly,
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::path::PathBuf;
+
+    use super::database_state_files;
+
+    #[test]
+    fn sqlite_sidecar_paths_preserve_non_utf8_database_bytes() {
+        let database = PathBuf::from(OsString::from_vec(b"/tmp/factory-\xFF.sqlite3".to_vec()));
+        let files = database_state_files(&database);
+
+        assert_eq!(
+            files[0].as_os_str().as_bytes(),
+            database.as_os_str().as_bytes()
+        );
+        assert_eq!(
+            files[1].as_os_str().as_bytes(),
+            b"/tmp/factory-\xFF.sqlite3-wal"
+        );
+        assert_eq!(
+            files[2].as_os_str().as_bytes(),
+            b"/tmp/factory-\xFF.sqlite3-shm"
+        );
+        assert_eq!(
+            files[3].as_os_str().as_bytes(),
+            b"/tmp/factory-\xFF.sqlite3-journal"
+        );
+    }
 }
 
 async fn run_workflow(

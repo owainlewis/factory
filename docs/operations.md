@@ -113,6 +113,24 @@ Confirmed cleanup removes only the recorded managed worktree or standalone
 clone. The remote branch and pull request remain. Proposal workspaces are
 disposable and are removed at a terminal outcome.
 
+## Reset durable state
+
+Preview a fresh start before removing task history:
+
+```sh
+factory reset
+factory reset --confirm
+```
+
+Reset includes the current repository ledger and the older global ledger when
+it exists. Confirmation is refused while either ledger has queued or running
+work, a live daemon lease, an unremoved managed container, or retained workspace
+ownership. Stop Factory and use `factory cleanup RUN_ID --confirm` for retained
+work before retrying.
+
+Reset removes only SQLite state. Repository configuration, workflows, branches,
+and worktree directories are preserved.
+
 ## Troubleshooting
 
 - `factory init --check` reports missing repository assets without writing.
