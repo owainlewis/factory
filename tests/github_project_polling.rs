@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use factory::config::{Config, GitHubConfig, PipelineState, SourceConfig, SourceStates};
+use factory::config::{
+    Config, ExecutionMode, GitHubConfig, PipelineState, SourceConfig, SourceStates,
+};
 use factory::github::{GitHubClient, ProjectTicketContext};
 use factory::storage::{Ledger, RunOutcome};
 use factory::workflow::WorkflowCatalog;
@@ -76,6 +78,7 @@ impl Fixture {
             max_concurrent_runs_per_repository: 1,
             workspace_root,
             data_directory: temp.path().join("data"),
+            execution_mode: ExecutionMode::Worktree,
             worker: None,
             source: Some(source),
             github: GitHubConfig {

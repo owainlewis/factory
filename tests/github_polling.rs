@@ -10,7 +10,7 @@ use std::time::Duration;
 use assert_cmd::Command as AssertCommand;
 use chrono::Utc;
 use factory::approval::{ApprovalArtifact, approved_content_hash, render};
-use factory::config::{Config, GitHubConfig};
+use factory::config::{Config, ExecutionMode, GitHubConfig};
 use factory::github::{GitHubClient, TicketContext};
 use factory::storage::{Ledger, RunOutcome, TaskIdentity};
 use factory::workflow::{
@@ -96,6 +96,7 @@ impl Fixture {
             max_concurrent_runs_per_repository: 2,
             workspace_root: workspace,
             data_directory: temp.path().join("data"),
+            execution_mode: ExecutionMode::Worktree,
             worker: None,
             source: None,
             github: GitHubConfig {

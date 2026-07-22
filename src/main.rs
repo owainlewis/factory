@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use factory::approve::approve_issue;
 use factory::clone::CloneManager;
-use factory::config::{Config, repository_config_path, repository_remote_identity};
+use factory::config::{Config, ExecutionMode, repository_config_path, repository_remote_identity};
 use factory::daemon::FactoryDaemon;
 use factory::docker::DockerWorker;
 use factory::execution::ResolvedWorkflow;
@@ -45,6 +45,9 @@ enum Command {
         /// Report required changes without writing anything.
         #[arg(long)]
         check: bool,
+        /// Execution backend for a new configuration.
+        #[arg(long, value_enum, default_value_t = ExecutionMode::Worktree)]
+        execution_mode: ExecutionMode,
     },
     /// Poll this repository once and persist eligible tasks without executing them.
     Run {
@@ -247,7 +250,11 @@ async fn run_cli() -> Result<u8> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Init { repository, check } => {
+        Command::Init {
+            repository,
+            check,
+            execution_mode,
+        } => {
             let repository = repository
                 .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
             let repository = factory::init::discover_repository(&repository)?;
@@ -255,6 +262,7 @@ async fn run_cli() -> Result<u8> {
                 config_path: repository_config_path(&repository),
                 repository,
                 check,
+                execution_mode,
             })?;
             let exit_code = report.exit_code();
             print!("{report}");
@@ -301,9 +309,9 @@ async fn run_cli() -> Result<u8> {
             let catalog = WorkflowCatalog::load(&config)?;
             catalog.validate_ticket_workflows()?;
             validate_data_directory(&config.data_directory)?;
+            let cancellation = CancellationToken::new();
             if let Some(source) = &config.source {
                 let github = GitHubClient::default();
-                let cancellation = CancellationToken::new();
                 github.validate_global(&cancellation).await?;
                 for repository in &config.repositories {
                     github
@@ -313,10 +321,14 @@ async fn run_cli() -> Result<u8> {
             }
             if let Some(worker) = &config.worker {
                 GitHubClient::default()
-                    .validate_token_env(&worker.github_token_env, &CancellationToken::new())
+                    .validate_token_env(&worker.github_token_env, &cancellation)
                     .await?;
                 DockerWorker::new(worker.clone(), "validate")
-                    .validate(&CancellationToken::new())
+                    .validate(&cancellation)
+                    .await?;
+            } else {
+                CodexRuntime::default()
+                    .health_check_with_cancellation(cancellation)
                     .await?;
             }
             print!("{config}");

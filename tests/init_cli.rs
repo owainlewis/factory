@@ -103,21 +103,17 @@ fn init_creates_complete_repository_factory_without_overwriting() {
         .stdout(predicate::str::contains("workflow directory"))
         .stdout(predicate::str::contains("triage-ticket.md"))
         .stdout(predicate::str::contains("implement-ready-ticket.md"))
-        .stdout(predicate::str::contains("Dockerfile"))
+        .stdout(predicate::str::contains("Dockerfile").not())
         .stdout(predicate::str::contains("GitHub label").not())
         .stdout(predicate::str::contains("factory validate"));
 
     let config = fs::read_to_string(fixture.config_path()).unwrap();
     assert!(config.contains("version = 1"));
+    assert!(config.contains("execution_mode = \"worktree\""));
     assert!(config.contains("[source]"));
     assert!(config.contains("kind = \"github_project\""));
     assert!(config.contains("project_number = 16"));
-    assert!(config.contains("[worker]"));
-    assert!(config.contains("kind = \"docker\""));
-    assert!(config.contains("image = \"factory-codex:dev\""));
-    assert!(config.contains("memory = \"8g\""));
-    assert!(config.contains("cpus = 4"));
-    assert!(config.contains("pids = 512"));
+    assert!(!config.contains("[worker]"));
     assert!(config.contains("max_concurrent_runs = 1"));
     assert!(config.contains("[source.states]"));
     assert!(!config.contains("[github]"));
@@ -134,10 +130,7 @@ fn init_creates_complete_repository_factory_without_overwriting() {
         fs::read_to_string(fixture.workflows().join("implement-ready-ticket.md")).unwrap(),
         include_str!("../.factory/workflows/implement-ready-ticket.md")
     );
-    assert_eq!(
-        fs::read_to_string(fixture.repository.join(".factory/Dockerfile")).unwrap(),
-        include_str!("../.factory/Dockerfile")
-    );
+    assert!(!fixture.repository.join(".factory/Dockerfile").exists());
     assert!(!fixture.repository.join(".gh-calls").exists());
 
     fixture
@@ -147,6 +140,32 @@ fn init_creates_complete_repository_factory_without_overwriting() {
         .success()
         .stdout(predicate::str::contains("unchanged:"));
     assert_eq!(fs::read_to_string(fixture.config_path()).unwrap(), config);
+}
+
+#[test]
+fn init_docker_mode_creates_worker_configuration_and_dockerfile() {
+    let fixture = Fixture::new();
+
+    fixture
+        .command()
+        .args(["init", "--execution-mode", "docker"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Dockerfile"))
+        .stdout(predicate::str::contains("docker build"));
+
+    let config = fs::read_to_string(fixture.config_path()).unwrap();
+    assert!(config.contains("execution_mode = \"docker\""));
+    assert!(config.contains("[worker]"));
+    assert!(config.contains("kind = \"docker\""));
+    assert!(config.contains("image = \"factory-codex:dev\""));
+    assert!(config.contains("memory = \"8g\""));
+    assert!(config.contains("cpus = 4"));
+    assert!(config.contains("pids = 512"));
+    assert_eq!(
+        fs::read_to_string(fixture.repository.join(".factory/Dockerfile")).unwrap(),
+        include_str!("../.factory/Dockerfile")
+    );
 }
 
 #[test]
@@ -164,7 +183,7 @@ fn check_reports_missing_resources_without_writes() {
         .stdout(predicate::str::contains("workflow directory"))
         .stdout(predicate::str::contains("triage-ticket.md"))
         .stdout(predicate::str::contains("implement-ready-ticket.md"))
-        .stdout(predicate::str::contains("Dockerfile"));
+        .stdout(predicate::str::contains("Dockerfile").not());
 
     assert!(!fixture.config_path().exists());
     assert!(!fixture.data_home.exists());

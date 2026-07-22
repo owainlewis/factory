@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use assert_cmd::Command as AssertCommand;
 use factory::approval::{ApprovalArtifact, approved_content_hash, render};
-use factory::config::{Config, GitHubConfig};
+use factory::config::{Config, ExecutionMode, GitHubConfig};
 use factory::daemon::FactoryDaemon;
 use factory::github::GitHubClient;
 use factory::runtime::CodexRuntime;
@@ -126,6 +126,7 @@ impl Fixture {
             max_concurrent_runs_per_repository: repository_limit,
             workspace_root: workspace,
             data_directory: temp.path().join("data"),
+            execution_mode: ExecutionMode::Worktree,
             worker: None,
             source: None,
             github: GitHubConfig {

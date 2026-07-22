@@ -1,14 +1,14 @@
 # Run the single-repository Factory v1
 
 Factory watches one GitHub Project and reacts only when trusted work enters one
-of two configured states. Triage runs from a read-only clone. Implementation
-runs from a writable clone, pushes one stable issue branch, and leaves one pull
+of two configured states. It can run in fast local worktrees or isolated Docker
+clones. Implementation pushes one stable issue branch and leaves one pull
 request for human review and merge.
 
 ## Requirements
 
-Install Rust, Git, GitHub CLI, Docker, and Codex CLI on a Unix-like host. Docker
-must be running. Authenticate the host GitHub CLI:
+Install Rust, Git, GitHub CLI, and Codex CLI on a Unix-like host. Install and
+start Docker as well when using Docker mode. Authenticate the host GitHub CLI:
 
 ```sh
 gh auth login
@@ -35,7 +35,6 @@ This creates, only when missing:
 
 ```text
 .factory/config.toml
-.factory/Dockerfile
 .factory/workflows/triage-ticket.md
 .factory/workflows/implement-ready-ticket.md
 ```
@@ -44,14 +43,22 @@ It also creates the repository-specific Factory data directory outside the
 checkout. Re-running the command preserves every existing file. Preview missing
 resources without writing with `factory init --check`.
 
+This selects `execution_mode = "worktree"`. Worktrees are quick for trusted
+local development but are not a security boundary. To select Docker and create
+the worker Dockerfile instead, run:
+
+```sh
+factory init --execution-mode docker
+```
+
 Edit `.factory/config.toml` with the GitHub Project owner and number, the exact
 Status field values, and trusted issue authors. Status names are local policy,
 so Jira-style or team-specific names are valid when mapped to all six semantic
 states.
 
 Review the two workflow prompts. They are the adaptive part of the factory.
-Review `.factory/Dockerfile` and add the repository toolchain needed by tests
-and builds, then build the configured image:
+In Docker mode, review `.factory/Dockerfile` and add the repository toolchain
+needed by tests and builds, then build the configured image:
 
 ```sh
 docker build --file .factory/Dockerfile --tag factory-codex:dev .
@@ -85,10 +92,11 @@ factory daemon
 ```
 
 Validation checks the repository, all configured Project states, trusted users,
-Docker daemon, exact image, authenticated Codex session inside that image, live worker GitHub token, and
-writable Factory data path. `run --once` polls and records matching work but
-does not claim tasks or launch containers. With no matching Project item,
-Factory starts no container and invokes no model.
+and writable Factory data path. Worktree mode validates the host Codex CLI.
+Docker mode validates the Docker daemon, exact image, authenticated Codex
+session inside that image, and live worker GitHub token. `run --once` polls and
+records matching work but does not claim tasks or launch workers. With no
+matching Project item, Factory invokes no model.
 
 The continuous daemon reacts to two states:
 

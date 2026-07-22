@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use tempfile::NamedTempFile;
 use toml_edit::{DocumentMut, Item, Table, value};
 
-use crate::config::Config;
+use crate::config::{Config, ExecutionMode};
 
 const TRIAGE_WORKFLOW: &str = include_str!("../.factory/workflows/triage-ticket.md");
 const IMPLEMENT_WORKFLOW: &str = include_str!("../.factory/workflows/implement-ready-ticket.md");
@@ -19,6 +19,7 @@ pub struct InitOptions {
     pub repository: PathBuf,
     pub config_path: PathBuf,
     pub check: bool,
+    pub execution_mode: ExecutionMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +61,7 @@ pub struct InitReport {
     repository: PathBuf,
     resources: Vec<ResourceResult>,
     check: bool,
+    execution_mode: ExecutionMode,
 }
 
 impl InitReport {
@@ -108,10 +110,12 @@ impl fmt::Display for InitReport {
         } else if self.exit_code() == 0 {
             writeln!(formatter, "Next:")?;
             writeln!(formatter, "  edit .factory/config.toml for your Project")?;
-            writeln!(
-                formatter,
-                "  docker build -f .factory/Dockerfile -t factory-codex:dev ."
-            )?;
+            if self.execution_mode == ExecutionMode::Docker {
+                writeln!(
+                    formatter,
+                    "  docker build -f .factory/Dockerfile -t factory-codex:dev ."
+                )?;
+            }
             writeln!(formatter, "  factory validate")?;
             writeln!(formatter, "  factory daemon")
         } else {
@@ -141,13 +145,14 @@ struct ConfigPlan {
     workspace_action: PlannedAction,
     action: PlannedAction,
     candidate: Option<String>,
+    execution_mode: ExecutionMode,
 }
 
 pub fn initialize(options: InitOptions) -> Result<InitReport> {
     let repository = discover_repository(&options.repository)?;
     let workflows = plan_workflow_directory(&repository)?;
-    let config = plan_config(&options.config_path, &repository)?;
-    let assets = plan_default_assets(&repository)?;
+    let config = plan_config(&options.config_path, &repository, options.execution_mode)?;
+    let assets = plan_default_assets(&repository, config.execution_mode)?;
 
     if options.check {
         return Ok(InitReport {
@@ -169,6 +174,7 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
             )
             .collect(),
             check: true,
+            execution_mode: config.execution_mode,
         });
     }
 
@@ -199,6 +205,7 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
             repository,
             resources,
             check: false,
+            execution_mode: config.execution_mode,
         });
     }
     resources.push(ResourceResult {
@@ -218,6 +225,7 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
             repository,
             resources,
             check: false,
+            execution_mode: config.execution_mode,
         });
     }
     resources.push(ResourceResult {
@@ -239,6 +247,7 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
                 repository,
                 resources,
                 check: false,
+                execution_mode: config.execution_mode,
             });
         }
         resources.push(ResourceResult {
@@ -252,6 +261,7 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
         repository,
         resources,
         check: false,
+        execution_mode: config.execution_mode,
     })
 }
 
@@ -388,9 +398,9 @@ fn plan_workflow_directory(repository: &Path) -> Result<DirectoryPlan> {
     })
 }
 
-fn plan_default_assets(repository: &Path) -> Result<Vec<FilePlan>> {
+fn plan_default_assets(repository: &Path, execution_mode: ExecutionMode) -> Result<Vec<FilePlan>> {
     let factory = repository.join(".factory");
-    Ok(vec![
+    let mut assets = vec![
         plan_file(
             factory.join("workflows/triage-ticket.md"),
             TRIAGE_WORKFLOW,
@@ -401,12 +411,15 @@ fn plan_default_assets(repository: &Path) -> Result<Vec<FilePlan>> {
             IMPLEMENT_WORKFLOW,
             "implementation workflow",
         )?,
-        plan_file(
+    ];
+    if execution_mode == ExecutionMode::Docker {
+        assets.push(plan_file(
             factory.join("Dockerfile"),
             WORKER_DOCKERFILE,
             "Docker worker image",
-        )?,
-    ])
+        )?);
+    }
+    Ok(assets)
 }
 
 fn plan_file(path: PathBuf, contents: &'static str, detail: &'static str) -> Result<FilePlan> {
@@ -439,7 +452,11 @@ pub(crate) fn validate_optional_directory(path: &Path) -> Result<()> {
     }
 }
 
-fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
+fn plan_config(
+    path: &Path,
+    repository: &Path,
+    requested_mode: ExecutionMode,
+) -> Result<ConfigPlan> {
     let path = absolute_path(path)?;
     let expected = repository.join(".factory/config.toml");
     if path != expected {
@@ -466,10 +483,11 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
                 workspace_action,
                 action: PlannedAction::Unchanged,
                 candidate: None,
+                execution_mode: config.execution_mode,
             })
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let candidate = default_config();
+            let candidate = default_config(requested_mode);
             let validated = Config::validate_candidate(&candidate, repository)
                 .context("generated configuration is invalid")?;
             let workspace = validated.workspace_root;
@@ -483,6 +501,7 @@ fn plan_config(path: &Path, repository: &Path) -> Result<ConfigPlan> {
                 },
                 action: PlannedAction::Create,
                 candidate: Some(candidate),
+                execution_mode: requested_mode,
             })
         }
         Err(error) => {
@@ -501,20 +520,23 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn default_config() -> String {
+fn default_config(execution_mode: ExecutionMode) -> String {
     let mut document = DocumentMut::new();
     document["version"] = value(1);
+    document["execution_mode"] = value(execution_mode.to_string());
     document["poll_every"] = value("30s");
     document["default_runtime"] = value("codex");
     document["default_timeout"] = value("2h");
     document["maximum_timeout"] = value("8h");
     document["max_concurrent_runs"] = value(1);
-    document["worker"] = Item::Table(Table::new());
-    document["worker"]["kind"] = value("docker");
-    document["worker"]["image"] = value("factory-codex:dev");
-    document["worker"]["memory"] = value("8g");
-    document["worker"]["cpus"] = value(4);
-    document["worker"]["pids"] = value(512);
+    if execution_mode == ExecutionMode::Docker {
+        document["worker"] = Item::Table(Table::new());
+        document["worker"]["kind"] = value("docker");
+        document["worker"]["image"] = value("factory-codex:dev");
+        document["worker"]["memory"] = value("8g");
+        document["worker"]["cpus"] = value(4);
+        document["worker"]["pids"] = value(512);
+    }
     document["source"] = Item::Table(Table::new());
     document["source"]["kind"] = value("github_project");
     document["source"]["owner"] = value("owainlewis");

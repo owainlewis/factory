@@ -48,8 +48,8 @@ impl CloneManager {
         implementation: bool,
         github_token_env: &str,
     ) -> Result<StandaloneClone> {
-        if task_id <= 0 || issue == 0 {
-            bail!("clone task and issue IDs must be positive");
+        if task_id <= 0 || (implementation && issue == 0) {
+            bail!("clone task IDs and implementation issue IDs must be positive");
         }
         validate_repository(repository)?;
         validate_revision(base_sha)?;
@@ -191,6 +191,26 @@ impl CloneManager {
             base_branch: base_branch.to_owned(),
             base_sha: base_sha.to_owned(),
         })
+    }
+
+    pub fn prepare_proposal(
+        &self,
+        repository: &str,
+        task_id: i64,
+        base_branch: &str,
+        base_sha: &str,
+        github_token_env: &str,
+    ) -> Result<StandaloneClone> {
+        self.prepare(
+            repository,
+            task_id,
+            0,
+            "",
+            base_branch,
+            base_sha,
+            false,
+            github_token_env,
+        )
     }
 
     pub fn remove(&self, path: &Path) -> Result<()> {
@@ -415,16 +435,7 @@ esac
         };
 
         let triage = manager
-            .prepare(
-                "acme/widgets",
-                7,
-                42,
-                "Fix login timeout",
-                "main",
-                BASE_SHA,
-                false,
-                TOKEN_ENV,
-            )
+            .prepare_proposal("acme/widgets", 7, "main", BASE_SHA, TOKEN_ENV)
             .unwrap();
         assert_eq!(triage.path, root.join("triage-7"));
         assert_eq!(triage.branch, None);

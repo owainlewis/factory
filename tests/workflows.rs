@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use assert_cmd::Command;
-use factory::config::{Config, GitHubConfig, PipelineState, SourceConfig, SourceStates};
+use factory::config::{
+    Config, ExecutionMode, GitHubConfig, PipelineState, SourceConfig, SourceStates,
+};
 use factory::workflow::{Trigger, WorkflowCatalog};
 use predicates::prelude::*;
 
@@ -91,6 +93,7 @@ fn test_config(repositories: Vec<PathBuf>, workspace: PathBuf, data: PathBuf) ->
         max_concurrent_runs_per_repository: 2,
         workspace_root: workspace,
         data_directory: data,
+        execution_mode: ExecutionMode::Worktree,
         worker: None,
         source: None,
         github: GitHubConfig {
@@ -605,6 +608,7 @@ fn catalog_output_escapes_control_characters_in_every_dynamic_cell() {
         max_concurrent_runs_per_repository: 1,
         workspace_root: workspace,
         data_directory: temp.path().join("data"),
+        execution_mode: ExecutionMode::Worktree,
         worker: None,
         source: None,
         github: GitHubConfig {
