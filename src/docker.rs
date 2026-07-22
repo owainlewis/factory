@@ -150,6 +150,7 @@ impl DockerWorker {
                     self.config.codex_auth.display()
                 )
             })?;
+        self.validate_codex_auth(&image_id, cancellation).await?;
         let token = std::env::var(&self.config.github_token_env).with_context(|| {
             format!(
                 "GitHub token is missing; export {} for the dedicated Factory identity",
@@ -164,6 +165,63 @@ impl DockerWorker {
             self.config.github_token_env
         );
         Ok(image_id)
+    }
+
+    async fn validate_codex_auth(
+        &self,
+        image_id: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        let auth = self.config.codex_auth.canonicalize().with_context(|| {
+            format!(
+                "failed to resolve auth file {}",
+                self.config.codex_auth.display()
+            )
+        })?;
+        let (uid, gid) = host_owner(&auth)?;
+        let auth_mount = format!(
+            "type=bind,src={},dst=/home/agent/.codex/auth.json",
+            docker_path(&auth)?
+        );
+        let arguments = vec![
+            OsString::from("run"),
+            OsString::from("--rm"),
+            OsString::from("--user"),
+            OsString::from(format!("{uid}:{gid}")),
+            OsString::from("--read-only"),
+            OsString::from("--network"),
+            OsString::from("none"),
+            OsString::from("--cap-drop"),
+            OsString::from("ALL"),
+            OsString::from("--security-opt"),
+            OsString::from("no-new-privileges"),
+            OsString::from("--pids-limit"),
+            OsString::from(self.config.pids.to_string()),
+            OsString::from("--memory"),
+            OsString::from(self.config.memory.clone()),
+            OsString::from("--cpus"),
+            OsString::from(self.config.cpus.to_string()),
+            OsString::from("--tmpfs"),
+            OsString::from(format!(
+                "/home/agent/.codex:rw,size=64m,uid={uid},gid={gid},mode=700"
+            )),
+            OsString::from("--mount"),
+            OsString::from(auth_mount),
+            OsString::from("--env"),
+            OsString::from("HOME=/home/agent"),
+            OsString::from("--env"),
+            OsString::from("CODEX_HOME=/home/agent/.codex"),
+            OsString::from(image_id),
+            OsString::from("codex"),
+            OsString::from("login"),
+            OsString::from("status"),
+        ];
+        self.command_output_os(&arguments, cancellation)
+            .await
+            .context(
+                "Codex authentication is invalid in the configured worker image; refresh the dedicated login",
+            )?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -851,6 +909,67 @@ mod tests {
         let mut permissions = fs::metadata(path).unwrap().permissions();
         permissions.set_mode(0o700);
         fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[tokio::test]
+    async fn validates_codex_login_in_a_hardened_temporary_container() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = temp.path().join("docker.log");
+        let docker = temp.path().join("docker");
+        let auth = temp.path().join("auth.json");
+        fs::write(&auth, "{}").unwrap();
+        executable(
+            &docker,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> '{}'
+case "$1 ${{2:-}}" in
+  'version --format') printf '%s\n' '27.0.0' ;;
+  'image inspect') printf '%s\n' 'sha256:abcdef0123456789' ;;
+  'run --rm') printf '%s\n' 'Logged in using ChatGPT' ;;
+  *) printf 'unexpected fake docker command: %s\n' "$*" >&2; exit 1 ;;
+esac
+"#,
+                log.display()
+            ),
+        );
+        // SAFETY: all tests in this module use the same harmless test value.
+        unsafe { std::env::set_var(TOKEN_ENV, "super-secret-docker-token") };
+        let worker = DockerWorker::new(
+            WorkerConfig {
+                image: "factory-codex:test".to_owned(),
+                memory: "4g".to_owned(),
+                cpus: 2,
+                pids: 128,
+                codex_auth: auth.clone(),
+                github_token_env: TOKEN_ENV.to_owned(),
+            },
+            "validate-instance",
+        )
+        .with_executable(&docker);
+
+        let image = worker.validate(&CancellationToken::new()).await.unwrap();
+        assert_eq!(image, "sha256:abcdef0123456789");
+        let commands = fs::read_to_string(log).unwrap();
+        let login = commands
+            .lines()
+            .find(|line| line.starts_with("run --rm"))
+            .unwrap();
+        assert!(login.contains("--read-only"));
+        assert!(login.contains("--network none"));
+        assert!(login.contains("--cap-drop ALL"));
+        assert!(login.contains("--security-opt no-new-privileges"));
+        assert!(login.contains("--pids-limit 128"));
+        assert!(login.contains("--memory 4g"));
+        assert!(login.contains("--cpus 2"));
+        assert!(login.contains("codex login status"));
+        assert!(login.contains(&format!(
+            "type=bind,src={},dst=/home/agent/.codex/auth.json",
+            auth.canonicalize().unwrap().display()
+        )));
+        assert!(!login.contains("super-secret-docker-token"));
+        assert!(!login.contains("docker.sock"));
     }
 
     #[tokio::test]

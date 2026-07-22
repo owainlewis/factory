@@ -22,6 +22,7 @@ use factory::runtime::{
 };
 use factory::storage::{
     CancellationRequest, DATABASE_NAME, Ledger, OPERATOR_CONFIRMED_CLEANUP, TaskState,
+    validate_data_directory,
 };
 use factory::workflow::WorkflowCatalog;
 use factory::workflow_create::{CreateWorkflowOptions, create_workflow};
@@ -299,6 +300,7 @@ async fn run_cli() -> Result<u8> {
             let config = Config::load(&path)?;
             let catalog = WorkflowCatalog::load(&config)?;
             catalog.validate_ticket_workflows()?;
+            validate_data_directory(&config.data_directory)?;
             if let Some(source) = &config.source {
                 let github = GitHubClient::default();
                 let cancellation = CancellationToken::new();

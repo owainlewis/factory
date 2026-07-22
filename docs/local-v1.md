@@ -85,7 +85,7 @@ factory daemon
 ```
 
 Validation checks the repository, all configured Project states, trusted users,
-Docker daemon, exact image, writable Codex auth, live worker GitHub token, and
+Docker daemon, exact image, authenticated Codex session inside that image, live worker GitHub token, and
 writable Factory data path. `run --once` polls and records matching work but
 does not claim tasks or launch containers. With no matching Project item,
 Factory starts no container and invokes no model.
@@ -130,7 +130,8 @@ the missing repository config without changing the checked-in workflows or
 Dockerfile. The image built as `factory-codex:dev` with digest
 `sha256:af5b2c31afc1e06d809a96d8c675bd7470532a4f1e30b0de118cab046fd3a52e`.
 `factory validate` resolved all six Project states, the trusted user, live
-worker token, Docker daemon and image, and dedicated writable Codex auth.
+worker token, Docker daemon and image, and a dedicated Codex login verified
+inside the hardened worker container.
 
 Before adding ready work, `factory run --once` saw seven repository issues and
 created zero tasks. `factory tasks --json` returned `[]`, and Docker listed no

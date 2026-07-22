@@ -482,7 +482,8 @@ factory daemon
 
 `factory validate` confirms the enclosing repository, Project and Status field,
 all six configured state values, trusted users, Docker daemon, exact image,
-Codex authentication file, GitHub token, and writable Factory data directory.
+Codex authentication status inside the configured worker image, GitHub token,
+and writable Factory data directory and existing SQLite database.
 It prints one actionable error for every missing prerequisite and starts no
 container.
 
