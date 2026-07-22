@@ -258,6 +258,29 @@ fn init_ignores_a_previous_default_without_a_ledger() {
 }
 
 #[test]
+fn init_refuses_to_overlap_a_global_ledger() {
+    let fixture = Fixture::new();
+    let global_database = fixture.home.join(".factory/factory.sqlite3");
+    let mut global_ledger = Ledger::open(&global_database).unwrap();
+    global_ledger
+        .enqueue(
+            &TaskIdentity::ticket("example/repository", "implement", "1", "revision-1").unwrap(),
+        )
+        .unwrap();
+    drop(global_ledger);
+
+    fixture
+        .command()
+        .env_remove("FACTORY_DATA_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("global ledger"))
+        .stderr(predicate::str::contains(global_database.to_str().unwrap()));
+}
+
+#[test]
 fn init_docker_mode_creates_worker_configuration_and_dockerfile() {
     let fixture = Fixture::new();
 

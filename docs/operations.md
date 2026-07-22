@@ -33,7 +33,9 @@ Factory stores durable state and managed worktrees below
 `~/.factory` root. When upgrading an installation that already has state below
 the previous platform data directory, Factory refuses to select the new default
 while the previous ledger remains and reports the `FACTORY_DATA_HOME` value that
-continues using that state.
+continues using that state. Factory also refuses to start while the older global
+`~/.factory/factory.sqlite3` ledger remains, preventing overlap with work owned
+by an old Factory process.
 
 ## Worker boundary
 
