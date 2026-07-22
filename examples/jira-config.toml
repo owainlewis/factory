@@ -1,0 +1,31 @@
+# Copy the source and trigger tables into .factory/config.toml, then adapt the
+# project key, Jira state names, and label.
+version = 1
+poll_every = "30s"
+
+[worker]
+runtime = "codex"
+sandbox = "worktree"
+timeout = "2h"
+maximum_timeout = "8h"
+max_concurrent = 1
+
+[source]
+command = [
+  ".factory/sources/jira",
+  "--project", "SPS",
+  "--max-results", "100",
+]
+
+[trigger.triage]
+type = "source"
+state = "Ready For Spec"
+labels = ["factory-ready"]
+workflow = ".factory/workflows/jira/triage/WORKFLOW.md"
+
+[trigger.implement]
+type = "source"
+state = "Ready To Implement"
+labels = ["factory-ready"]
+workflow = ".factory/workflows/jira/implement/WORKFLOW.md"
+timeout = "4h"

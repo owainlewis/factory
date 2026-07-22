@@ -155,6 +155,62 @@ paginates matching issues, and returns only issues created by a configured
 trusted user. A Jira repository can replace it with a script backed by
 `jiractrl` without changing Factory's core.
 
+### Jira with `jiractrl`
+
+This repository includes a Jira adapter backed by `jiractrl` and `jq`. It asks
+Jira for only issues that match the trigger's exact state and labels, and
+restricts work to tickets created by the authenticated Jira user.
+
+Configure `jiractrl` first:
+
+```sh
+export JIRACTRL_BASE_URL="https://jira.example.com"
+export JIRACTRL_TOKEN="..."
+jiractrl auth check
+```
+
+Then replace the source and workflow paths in `.factory/config.toml`. Adapt the
+project key, state names, and label to your Jira project:
+
+```toml
+[source]
+command = [
+  ".factory/sources/jira",
+  "--project", "SPS",
+  "--max-results", "100",
+]
+
+[trigger.triage]
+type = "source"
+state = "Ready For Spec"
+labels = ["factory-ready"]
+workflow = ".factory/workflows/jira/triage/WORKFLOW.md"
+
+[trigger.implement]
+type = "source"
+state = "Ready To Implement"
+labels = ["factory-ready"]
+workflow = ".factory/workflows/jira/implement/WORKFLOW.md"
+timeout = "4h"
+```
+
+The adapter builds bounded JQL such as:
+
+```text
+project = "SPS" AND creator = currentUser()
+AND status = "Ready To Implement" AND labels = "factory-ready"
+```
+
+Factory passes only the Jira key, such as `SPS-123`, to the worker. The Jira
+workflow tells the agent to fetch, comment, update, and transition the live
+ticket with `jiractrl`; `git` and `gh` remain responsible for code and pull
+requests.
+
+The Jira demo currently uses `sandbox = "worktree"`, so the worker inherits the
+host's `jiractrl` binary and Jira environment variables. A Docker worker would
+also need `jiractrl` in its image and an explicit Jira credential mount or
+environment policy; that is not included in this demo path.
+
 ## Run it
 
 Install Rust, Git, the GitHub CLI, and the Codex CLI. Authenticate the host tools

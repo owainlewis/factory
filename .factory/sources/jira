@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project=""
+state=""
+max_results="100"
+labels=()
+has_labels=0
+
+while (($# > 0)); do
+  case "$1" in
+    --project|--state|--label|--max-results)
+      [[ $# -ge 2 ]] || { echo "missing value for $1" >&2; exit 2; }
+      option="$1"
+      value="$2"
+      case "$option" in
+        --project) project="$value" ;;
+        --state) state="$value" ;;
+        --label) labels+=("$value"); has_labels=1 ;;
+        --max-results) max_results="$value" ;;
+      esac
+      shift 2
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+[[ "$project" =~ ^[A-Za-z][A-Za-z0-9_]*$ ]] || { echo "--project must be a Jira project key" >&2; exit 2; }
+[[ -n "$state" ]] || { echo "--state is required" >&2; exit 2; }
+[[ "$max_results" =~ ^[1-9][0-9]*$ ]] || { echo "--max-results must be positive" >&2; exit 2; }
+(( max_results <= 1000 )) || { echo "--max-results must not exceed 1000" >&2; exit 2; }
+
+escape_jql() {
+  local escaped=${1//\\/\\\\}
+  escaped=${escaped//\"/\\\"}
+  printf '%s' "$escaped"
+}
+
+jql="project = \"$(escape_jql "$project")\" AND creator = currentUser() AND status = \"$(escape_jql "$state")\""
+if (( has_labels )); then
+  for label in "${labels[@]}"; do
+    jql+=" AND labels = \"$(escape_jql "$label")\""
+  done
+fi
+jql+=" ORDER BY updated ASC"
+
+FACTORY_SOURCE_STATE="$state" jiractrl search \
+  --jql "$jql" \
+  --fields summary,description,status,labels \
+  --max "$max_results" \
+  --json |
+  jq -e '
+    if .total > (.issues | length) then
+      error("jiractrl result was truncated; increase --max-results")
+    else
+      {issues: [
+        .issues[]
+        | {
+            key: .key,
+            title: .fields.summary,
+            description: (.fields.description // "")[0:2000],
+            state: .fields.status.name,
+            labels: (.fields.labels // []),
+            url: ""
+          }
+      ]}
+    end
+  '
