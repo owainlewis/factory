@@ -275,9 +275,10 @@ factory cancel RUN_ID
 factory cleanup RUN_ID
 ```
 
-Run a repository-only workflow manually with `factory workflow run ID`. Ticket
-workflows normally run through their trigger because that is how Factory binds
-the issue identity and live source state to the task.
+Run a schedule-triggered workflow immediately with `factory run ID`. This form
+rejects source-triggered workflows because the loop is what binds the issue
+identity and live source state to the task. The explicit `factory workflow run
+ID` command remains available for manual repository-only workflow runs.
 
 ## Sandboxes and trust
 

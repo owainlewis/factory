@@ -119,6 +119,114 @@ printf 'Read-only workflow complete.' > "$output"
 }
 
 #[test]
+fn run_executes_a_schedule_triggered_workflow_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = temp.path().join("repository");
+    let workflows = repository.join(".factory/workflows");
+    let data_home = temp.path().join("factory-data");
+    let binaries = temp.path().join("bin");
+    fs::create_dir_all(&workflows).unwrap();
+    fs::create_dir(&binaries).unwrap();
+    initialize_repository(&repository, &data_home);
+    fs::create_dir(workflows.join("pr-review")).unwrap();
+    fs::write(
+        workflows.join("pr-review/WORKFLOW.md"),
+        "Review open pull requests.\n",
+    )
+    .unwrap();
+    let config_path = repository.join(".factory/config.toml");
+    let mut config = fs::read_to_string(&config_path).unwrap();
+    config.push_str(
+        r#"
+[trigger.pr-review]
+type = "schedule"
+schedule = "*/10 * * * *"
+timezone = "UTC"
+workflow = ".factory/workflows/pr-review/WORKFLOW.md"
+"#,
+    );
+    fs::write(config_path, config).unwrap();
+
+    let prompt_capture = temp.path().join("prompt.txt");
+    let executable = binaries.join("codex");
+    fs::write(
+        &executable,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "codex-cli 1.2.3"
+  exit 0
+fi
+if [ "$1" = "login" ] && [ "$2" = "status" ]; then
+  echo "Logged in using ChatGPT"
+  exit 0
+fi
+output=""
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = "--output-last-message" ]; then
+    output="$argument"
+  fi
+  previous="$argument"
+done
+cat > "$FACTORY_PROMPT_CAPTURE"
+echo '{"type":"thread.started","thread_id":"scheduled-thread"}'
+printf 'Scheduled workflow complete.' > "$output"
+"#,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&executable, permissions).unwrap();
+    let path = format!(
+        "{}:{}",
+        binaries.display(),
+        env::var("PATH").unwrap_or_default()
+    );
+
+    Command::cargo_bin("factory")
+        .unwrap()
+        .args(["run", "pr-review"])
+        .current_dir(&repository)
+        .env("FACTORY_DATA_HOME", &data_home)
+        .env("PATH", path)
+        .env("FACTORY_PROMPT_CAPTURE", &prompt_capture)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Scheduled workflow complete."))
+        .stderr(predicate::str::contains("Running workflow \"pr-review\""));
+
+    let prompt = fs::read_to_string(prompt_capture).unwrap();
+    assert!(prompt.contains("Review open pull requests."));
+    assert!(prompt.contains("Workflow: pr-review"));
+}
+
+#[test]
+fn run_rejects_source_triggered_workflows_before_launch() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = temp.path().join("repository");
+    let workflows = repository.join(".factory/workflows");
+    let data_home = temp.path().join("factory-data");
+    fs::create_dir_all(&workflows).unwrap();
+    initialize_repository(&repository, &data_home);
+    fs::write(
+        workflows.join("triage/WORKFLOW.md"),
+        "Triage the supplied issue.\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("factory")
+        .unwrap()
+        .args(["run", "triage"])
+        .current_dir(&repository)
+        .env("FACTORY_DATA_HOME", &data_home)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "only schedule-triggered workflows are allowed",
+        ));
+}
+
+#[test]
 fn concurrent_manual_runs_exit_when_shared_output_is_full_and_unread() {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repository");
