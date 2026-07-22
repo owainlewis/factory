@@ -42,6 +42,24 @@ fn initialize_repository(repository: &std::path::Path, data_home: &std::path::Pa
         .success();
 }
 
+fn install_codex_invocation_sentinel(binaries: &std::path::Path) -> String {
+    fs::create_dir(binaries).unwrap();
+    let executable = binaries.join("codex");
+    fs::write(
+        &executable,
+        "#!/bin/sh\ntouch \"$FACTORY_CODEX_MARKER\"\nexit 99\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&executable, permissions).unwrap();
+    format!(
+        "{}:{}",
+        binaries.display(),
+        env::var("PATH").unwrap_or_default()
+    )
+}
+
 #[test]
 fn manual_workflow_run_resolves_context_and_invokes_codex() {
     let temp = tempfile::tempdir().unwrap();
@@ -145,7 +163,7 @@ timezone = "UTC"
 workflow = ".factory/workflows/pr-review/WORKFLOW.md"
 "#,
     );
-    fs::write(config_path, config).unwrap();
+    fs::write(&config_path, config).unwrap();
 
     let prompt_capture = temp.path().join("prompt.txt");
     let executable = binaries.join("codex");
@@ -185,8 +203,13 @@ printf 'Scheduled workflow complete.' > "$output"
 
     Command::cargo_bin("factory")
         .unwrap()
-        .args(["run", "pr-review"])
-        .current_dir(&repository)
+        .args([
+            "run",
+            "pr-review",
+            "--config",
+            config_path.to_str().unwrap(),
+        ])
+        .current_dir(temp.path())
         .env("FACTORY_DATA_HOME", &data_home)
         .env("PATH", path)
         .env("FACTORY_PROMPT_CAPTURE", &prompt_capture)
@@ -201,11 +224,61 @@ printf 'Scheduled workflow complete.' > "$output"
 }
 
 #[test]
+fn run_rejects_a_direct_schedule_when_docker_is_configured() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = temp.path().join("repository");
+    let workflows = repository.join(".factory/workflows");
+    let data_home = temp.path().join("factory-data");
+    let binaries = temp.path().join("bin");
+    let codex_marker = temp.path().join("codex-invoked");
+    fs::create_dir_all(&workflows).unwrap();
+    initialize_repository(&repository, &data_home);
+    fs::create_dir(workflows.join("pr-review")).unwrap();
+    fs::write(
+        workflows.join("pr-review/WORKFLOW.md"),
+        "Review open pull requests.\n",
+    )
+    .unwrap();
+    let config_path = repository.join(".factory/config.toml");
+    let config = fs::read_to_string(&config_path)
+        .unwrap()
+        .replace("sandbox = \"worktree\"", "sandbox = \"docker\"")
+        .replace(
+            "max_concurrent = 1",
+            "max_concurrent = 1\nimage = \"factory-codex:test\"\nmemory = \"1g\"\ncpus = 1\npids = 64",
+        );
+    let config = format!(
+        "{config}\n[trigger.pr-review]\ntype = \"schedule\"\nschedule = \"*/10 * * * *\"\ntimezone = \"UTC\"\nworkflow = \".factory/workflows/pr-review/WORKFLOW.md\"\n"
+    );
+    fs::write(&config_path, config).unwrap();
+    let path = install_codex_invocation_sentinel(&binaries);
+
+    Command::cargo_bin("factory")
+        .unwrap()
+        .args(["run", "pr-review"])
+        .current_dir(&repository)
+        .env("FACTORY_DATA_HOME", &data_home)
+        .env("FACTORY_CODEX_MARKER", &codex_marker)
+        .env("PATH", path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "cannot be run directly when worker.sandbox is \"docker\"",
+        ))
+        .stderr(predicate::str::contains(
+            "start the `factory run` loop to preserve Docker isolation",
+        ));
+    assert!(!codex_marker.exists());
+}
+
+#[test]
 fn run_rejects_source_triggered_workflows_before_launch() {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repository");
     let workflows = repository.join(".factory/workflows");
     let data_home = temp.path().join("factory-data");
+    let binaries = temp.path().join("bin");
+    let codex_marker = temp.path().join("codex-invoked");
     fs::create_dir_all(&workflows).unwrap();
     initialize_repository(&repository, &data_home);
     fs::write(
@@ -213,17 +286,21 @@ fn run_rejects_source_triggered_workflows_before_launch() {
         "Triage the supplied issue.\n",
     )
     .unwrap();
+    let path = install_codex_invocation_sentinel(&binaries);
 
     Command::cargo_bin("factory")
         .unwrap()
         .args(["run", "triage"])
         .current_dir(&repository)
         .env("FACTORY_DATA_HOME", &data_home)
+        .env("FACTORY_CODEX_MARKER", &codex_marker)
+        .env("PATH", path)
         .assert()
         .failure()
         .stderr(predicate::str::contains(
             "only schedule-triggered workflows are allowed",
         ));
+    assert!(!codex_marker.exists());
 }
 
 #[test]

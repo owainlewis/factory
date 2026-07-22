@@ -211,16 +211,8 @@ async fn run_cli() -> Result<u8> {
             data_directory,
         } => {
             if let Some(workflow_id) = workflow_id {
-                let repository =
-                    std::env::current_dir().context("failed to resolve current directory")?;
-                let repository = factory::init::discover_repository(&repository)?;
-                return run_workflow(
-                    &workflow_id,
-                    &repository,
-                    config,
-                    WorkflowRunMode::ScheduledOnly,
-                )
-                .await;
+                return run_workflow(&workflow_id, None, config, WorkflowRunMode::ScheduledOnly)
+                    .await;
             }
             return run_poller(config, data_directory, once).await;
         }
@@ -310,7 +302,13 @@ async fn run_cli() -> Result<u8> {
             let repository = repository
                 .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
             let repository = factory::init::discover_repository(&repository)?;
-            return run_workflow(&workflow_id, &repository, config, WorkflowRunMode::Any).await;
+            return run_workflow(
+                &workflow_id,
+                Some(&repository),
+                config,
+                WorkflowRunMode::Any,
+            )
+            .await;
         }
         Command::Tasks {
             json,
@@ -679,13 +677,16 @@ enum WorkflowRunMode {
 
 async fn run_workflow(
     workflow_id: &str,
-    repository: &std::path::Path,
+    repository: Option<&std::path::Path>,
     config_path: Option<PathBuf>,
     mode: WorkflowRunMode,
 ) -> Result<u8> {
     let path = resolve_config_path(config_path)?;
     let config = Config::load(&path)?;
     let catalog = WorkflowCatalog::load(&config)?;
+    let repository = repository
+        .or_else(|| config.repositories.first().map(PathBuf::as_path))
+        .context("Factory configuration has no repository")?;
     let workflow = ResolvedWorkflow::resolve(&config, &catalog, workflow_id, repository)?;
     if matches!(mode, WorkflowRunMode::ScheduledOnly) {
         let entry = catalog
@@ -696,6 +697,12 @@ async fn run_workflow(
         if !matches!(entry.trigger, Some(Trigger::Schedule { .. })) {
             bail!(
                 "workflow {:?} cannot be run directly with `factory run`; only schedule-triggered workflows are allowed",
+                workflow.id
+            );
+        }
+        if config.execution_mode == ExecutionMode::Docker {
+            bail!(
+                "workflow {:?} cannot be run directly when worker.sandbox is \"docker\"; start the `factory run` loop to preserve Docker isolation",
                 workflow.id
             );
         }
