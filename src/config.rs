@@ -807,21 +807,24 @@ pub fn repository_data_directory(repository: &Path) -> Result<PathBuf> {
     hasher.update(repository.as_os_str().as_encoded_bytes());
     let digest = format!("{:x}", hasher.finalize());
     let digest = &digest[..20];
-    if let Some(base) = env::var_os("FACTORY_DATA_HOME").map(PathBuf::from) {
-        return Ok(resolve_data_base(base)?.join(digest));
-    }
-
-    let base = dirs::home_dir()
-        .map(|path| path.join(".factory"))
-        .context("could not determine Factory data directory")?;
+    let configured_base = env::var_os("FACTORY_DATA_HOME").map(PathBuf::from);
+    let base = match configured_base.as_ref() {
+        Some(base) => resolve_data_base(base.clone())?,
+        None => dirs::home_dir()
+            .map(|path| path.join(".factory"))
+            .context("could not determine Factory data directory")?,
+    };
     let global_database = base.join(DATABASE_NAME);
     if global_database.exists() {
         bail!(
-            "Factory found a global ledger at {} and refused to start repository-scoped state because old queued or running work could overlap; stop the old Factory process, finish or cancel its work, then archive the global ledger before using the new default",
+            "Factory found an unscoped ledger at {} and refused to start repository-scoped state because old queued or running work could overlap; stop the old Factory process, finish or cancel its work, then archive the unscoped ledger before using this data root",
             global_database.display()
         );
     }
     let data_directory = base.join(digest);
+    if configured_base.is_some() {
+        return Ok(data_directory);
+    }
     if let Some(previous_base) = dirs::data_local_dir().map(|path| path.join("factory")) {
         let previous_directory = previous_base.join(digest);
         if previous_directory.join(DATABASE_NAME).exists() {

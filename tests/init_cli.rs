@@ -276,7 +276,24 @@ fn init_refuses_to_overlap_a_global_ledger() {
         .arg("init")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("global ledger"))
+        .stderr(predicate::str::contains("unscoped ledger"))
+        .stderr(predicate::str::contains(global_database.to_str().unwrap()));
+}
+
+#[test]
+fn init_refuses_an_override_root_containing_an_unscoped_ledger() {
+    let fixture = Fixture::new();
+    let data_home = fixture.home.join(".factory");
+    let global_database = data_home.join("factory.sqlite3");
+    drop(Ledger::open(&global_database).unwrap());
+
+    fixture
+        .command()
+        .env("FACTORY_DATA_HOME", data_home)
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unscoped ledger"))
         .stderr(predicate::str::contains(global_database.to_str().unwrap()));
 }
 
