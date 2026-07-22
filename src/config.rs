@@ -20,9 +20,26 @@ pub struct Config {
     pub max_concurrent_runs_per_repository: usize,
     pub workspace_root: PathBuf,
     pub data_directory: PathBuf,
+    pub execution_mode: ExecutionMode,
     pub worker: Option<WorkerConfig>,
     pub source: Option<SourceConfig>,
     pub github: GitHubConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionMode {
+    Worktree,
+    Docker,
+}
+
+impl fmt::Display for ExecutionMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Worktree => "worktree",
+            Self::Docker => "docker",
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +129,7 @@ pub struct GitHubConfig {
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     version: u8,
+    execution_mode: Option<ExecutionMode>,
     poll_every: String,
     default_runtime: String,
     default_timeout: String,
@@ -244,7 +262,18 @@ impl Config {
         if raw.max_concurrent_runs == 0 {
             bail!("max_concurrent_runs must be greater than zero");
         }
-        if raw.worker.is_some() && raw.max_concurrent_runs != 1 {
+        let execution_mode = match (raw.execution_mode, raw.worker.is_some()) {
+            (Some(ExecutionMode::Worktree), true) => {
+                bail!("worktree execution_mode does not accept [worker] configuration")
+            }
+            (Some(ExecutionMode::Docker), false) => {
+                bail!("docker execution_mode requires [worker] configuration")
+            }
+            (Some(mode), _) => mode,
+            (None, true) => ExecutionMode::Docker,
+            (None, false) => ExecutionMode::Worktree,
+        };
+        if execution_mode == ExecutionMode::Docker && raw.max_concurrent_runs != 1 {
             bail!("Docker workers require max_concurrent_runs = 1");
         }
         if raw.source.is_some() && raw.github.is_some() {
@@ -307,6 +336,7 @@ impl Config {
             max_concurrent_runs_per_repository: raw.max_concurrent_runs,
             workspace_root,
             data_directory,
+            execution_mode,
             worker,
             source,
             github,
@@ -352,6 +382,7 @@ impl fmt::Display for Config {
             "max_concurrent_runs: {}",
             self.max_concurrent_runs
         )?;
+        writeln!(formatter, "execution_mode: {}", self.execution_mode)?;
         if let Some(worker) = &self.worker {
             writeln!(formatter, "worker: docker")?;
             writeln!(formatter, "worker.image: {}", worker.image)?;
@@ -975,6 +1006,7 @@ mod tests {
         }
         RawConfig {
             version: 1,
+            execution_mode: None,
             poll_every: "30s".into(),
             default_runtime: "codex".into(),
             default_timeout: "2h".into(),
@@ -1016,6 +1048,57 @@ mod tests {
         );
         assert!(config.workspace_root.ends_with("worktrees"));
         assert_eq!(config.poll_every, Duration::from_secs(30));
+        assert_eq!(config.execution_mode, ExecutionMode::Worktree);
+    }
+
+    #[test]
+    fn resolves_explicit_and_legacy_docker_modes() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let workspace = temp.path().join("worktrees");
+        let mut explicit = raw(&repository, &workspace);
+        explicit.execution_mode = Some(ExecutionMode::Docker);
+        explicit.max_concurrent_runs = 1;
+        explicit.worker = Some(docker_worker());
+        assert_eq!(
+            Config::resolve(explicit, &repository)
+                .unwrap()
+                .execution_mode,
+            ExecutionMode::Docker
+        );
+
+        let mut legacy = raw(&repository, &workspace);
+        legacy.max_concurrent_runs = 1;
+        legacy.worker = Some(docker_worker());
+        assert_eq!(
+            Config::resolve(legacy, &repository).unwrap().execution_mode,
+            ExecutionMode::Docker
+        );
+    }
+
+    #[test]
+    fn rejects_execution_mode_worker_mismatches() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let workspace = temp.path().join("worktrees");
+        let mut worktree = raw(&repository, &workspace);
+        worktree.execution_mode = Some(ExecutionMode::Worktree);
+        worktree.worker = Some(docker_worker());
+        assert!(
+            Config::resolve(worktree, &repository)
+                .unwrap_err()
+                .to_string()
+                .contains("worktree execution_mode does not accept [worker]")
+        );
+
+        let mut docker = raw(&repository, &workspace);
+        docker.execution_mode = Some(ExecutionMode::Docker);
+        assert!(
+            Config::resolve(docker, &repository)
+                .unwrap_err()
+                .to_string()
+                .contains("docker execution_mode requires [worker]")
+        );
     }
 
     #[test]
@@ -1214,6 +1297,7 @@ mod tests {
         fs::create_dir(&workspace).unwrap();
         let config = RawConfig {
             version: 1,
+            execution_mode: None,
             poll_every: "30s".into(),
             default_runtime: "codex".into(),
             default_timeout: "2h".into(),

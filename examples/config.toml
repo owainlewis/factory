@@ -1,6 +1,7 @@
 # Copy this file to <repository>/.factory/config.toml.
 # Repository identity and external state paths are derived from the Git root.
 version = 1
+execution_mode = "docker"
 
 poll_every = "30s"
 default_runtime = "codex"

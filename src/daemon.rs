@@ -375,15 +375,7 @@ impl FactoryDaemon {
         if let Some(docker) = &self.docker {
             docker.validate(cancellation).await?;
         }
-        let needs_host_codex = self.docker.is_none()
-            || self.catalog.entries.iter().any(|entry| {
-                entry.errors.is_empty()
-                    && entry
-                        .trigger
-                        .as_ref()
-                        .is_some_and(|trigger| !matches!(trigger, Trigger::State(_)))
-            });
-        if !needs_host_codex {
+        if self.docker.is_some() {
             return Ok(());
         }
         match self
@@ -720,6 +712,17 @@ fn resolve_workflow_target(entry: &WorkflowEntry) -> Option<(String, WorkflowTar
     ))
 }
 
+fn docker_clone_mount(trigger: &Trigger) -> CloneMount {
+    if matches!(
+        trigger,
+        Trigger::Label(_) | Trigger::State(PipelineState::ReadyToImplement)
+    ) {
+        CloneMount::ReadWrite
+    } else {
+        CloneMount::ReadOnly
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn dispatch_available(
     ledger: &mut Ledger,
@@ -913,7 +916,7 @@ fn dispatch_available(
                 );
                 return (repository, Ok(()));
             }
-            let sandboxed = docker.is_some() && matches!(workflow.trigger, Trigger::State(_));
+            let sandboxed = docker.is_some();
             let execution_target = match prepare_task_workspace(
                 &mut worker_ledger,
                 &github,
@@ -984,15 +987,8 @@ fn dispatch_available(
                 );
             }
             let result = if sandboxed {
-                let docker = docker.as_ref().expect("sandboxed tasks have Docker worker");
-                let mount = if matches!(
-                    workflow.trigger,
-                    Trigger::State(PipelineState::ReadyForSpec)
-                ) {
-                    CloneMount::ReadOnly
-                } else {
-                    CloneMount::ReadWrite
-                };
+                let docker = docker.as_ref().expect("Docker tasks have a Docker worker");
+                let mount = docker_clone_mount(&workflow.trigger);
                 execute_docker_task(
                     worker_ledger,
                     &execution_target,
@@ -1117,21 +1113,39 @@ async fn prepare_task_workspace(
         };
         ledger.reserve_task_workspace(&candidate)?
     };
-    if sandboxed {
-        if workspace.backend != "clone" {
-            bail!("sandboxed task {} owns a non-clone workspace", task.id);
-        }
-        let ticket = ticket_summary(task)?;
-        let clone = CloneManager::new(&workspace_root)?.prepare(
-            &task.repository,
+    let expected_backend = if sandboxed { "clone" } else { "worktree" };
+    if workspace.backend != expected_backend {
+        bail!(
+            "task {} owns a {} workspace but the configured execution mode requires {}; finish or clean up the task before changing execution_mode",
             task.id,
-            ticket.number,
-            &ticket.title,
-            &workspace.base_branch,
-            &workspace.base_sha,
-            workspace.kind == "delivery",
-            github_token_env.context("sandboxed clone has no GitHub token source")?,
-        )?;
+            workspace.backend,
+            expected_backend,
+        );
+    }
+    if sandboxed {
+        let token_env = github_token_env.context("sandboxed clone has no GitHub token source")?;
+        let clone_manager = CloneManager::new(&workspace_root)?;
+        let clone = if workspace.kind == "delivery" {
+            let ticket = ticket_summary(task)?;
+            clone_manager.prepare(
+                &task.repository,
+                task.id,
+                ticket.number,
+                &ticket.title,
+                &workspace.base_branch,
+                &workspace.base_sha,
+                true,
+                token_env,
+            )?
+        } else {
+            clone_manager.prepare_proposal(
+                &task.repository,
+                task.id,
+                &workspace.base_branch,
+                &workspace.base_sha,
+                token_env,
+            )?
+        };
         if clone.path != workspace.path
             || clone.branch != workspace.factory_branch
             || clone.base_branch != workspace.base_branch
@@ -2190,6 +2204,29 @@ mod tests {
         DateTime::parse_from_rfc3339(value)
             .unwrap()
             .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn docker_mounts_only_delivery_workflows_read_write() {
+        assert_eq!(
+            docker_clone_mount(&Trigger::State(PipelineState::ReadyForSpec)),
+            CloneMount::ReadOnly
+        );
+        assert_eq!(
+            docker_clone_mount(&Trigger::Schedule {
+                expression: "0 9 * * 1".to_owned(),
+                timezone: chrono_tz::UTC,
+            }),
+            CloneMount::ReadOnly
+        );
+        assert_eq!(
+            docker_clone_mount(&Trigger::State(PipelineState::ReadyToImplement)),
+            CloneMount::ReadWrite
+        );
+        assert_eq!(
+            docker_clone_mount(&Trigger::Label("factory:ready".to_owned())),
+            CloneMount::ReadWrite
+        );
     }
 
     fn scheduled_targets(
