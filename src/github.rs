@@ -4,7 +4,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
@@ -150,6 +150,24 @@ impl GitHubClient {
             .await
             .context("GitHub CLI is not authenticated; run gh auth login")?;
         Ok(())
+    }
+
+    pub async fn validate_token_env(
+        &self,
+        environment: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<GitHubUser> {
+        let token = std::env::var(environment)
+            .with_context(|| format!("GitHub token is missing; export {environment}"))?;
+        if token.trim().is_empty() {
+            bail!("{environment} must not be empty");
+        }
+        let output = self
+            .run_with_token(None, &["api", "user"], Some(&token), cancellation)
+            .await
+            .with_context(|| format!("GitHub token from {environment} is not valid"))?;
+        serde_json::from_str(&output)
+            .context("GitHub token validation returned malformed user JSON")
     }
 
     pub async fn validate_repository(
@@ -1289,8 +1307,22 @@ impl GitHubClient {
         arguments: &[&str],
         cancellation: &CancellationToken,
     ) -> Result<String> {
+        self.run_with_token(repository, arguments, None, cancellation)
+            .await
+    }
+
+    async fn run_with_token(
+        &self,
+        repository: Option<&Path>,
+        arguments: &[&str],
+        token: Option<&str>,
+        cancellation: &CancellationToken,
+    ) -> Result<String> {
         let mut command = Command::new(&self.executable);
         command.args(arguments).env_remove("GH_REPO");
+        if let Some(token) = token {
+            command.env("GH_TOKEN", token);
+        }
         if let Some(repository) = repository {
             command.current_dir(repository);
         }
@@ -1318,7 +1350,12 @@ impl GitHubClient {
             }
         };
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            let stderr = if let Some(secret) = token {
+                stderr.replace(secret, "[REDACTED]")
+            } else {
+                stderr
+            };
             bail!(
                 "gh {} failed with status {}: {}",
                 arguments.join(" "),
@@ -1487,6 +1524,7 @@ struct ProjectItem {
     #[allow(dead_code)]
     #[serde(rename = "updatedAt")]
     updated_at: String,
+    #[serde(default, deserialize_with = "deserialize_project_issue")]
     content: Option<ProjectIssue>,
     #[serde(rename = "fieldValueByName", alias = "fieldValue")]
     field_value: Option<ProjectStatusValue>,
@@ -1516,6 +1554,21 @@ struct ProjectAuthor {
 struct ProjectRepository {
     #[serde(rename = "nameWithOwner")]
     name_with_owner: String,
+}
+
+fn deserialize_project_issue<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<ProjectIssue>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        Some(value) if value.get("id").is_some() => serde_json::from_value(value)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+        _ => Ok(None),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1770,6 +1823,11 @@ impl From<ApiIssue> for IssueSnapshot {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
     use crate::approval::{ClaimArtifact, render_claim};
 
@@ -1824,5 +1882,49 @@ mod tests {
             ticket_context_hash(&context, "deliver", "workflow").unwrap(),
             context.approval.approved_content_hash
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worker_token_validation_redacts_a_rejected_secret() {
+        const TOKEN_ENV: &str = "FACTORY_GITHUB_VALIDATION_TEST_TOKEN";
+        let temp = tempfile::tempdir().unwrap();
+        let gh = temp.path().join("gh");
+        fs::write(&gh, "#!/bin/sh\nprintf '%s' \"$GH_TOKEN\" >&2\nexit 1\n").unwrap();
+        let mut permissions = fs::metadata(&gh).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&gh, permissions).unwrap();
+        unsafe { std::env::set_var(TOKEN_ENV, "worker-secret-value") };
+
+        let error = GitHubClient::new(gh)
+            .validate_token_env(TOKEN_ENV, &CancellationToken::new())
+            .await
+            .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("is not valid"));
+        assert!(message.contains("[REDACTED]"));
+        assert!(!message.contains("worker-secret-value"));
+    }
+
+    #[test]
+    fn project_poll_ignores_non_issue_content() {
+        let response: ProjectItemsResponse = serde_json::from_value(serde_json::json!({
+            "data": {
+                "node": {
+                    "items": {
+                        "pageInfo": {"hasNextPage": false, "endCursor": null},
+                        "nodes": [{
+                            "id": "PVTI_pull_request",
+                            "updatedAt": "2026-07-21T00:00:00Z",
+                            "content": {},
+                            "fieldValueByName": null
+                        }]
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        assert!(response.data.node.unwrap().items.nodes[0].content.is_none());
     }
 }
