@@ -328,6 +328,10 @@ Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
 scope, and pull request guidance. Report security issues privately according to
 [SECURITY.md](SECURITY.md).
 
+To develop with Codex in an isolated environment, build and use the
+[Docker Sandbox template](docs/docker-sandbox-template.md). It includes the
+pinned Rust toolchain and a private Docker daemon.
+
 ```sh
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings
