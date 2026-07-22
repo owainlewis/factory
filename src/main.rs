@@ -24,7 +24,7 @@ use factory::storage::{
     CancellationRequest, DATABASE_NAME, Ledger, OPERATOR_CONFIRMED_CLEANUP, TaskState,
     validate_data_directory,
 };
-use factory::workflow::WorkflowCatalog;
+use factory::workflow::{Trigger, WorkflowCatalog};
 use factory::workspace::WorkspaceManager;
 
 #[derive(Debug, Parser)]
@@ -50,14 +50,16 @@ enum Command {
     },
     /// Continuously evaluate work and execute tasks, or poll once without executing.
     Run {
+        /// Schedule-triggered workflow ID to run once instead of starting the loop.
+        workflow_id: Option<String>,
         /// Evaluate schedules and poll once without executing eligible tasks.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "workflow_id")]
         once: bool,
         /// Path to the Factory configuration file.
         #[arg(long)]
         config: Option<PathBuf>,
         /// Directory containing the durable Factory database.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "workflow_id")]
         data_directory: Option<PathBuf>,
     },
     /// Validate configuration, workflows, and configured GitHub Project IDs.
@@ -203,10 +205,15 @@ async fn run_cli() -> Result<u8> {
             return Ok(exit_code);
         }
         Command::Run {
+            workflow_id,
             once,
             config,
             data_directory,
         } => {
+            if let Some(workflow_id) = workflow_id {
+                return run_workflow(&workflow_id, None, config, WorkflowRunMode::ScheduledOnly)
+                    .await;
+            }
             return run_poller(config, data_directory, once).await;
         }
         Command::Validate { config } => {
@@ -295,7 +302,13 @@ async fn run_cli() -> Result<u8> {
             let repository = repository
                 .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
             let repository = factory::init::discover_repository(&repository)?;
-            return run_workflow(&workflow_id, &repository, config).await;
+            return run_workflow(
+                &workflow_id,
+                Some(&repository),
+                config,
+                WorkflowRunMode::Any,
+            )
+            .await;
         }
         Command::Tasks {
             json,
@@ -656,15 +669,44 @@ fn print_poll_report(report: &PollReport) {
     }
 }
 
+#[derive(Clone, Copy)]
+enum WorkflowRunMode {
+    Any,
+    ScheduledOnly,
+}
+
 async fn run_workflow(
     workflow_id: &str,
-    repository: &std::path::Path,
+    repository: Option<&std::path::Path>,
     config_path: Option<PathBuf>,
+    mode: WorkflowRunMode,
 ) -> Result<u8> {
     let path = resolve_config_path(config_path)?;
     let config = Config::load(&path)?;
     let catalog = WorkflowCatalog::load(&config)?;
+    let repository = repository
+        .or_else(|| config.repositories.first().map(PathBuf::as_path))
+        .context("Factory configuration has no repository")?;
     let workflow = ResolvedWorkflow::resolve(&config, &catalog, workflow_id, repository)?;
+    if matches!(mode, WorkflowRunMode::ScheduledOnly) {
+        let entry = catalog
+            .entries
+            .iter()
+            .find(|entry| entry.repository == workflow.repository && entry.id == workflow.id)
+            .context("resolved workflow disappeared from the workflow catalog")?;
+        if !matches!(entry.trigger, Some(Trigger::Schedule { .. })) {
+            bail!(
+                "workflow {:?} cannot be run directly with `factory run`; only schedule-triggered workflows are allowed",
+                workflow.id
+            );
+        }
+        if config.execution_mode == ExecutionMode::Docker {
+            bail!(
+                "workflow {:?} cannot be run directly when worker.sandbox is \"docker\"; start the `factory run` loop to preserve Docker isolation",
+                workflow.id
+            );
+        }
+    }
     if workflow.runtime != "codex" {
         bail!(
             "workflow {:?} resolves to unsupported runtime {:?}; Factory v1 supports codex",
