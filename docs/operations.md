@@ -48,6 +48,29 @@ authors' issues. Treat all issue, comment, attachment, and review text as
 untrusted input. Use a dedicated GitHub identity and protected branches so the
 worker cannot merge or bypass review.
 
+## Prove an idle poll
+
+When no configured Project item is ready and no scheduled workflow is due,
+capture the task list before and after one poll and list all Factory-managed
+containers:
+
+```sh
+factory tasks --json
+factory run --once
+factory tasks --json
+docker ps --all --filter label=dev.factory.managed=true
+```
+
+The two task listings should show zero new tasks, and the Docker listing should
+show zero Factory containers. This proves the empty poll persisted and launched
+nothing.
+
+Before first repository-local startup, Factory reads the old
+`~/.factory/factory.sqlite3` database without modifying it. If that database
+contains queued or running work for this repository, startup stops with
+instructions to stop the old daemon and finish or cancel the work. Terminal
+legacy history is not imported.
+
 ## Cancellation and recovery
 
 Request cancellation with:
