@@ -6,6 +6,7 @@ project_number=""
 status_field="Status"
 state=""
 labels=()
+has_labels=0
 trusted_users=()
 
 while (($# > 0)); do
@@ -19,7 +20,7 @@ while (($# > 0)); do
         --project-number) project_number="$value" ;;
         --status-field) status_field="$value" ;;
         --state) state="$value" ;;
-        --label) labels+=("$value") ;;
+        --label) labels+=("$value"); has_labels=1 ;;
         --trusted-user) trusted_users+=("$value") ;;
       esac
       shift 2
@@ -44,11 +45,13 @@ project_id=$(gh project view "$project_number" \
   --jq '.id')
 
 search_query="repo:${repository} is:issue is:open"
-for label in "${labels[@]}"; do
-  escaped=${label//\\/\\\\}
-  escaped=${escaped//\"/\\\"}
-  search_query+=" label:\"${escaped}\""
-done
+if (( has_labels )); then
+  for label in "${labels[@]}"; do
+    escaped=${label//\\/\\\\}
+    escaped=${escaped//\"/\\\"}
+    search_query+=" label:\"${escaped}\""
+  done
+fi
 
 graphql='query($searchQuery:String!,$endCursor:String,$statusField:String!){search(type:ISSUE,query:$searchQuery,first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{... on Issue{number title body url author{login} labels(first:100){nodes{name}} projectItems(first:100){nodes{project{id} fieldValueByName(name:$statusField){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}}'
 results=$(mktemp -t factory-github-source.XXXXXX)
