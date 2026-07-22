@@ -114,6 +114,25 @@ If this ticket changes visible behaviour, read and follow
 Factory supplies the ticket identity and execution context. The agent rereads
 live GitHub state and owns the adaptive GitHub and engineering actions.
 
+## Source adapter contract
+
+For each source trigger, Factory appends `--state <state>` and one `--label
+<label>` argument per configured label to the configured source command. The
+command must print one JSON object with an `issues` array:
+
+```json
+{"issues":[{"key":"#56","title":"Fix the daemon","description":"What is broken and why","state":"Ready To Implement","labels":["factory:ready"],"url":"https://github.com/example/repo/issues/56","author":"owainlewis"}]}
+```
+
+The generated GitHub adapter is a shell script that uses the authenticated `gh`
+CLI. It searches the exact Project owner and number, paginates matching issues,
+and returns only issues created by a configured trusted user. Source adapters
+are trusted repository code and must apply an equivalent authorization gate
+before returning work.
+
+The repository also includes a [Jira adapter](jira.md). It demonstrates how a
+different provider can implement this contract without changing Factory.
+
 ## Validate and run
 
 ```sh
@@ -132,6 +151,31 @@ Status and label events are edge-triggered. One continuous match creates one
 task. Moving the issue out of the condition rearms it, so moving it back later
 can create a continuation task. Scheduled jobs create one task per due instant.
 Durable task keys and atomic claims prevent duplicate workers after restarts.
+
+Run a schedule-triggered workflow immediately with `factory run ID`. This form
+rejects source-triggered workflows because the loop is what binds the issue
+identity and live source state to the task. It also rejects Docker-configured
+workers; use the normal loop so Factory preserves the configured isolation.
+The explicit `factory workflow run ID` command remains available for manual
+repository-only workflow runs.
+
+## Run the two-flow demonstration
+
+This repository includes a repeatable setup script for the complete triage and
+implementation flow. It creates a real issue, adds it to GitHub Project 16, and
+moves it to `Ready For Spec`:
+
+```sh
+./scripts/create-demo-issue.sh \
+  "Remove the unreachable legacy configuration test module" \
+  "src/config.rs contains a large test module guarded by cfg(all(test, any())), so it can never compile or run. Remove the unreachable module without changing active configuration behaviour."
+```
+
+Then run `cargo run -- run`. The specification agent refines the idea and stops
+in `Creating Spec`. Review the ticket on the board and move it to
+`Ready To Implement`. The same Factory process starts the implementation agent,
+which writes the code, opens a pull request, waits for CI and review, and moves
+the ticket to `Reviewing`. Use a fresh idea each time you repeat the demo.
 
 ## Use Docker workers
 
