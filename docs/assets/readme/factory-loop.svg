@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="720" viewBox="0 0 960 720" role="img" aria-labelledby="title desc">
-  <title id="title">The continuous software development lifecycle</title>
-  <desc id="desc">A repository-owned clockwise cycle moves through Intake, Design, Plan, Build, Test, Review, Merge, and Deploy. Factory runs bounded tasks inside repository-defined workflows while evidence, telemetry, incidents, and product feedback return deployed work to intake.</desc>
+  <title id="title">The AI-native software development lifecycle</title>
+  <desc id="desc">A repository-owned clockwise cycle moves through Intake, Spec, Task, Build, Validate, Review, Merge, and Learn. Factory runs bounded tasks inside repository-defined workflows while evidence, telemetry, incidents, and product feedback return learned context to intake.</desc>
   <defs>
     <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
       <feDropShadow dx="0" dy="7" stdDeviation="10" flood-color="#172033" flood-opacity=".09"/>
@@ -21,8 +21,8 @@
   </defs>
 
   <rect width="960" height="720" rx="28" fill="#f7f8fc"/>
-  <text class="text eyebrow" x="48" y="58">A REPOSITORY-OWNED DEVELOPMENT LOOP</text>
-  <text class="text heading" x="48" y="95">From a trusted idea to deployed evidence, then around again</text>
+  <text class="text eyebrow" x="48" y="58">AN AI-NATIVE DEVELOPMENT LOOP</text>
+  <text class="text heading" x="48" y="95">From trusted intent to validated evidence, then learn and repeat</text>
 
   <g transform="translate(-160)">
     <g aria-hidden="true">
@@ -56,15 +56,15 @@
       <rect class="card" x="780" y="177" width="148" height="72" rx="18"/>
       <circle cx="804" cy="201" r="13" fill="#eaf1ff"/>
       <text class="text number" x="804" y="206" text-anchor="middle" fill="#2e5cc2">2</text>
-      <text class="text stage" x="826" y="207">Design</text>
-      <text class="text detail" x="854" y="233" text-anchor="middle">shape the change</text>
+      <text class="text stage" x="826" y="207">Spec</text>
+      <text class="text detail" x="854" y="233" text-anchor="middle">define the outcome</text>
     </g>
     <g>
       <rect class="card" x="841" y="336" width="140" height="72" rx="18"/>
       <circle cx="865" cy="360" r="13" fill="#eaf1ff"/>
       <text class="text number" x="865" y="365" text-anchor="middle" fill="#2e5cc2">3</text>
-      <text class="text stage" x="887" y="366">Plan</text>
-      <text class="text detail" x="911" y="392" text-anchor="middle">bound the work</text>
+      <text class="text stage" x="887" y="366">Task</text>
+      <text class="text detail" x="911" y="392" text-anchor="middle">bound agent work</text>
     </g>
     <g>
       <rect class="card" x="780" y="495" width="148" height="72" rx="18"/>
@@ -77,7 +77,7 @@
       <rect class="card" x="570" y="551" width="140" height="72" rx="18"/>
       <circle cx="594" cy="575" r="13" fill="#f1ecff"/>
       <text class="text number" x="594" y="580" text-anchor="middle" fill="#6042b4">5</text>
-      <text class="text stage" x="616" y="581">Test</text>
+      <text class="text stage" x="616" y="581">Validate</text>
       <text class="text detail" x="640" y="607" text-anchor="middle">prove behavior</text>
     </g>
     <g>
@@ -95,11 +95,11 @@
       <text class="text detail" x="369" y="392" text-anchor="middle">human decision</text>
     </g>
     <g>
-      <rect x="352" y="177" width="156" height="72" rx="18" fill="#f0faf7" stroke="#b5e1d5" stroke-width="2"/>
-      <circle cx="376" cy="201" r="13" fill="#e5f6f1"/>
-      <text class="text number" x="376" y="206" text-anchor="middle" fill="#087a5d">8</text>
-      <text class="text stage" x="398" y="207">Deploy</text>
-      <text class="text detail" x="430" y="233" text-anchor="middle">team release</text>
+      <rect x="352" y="177" width="156" height="72" rx="18" fill="#eef4ff" stroke="#c5d5f7" stroke-width="2"/>
+      <circle cx="376" cy="201" r="13" fill="#eaf1ff"/>
+      <text class="text number" x="376" y="206" text-anchor="middle" fill="#2e5cc2">8</text>
+      <text class="text stage" x="398" y="207">Learn</text>
+      <text class="text detail" x="430" y="233" text-anchor="middle">feedback + signals</text>
     </g>
   </g>
 
