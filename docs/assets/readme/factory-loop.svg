@@ -1,57 +1,110 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="540" viewBox="0 0 1280 540" role="img" aria-labelledby="title desc">
-  <title id="title">Factory execution loop</title>
-  <desc id="desc">A trusted ticket or schedule enters a matching trigger, becomes a durable task, runs in a managed worker, and produces a reviewable pull request. CI and human feedback can re-enter the trigger to create a new bounded task.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="720" viewBox="0 0 960 720" role="img" aria-labelledby="title desc">
+  <title id="title">The continuous software development lifecycle</title>
+  <desc id="desc">A repository-owned clockwise cycle moves through Intake, Design, Plan, Build, Test, Review, Merge, and Deploy. Factory runs bounded tasks inside repository-defined workflows while evidence, telemetry, incidents, and product feedback return deployed work to intake.</desc>
   <defs>
     <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
-      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#172033" flood-opacity=".09"/>
+      <feDropShadow dx="0" dy="7" stdDeviation="10" flood-color="#172033" flood-opacity=".09"/>
     </filter>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
-      <path d="M0 0 10 5 0 10z" fill="#71809d"/>
-    </marker>
-    <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
-      <path d="M0 0 10 5 0 10z" fill="#7457d6"/>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 10 5 0 10z" fill="#8793aa"/>
     </marker>
     <style>
       .text{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;fill:#172033}
-      .eyebrow{font-size:14px;font-weight:750;letter-spacing:1.2px;fill:#5f6c84}
-      .label{font-size:19px;font-weight:720}
-      .detail{font-size:15px;fill:#5f6c84}
+      .eyebrow{font-size:14px;font-weight:760;letter-spacing:1.35px;fill:#2e5cc2}
+      .heading{font-size:28px;font-weight:740;letter-spacing:-.45px}
+      .stage{font-size:18px;font-weight:730}
+      .number{font-size:13px;font-weight:780}
+      .detail{font-size:14px;fill:#5f6c84}
+      .flow{fill:none;stroke:#8793aa;stroke-width:3;stroke-linecap:round;marker-end:url(#arrow)}
       .card{fill:#fff;stroke:#dce2ee;stroke-width:2}
-      .flow{fill:none;stroke:#71809d;stroke-width:3;marker-end:url(#arrow)}
     </style>
   </defs>
-  <rect width="1280" height="540" rx="28" fill="#f7f8fc"/>
-  <text class="text eyebrow" x="64" y="64">FROM INTENT TO EVIDENCE</text>
-  <text class="text label" x="64" y="101" font-size="28">A controlled loop keeps agent work moving</text>
+
+  <rect width="960" height="720" rx="28" fill="#f7f8fc"/>
+  <text class="text eyebrow" x="48" y="58">A REPOSITORY-OWNED DEVELOPMENT LOOP</text>
+  <text class="text heading" x="48" y="95">From a trusted idea to deployed evidence, then around again</text>
+
+  <g transform="translate(-160)">
+    <g aria-hidden="true">
+      <path class="flow" d="M689 157A231 231 0 0 1 770 195"/>
+      <path class="flow" d="M841 246A231 231 0 0 1 880 327"/>
+      <path class="flow" d="M883 397A231 231 0 0 1 873 486"/>
+      <path class="flow" d="M790 545A231 231 0 0 1 718 579"/>
+      <path class="flow" d="M591 587A231 231 0 0 1 516 540"/>
+      <path class="flow" d="M439 498A231 231 0 0 1 429 416"/>
+      <path class="flow" d="M397 347A231 231 0 0 1 434 257"/>
+      <path class="flow" d="M490 199A231 231 0 0 1 562 172"/>
+    </g>
+
+    <circle cx="640" cy="372" r="142" fill="#fff" stroke="#dce2ee" stroke-width="2"/>
+    <circle cx="640" cy="372" r="125" fill="#f9f7ff" stroke="#e0d8f7" stroke-width="2" stroke-dasharray="5 7"/>
+    <circle cx="640" cy="320" r="23" fill="#7457d6"/>
+    <path d="M628 320h24M640 308v24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+    <text class="text" x="640" y="365" text-anchor="middle" font-size="29" font-weight="760" letter-spacing="-.6">Factory</text>
+    <text class="text detail" x="640" y="394" text-anchor="middle">runs bounded tasks inside</text>
+    <text class="text detail" x="640" y="416" text-anchor="middle">repository-owned workflows</text>
 
   <g filter="url(#shadow)">
-    <rect class="card" x="64" y="168" width="208" height="136" rx="20"/>
-    <rect class="card" x="310" y="168" width="208" height="136" rx="20"/>
-    <rect class="card" x="556" y="168" width="208" height="136" rx="20"/>
-    <rect class="card" x="802" y="168" width="208" height="136" rx="20"/>
-    <rect x="1048" y="168" width="168" height="136" rx="20" fill="#e5f6f1" stroke="#9dd9c8" stroke-width="2"/>
+    <g>
+      <rect class="card" x="570" y="121" width="140" height="72" rx="18"/>
+      <circle cx="594" cy="145" r="13" fill="#eaf1ff"/>
+      <text class="text number" x="594" y="150" text-anchor="middle" fill="#2e5cc2">1</text>
+      <text class="text stage" x="616" y="151">Intake</text>
+      <text class="text detail" x="640" y="177" text-anchor="middle">trusted intent</text>
+    </g>
+    <g>
+      <rect class="card" x="780" y="177" width="148" height="72" rx="18"/>
+      <circle cx="804" cy="201" r="13" fill="#eaf1ff"/>
+      <text class="text number" x="804" y="206" text-anchor="middle" fill="#2e5cc2">2</text>
+      <text class="text stage" x="826" y="207">Design</text>
+      <text class="text detail" x="854" y="233" text-anchor="middle">shape the change</text>
+    </g>
+    <g>
+      <rect class="card" x="841" y="336" width="140" height="72" rx="18"/>
+      <circle cx="865" cy="360" r="13" fill="#eaf1ff"/>
+      <text class="text number" x="865" y="365" text-anchor="middle" fill="#2e5cc2">3</text>
+      <text class="text stage" x="887" y="366">Plan</text>
+      <text class="text detail" x="911" y="392" text-anchor="middle">bound the work</text>
+    </g>
+    <g>
+      <rect class="card" x="780" y="495" width="148" height="72" rx="18"/>
+      <circle cx="804" cy="519" r="13" fill="#f1ecff"/>
+      <text class="text number" x="804" y="524" text-anchor="middle" fill="#6042b4">4</text>
+      <text class="text stage" x="826" y="525">Build</text>
+      <text class="text detail" x="854" y="551" text-anchor="middle">make the change</text>
+    </g>
+    <g>
+      <rect class="card" x="570" y="551" width="140" height="72" rx="18"/>
+      <circle cx="594" cy="575" r="13" fill="#f1ecff"/>
+      <text class="text number" x="594" y="580" text-anchor="middle" fill="#6042b4">5</text>
+      <text class="text stage" x="616" y="581">Test</text>
+      <text class="text detail" x="640" y="607" text-anchor="middle">prove behavior</text>
+    </g>
+    <g>
+      <rect class="card" x="352" y="495" width="156" height="72" rx="18"/>
+      <circle cx="376" cy="519" r="13" fill="#fff2de"/>
+      <text class="text number" x="376" y="524" text-anchor="middle" fill="#9a6300">6</text>
+      <text class="text stage" x="398" y="525">Review</text>
+      <text class="text detail" x="430" y="551" text-anchor="middle">inspect evidence</text>
+    </g>
+    <g>
+      <rect x="299" y="336" width="140" height="72" rx="18" fill="#f0faf7" stroke="#b5e1d5" stroke-width="2"/>
+      <circle cx="323" cy="360" r="13" fill="#e5f6f1"/>
+      <text class="text number" x="323" y="365" text-anchor="middle" fill="#087a5d">7</text>
+      <text class="text stage" x="345" y="366">Merge</text>
+      <text class="text detail" x="369" y="392" text-anchor="middle">human decision</text>
+    </g>
+    <g>
+      <rect x="352" y="177" width="156" height="72" rx="18" fill="#f0faf7" stroke="#b5e1d5" stroke-width="2"/>
+      <circle cx="376" cy="201" r="13" fill="#e5f6f1"/>
+      <text class="text number" x="376" y="206" text-anchor="middle" fill="#087a5d">8</text>
+      <text class="text stage" x="398" y="207">Deploy</text>
+      <text class="text detail" x="430" y="233" text-anchor="middle">team release</text>
+    </g>
   </g>
 
-  <g class="text" text-anchor="middle">
-    <circle cx="168" cy="205" r="16" fill="#eaf1ff"/><text x="168" y="211" font-size="15" font-weight="750" fill="#2e5cc2">1</text>
-    <text class="label" x="168" y="246">Trusted input</text><text class="detail" x="168" y="274">ticket or schedule</text>
-    <circle cx="414" cy="205" r="16" fill="#eaf1ff"/><text x="414" y="211" font-size="15" font-weight="750" fill="#2e5cc2">2</text>
-    <text class="label" x="414" y="246">Match trigger</text><text class="detail" x="414" y="274">status, label, or cron</text>
-    <circle cx="660" cy="205" r="16" fill="#eaf1ff"/><text x="660" y="211" font-size="15" font-weight="750" fill="#2e5cc2">3</text>
-    <text class="label" x="660" y="246">Durable task</text><text class="detail" x="660" y="274">claimed and recoverable</text>
-    <circle cx="906" cy="205" r="16" fill="#eaf1ff"/><text x="906" y="211" font-size="15" font-weight="750" fill="#2e5cc2">4</text>
-    <text class="label" x="906" y="246">Managed worker</text><text class="detail" x="906" y="274">workflow + agent + limits</text>
-    <circle cx="1132" cy="205" r="16" fill="#d5efe7"/><text x="1132" y="211" font-size="15" font-weight="750" fill="#087a5d">5</text>
-    <text class="label" x="1132" y="246">Review</text><text class="detail" x="1132" y="274">issue or PR</text>
+  <rect x="280" y="654" width="720" height="42" rx="21" fill="#eef4ff" stroke="#c5d5f7" stroke-width="2"/>
+  <circle cx="307" cy="675" r="8" fill="#2e5cc2"/>
+  <text class="text detail" x="326" y="680">Telemetry, incidents, and product feedback become trusted input for the next pass.</text>
   </g>
-
-  <path class="flow" d="M272 236h38M518 236h38M764 236h38M1010 236h38"/>
-
-  <rect x="310" y="385" width="700" height="76" rx="18" fill="#f1ecff" stroke="#cec0f4" stroke-width="2"/>
-  <circle cx="354" cy="423" r="15" fill="#7457d6"/>
-  <path d="M347 423l5 5 10-12" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-  <text class="text label" x="386" y="416">CI and human feedback</text>
-  <text class="text detail" x="386" y="441">Evidence closes the task, or re-enters the trigger for another bounded pass.</text>
-  <path d="M1132 304v119h-122" fill="none" stroke="#7457d6" stroke-width="3" marker-end="url(#arrow-purple)"/>
-  <path d="M414 385V304" fill="none" stroke="#7457d6" stroke-width="3" marker-end="url(#arrow-purple)"/>
 </svg>
