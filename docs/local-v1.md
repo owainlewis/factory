@@ -82,7 +82,15 @@ are not hard-coded pipeline roles. `.factory/sources/github` matches plain
 issue state (open/closed) and labels directly; it does not read a GitHub
 Project or any board. A pipeline stage is whichever label a trigger is
 configured to match. You may still add the issue to a project board for your
-own visualization; Factory never reads it. You can add another source trigger:
+own visualization; the generated adapter never reads it. You can add another
+source trigger:
+
+A repository-owned source may use a different control plane. Factory itself
+uses `.factory/sources/github-project` to match a configured GitHub Project
+status without filtering public issue authors. In that model, Project write
+access is the authorization boundary. The adapter validates the configured
+single-select field and status option so a renamed value fails loudly instead
+of silently emptying the queue.
 
 ```toml
 [trigger.urgent-fix]

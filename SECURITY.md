@@ -32,7 +32,7 @@ credentials, and protected branches. The configured source command is trusted
 repository code that runs on the daemon host. Review changes to
 `.factory/config.toml` and `.factory/sources/` as carefully as build scripts.
 Source adapters should only return work that passed an explicit authorization
-gate. The generated GitHub adapter matches issue state and labels without
-filtering by issue author. Treat label and triage access on the managed
-repository as permission to request a worker run. See the
+gate. They may match a label, Project status, or another trusted condition
+without filtering by issue author. Treat permission to change the configured
+source condition as permission to request a worker run. See the
 [operations guide](docs/operations.md) for deployment guidance.

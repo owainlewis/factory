@@ -98,9 +98,10 @@ source -> matching event -> durable task -> atomic claim -> revalidate
    +---- ticket, pull request, CI, and review <- worker in sandbox
 ```
 
-The current GitHub adapter queries issue state and labels. Factory does not read
-a GitHub Project board. A team may use a board for visualization, but labels
-are the default machine-facing gate.
+The generated GitHub adapter queries native issue state and labels. A
+repository-owned source may query another trusted control plane instead. This
+repository's `github-project` source queries Project status so Status is its
+machine-facing gate.
 
 ## Repository contract
 
@@ -192,10 +193,10 @@ condition. The included GitHub adapter implements this contract with the
 authenticated `gh` CLI. The experimental [Jira adapter](jira.md) demonstrates
 the same boundary for another provider.
 
-The source command is part of the trust boundary. The default GitHub adapter
-does not filter by issue author. Anyone who can apply a triggering label can
-request a worker run, so Factory must only watch repositories where label or
-triage access is trusted.
+The source command is part of the trust boundary. Source adapters do not need
+to filter by issue author, but only trusted people may satisfy their configured
+condition. For the generated adapter that means applying a triggering label;
+for this repository's Project adapter it means changing Project status.
 
 ## Trigger semantics
 

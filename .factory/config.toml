@@ -9,20 +9,30 @@ maximum_timeout = "8h"
 max_concurrent = 1
 
 [source]
-command = [".factory/sources/github"]
+command = [
+  ".factory/sources/github-project",
+  "--project-owner", "owainlewis",
+  "--project-number", "16",
+  "--status-field", "Status",
+]
 
 [trigger.triage]
 type = "source"
-state = "open"
-labels = ["factory:ready-for-spec"]
+state = "Ready For Spec"
 workflow = ".factory/workflows/triage.md"
 
 [trigger.implement]
 type = "source"
-state = "open"
-labels = ["factory:ready-to-implement"]
+state = "Ready To Implement"
 workflow = ".factory/workflows/implement.md"
 timeout = "4h"
+
+[trigger.classify-tickets]
+type = "schedule"
+schedule = "0 8 * * *"
+timezone = "Europe/London"
+workflow = ".factory/workflows/classify-tickets.md"
+timeout = "2h"
 
 [trigger.bug-finder]
 type = "schedule"

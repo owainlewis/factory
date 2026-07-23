@@ -75,12 +75,13 @@ effects. A trigger means only: **when this condition is true, run this prompt**.
 ## Human review is the shipping boundary
 
 Factory revalidates live source state immediately before execution, but does
-not filter tickets by author: the trust boundary for a source trigger is
-whoever can apply labels on the repository or project, not who opened the
-ticket. Do not point Factory at a repository or project where untrusted people
-have label or triage access. Ticket bodies, comments, linked pull requests, and
-attachments remain untrusted input regardless. Use narrow credentials and
-protected branches that the worker cannot bypass.
+not filter tickets by author. The trust boundary for a source trigger is
+whoever can satisfy its configured condition, such as applying a label or
+changing a Project status, not who opened the ticket. Do not use a source whose
+configured condition can be changed by untrusted people. Ticket bodies,
+comments, linked pull requests, and attachments remain untrusted input
+regardless. Use narrow credentials and protected branches that the worker
+cannot bypass.
 
 Factory-created software pull requests remain for human review. Factory and its
 default workflows never merge them or enable automatic merge. The human who
@@ -139,6 +140,7 @@ scope.
 ## Learn more
 
 - [Vision and technical design](docs/design.md)
+- [Labels and ticket status](docs/labels.md)
 - [Setup, configuration, and first run](docs/local-v1.md)
 - [Operations and recovery](docs/operations.md)
 - [Jira source adapter](docs/jira.md)
