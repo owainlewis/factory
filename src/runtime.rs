@@ -760,6 +760,17 @@ pub(crate) fn safe_activity_summary(event: &Value) -> Option<&'static str> {
             Some("agent_message") => Some("reporting progress"),
             _ => None,
         },
+        "item.updated" => match activity_item_type(event) {
+            Some("command_execution") => Some("command still running"),
+            Some("file_change") => Some("changing files"),
+            Some("mcp_tool_call") => Some("tool still running"),
+            Some("web_search") => Some("web search in progress"),
+            Some("collaboration_tool_call") => Some("subtask in progress"),
+            Some("todo_list") => Some("plan updated"),
+            Some("agent_message") => Some("reporting progress"),
+            Some("reasoning") => Some("reasoning"),
+            _ => None,
+        },
         "item.completed" => match activity_item_type(event) {
             Some("command_execution") => Some("command finished"),
             Some("file_change") => Some("files changed"),

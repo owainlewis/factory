@@ -275,6 +275,9 @@ echo '{"type":"thread.started","thread_id":"progress-thread"}'
 echo '{"type":"turn.started","prompt":"SECRET prompt"}'
 echo '{"type":"item.started","item":{"type":"reasoning","text":"SECRET reasoning"}}'
 echo '{"type":"item.completed","item":{"type":"reasoning","text":"SECRET reasoning"}}'
+echo '{"type":"item.updated","item":{"type":"todo_list","items":[{"text":"SECRET plan"}]}}'
+echo '{"type":"item.updated","item":{"type":"todo_list","items":[{"text":"SECRET changed plan"}]}}'
+echo '{"type":"item.updated","item":{"type":"future_item","payload":"SECRET unknown item"}}'
 echo '{"type":"item.started","item":{"type":"command_execution","command":"echo SECRET"}}'
 echo '{"type":"future.event","payload":"SECRET unknown"}'
 echo '{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"SECRET output"}}'
@@ -307,6 +310,7 @@ exit 0"#,
             "Codex progress: worker started\n",
             "Codex progress: working\n",
             "Codex progress: reasoning\n",
+            "Codex progress: plan updated\n",
             "Codex progress: running a command\n",
             "Codex progress: command finished\n",
             "Codex progress: changing files\n",

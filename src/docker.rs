@@ -1231,6 +1231,39 @@ esac
         assert_eq!(receiver.borrow().sequence, sequence);
     }
 
+    #[test]
+    fn updated_plan_activity_is_safe_and_deduplicated() {
+        let (observations, mut receiver) = observation_channel();
+        let update = serde_json::json!({
+            "type": "item.updated",
+            "item": {
+                "type": "todo_list",
+                "items": [{ "text": "untrusted plan content" }]
+            }
+        });
+
+        observe_event(&observations, &update);
+        assert_eq!(
+            receiver.borrow().activity.as_deref(),
+            Some("Codex progress: plan updated\n")
+        );
+        assert!(
+            !receiver
+                .borrow()
+                .activity
+                .as_deref()
+                .unwrap()
+                .contains("untrusted")
+        );
+        receiver.borrow_and_update();
+        let sequence = receiver.borrow().sequence;
+
+        observe_event(&observations, &update);
+
+        assert!(!receiver.has_changed().unwrap());
+        assert_eq!(receiver.borrow().sequence, sequence);
+    }
+
     #[tokio::test]
     async fn bounds_and_rejects_malformed_activity_lines() {
         let (mut writer, reader) = tokio::io::duplex(1024);
