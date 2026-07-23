@@ -5,8 +5,9 @@ native build dependencies needed to format, lint, build, and test the project.
 It extends Docker's `codex-docker` template, so Codex and a private Docker
 daemon are available inside the sandbox.
 
-The template is separate from `.factory/Dockerfile`. The latter is the image
-used by Factory when `worker.sandbox = "docker"`; this template is the
+This template is separate from the sandbox template Factory's own workers use
+when `worker.sandbox = "docker_sandbox"` (configured with `worker.template`,
+e.g. `docker/sandbox-templates:codex-docker`); this template is only the
 development environment used to work on Factory itself with `sbx`.
 
 ## Build and load the template

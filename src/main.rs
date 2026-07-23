@@ -10,7 +10,6 @@ use tokio_util::sync::CancellationToken;
 use factory::clone::CloneManager;
 use factory::config::{Config, ExecutionMode, repository_config_path};
 use factory::daemon::FactoryDaemon;
-use factory::docker::DockerWorker;
 use factory::execution::ResolvedWorkflow;
 use factory::github::GitHubClient;
 use factory::init::{InitOptions, initialize};
@@ -20,6 +19,7 @@ use factory::inspection::{
 use factory::runtime::{
     CodexRuntime, RuntimeCancelled, Termination, write_stderr_best_effort, write_stdout_best_effort,
 };
+use factory::sandbox::SandboxWorker;
 use factory::source::{PollReport, SourceClient};
 use factory::storage::{
     CancellationRequest, DATABASE_NAME, Ledger, OPERATOR_CONFIRMED_CLEANUP, TaskState,
@@ -284,7 +284,7 @@ async fn run_cli() -> Result<u8> {
                 GitHubClient::default()
                     .validate_token_env(&worker.github_token_env, &cancellation)
                     .await?;
-                DockerWorker::new(worker.clone(), "validate")
+                SandboxWorker::new(worker.clone(), "validate")
                     .validate(&cancellation)
                     .await?;
             } else {
@@ -366,7 +366,8 @@ async fn run_cli() -> Result<u8> {
                 .task(run.task_id)?
                 .with_context(|| format!("task {} for run {run_id} does not exist", run.task_id))?;
             let container = ledger.run_container(run_id)?;
-            let inspection = RunInspection::new(&run, &task, container.as_ref());
+            let sandbox = ledger.run_sandbox(run_id)?;
+            let inspection = RunInspection::new(&run, &task, container.as_ref(), sandbox.as_ref());
             if json {
                 print_json(&inspection)?;
             } else {
@@ -580,6 +581,7 @@ async fn run_cli() -> Result<u8> {
                 println!("active tasks: {}", summary.active_tasks);
                 println!("active runs: {}", summary.active_runs);
                 println!("managed containers: {}", summary.managed_containers);
+                println!("managed sandboxes: {}", summary.managed_sandboxes);
                 println!("live daemons: {}", summary.live_daemons);
                 for repository in &summary.repositories {
                     println!("repository: {repository}");
@@ -592,6 +594,7 @@ async fn run_cli() -> Result<u8> {
                     && (summary.active_tasks > 0
                         || summary.active_runs > 0
                         || summary.managed_containers > 0
+                        || summary.managed_sandboxes > 0
                         || summary.live_daemons > 0
                         || !summary.retained_workspaces.is_empty())
                 {
@@ -899,9 +902,9 @@ async fn run_workflow(
                 workflow.id
             );
         }
-        if config.execution_mode == ExecutionMode::Docker {
+        if config.execution_mode == ExecutionMode::DockerSandbox {
             bail!(
-                "workflow {:?} cannot be run directly when worker.sandbox is \"docker\"; start the `factory run` loop to preserve Docker isolation",
+                "workflow {:?} cannot be run directly when worker.sandbox is \"docker_sandbox\"; start the `factory run` loop to preserve Docker Sandbox isolation",
                 workflow.id
             );
         }

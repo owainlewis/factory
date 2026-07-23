@@ -90,7 +90,7 @@ fn command_with_healthy_codex(temp: &tempfile::TempDir) -> Command {
     let gh = bin.join("gh");
     fs::write(
         &gh,
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'gh version 2.80.0'; exit 0; fi\nif [ \"$1\" = \"auth\" ]; then exit 0; fi\nif [ \"$1\" = \"repo\" ]; then echo 'example/repository'; exit 0; fi\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"users/example\" ]; then echo '{\"id\":1,\"login\":\"example\",\"node_id\":\"U_1\"}'; exit 0; fi\nexit 64\n",
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'gh version 2.80.0'; exit 0; fi\nif [ \"$1\" = \"auth\" ]; then exit 0; fi\nif [ \"$1\" = \"repo\" ]; then echo 'example/repository'; exit 0; fi\nif [ \"$1 $2\" = \"api user\" ]; then echo '{\"id\":2,\"login\":\"factory-bot\"}'; exit 0; fi\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"users/example\" ]; then echo '{\"id\":1,\"login\":\"example\",\"node_id\":\"U_1\"}'; exit 0; fi\nexit 64\n",
     )
     .unwrap();
     let mut permissions = fs::metadata(&gh).unwrap().permissions();
@@ -118,6 +118,42 @@ fn validates_explicit_config() {
         .success()
         .stdout(predicate::str::contains("Configuration is valid."))
         .stdout(predicate::str::contains("worker.runtime: codex"));
+}
+
+#[cfg(unix)]
+#[test]
+fn docker_sandbox_validation_requires_cli_credentials_and_host_clone_token() {
+    let (temp, path, _repository, data_home) = valid_config();
+    let contents = fs::read_to_string(&path)
+        .unwrap()
+        .replace("sandbox = \"worktree\"", "sandbox = \"docker_sandbox\"")
+        .replace(
+            "max_concurrent = 2",
+            "max_concurrent = 2\ntemplate = \"docker/sandbox-templates:codex\"\nmemory = \"8g\"\ncpus = 4\ngithub_token_env = \"FACTORY_GITHUB_TOKEN\"",
+        );
+    fs::write(&path, contents).unwrap();
+    let bin = temp.path().join("healthy-bin");
+    fs::create_dir_all(&bin).unwrap();
+    let sbx = bin.join("sbx");
+    fs::write(
+        &sbx,
+        "#!/bin/sh\nif [ \"$1\" = version ]; then echo 'sbx version 0.35.0'; exit 0; fi\nif [ \"$1 $2 $3 $4\" = 'secret ls --global --service' ]; then echo \"global service $5\"; exit 0; fi\nexit 64\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&sbx).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(sbx, permissions).unwrap();
+
+    command_with_healthy_codex(&temp)
+        .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", data_home)
+        .env("FACTORY_GITHUB_TOKEN", "dedicated-test-token")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("worker.sandbox: docker_sandbox"))
+        .stdout(predicate::str::contains(
+            "worker.template: docker/sandbox-templates:codex",
+        ));
 }
 
 #[cfg(unix)]

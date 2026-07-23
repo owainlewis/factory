@@ -6,8 +6,8 @@ plain Markdown agent prompts.
 
 ## Install
 
-Install Rust, Git, GitHub CLI, and Codex CLI on a Unix-like host. Docker is also
-required for Docker workers.
+Install Rust, Git, GitHub CLI, and Codex CLI on a Unix-like host. The `sbx` CLI
+and supported hardware virtualization are also required for Docker Sandbox workers.
 
 ```sh
 gh auth login
@@ -35,8 +35,8 @@ Initialization creates missing files without overwriting existing ones:
 ```
 
 Use `factory init --check` to preview the changes. The default sandbox is a Git
-worktree. Use `factory init --execution-mode docker` to generate Docker settings
-and `.factory/Dockerfile` instead.
+worktree. Use `factory init --execution-mode docker-sandbox` to generate Docker
+Sandbox settings instead.
 
 ## Configure the control plane
 
@@ -153,7 +153,7 @@ Durable task keys and atomic claims prevent duplicate workers after restarts.
 
 Run a schedule-triggered workflow immediately with `factory run ID`. This form
 rejects source-triggered workflows because the loop is what binds the issue
-identity and live source state to the task. It also rejects Docker-configured
+identity and live source state to the task. It also rejects Docker Sandbox
 workers; use the normal loop so Factory preserves the configured isolation.
 The explicit `factory workflow run ID` command remains available for manual
 repository-only workflow runs.
@@ -175,39 +175,44 @@ removes `factory:ready-for-spec`. Review the ticket and add
 implementation agent, which writes the code and opens a pull request. Use a
 fresh idea each time you repeat the demo.
 
-## Use Docker workers
+## Use Docker Sandbox workers
 
-Review the generated Dockerfile and build the configured image:
+Sign in to Docker Sandboxes and configure proxy-managed credentials before
+starting Factory:
 
 ```sh
-docker build --file .factory/Dockerfile --tag factory-codex:dev .
+sbx login
+sbx secret set -g openai --oauth
+gh auth token | sbx secret set -g github
 ```
 
-Create a dedicated Codex login outside the repository and set its `auth.json`
-path in `worker.codex_auth`. Export a dedicated GitHub token through the variable
-named by `worker.github_token_env`. The container mounts the Codex auth file
-writable because OAuth refresh may update it. Do not point production workers at
-your normal interactive login; use a separate credential that can be revoked.
+Export a dedicated GitHub token through the variable named by
+`worker.github_token_env`. Factory uses this token only on the host while
+preparing its standalone source clone. The agent receives the separate
+proxy-managed GitHub credential configured with `sbx secret`; the raw value does
+not enter the sandbox.
 
-A complete Docker worker section is:
+A complete Docker Sandbox worker section is:
 
 ```toml
 [worker]
 runtime = "codex"
-sandbox = "docker"
+sandbox = "docker_sandbox"
 timeout = "2h"
 maximum_timeout = "8h"
 max_concurrent = 1
-image = "factory-codex:dev"
+template = "docker/sandbox-templates:codex-docker"
 memory = "8g"
 cpus = 4
-pids = 512
-codex_auth = "/absolute/path/to/factory-codex/auth.json"
 github_token_env = "FACTORY_GITHUB_TOKEN"
 ```
 
-The container gets a standalone clone and no Docker socket or canonical checkout
-mount. Worktree mode is simpler and faster, but it is not a security boundary.
+Each run gets a disposable clone-mode microVM with a private Docker daemon. The
+host source clone is read-only to the VM. Factory snapshots changes inside the
+VM and fetches them into trusted host Git metadata before removal. If that
+handoff fails, the sandbox is retained. The canonical checkout, Factory
+database, host Docker daemon, and raw agent credentials remain outside the VM.
+Worktree mode is simpler and faster, but it is not a security boundary.
 
 ## Observe and recover
 

@@ -242,10 +242,10 @@ fn run_rejects_a_direct_schedule_when_docker_is_configured() {
     let config_path = repository.join(".factory/config.toml");
     let config = fs::read_to_string(&config_path)
         .unwrap()
-        .replace("sandbox = \"worktree\"", "sandbox = \"docker\"")
+        .replace("sandbox = \"worktree\"", "sandbox = \"docker_sandbox\"")
         .replace(
             "max_concurrent = 1",
-            "max_concurrent = 1\nimage = \"factory-codex:test\"\nmemory = \"1g\"\ncpus = 1\npids = 64",
+            "max_concurrent = 1\ntemplate = \"docker/sandbox-templates:codex\"\nmemory = \"1g\"\ncpus = 1",
         );
     let config = format!(
         "{config}\n[trigger.pr-review]\ntype = \"schedule\"\nschedule = \"*/10 * * * *\"\ntimezone = \"UTC\"\nworkflow = \".factory/workflows/pr-review/WORKFLOW.md\"\n"
@@ -263,10 +263,10 @@ fn run_rejects_a_direct_schedule_when_docker_is_configured() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "cannot be run directly when worker.sandbox is \"docker\"",
+            "cannot be run directly when worker.sandbox is \"docker_sandbox\"",
         ))
         .stderr(predicate::str::contains(
-            "start the `factory run` loop to preserve Docker isolation",
+            "start the `factory run` loop to preserve Docker Sandbox isolation",
         ));
     assert!(!codex_marker.exists());
 }
