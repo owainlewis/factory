@@ -234,7 +234,7 @@ async fn persisted_activity_is_structural_and_never_contains_raw_secret_output()
         r#"cat >/dev/null
 printf '{"type":"item.completed","text":"TOKEN='
 awk 'BEGIN { for (i = 0; i < 70000; i++) printf "s" }'
-echo '","url":"https://github.com/owainlewis/factory/pull/123"}'
+echo '","item":{"type":"command_execution","command":"print TOKEN"},"url":"https://github.com/owainlewis/factory/pull/123"}'
 printf 'done' > "$output"
 exit 0"#,
     );
@@ -260,9 +260,67 @@ exit 0"#,
         Some("https://github.com/owainlewis/factory/pull/123")
     );
     let activity = observation.activity.unwrap();
-    assert_eq!(activity, "Codex event: item.completed\n");
+    assert_eq!(activity, "Codex progress: command finished\n");
     assert!(!activity.contains("TOKEN"));
-    assert!(!activity.contains('s'));
+    assert!(!activity.contains("ssssssss"));
+}
+
+#[tokio::test]
+async fn activity_reports_safe_progress_without_copying_event_payloads() {
+    let temp = tempfile::tempdir().unwrap();
+    let executable = fake_codex(
+        temp.path(),
+        r#"cat >/dev/null
+echo '{"type":"thread.started","thread_id":"progress-thread"}'
+echo '{"type":"turn.started","prompt":"SECRET prompt"}'
+echo '{"type":"item.started","item":{"type":"reasoning","text":"SECRET reasoning"}}'
+echo '{"type":"item.completed","item":{"type":"reasoning","text":"SECRET reasoning"}}'
+echo '{"type":"item.updated","item":{"type":"todo_list","items":[{"text":"SECRET plan"}]}}'
+echo '{"type":"item.updated","item":{"type":"todo_list","items":[{"text":"SECRET changed plan"}]}}'
+echo '{"type":"item.updated","item":{"type":"future_item","payload":"SECRET unknown item"}}'
+echo '{"type":"item.started","item":{"type":"command_execution","command":"echo SECRET"}}'
+echo '{"type":"future.event","payload":"SECRET unknown"}'
+echo '{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"SECRET output"}}'
+echo '{"type":"item.started","item":{"type":"file_change","changes":[{"path":"SECRET-path"}]}}'
+echo '{"type":"item.completed","item":{"type":"file_change","changes":[{"path":"SECRET-path"}]}}'
+echo '{"type":"item.started","item":{"type":"collaboration_tool_call","prompt":"SECRET subtask"}}'
+echo '{"type":"item.completed","item":{"type":"collaboration_tool_call","result":"SECRET result"}}'
+printf 'done' > "$output"
+exit 0"#,
+    );
+    let (observations, receiver) = observation_channel();
+
+    CodexRuntime::new(executable)
+        .with_activity_streaming(false)
+        .run_with_session(
+            "Observe safe progress.",
+            temp.path(),
+            Duration::from_secs(5),
+            CancellationToken::new(),
+            None,
+            observations,
+        )
+        .await
+        .unwrap();
+
+    let activity = receiver.borrow().activity.clone().unwrap();
+    assert_eq!(
+        activity,
+        concat!(
+            "Codex progress: worker started\n",
+            "Codex progress: working\n",
+            "Codex progress: reasoning\n",
+            "Codex progress: plan updated\n",
+            "Codex progress: running a command\n",
+            "Codex progress: command finished\n",
+            "Codex progress: changing files\n",
+            "Codex progress: files changed\n",
+            "Codex progress: coordinating a subtask\n",
+        )
+    );
+    assert!(!activity.contains("SECRET"));
+    assert!(!activity.contains("echo"));
+    assert!(!activity.contains("SECRET-path"));
 }
 
 #[tokio::test]

@@ -694,27 +694,23 @@ fn capture_activity_line(
     let line = line.strip_suffix(b"\r").unwrap_or(line);
     match serde_json::from_slice::<Value>(line) {
         Ok(event) => {
-            let event_type = event
-                .get("type")
-                .and_then(Value::as_str)
-                .filter(|value| {
-                    value.len() <= 80
-                        && value.bytes().all(|byte| {
-                            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
-                        })
-                })
-                .unwrap_or("unknown");
-            update_observation(
-                observations,
-                None,
-                None,
-                None,
-                Some(format!("Codex event: {event_type}\n")),
-            );
+            if let Some(summary) = safe_activity_summary(&event) {
+                update_observation(
+                    observations,
+                    None,
+                    None,
+                    None,
+                    Some(format!("Codex progress: {summary}\n")),
+                );
+            }
             if let Some(pull_request) = find_pull_request_url(&event) {
-                observations.send_modify(|observation| {
-                    observation.pull_request = Some(pull_request);
+                observations.send_if_modified(|observation| {
+                    if observation.pull_request.as_deref() == Some(&pull_request) {
+                        return false;
+                    }
+                    observation.pull_request = Some(pull_request.clone());
                     observation.sequence = observation.sequence.saturating_add(1);
+                    true
                 });
             }
             if capture.thread_id.is_none()
@@ -734,6 +730,66 @@ fn capture_activity_line(
         }
         Err(_) => {}
     }
+}
+
+pub(crate) fn safe_activity_summary(event: &Value) -> Option<&'static str> {
+    let event_type = event
+        .get("type")
+        .and_then(Value::as_str)
+        .filter(|value| {
+            value.len() <= 80
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        })
+        .unwrap_or("unknown");
+    match event_type {
+        "thread.started" => Some("worker started"),
+        "turn.started" => Some("working"),
+        "turn.completed" => Some("turn completed"),
+        "turn.failed" => Some("turn failed"),
+        "error" => Some("runtime error"),
+        "item.started" => match activity_item_type(event) {
+            Some("command_execution") => Some("running a command"),
+            Some("file_change") => Some("changing files"),
+            Some("mcp_tool_call") => Some("using a tool"),
+            Some("web_search") => Some("searching the web"),
+            Some("collaboration_tool_call") => Some("coordinating a subtask"),
+            Some("reasoning") => Some("reasoning"),
+            Some("todo_list") => Some("updating the plan"),
+            Some("agent_message") => Some("reporting progress"),
+            _ => None,
+        },
+        "item.updated" => match activity_item_type(event) {
+            Some("command_execution") => Some("command still running"),
+            Some("file_change") => Some("changing files"),
+            Some("mcp_tool_call") => Some("tool still running"),
+            Some("web_search") => Some("web search in progress"),
+            Some("collaboration_tool_call") => Some("subtask in progress"),
+            Some("todo_list") => Some("plan updated"),
+            Some("agent_message") => Some("reporting progress"),
+            Some("reasoning") => Some("reasoning"),
+            _ => None,
+        },
+        "item.completed" => match activity_item_type(event) {
+            Some("command_execution") => Some("command finished"),
+            Some("file_change") => Some("files changed"),
+            Some("web_search") => Some("web search finished"),
+            Some("todo_list") => Some("plan updated"),
+            Some("agent_message") => Some("progress reported"),
+            Some("reasoning" | "mcp_tool_call" | "collaboration_tool_call") => None,
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn activity_item_type(event: &Value) -> Option<&str> {
+    event
+        .get("item")
+        .and_then(Value::as_object)
+        .and_then(|item| item.get("type"))
+        .and_then(Value::as_str)
 }
 
 pub(crate) fn find_pull_request_url(value: &Value) -> Option<String> {
@@ -799,28 +855,45 @@ fn update_observation(
     session_id: Option<String>,
     activity: Option<String>,
 ) {
-    observations.send_modify(|observation| {
-        if let Some(process_id) = process_id {
+    observations.send_if_modified(|observation| {
+        let mut changed = false;
+        if let Some(process_id) = process_id
+            && observation.process_id != Some(process_id)
+        {
             observation.process_id = Some(process_id);
+            changed = true;
         }
-        if let Some(process_identity) = process_identity {
+        if let Some(process_identity) = process_identity
+            && observation.process_identity.as_deref() != Some(&process_identity)
+        {
             observation.process_identity = Some(process_identity);
+            changed = true;
         }
-        if let Some(session_id) = session_id {
+        if let Some(session_id) = session_id
+            && observation.session_id.as_deref() != Some(&session_id)
+        {
             observation.session_id = Some(session_id);
+            changed = true;
         }
         if let Some(activity) = activity {
+            let activity = crate::inspection::sanitize_for_storage(&activity);
             let observed = observation.activity.get_or_insert_with(String::new);
-            observed.push_str(&crate::inspection::sanitize_for_storage(&activity));
-            if observed.len() > MAX_OBSERVED_ACTIVITY_BYTES {
-                let mut start = observed.len() - MAX_OBSERVED_ACTIVITY_BYTES;
-                while !observed.is_char_boundary(start) {
-                    start += 1;
+            if observed.lines().next_back() != activity.lines().next_back() {
+                observed.push_str(&activity);
+                if observed.len() > MAX_OBSERVED_ACTIVITY_BYTES {
+                    let mut start = observed.len() - MAX_OBSERVED_ACTIVITY_BYTES;
+                    while !observed.is_char_boundary(start) {
+                        start += 1;
+                    }
+                    observed.drain(..start);
                 }
-                observed.drain(..start);
+                changed = true;
             }
         }
-        observation.sequence = observation.sequence.saturating_add(1);
+        if changed {
+            observation.sequence = observation.sequence.saturating_add(1);
+        }
+        changed
     });
 }
 
@@ -1232,4 +1305,40 @@ async fn stop_process_group_anchor(anchor: &mut Child, process_id: u32) -> Resul
         .await
         .context("failed to reap Codex process-group anchor")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_activity_does_not_notify_or_advance_the_sequence() {
+        let (observations, mut receiver) = observation_channel();
+        let activity = "Codex progress: working\n".to_owned();
+
+        update_observation(&observations, None, None, None, Some(activity.clone()));
+        assert!(receiver.has_changed().unwrap());
+        receiver.borrow_and_update();
+        let sequence = receiver.borrow().sequence;
+
+        update_observation(&observations, None, None, None, Some(activity));
+
+        assert!(!receiver.has_changed().unwrap());
+        assert_eq!(receiver.borrow().sequence, sequence);
+    }
+
+    #[test]
+    fn unknown_item_types_have_no_safe_activity_summary() {
+        assert_eq!(
+            safe_activity_summary(&serde_json::json!({
+                "type": "item.started",
+                "item": { "type": "future_item", "payload": "untrusted" }
+            })),
+            None
+        );
+        assert_eq!(
+            safe_activity_summary(&serde_json::json!({ "type": "item.completed" })),
+            None
+        );
+    }
 }

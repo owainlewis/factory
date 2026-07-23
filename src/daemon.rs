@@ -1870,6 +1870,7 @@ async fn monitor_run(
     observations: &mut tokio::sync::watch::Receiver<RuntimeObservation>,
 ) -> Result<()> {
     let mut ledger = Ledger::open(ledger_path)?;
+    let mut last_reported_activity = None;
     let mut interval = tokio::time::interval(Duration::from_millis(50));
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
@@ -1888,6 +1889,12 @@ async fn monitor_run(
                     observation.pull_request.as_deref(),
                     observation.activity.as_deref(),
                 )?;
+                if let Some(activity) = latest_worker_progress(observation.activity.as_deref())
+                    && last_reported_activity.as_deref() != Some(activity)
+                {
+                    eprintln!("Factory worker: run={run_id} {activity}");
+                    last_reported_activity = Some(activity.to_owned());
+                }
             }
             _ = interval.tick() => {
                 if ledger.cancellation_requested(run_id)? {
@@ -1897,6 +1904,13 @@ async fn monitor_run(
             }
         }
     }
+}
+
+fn latest_worker_progress(activity: Option<&str>) -> Option<&str> {
+    activity?
+        .lines()
+        .rev()
+        .find(|line| line.starts_with("Codex progress: "))
 }
 
 fn recovery_prompt(base: &str, previous: &Run, repository: &RepositoryTarget) -> String {
@@ -2299,6 +2313,21 @@ fn decrement_active(active: &mut HashMap<String, usize>, repository: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latest_worker_progress_returns_only_the_last_safe_progress_line() {
+        assert_eq!(
+            latest_worker_progress(Some(
+                "Codex progress: working\nDocker stderr: SECRET\nCodex progress: files changed\n"
+            )),
+            Some("Codex progress: files changed")
+        );
+        assert_eq!(
+            latest_worker_progress(Some("Docker stderr: SECRET\n")),
+            None
+        );
+        assert_eq!(latest_worker_progress(None), None);
+    }
 
     fn utc(value: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(value)

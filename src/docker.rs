@@ -16,9 +16,8 @@ use tokio::time::Instant as TokioInstant;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::WorkerConfig;
-use crate::inspection::sanitize_for_storage;
 use crate::runtime::{
-    ExecutionResult, RuntimeObservation, Termination, find_pull_request_url,
+    ExecutionResult, RuntimeObservation, Termination, find_pull_request_url, safe_activity_summary,
     write_stderr_best_effort, write_stdout_best_effort,
 };
 
@@ -753,9 +752,17 @@ async fn capture_pipe<R: AsyncRead + Unpin>(
     }
     let text = String::from_utf8_lossy(&bytes).into_owned();
     if !text.is_empty() {
-        observations.send_modify(|observation| {
-            observation.activity = Some(format!("Docker stderr: {}", sanitize_for_storage(&text)));
+        observations.send_if_modified(|observation| {
+            let stderr_activity = format!("Codex stderr activity: {} bytes\n", bytes.len());
+            let mut activity = observation.activity.take().unwrap_or_default();
+            if activity.lines().next_back() == stderr_activity.lines().next_back() {
+                observation.activity = Some(activity);
+                return false;
+            }
+            activity.push_str(&stderr_activity);
+            observation.activity = Some(truncate_tail(&activity, MAX_STREAM_BYTES));
             observation.sequence = observation.sequence.saturating_add(1);
+            true
         });
     }
     Ok(PipeCapture {
@@ -844,18 +851,32 @@ fn record_activity_line(
 }
 
 fn observe_event(observations: &watch::Sender<RuntimeObservation>, event: &Value) {
-    let kind = event
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    observations.send_modify(|observation| {
-        let mut activity = observation.activity.take().unwrap_or_default();
-        activity.push_str(&format!("Codex event: {}\n", sanitize_for_storage(kind)));
-        observation.activity = Some(truncate_tail(&activity, MAX_STREAM_BYTES));
-        if let Some(pull_request) = find_pull_request_url(event) {
-            observation.pull_request = Some(pull_request);
+    let summary = safe_activity_summary(event);
+    let pull_request = find_pull_request_url(event);
+    if summary.is_none() && pull_request.is_none() {
+        return;
+    }
+    observations.send_if_modified(|observation| {
+        let mut changed = false;
+        if let Some(summary) = summary {
+            let progress = format!("Codex progress: {summary}\n");
+            let mut activity = observation.activity.take().unwrap_or_default();
+            if activity.lines().next_back() != progress.lines().next_back() {
+                activity.push_str(&progress);
+                changed = true;
+            }
+            observation.activity = Some(truncate_tail(&activity, MAX_STREAM_BYTES));
         }
-        observation.sequence = observation.sequence.saturating_add(1);
+        if let Some(pull_request) = pull_request
+            && observation.pull_request.as_deref() != Some(&pull_request)
+        {
+            observation.pull_request = Some(pull_request);
+            changed = true;
+        }
+        if changed {
+            observation.sequence = observation.sequence.saturating_add(1);
+        }
+        changed
     });
 }
 
@@ -1130,11 +1151,117 @@ esac
                 .activity
                 .as_deref()
                 .unwrap()
-                .contains("turn.started")
+                .contains("Codex progress: working")
         );
 
         drop(writer);
         assert_eq!(capture.await.unwrap().unwrap().lines, 1);
+    }
+
+    #[tokio::test]
+    async fn stderr_activity_records_only_a_structural_byte_count() {
+        let secret = "unstructured-secret-value";
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let (observations, mut receiver) = observation_channel();
+        observations.send_modify(|observation| {
+            observation.activity = Some("Codex progress: working\n".to_owned());
+        });
+        receiver.borrow_and_update();
+        let capture = tokio::spawn(capture_pipe(reader, false, false, observations));
+
+        writer.write_all(secret.as_bytes()).await.unwrap();
+        drop(writer);
+        tokio::time::timeout(Duration::from_secs(1), receiver.changed())
+            .await
+            .expect("stderr activity was not observed")
+            .unwrap();
+
+        let activity = receiver.borrow().activity.clone().unwrap();
+        assert_eq!(
+            activity,
+            format!(
+                "Codex progress: working\nCodex stderr activity: {} bytes\n",
+                secret.len()
+            )
+        );
+        assert!(!activity.contains(secret));
+        assert_eq!(capture.await.unwrap().unwrap().text, secret);
+    }
+
+    #[test]
+    fn unknown_activity_without_a_pull_request_is_ignored() {
+        let (observations, receiver) = observation_channel();
+
+        observe_event(
+            &observations,
+            &serde_json::json!({
+                "type": "future.event",
+                "payload": "untrusted value"
+            }),
+        );
+
+        assert_eq!(receiver.borrow().sequence, 0);
+        assert_eq!(receiver.borrow().activity, None);
+        assert_eq!(receiver.borrow().pull_request, None);
+    }
+
+    #[test]
+    fn duplicate_and_unknown_item_activity_do_not_notify_or_advance_sequence() {
+        let (observations, mut receiver) = observation_channel();
+        let command = serde_json::json!({
+            "type": "item.started",
+            "item": { "type": "command_execution", "command": "untrusted" }
+        });
+
+        observe_event(&observations, &command);
+        assert!(receiver.has_changed().unwrap());
+        receiver.borrow_and_update();
+        let sequence = receiver.borrow().sequence;
+
+        observe_event(&observations, &command);
+        observe_event(
+            &observations,
+            &serde_json::json!({
+                "type": "item.started",
+                "item": { "type": "future_item", "payload": "untrusted" }
+            }),
+        );
+
+        assert!(!receiver.has_changed().unwrap());
+        assert_eq!(receiver.borrow().sequence, sequence);
+    }
+
+    #[test]
+    fn updated_plan_activity_is_safe_and_deduplicated() {
+        let (observations, mut receiver) = observation_channel();
+        let update = serde_json::json!({
+            "type": "item.updated",
+            "item": {
+                "type": "todo_list",
+                "items": [{ "text": "untrusted plan content" }]
+            }
+        });
+
+        observe_event(&observations, &update);
+        assert_eq!(
+            receiver.borrow().activity.as_deref(),
+            Some("Codex progress: plan updated\n")
+        );
+        assert!(
+            !receiver
+                .borrow()
+                .activity
+                .as_deref()
+                .unwrap()
+                .contains("untrusted")
+        );
+        receiver.borrow_and_update();
+        let sequence = receiver.borrow().sequence;
+
+        observe_event(&observations, &update);
+
+        assert!(!receiver.has_changed().unwrap());
+        assert_eq!(receiver.borrow().sequence, sequence);
     }
 
     #[tokio::test]
