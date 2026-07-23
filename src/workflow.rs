@@ -3,12 +3,14 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use std::{collections::BTreeMap, fmt::Write};
 
 use anyhow::Result;
 use chrono_tz::Tz;
 
 use crate::config::{Config, TriggerKind};
 use crate::hash::sha256_hex;
+use crate::table;
 
 pub fn scheduled_workflow_fingerprint(
     expression: &str,
@@ -133,40 +135,56 @@ impl WorkflowCatalog {
 
 impl fmt::Display for WorkflowCatalog {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(
-            formatter,
-            "REPOSITORY\tWORKFLOW\tTRIGGER\tRUNTIME\tTIMEOUT\tVALIDITY"
-        )?;
+        let mut repositories = BTreeMap::<String, Vec<[String; 5]>>::new();
         for entry in &self.entries {
-            let trigger = entry
-                .trigger
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| "-".to_owned());
-            let runtime = entry.runtime.as_deref().unwrap_or("-");
-            let timeout = entry
-                .timeout
-                .map(humantime::format_duration)
-                .map(|duration| duration.to_string())
-                .unwrap_or_else(|| "-".to_owned());
-            let validity = if entry.errors.is_empty() {
-                "valid".to_owned()
-            } else {
-                format!("invalid: {}", entry.errors.join("; "))
-            };
-            let cells = [
-                entry.repository.display().to_string(),
-                entry.id.clone(),
-                trigger,
-                runtime.to_owned(),
-                timeout,
-                validity,
-            ]
-            .map(|cell| sanitize_catalog_cell(&cell));
-            writeln!(formatter, "{}", cells.join("\t"))?;
+            repositories
+                .entry(sanitize_catalog_cell(
+                    &entry.repository.display().to_string(),
+                ))
+                .or_default()
+                .push(workflow_row(entry));
+        }
+
+        for (index, (repository, rows)) in repositories.iter().enumerate() {
+            if index > 0 {
+                formatter.write_char('\n')?;
+            }
+            writeln!(formatter, "Repository: {repository}\n")?;
+            formatter.write_str(&table::render(
+                ["WORKFLOW", "TRIGGER", "RUNTIME", "TIMEOUT", "VALIDITY"],
+                rows,
+                &[],
+            ))?;
         }
         Ok(())
     }
+}
+
+fn workflow_row(entry: &WorkflowEntry) -> [String; 5] {
+    let trigger = entry
+        .trigger
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "-".to_owned());
+    let timeout = entry
+        .timeout
+        .map(humantime::format_duration)
+        .map(|duration| duration.to_string())
+        .unwrap_or_else(|| "-".to_owned());
+    let validity = if entry.errors.is_empty() {
+        "valid".to_owned()
+    } else {
+        format!("invalid: {}", entry.errors.join("; "))
+    };
+
+    [
+        entry.id.clone(),
+        trigger,
+        entry.runtime.clone().unwrap_or_else(|| "-".to_owned()),
+        timeout,
+        validity,
+    ]
+    .map(|cell| sanitize_catalog_cell(&cell))
 }
 
 impl fmt::Display for Trigger {

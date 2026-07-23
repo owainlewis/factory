@@ -14,5 +14,6 @@ pub mod runtime;
 pub mod sandbox;
 pub mod source;
 pub mod storage;
+mod table;
 pub mod workflow;
 pub mod workspace;

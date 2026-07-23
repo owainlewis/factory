@@ -351,5 +351,8 @@ fn empty_ledgers_have_stable_empty_outputs() {
         .arg(&data)
         .assert()
         .success()
-        .stdout("ID\tSTATE\tREPOSITORY\tWORKFLOW\tSOURCE\tCREATED\tUPDATED\n");
+        .stdout(
+            "ID  STATE  REPOSITORY  WORKFLOW  SOURCE  CREATED  UPDATED\n\
+             ──  ─────  ──────────  ────────  ──────  ───────  ───────\n",
+        );
 }

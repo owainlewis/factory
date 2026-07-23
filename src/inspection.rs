@@ -4,6 +4,7 @@ use regex::Regex;
 use serde::Serialize;
 
 use crate::storage::{Run, RunContainer, RunSandbox, Task, TaskState};
+use crate::table;
 
 const MAX_SUMMARY_BYTES: usize = 240;
 const MAX_DETAIL_BYTES: usize = 16 * 1024;
@@ -191,38 +192,73 @@ impl RunInspection {
 }
 
 pub fn print_tasks(tasks: &[Task]) {
-    println!("ID\tSTATE\tREPOSITORY\tWORKFLOW\tSOURCE\tCREATED\tUPDATED");
-    for task in tasks {
-        println!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            task.id,
-            task_state(task.state),
-            safe_column(&task.repository, 48),
-            safe_column(&task.workflow, 36),
-            safe_column(task.source_item.as_deref().unwrap_or("-"), 24),
-            task.created_at,
-            task.updated_at,
-        );
-    }
+    let rows = tasks
+        .iter()
+        .map(|task| {
+            [
+                task.id.to_string(),
+                task_state(task.state).to_owned(),
+                safe_column(&task.repository, 48),
+                safe_column(&task.workflow, 36),
+                safe_column(task.source_item.as_deref().unwrap_or("-"), 24),
+                task.created_at.to_string(),
+                task.updated_at.to_string(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print!(
+        "{}",
+        table::render(
+            [
+                "ID",
+                "STATE",
+                "REPOSITORY",
+                "WORKFLOW",
+                "SOURCE",
+                "CREATED",
+                "UPDATED",
+            ],
+            &rows,
+            &[0, 5, 6],
+        )
+    );
 }
 
 pub fn print_runs(runs: &[Run]) {
-    println!("ID\tOUTCOME\tRUNTIME\tWORKFLOW\tREPOSITORY\tSOURCE\tDURATION_MS\tSUMMARY");
-    for run in runs {
-        let view = RunView::from(run);
-        println!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            view.id,
-            safe_column(&view.outcome, 16),
-            safe_column(&view.runtime, 16),
-            safe_column(&view.workflow, 36),
-            safe_column(&view.repository, 48),
-            safe_column(view.source_item.as_deref().unwrap_or("-"), 24),
-            view.duration_ms
-                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
-            safe_column(view.summary.as_deref().unwrap_or("-"), MAX_SUMMARY_BYTES),
-        );
-    }
+    let rows = runs
+        .iter()
+        .map(|run| {
+            let view = RunView::from(run);
+            [
+                view.id.to_string(),
+                safe_column(&view.outcome, 16),
+                safe_column(&view.runtime, 16),
+                safe_column(&view.workflow, 36),
+                safe_column(&view.repository, 48),
+                safe_column(view.source_item.as_deref().unwrap_or("-"), 24),
+                view.duration_ms
+                    .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+                safe_column(view.summary.as_deref().unwrap_or("-"), MAX_SUMMARY_BYTES),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print!(
+        "{}",
+        table::render(
+            [
+                "ID",
+                "OUTCOME",
+                "RUNTIME",
+                "WORKFLOW",
+                "REPOSITORY",
+                "SOURCE",
+                "DURATION_MS",
+                "SUMMARY",
+            ],
+            &rows,
+            &[0, 6],
+        )
+    );
 }
 
 pub fn print_inspection(inspection: &RunInspection) {
