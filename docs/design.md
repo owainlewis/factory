@@ -177,10 +177,12 @@ of deterministic steps.
 
 ## Security boundary
 
-Ticket content is untrusted input. Factory only accepts configured users and
-keeps orchestration policy outside the ticket. Credentials must be scoped to the
-repository and Project being managed. Branch protection should prevent the
-worker identity from bypassing required review.
+Ticket content is untrusted input and keeps orchestration policy outside the
+ticket. Source triggers do not filter by ticket author; the trust boundary is
+whoever can apply labels on the repository, so Factory should not be pointed at
+a repository where untrusted people have label or triage access. Credentials
+must be scoped to the repository being managed. Branch protection should
+prevent the worker identity from bypassing required review.
 
 Worktrees isolate Git state from the canonical checkout but share the host,
 network, credentials, and processes. Docker mode gives each run a standalone

@@ -302,9 +302,12 @@ OAuth credentials. Keep it separate from your normal login and make it easy to
 revoke. Docker is still not a VM and the worker still has network access and
 repository credentials.
 
-Factory limits ticket triggers to configured issue authors and revalidates live
-source state immediately before execution. Ticket bodies, comments, linked pull
-requests, and attachments remain untrusted input. Use narrow credentials and
+Factory revalidates live source state immediately before execution, but does
+not filter tickets by author: the trust boundary for a source trigger is
+whoever can apply labels on the repository or project, not who opened the
+ticket. Do not point Factory at a repository or project where untrusted people
+have label or triage access. Ticket bodies, comments, linked pull requests, and
+attachments remain untrusted input regardless. Use narrow credentials and
 protected branches that the worker cannot bypass. The default implementation
 workflow leaves pull requests for human review and never merges them.
 
