@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use assert_cmd::Command as AssertCommand;
-use factory::storage::{Ledger, RunOutcome, TaskIdentity, TaskWorkspace};
+use factory::storage::{Ledger, RunOutcome, RunSandbox, TaskIdentity, TaskWorkspace};
 use predicates::prelude::*;
 
 #[test]
@@ -98,6 +98,42 @@ fn reset_refuses_retained_workspace_ownership() {
         .assert()
         .failure()
         .stdout(predicate::str::contains(workspace.to_str().unwrap()))
+        .stderr(predicate::str::contains("retained resources"));
+    assert!(fixture.scoped_ledger.join("factory.sqlite3").exists());
+}
+
+#[test]
+fn reset_refuses_an_unremoved_sandbox() {
+    let fixture = Fixture::new();
+    let mut ledger = Ledger::open_in(&fixture.scoped_ledger).unwrap();
+    let task = ledger.enqueue(&ticket("sandboxed")).unwrap().task;
+    let claimed = ledger.claim_next().unwrap().unwrap();
+    assert_eq!(claimed.id, task.id);
+    let run = ledger.start_run(task.id, "codex").unwrap();
+    ledger
+        .record_run_sandbox(&RunSandbox {
+            run_id: run.id,
+            sandbox_name: "factory-reset-test-instance".into(),
+            instance_id: "factory-reset-test".into(),
+            template_ref: "docker/sandbox-templates:codex-docker".into(),
+            sbx_version: "sbx version 0.35.0".into(),
+            limits_json: r#"{"memory":"8g","cpus":4}"#.into(),
+            state: "created".into(),
+            exit_code: None,
+            logs: None,
+            created_at: 0,
+            updated_at: 0,
+            removed_at: None,
+        })
+        .unwrap();
+    drop(ledger);
+
+    fixture
+        .command()
+        .arg("--confirm")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("managed sandboxes: 1"))
         .stderr(predicate::str::contains("retained resources"));
     assert!(fixture.scoped_ledger.join("factory.sqlite3").exists());
 }

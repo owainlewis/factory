@@ -581,6 +581,7 @@ async fn run_cli() -> Result<u8> {
                 println!("active tasks: {}", summary.active_tasks);
                 println!("active runs: {}", summary.active_runs);
                 println!("managed containers: {}", summary.managed_containers);
+                println!("managed sandboxes: {}", summary.managed_sandboxes);
                 println!("live daemons: {}", summary.live_daemons);
                 for repository in &summary.repositories {
                     println!("repository: {repository}");
@@ -593,6 +594,7 @@ async fn run_cli() -> Result<u8> {
                     && (summary.active_tasks > 0
                         || summary.active_runs > 0
                         || summary.managed_containers > 0
+                        || summary.managed_sandboxes > 0
                         || summary.live_daemons > 0
                         || !summary.retained_workspaces.is_empty())
                 {
