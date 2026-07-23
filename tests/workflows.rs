@@ -1,8 +1,9 @@
 use std::fs;
 use std::process::Command;
+use std::time::Duration;
 
 use factory::config::{Config, TriggerKind};
-use factory::workflow::{Trigger, WorkflowCatalog};
+use factory::workflow::{Trigger, WorkflowCatalog, WorkflowEntry};
 
 struct Fixture {
     _temp: tempfile::TempDir,
@@ -75,6 +76,49 @@ trusted_users = ["owainlewis"]
 {triggers}
 "#
     )
+}
+
+#[test]
+fn catalog_display_groups_the_repository_and_aligns_workflows() {
+    let repository = std::path::PathBuf::from("/tmp/a-long-repository-path");
+    let entries = vec![
+        WorkflowEntry {
+            repository: repository.clone(),
+            path: repository.join("implement.md"),
+            id: "implement".to_owned(),
+            trigger: Some(Trigger::Source {
+                state: "open".to_owned(),
+                labels: vec!["factory:ready-to-implement".to_owned()],
+            }),
+            runtime: Some("codex".to_owned()),
+            timeout: Some(Duration::from_secs(4 * 60 * 60)),
+            prompt: Some("Implement it.".to_owned()),
+            errors: Vec::new(),
+        },
+        WorkflowEntry {
+            repository,
+            path: std::path::PathBuf::from("/tmp/pr-review.md"),
+            id: "pr-review".to_owned(),
+            trigger: Some(Trigger::Schedule {
+                expression: "*/10 * * * *".to_owned(),
+                timezone: chrono_tz::Europe::London,
+            }),
+            runtime: Some("codex".to_owned()),
+            timeout: Some(Duration::from_secs(30 * 60)),
+            prompt: Some("Review it.".to_owned()),
+            errors: Vec::new(),
+        },
+    ];
+
+    assert_eq!(
+        WorkflowCatalog { entries }.to_string(),
+        "Repository: /tmp/a-long-repository-path\n\
+         \n\
+         WORKFLOW   TRIGGER                                                    RUNTIME  TIMEOUT  VALIDITY\n\
+         ─────────  ─────────────────────────────────────────────────────────  ───────  ───────  ────────\n\
+         implement  source state \"open\" labels [\"factory:ready-to-implement\"]  codex    4h       valid\n\
+         pr-review  schedule \"*/10 * * * *\" (Europe/London)                    codex    30m      valid\n"
+    );
 }
 
 #[test]
