@@ -138,7 +138,7 @@ scope.
 
 ## Learn more
 
-- [Architecture](docs/design.md)
+- [Vision and technical design](docs/design.md)
 - [Setup, configuration, and first run](docs/local-v1.md)
 - [Operations and recovery](docs/operations.md)
 - [Jira source adapter](docs/jira.md)

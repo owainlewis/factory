@@ -1,34 +1,123 @@
-# Factory architecture
+# Factory vision and technical design
 
-## The model
+This is the source of truth for what Factory is, why it exists, and how its
+implemented architecture works. The [setup guide](local-v1.md) explains how to
+run it, while the [operations guide](operations.md) explains how to inspect and
+recover it.
 
-Factory is a durable trigger-to-prompt runner for software work:
+## Vision
 
-```text
-GitHub source -> matching trigger -> durable task -> sandboxed agent -> GitHub
-      ^                                                            |
-      +------------------------------------------------------------+
-```
+Coding agents can implement substantial changes, but most teams still operate
+them as one-off terminal sessions. A person notices work, chooses a prompt,
+starts an agent, waits for it, forwards feedback, and remembers to try again.
+The quality of the process depends on who happens to be driving.
 
-The ticket system is the control plane. It is where people and agents describe,
-prioritize, approve, review, and observe work. Factory watches it and starts an
-agent only when an explicit condition matches.
-
-Factory v1 is deliberately scoped to one repository and one GitHub source. That
-keeps repository identity, credentials, configuration, sandboxes, and recovery
-simple enough to operate today. The source boundary can support Jira, Linear, or
-GitLab later without changing the task and worker kernel.
-
-## Four concepts
+Factory makes that process repeatable. It gives software work the same kind of
+durable, observable execution that CI/CD gives builds and deployments:
 
 ```text
-Source    The external ticket queue. GitHub in v1.
-Trigger   A status, label, or schedule condition.
-Workflow  A plain Markdown prompt describing an outcome and policy.
-Worker    The runtime, sandbox, timeout, and concurrency limits.
+ticket or schedule -> trusted trigger -> durable task -> isolated agent -> review
 ```
 
-The config makes every relationship explicit:
+The ticket system is the control plane. It holds the problem, decisions,
+acceptance criteria, discussion, status, and evidence. Moving a ticket into a
+configured condition is an explicit request for an agent pass. The agent reads
+the live ticket, works in the repository, and returns its result to the same
+human-owned review loop.
+
+Factory is not an autonomous product manager or a replacement for engineering
+judgment. Humans decide what matters, resolve ambiguous product choices, review
+the result, and remain accountable for what ships. Factory removes the manual
+coordination between those decisions.
+
+The long-term goal is a small, reliable kernel that can supervise different
+ticket sources, agent runtimes, and isolation systems without encoding one
+team's development process.
+
+## Design principles
+
+### Tickets are the durable interface
+
+Important context must live in the issue, pull request, or review, not only in
+an agent session. A later human or worker should be able to continue from
+external state after a timeout, crash, or restart.
+
+### Configuration owns mechanism; prompts own policy
+
+Factory owns polling, matching, durable claims, concurrency, timeouts,
+isolation, cancellation, history, and recovery. Repository-owned Markdown
+workflows tell the agent what outcome to produce and what policy to follow.
+
+This boundary lets teams change their process without changing Factory. Triage,
+implementation, security review, and maintenance are prompt conventions, not
+built-in pipeline stages.
+
+### Idle must be cheap
+
+Polling and schedule evaluation are deterministic local work. Factory starts no
+model when no trigger matches and no schedule is due.
+
+### Human review is the shipping boundary
+
+Factory's default workflows may update tickets and open pull requests, but they
+do not merge or enable automatic merge. Credentials and branch protection must
+preserve that boundary.
+
+### Recovery uses real external state
+
+Factory records attempts and workspace ownership, then lets a later run inspect
+the current issue, branch, pull request, CI, and review state. It does not try to
+replay a fixed list of GitHub mutations.
+
+### Start narrow
+
+The current product runs one repository, one source, and Codex workers. New
+providers and runtimes should fit behind existing boundaries only when operating
+evidence justifies them.
+
+## System model
+
+Factory has four concepts:
+
+| Concept | Responsibility |
+| --- | --- |
+| Source | Returns tickets that match a requested state and labels. |
+| Trigger | Connects a source condition or schedule to a workflow. |
+| Workflow | Plain Markdown describing the agent's outcome and policy. |
+| Worker | Runs the workflow with a timeout, concurrency limit, and sandbox. |
+
+The complete loop is:
+
+```text
+              poll
+                |
+                v
+source -> matching event -> durable task -> atomic claim -> revalidate
+   ^                                                   |
+   |                                                   v
+   +---- ticket, pull request, CI, and review <- worker in sandbox
+```
+
+The current GitHub adapter queries issue state and labels. Factory does not read
+a GitHub Project board. A team may use a board for visualization, but labels
+are the default machine-facing gate.
+
+## Repository contract
+
+Each managed repository owns:
+
+```text
+.factory/
+├── config.toml
+├── sources/
+│   └── github
+└── workflows/
+    ├── bug-finder.md
+    ├── implement.md
+    └── triage.md
+```
+
+The configuration makes the relationships explicit:
 
 ```toml
 version = 1
@@ -64,144 +153,225 @@ timezone = "Europe/London"
 workflow = ".factory/workflows/bug-finder.md"
 ```
 
-The tagged trigger type is important. It makes the data model unambiguous and
-lets validation reject mixed or misspelled fields. Trigger IDs are stable queue
-identities, not semantic pipeline stages.
+Trigger types are tagged so validation can reject mixed, unknown, or misspelled
+fields. Trigger IDs are stable queue identities, not semantic stages.
 
-Workflow files contain only instructions. They have no metadata or frontmatter.
-Config owns when and how the prompt runs. The Markdown file owns what the agent
-should achieve.
+Workflow files contain instructions only. They have no frontmatter and cannot
+override worker configuration. A workflow may direct the agent to use
+repository instructions or skills, but Factory does not install, interpret, or
+version those formats.
 
-Repository-local skills are optional prompt context, not a Factory abstraction.
-A workflow may instruct the agent to read a skill for reusable behaviour such
-as browser verification or code review. Factory does not install, load, version,
-or interpret those skills. This keeps the execution kernel independent of any
-one agent's skill format.
+## Source boundary
 
-## Responsibility boundary
+For every source trigger, Factory invokes the configured command with:
 
-Factory owns mechanisms that must be consistent:
+```text
+--state <state> --label <label> ...
+```
 
-- poll timing and source command execution;
-- validation of the provider-neutral source output;
-- event detection and edge rearming;
-- durable task identity and atomic claims;
-- concurrency and time limits;
-- worktree or Docker sandbox lifecycle;
-- process supervision, cancellation, logs, history, and restart recovery.
+The command returns a provider-neutral JSON object:
 
-The workflow and agent own adaptive work:
+```json
+{
+  "issues": [
+    {
+      "key": "#56",
+      "title": "Fix the daemon",
+      "description": "What is broken and why",
+      "state": "open",
+      "labels": ["factory:ready-to-implement"],
+      "url": "https://github.com/example/repo/issues/56"
+    }
+  ]
+}
+```
 
-- read the current issue, comments, Project, pull requests, and CI state;
-- reproduce or clarify a problem;
-- edit ticket content and statuses;
-- inspect the repository and choose an implementation;
-- use `git` and `gh` directly;
-- create or update branches and pull requests;
-- respond to tests, CI, reviews, and human feedback;
-- post the final evidence and handoff.
+Factory bounds execution time and output size, validates the schema, rejects
+duplicate keys, and verifies that every result satisfies the requested
+condition. The included GitHub adapter implements this contract with the
+authenticated `gh` CLI. The experimental [Jira adapter](jira.md) demonstrates
+the same boundary for another provider.
 
-This boundary avoids encoding every GitHub action inside Factory. Modern
-agents already know how to use these tools and reconcile changing state. Factory
-adds reliability around that work instead of replacing it with a brittle GitHub
-state machine.
+The source command is part of the trust boundary. The default GitHub adapter
+does not filter by issue author. Anyone who can apply a triggering label can
+request a worker run, so Factory must only watch repositories where label or
+triage access is trusted.
 
 ## Trigger semantics
 
-### Source
+### Source triggers
 
-A source trigger asks the configured adapter for issues matching one exact
-state and every configured label. It runs once for one continuous visit to that
-condition. Leaving the condition rearms the trigger. Returning later creates a
-new task, which is useful for human review loops. Factory reruns the same source
-query immediately before launch so stale poll results do not start work.
+A source trigger runs once for each unchanged revision during a continuous
+match. Factory records the ticket and trigger pair when it first appears.
+Repeated polls of the same revision do not create duplicate tasks. Leaving the
+condition rearms the pair, so returning later creates a new task for a review or
+correction pass.
 
-### Schedule
+An adapter may supply a revision to identify a new event without requiring the
+ticket to leave the condition first. A changed revision can create a new task
+when no task for that ticket is already queued or running. When the adapter
+omits it, Factory derives a stable revision from the ticket key and requested
+condition.
+
+Immediately before starting a source task, Factory runs the same query again.
+If the ticket no longer matches, the worker does not start. This closes the
+race between polling and execution.
+
+### Schedule triggers
 
 A schedule trigger uses a five-field cron expression and an IANA timezone. Its
-identity includes the scheduled instant, so each instant runs at most once even
-across restarts. Scheduled prompts can review code, triage pull requests, find
-security problems, or create new tickets that feed the same control plane.
+durable identity includes the scheduled instant, so an instant creates at most
+one task across restarts.
 
-Polling is only detection. When no event matches and no schedule is due, Factory
-does not launch an agent.
+Scheduled workflows can inspect the repository, find bugs, review dependencies,
+or create tickets that enter the same human-controlled loop.
 
-## A software development loop
+## Task and worker lifecycle
 
-The generic model can express a practical two-phase factory without hard-coding
-it:
+SQLite stores tasks, trigger observations, run attempts, cancellation requests,
+bounded output, workspace ownership, and sandbox metadata under Factory's data
+directory outside the repository.
+
+A database uniqueness constraint deduplicates task identities. An atomic
+queued-to-running transition prevents two daemon workers from claiming the same
+task. The daemon enforces the configured concurrency limit and each workflow's
+resolved timeout, capped by `maximum_timeout`.
+
+Execution follows this sequence:
+
+1. Poll sources and evaluate schedules.
+2. Reconcile observations and insert new durable tasks.
+3. Atomically claim eligible queued work within the concurrency limit.
+4. Revalidate live source tasks.
+5. Prepare an isolated workspace.
+6. Build a prompt from workflow instructions and task context.
+7. Run Codex while recording bounded activity and cancellation state.
+8. Record the outcome and reconcile or retain the workspace.
+
+Unexpected exits remain visible as run attempts. On startup, Factory reconciles
+active tasks and owned resources. Interrupted work receives up to two bounded
+recovery attempts; later work continues from durable repository and ticket
+state.
+
+## Workspace and isolation model
+
+### Worktree mode
+
+Worktree mode creates a Factory-owned Git worktree outside the primary checkout
+and runs the host Codex CLI inside it. It isolates branches and working-tree
+state, but shares the host filesystem, processes, network, and credentials.
+Only trusted work should use this mode.
+
+Each new task starts from the fetched remote default branch in a detached
+workspace. The workflow and agent own branch selection and may continue an
+existing trusted branch or pull request after inspecting live state. Terminal
+scheduled workspaces are disposable. Ticket workspaces with unpublished, dirty,
+failed, or cancelled work are retained for inspection and explicit cleanup.
+
+### Docker Sandbox mode
+
+Docker Sandbox mode creates a standalone host clone and a private clone inside
+a microVM. The worker has a separate kernel and Docker daemon, bounded CPU and
+memory, deny-by-default networking, and proxy-managed OpenAI and GitHub
+credentials. The canonical checkout and Factory database are not mounted.
+
+Before removing the sandbox, Factory snapshots tracked and untracked changes
+and fetches that commit into trusted host Git metadata. If handoff fails, it
+retains the sandbox and host clone for recovery.
+
+Isolation limits the blast radius but does not make ticket content trusted.
+Allowed network calls and repository writes are still external effects, so
+credentials must be narrow and protected branches must remain effective.
+
+## Responsibility boundaries
+
+Factory owns:
+
+- repository-local configuration validation;
+- source command execution and normalized result validation;
+- polling, edge detection, schedules, and durable task identity;
+- atomic claims, concurrency, timeouts, and cancellation;
+- worktree or Docker Sandbox lifecycle;
+- process supervision, bounded logs, inspection, and restart recovery.
+
+The workflow and agent own:
+
+- reading live issues, comments, pull requests, CI, and review state;
+- investigating or reproducing the problem;
+- clarifying requirements and updating the ticket;
+- choosing and implementing a technical solution;
+- using `git`, `gh`, and repository tools;
+- creating or updating branches and pull requests;
+- responding to feedback and reporting evidence.
+
+Factory deliberately does not encode comments, branches, pull requests, CI
+repair, or ticket transitions as deterministic built-in operations. Those steps
+change often, require judgment, and are best reconciled by an agent against live
+state.
+
+## Example development loop
+
+The default files express a two-phase process without hard-coding it:
 
 ```text
-New idea or bug
+new idea or bug
       |
       v
-factory:ready-for-spec --triage prompt--> (label removed)
-                                        |
-                                 human reviews ticket
-                                        |
-                                        v
-factory:ready-to-implement --implementation prompt--> (label removed)
-      ^                                             |
-      |                                             v
-      +-------- human review, CI, agent feedback ---+
+ready-for-spec -> triage workflow -> human reviews refined ticket
+                                            |
+                                            v
+ready-to-implement -> implementation workflow -> pull request
+        ^                                              |
+        +------------ CI and human feedback -----------+
 ```
 
-Triage turns vague work into an executable ticket with context, scope,
-acceptance criteria, constraints, and verification, then stops. A human reviews
-the ticket and applies the implementation trigger's label. Implementation treats
-the approved ticket as the spec, makes the change, and produces review evidence.
-Humans still choose work and remain accountable for quality. Their feedback
-goes through the issue, review, or CI so the next agent run can continue the
-loop.
+Triage removes its trigger label, investigates the repository, and turns vague
+work into an executable ticket. A human reviews that specification and applies
+the implementation label. Implementation removes its trigger label, makes the
+change, verifies it, and opens or updates a pull request. Human review and CI
+may send the ticket through another pass.
 
-The exact label names belong to the team's prompts and config, not to Factory.
-A human may still track progress on a GitHub Project board for their own
-visualization; Factory only ever reads issue state and labels, never a board.
+The label names and workflow details belong to the repository. Factory only
+sees a condition connected to a prompt.
 
-## Durable execution
+## Security model
 
-A ticket task identity includes the repository, trigger, ticket identity, and
-source event. A scheduled task identity includes the repository, trigger, and
-scheduled instant. A database uniqueness constraint and atomic queued-to-running
-transition make the claim durable.
+Ticket bodies, comments, linked pull requests, and attachments are untrusted
+input. They cannot override repository-owned workflows or operator policy.
 
-Before a ticket worker starts, Factory rereads current source state and trust.
-If the event is no longer valid, it does not launch the worker. A worker is also
-told to inspect live GitHub state before changing anything. This protects both
-the orchestration boundary and adaptive Git operations from stale observations.
+Operators must:
 
-Unexpected exits are recorded as attempts, not forgotten processes. Restart
-recovery reconciles active tasks and sandbox resources. A later run can continue
-from the real issue, branch, pull request, and CI state rather than replay a list
-of deterministic steps.
+- restrict label and triage access for triggering repositories;
+- use dedicated, revocable credentials with the smallest useful scope;
+- keep secrets out of config, workflows, tickets, and logs;
+- enforce branch protection that the worker identity cannot bypass;
+- use Docker Sandbox mode when host-level isolation is not acceptable;
+- retain human review as the merge boundary.
 
-## Security boundary
+See [SECURITY.md](../SECURITY.md) and the
+[worker boundary](operations.md#worker-boundary) for deployment guidance.
 
-Ticket content is untrusted input and keeps orchestration policy outside the
-ticket. Source triggers do not filter by ticket author; the trust boundary is
-whoever can apply labels on the repository, so Factory should not be pointed at
-a repository where untrusted people have label or triage access. Credentials
-must be scoped to the repository being managed. Branch protection should
-prevent the worker identity from bypassing required review.
+## Current scope and extension points
 
-Worktrees isolate Git state from the canonical checkout but share the host,
-network, credentials, and processes. Docker Sandbox mode gives each run a
-separate microVM, private clone, isolated Docker daemon, deny-by-default network,
-and proxy-managed credentials. Factory snapshots the VM workspace and fetches it
-into trusted host Git metadata before removal. Allowed network services and
-repository writes remain external effects governed by narrow identities and
-branch protection.
+The implemented V1 supports:
 
-## V1 boundaries
+- one repository and one command-backed source;
+- source conditions based on state and labels;
+- five-field cron schedules with IANA timezones;
+- Codex workers in managed worktrees or Docker Sandboxes;
+- strict repository-local configuration and Markdown workflows;
+- durable queueing, deduplication, supervision, inspection, cancellation,
+  cleanup, reset, and restart recovery.
 
-V1 includes:
+The architecture leaves room for:
 
-- one repository and one GitHub source;
-- GitHub Project status, issue label, and scheduled triggers;
-- Codex workers in worktrees or Docker Sandboxes;
-- explicit workflow paths and strict config validation;
-- durable queueing, supervision, history, cancellation, and recovery.
+- Jira, Linear, GitLab, and pull-request source adapters;
+- multiple repositories or sources in one daemon;
+- agent runtimes other than Codex;
+- webhooks as a wake-up optimization;
+- hosted worker pools and stronger isolation;
+- deployment workflows where a separate policy defines authorization.
 
-V1 does not include multiple repositories, Jira or Linear adapters, a workflow
-graph, deterministic GitHub operations, automatic deployment, or a web control
-plane. Those are extensions only when real use proves the need.
+These are extension points, not promises. Factory does not currently provide a
+workflow graph, a web control plane, automatic merge, or a provider-specific
+action language.
