@@ -56,21 +56,21 @@ command = [
 type = "source"
 state = "Ready For Spec"
 labels = ["factory:ready"]
-workflow = ".factory/workflows/triage/WORKFLOW.md"
+workflow = ".factory/workflows/triage.md"
 
 [trigger.implement]
 type = "source"
 state = "Ready To Implement"
 labels = ["factory:ready"]
-workflow = ".factory/workflows/implement/WORKFLOW.md"
+workflow = ".factory/workflows/implement.md"
 timeout = "4h"
 
-[trigger.security-review]
+[trigger.bug-finder]
 type = "schedule"
-schedule = "0 8 * * 1-5"
+schedule = "0 9 * * 1"
 timezone = "Europe/London"
-workflow = ".factory/workflows/security-review/WORKFLOW.md"
-timeout = "1h"
+workflow = ".factory/workflows/bug-finder.md"
+timeout = "2h"
 ```
 
 The top-level model is intentionally small:

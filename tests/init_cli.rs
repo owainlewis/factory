@@ -110,8 +110,9 @@ fn init_creates_complete_repository_factory_without_overwriting() {
         .success()
         .stdout(predicate::str::contains("repository configuration"))
         .stdout(predicate::str::contains("workflow directory"))
-        .stdout(predicate::str::contains("workflows/triage/WORKFLOW.md"))
-        .stdout(predicate::str::contains("workflows/implement/WORKFLOW.md"))
+        .stdout(predicate::str::contains("workflows/triage.md"))
+        .stdout(predicate::str::contains("workflows/implement.md"))
+        .stdout(predicate::str::contains("workflows/bug-finder.md"))
         .stdout(predicate::str::contains("Dockerfile").not())
         .stdout(predicate::str::contains("GitHub label").not())
         .stdout(predicate::str::contains("factory validate"));
@@ -129,22 +130,29 @@ fn init_creates_complete_repository_factory_without_overwriting() {
     assert!(config.contains("max_concurrent = 1"));
     assert!(config.contains("[trigger.triage]"));
     assert!(config.contains("[trigger.implement]"));
-    assert!(config.contains("workflow = \".factory/workflows/triage/WORKFLOW.md\""));
-    assert!(config.contains("workflow = \".factory/workflows/implement/WORKFLOW.md\""));
+    assert!(config.contains("[trigger.bug-finder]"));
+    assert!(config.contains("workflow = \".factory/workflows/triage.md\""));
+    assert!(config.contains("workflow = \".factory/workflows/implement.md\""));
+    assert!(config.contains("workflow = \".factory/workflows/bug-finder.md\""));
+    assert!(config.contains("schedule = \"0 9 * * 1\""));
     assert!(!config.contains("[source.states]"));
     assert!(!config.contains("[github]"));
     assert!(!config.contains("repositories"));
     assert!(!config.contains("workspace_root"));
     assert!(fixture.workspace().is_dir());
     assert!(fixture.workflows().is_dir());
-    assert_eq!(fs::read_dir(fixture.workflows()).unwrap().count(), 2);
+    assert_eq!(fs::read_dir(fixture.workflows()).unwrap().count(), 3);
     assert_eq!(
-        fs::read_to_string(fixture.workflows().join("triage/WORKFLOW.md")).unwrap(),
-        include_str!("../.factory/workflows/triage/WORKFLOW.md")
+        fs::read_to_string(fixture.workflows().join("triage.md")).unwrap(),
+        include_str!("../.factory/workflows/triage.md")
     );
     assert_eq!(
-        fs::read_to_string(fixture.workflows().join("implement/WORKFLOW.md")).unwrap(),
-        include_str!("../.factory/workflows/implement/WORKFLOW.md")
+        fs::read_to_string(fixture.workflows().join("implement.md")).unwrap(),
+        include_str!("../.factory/workflows/implement.md")
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.workflows().join("bug-finder.md")).unwrap(),
+        include_str!("../.factory/workflows/bug-finder.md")
     );
     let source = fixture.repository.join(".factory/sources/github");
     assert_eq!(
@@ -337,8 +345,9 @@ fn check_reports_missing_resources_without_writes() {
         .stdout(predicate::str::contains("repository configuration"))
         .stdout(predicate::str::contains("workspace directory"))
         .stdout(predicate::str::contains("workflow directory"))
-        .stdout(predicate::str::contains("workflows/triage/WORKFLOW.md"))
-        .stdout(predicate::str::contains("workflows/implement/WORKFLOW.md"))
+        .stdout(predicate::str::contains("workflows/triage.md"))
+        .stdout(predicate::str::contains("workflows/implement.md"))
+        .stdout(predicate::str::contains("workflows/bug-finder.md"))
         .stdout(predicate::str::contains("Dockerfile").not());
 
     assert!(!fixture.config_path().exists());
@@ -356,21 +365,22 @@ fn init_does_not_touch_existing_workflows() {
     fixture.command().arg("init").assert().success();
 
     assert_eq!(fs::read_to_string(workflow).unwrap(), "custom policy\n");
-    assert!(fixture.workflows().join("triage/WORKFLOW.md").is_file());
-    assert!(fixture.workflows().join("implement/WORKFLOW.md").is_file());
+    assert!(fixture.workflows().join("triage.md").is_file());
+    assert!(fixture.workflows().join("implement.md").is_file());
+    assert!(fixture.workflows().join("bug-finder.md").is_file());
 }
 
 #[test]
 fn init_preserves_existing_default_assets_byte_for_byte() {
     let fixture = Fixture::new();
     fs::create_dir_all(fixture.workflows()).unwrap();
-    fs::create_dir_all(fixture.workflows().join("triage")).unwrap();
-    fs::create_dir_all(fixture.workflows().join("implement")).unwrap();
-    let triage = fixture.workflows().join("triage/WORKFLOW.md");
-    let implement = fixture.workflows().join("implement/WORKFLOW.md");
+    let triage = fixture.workflows().join("triage.md");
+    let implement = fixture.workflows().join("implement.md");
+    let bug_finder = fixture.workflows().join("bug-finder.md");
     let dockerfile = fixture.repository.join(".factory/Dockerfile");
     fs::write(&triage, "custom triage\n").unwrap();
     fs::write(&implement, "custom implementation\n").unwrap();
+    fs::write(&bug_finder, "custom bug finder\n").unwrap();
     fs::write(&dockerfile, "FROM custom-image\n").unwrap();
 
     fixture.command().arg("init").assert().success();
@@ -379,6 +389,10 @@ fn init_preserves_existing_default_assets_byte_for_byte() {
     assert_eq!(
         fs::read_to_string(implement).unwrap(),
         "custom implementation\n"
+    );
+    assert_eq!(
+        fs::read_to_string(bug_finder).unwrap(),
+        "custom bug finder\n"
     );
     assert_eq!(
         fs::read_to_string(dockerfile).unwrap(),
@@ -390,10 +404,9 @@ fn init_preserves_existing_default_assets_byte_for_byte() {
 fn init_rejects_symlinked_default_asset_without_touching_target() {
     let fixture = Fixture::new();
     fs::create_dir_all(fixture.workflows()).unwrap();
-    fs::create_dir_all(fixture.workflows().join("triage")).unwrap();
     let outside = fixture._temp.path().join("outside-triage.md");
     fs::write(&outside, "outside policy\n").unwrap();
-    symlink(&outside, fixture.workflows().join("triage/WORKFLOW.md")).unwrap();
+    symlink(&outside, fixture.workflows().join("triage.md")).unwrap();
 
     fixture
         .command()
@@ -406,7 +419,8 @@ fn init_rejects_symlinked_default_asset_without_touching_target() {
 
     assert_eq!(fs::read_to_string(outside).unwrap(), "outside policy\n");
     assert!(!fixture.config_path().exists());
-    assert!(!fixture.workflows().join("implement/WORKFLOW.md").exists());
+    assert!(!fixture.workflows().join("implement.md").exists());
+    assert!(!fixture.workflows().join("bug-finder.md").exists());
     assert!(!fixture.repository.join(".factory/Dockerfile").exists());
 }
 

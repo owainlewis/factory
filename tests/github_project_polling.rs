@@ -26,8 +26,7 @@ impl Fixture {
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
         let repository = temp.path().join("repo");
-        fs::create_dir_all(repository.join(".factory/workflows/triage")).unwrap();
-        fs::create_dir_all(repository.join(".factory/workflows/implement")).unwrap();
+        fs::create_dir_all(repository.join(".factory/workflows")).unwrap();
         assert!(
             Command::new("git")
                 .args(["init", "--quiet", "-b", "main"])
@@ -37,12 +36,12 @@ impl Fixture {
                 .success()
         );
         fs::write(
-            repository.join(".factory/workflows/triage/WORKFLOW.md"),
+            repository.join(".factory/workflows/triage.md"),
             "Triage issue.\n",
         )
         .unwrap();
         fs::write(
-            repository.join(".factory/workflows/implement/WORKFLOW.md"),
+            repository.join(".factory/workflows/implement.md"),
             "Implement issue.\n",
         )
         .unwrap();
@@ -75,13 +74,13 @@ impl Fixture {
             triggers: vec![
                 TriggerConfig {
                     id: "triage".to_owned(),
-                    workflow: repository.join(".factory/workflows/triage/WORKFLOW.md"),
+                    workflow: repository.join(".factory/workflows/triage.md"),
                     timeout: Duration::from_secs(120),
                     kind: TriggerKind::Status("Ready For Spec".to_owned()),
                 },
                 TriggerConfig {
                     id: "implement".to_owned(),
-                    workflow: repository.join(".factory/workflows/implement/WORKFLOW.md"),
+                    workflow: repository.join(".factory/workflows/implement.md"),
                     timeout: Duration::from_secs(120),
                     kind: TriggerKind::Status("Ready To Implement".to_owned()),
                 },

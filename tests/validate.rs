@@ -67,7 +67,7 @@ trusted_users = ["example"]
 [trigger.implement]
 type = "label"
 label = "agent:ready"
-workflow = ".factory/workflows/implement/WORKFLOW.md"
+workflow = ".factory/workflows/implement.md"
 "#,
     )
     .unwrap();
@@ -242,16 +242,16 @@ fn validates_a_configurable_source_label_trigger() {
         ),
     )
     .unwrap();
-    fs::create_dir_all(repository.join(".factory/workflows/triage")).unwrap();
-    fs::create_dir_all(repository.join(".factory/workflows/implement")).unwrap();
+    fs::create_dir_all(repository.join(".factory/workflows")).unwrap();
+    fs::write(repository.join(".factory/workflows/triage.md"), "Triage.\n").unwrap();
     fs::write(
-        repository.join(".factory/workflows/triage/WORKFLOW.md"),
-        "Triage.\n",
+        repository.join(".factory/workflows/implement.md"),
+        "Implement.\n",
     )
     .unwrap();
     fs::write(
-        repository.join(".factory/workflows/implement/WORKFLOW.md"),
-        "Implement.\n",
+        repository.join(".factory/workflows/bug-finder.md"),
+        "Find bugs.\n",
     )
     .unwrap();
     let bin = temp.path().join("bin");

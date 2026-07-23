@@ -10,8 +10,9 @@ use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::config::{Config, ExecutionMode, repository_remote_identity};
 
-const TRIAGE_WORKFLOW: &str = include_str!("../.factory/workflows/triage/WORKFLOW.md");
-const IMPLEMENT_WORKFLOW: &str = include_str!("../.factory/workflows/implement/WORKFLOW.md");
+const TRIAGE_WORKFLOW: &str = include_str!("../.factory/workflows/triage.md");
+const IMPLEMENT_WORKFLOW: &str = include_str!("../.factory/workflows/implement.md");
+const BUG_FINDER_WORKFLOW: &str = include_str!("../.factory/workflows/bug-finder.md");
 const GITHUB_SOURCE: &str = include_str!("../.factory/sources/github");
 
 #[derive(Debug, Clone)]
@@ -402,7 +403,7 @@ fn plan_default_assets(repository: &Path) -> Result<Vec<FilePlan>> {
     let factory = repository.join(".factory");
     let assets = vec![
         plan_file(
-            factory.join("workflows/triage/WORKFLOW.md"),
+            factory.join("workflows/triage.md"),
             TRIAGE_WORKFLOW,
             "triage workflow",
         )?,
@@ -412,9 +413,14 @@ fn plan_default_assets(repository: &Path) -> Result<Vec<FilePlan>> {
             "GitHub source adapter",
         )?,
         plan_file(
-            factory.join("workflows/implement/WORKFLOW.md"),
+            factory.join("workflows/implement.md"),
             IMPLEMENT_WORKFLOW,
             "implementation workflow",
+        )?,
+        plan_file(
+            factory.join("workflows/bug-finder.md"),
+            BUG_FINDER_WORKFLOW,
+            "bug finder workflow",
         )?,
     ];
     Ok(assets)
@@ -565,15 +571,19 @@ fn default_config(execution_mode: ExecutionMode) -> String {
     document["trigger"]["triage"]["state"] = value("open");
     document["trigger"]["triage"]["labels"] =
         toml_edit::value(toml_edit::Array::from_iter(["factory:ready-for-spec"]));
-    document["trigger"]["triage"]["workflow"] = value(".factory/workflows/triage/WORKFLOW.md");
+    document["trigger"]["triage"]["workflow"] = value(".factory/workflows/triage.md");
     document["trigger"]["implement"] = Item::Table(Table::new());
     document["trigger"]["implement"]["type"] = value("source");
     document["trigger"]["implement"]["state"] = value("open");
     document["trigger"]["implement"]["labels"] =
         toml_edit::value(toml_edit::Array::from_iter(["factory:ready-to-implement"]));
-    document["trigger"]["implement"]["workflow"] =
-        value(".factory/workflows/implement/WORKFLOW.md");
+    document["trigger"]["implement"]["workflow"] = value(".factory/workflows/implement.md");
     document["trigger"]["implement"]["timeout"] = value("4h");
+    document["trigger"]["bug-finder"] = Item::Table(Table::new());
+    document["trigger"]["bug-finder"]["type"] = value("schedule");
+    document["trigger"]["bug-finder"]["schedule"] = value("0 9 * * 1");
+    document["trigger"]["bug-finder"]["timezone"] = value("Europe/London");
+    document["trigger"]["bug-finder"]["workflow"] = value(".factory/workflows/bug-finder.md");
     document.to_string()
 }
 

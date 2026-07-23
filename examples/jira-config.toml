@@ -1,5 +1,6 @@
-# Copy the source and trigger tables into .factory/config.toml, then adapt the
-# project key, Jira state names, and label.
+# Copy the Jira workflow examples into .factory/workflows, copy the source and
+# trigger tables into .factory/config.toml, then adapt the project key, Jira
+# state names, and label.
 version = 1
 poll_every = "30s"
 
@@ -21,11 +22,11 @@ command = [
 type = "source"
 state = "Ready For Spec"
 labels = ["factory-ready"]
-workflow = ".factory/workflows/jira/triage/WORKFLOW.md"
+workflow = ".factory/workflows/jira-triage.md"
 
 [trigger.implement]
 type = "source"
 state = "Ready To Implement"
 labels = ["factory-ready"]
-workflow = ".factory/workflows/jira/implement/WORKFLOW.md"
+workflow = ".factory/workflows/jira-implement.md"
 timeout = "4h"

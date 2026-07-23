@@ -30,8 +30,9 @@ Initialization creates missing files without overwriting existing ones:
 
 ```text
 .factory/config.toml
-.factory/workflows/triage/WORKFLOW.md
-.factory/workflows/implement/WORKFLOW.md
+.factory/workflows/triage.md
+.factory/workflows/implement.md
+.factory/workflows/bug-finder.md
 ```
 
 Use `factory init --check` to preview the changes. The default sandbox is a Git
@@ -60,14 +61,20 @@ command = [".factory/sources/github"]
 type = "source"
 state = "open"
 labels = ["factory:ready-for-spec"]
-workflow = ".factory/workflows/triage/WORKFLOW.md"
+workflow = ".factory/workflows/triage.md"
 
 [trigger.implement]
 type = "source"
 state = "open"
 labels = ["factory:ready-to-implement"]
-workflow = ".factory/workflows/implement/WORKFLOW.md"
+workflow = ".factory/workflows/implement.md"
 timeout = "4h"
+
+[trigger.bug-finder]
+type = "schedule"
+schedule = "0 9 * * 1"
+timezone = "Europe/London"
+workflow = ".factory/workflows/bug-finder.md"
 ```
 
 The state and label names are passed to the repository's source adapter. They
@@ -82,17 +89,21 @@ own visualization; Factory never reads it. You can add another source trigger:
 type = "source"
 state = "open"
 labels = ["urgent", "factory:ready-to-implement"]
-workflow = ".factory/workflows/urgent-fix/WORKFLOW.md"
+workflow = ".factory/workflows/urgent-fix.md"
 ```
 
-Or a scheduled job:
+The generated bug finder runs weekly and can also be started immediately with
+`factory run bug-finder`. It reports one proven, previously unreported defect
+as a GitHub issue without changing code.
+
+You can add another scheduled job:
 
 ```toml
 [trigger.security-review]
 type = "schedule"
 schedule = "0 8 * * *"
 timezone = "Europe/London"
-workflow = ".factory/workflows/security-review/WORKFLOW.md"
+workflow = ".factory/workflows/security-review.md"
 timeout = "1h"
 ```
 
