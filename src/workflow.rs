@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use chrono_tz::Tz;
-use sha2::{Digest, Sha256};
 
 use crate::config::{Config, TriggerKind};
+use crate::hash::sha256_hex;
 
 pub fn scheduled_workflow_fingerprint(
     expression: &str,
@@ -25,7 +25,7 @@ pub fn scheduled_workflow_fingerprint(
         timeout.subsec_nanos(),
         prompt,
     ))?;
-    Ok(format!("v2:{:x}", Sha256::digest(definition)))
+    Ok(format!("v2:{}", sha256_hex(definition)))
 }
 
 pub fn workflow_content_hash(entry: &WorkflowEntry) -> Result<String> {
@@ -38,7 +38,7 @@ pub fn workflow_content_hash(entry: &WorkflowEntry) -> Result<String> {
             .map(|timeout| (timeout.as_secs(), timeout.subsec_nanos())),
         entry.prompt.as_deref(),
     ))?;
-    Ok(format!("v1:{:x}", Sha256::digest(definition)))
+    Ok(format!("v1:{}", sha256_hex(definition)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

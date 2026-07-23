@@ -5,11 +5,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{Config, SourceConfig, repository_remote_identity};
+use crate::hash::sha256_hex;
 use crate::storage::{Ledger, ObservedTicket, Task};
 use crate::workflow::{Trigger, WorkflowCatalog, WorkflowEntry};
 
@@ -343,8 +343,8 @@ fn observed_ticket(issue: SourceIssue, state: &str, labels: &[String]) -> Result
         let mut selected_labels = labels.to_vec();
         selected_labels.sort();
         format!(
-            "source:{:x}",
-            Sha256::digest(
+            "source:{}",
+            sha256_hex(
                 serde_json::to_vec(&(issue.key.as_str(), state, selected_labels))
                     .expect("source revision tuple is serializable")
             )

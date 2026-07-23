@@ -3,7 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+
+use crate::hash::sha256_hex;
 
 const PREFIX: &str = "<!-- factory-approval:v1 ";
 const SUFFIX: &str = " -->";
@@ -46,7 +47,7 @@ pub fn approved_content_hash(
         workflow_id,
         workflow_hash,
     ))?;
-    Ok(format!("v1:{:x}", Sha256::digest(canonical)))
+    Ok(format!("v1:{}", sha256_hex(canonical)))
 }
 
 pub fn nonce(issue: u64, approver_id: u64) -> Result<String> {
@@ -56,7 +57,7 @@ pub fn nonce(issue: u64, approver_id: u64) -> Result<String> {
         .as_nanos();
     let sequence = NONCE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let value = serde_json::to_vec(&(now, std::process::id(), sequence, issue, approver_id))?;
-    Ok(format!("{:x}", Sha256::digest(value)))
+    Ok(sha256_hex(value))
 }
 
 pub fn render(artifact: &ApprovalArtifact) -> Result<String> {

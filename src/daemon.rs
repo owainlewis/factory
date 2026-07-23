@@ -9,7 +9,6 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, SecondsFormat, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
-use sha2::{Digest, Sha256};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
@@ -18,6 +17,7 @@ use crate::clone::CloneManager;
 use crate::config::{Config, SourceConfig};
 use crate::docker::{CloneMount, DockerRunFailure, DockerWorker};
 use crate::github::{GitHubClient, LabelTicketContext, ProjectTicketContext, TicketContext};
+use crate::hash::sha256_hex_prefix;
 use crate::runtime::{
     CodexRuntime, ExecutionResult, RuntimeCancelled, RuntimeObservation, Termination,
     observation_channel,
@@ -568,8 +568,7 @@ async fn reconcile_docker_workers(
 }
 
 fn docker_instance_id(data_directory: &Path) -> String {
-    let digest = Sha256::digest(data_directory.as_os_str().as_encoded_bytes());
-    format!("{:x}", digest)[..20].to_owned()
+    sha256_hex_prefix(data_directory.as_os_str().as_encoded_bytes(), 20)
 }
 
 fn validate_workspace_backends(ledger: &Ledger, docker_mode: bool) -> Result<()> {
