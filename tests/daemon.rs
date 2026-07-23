@@ -10,6 +10,7 @@ fn cli_exposes_the_small_v1_surface() {
         .success()
         .stdout(predicates::str::contains("\n  run "))
         .stdout(predicates::str::contains("\n  validate "))
+        .stdout(predicates::str::contains("\n  reset "))
         .stdout(predicates::str::contains("\n  daemon ").not())
         .stdout(predicates::str::contains("\n  approve ").not());
 

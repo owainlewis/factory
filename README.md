@@ -273,12 +273,18 @@ factory runs
 factory inspect RUN_ID
 factory cancel RUN_ID
 factory cleanup RUN_ID
+factory reset
 ```
 
 Run a schedule-triggered workflow immediately with `factory run ID`. This form
 rejects source-triggered workflows because the loop is what binds the issue
 identity and live source state to the task. The explicit `factory workflow run
 ID` command remains available for manual repository-only workflow runs.
+
+`factory reset` previews the repository ledger and any legacy global ledger.
+After retained runs have been cleaned, use `factory reset --confirm` to remove
+durable task history and start fresh. Configuration, workflows, branches, and
+worktree directories are preserved.
 
 ## Sandboxes and trust
 

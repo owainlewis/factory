@@ -1,10 +1,11 @@
-use std::collections::HashMap;
-use std::fs;
+use std::collections::{BTreeSet, HashMap};
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use fs2::FileExt;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 pub const DATABASE_NAME: &str = "factory.sqlite3";
@@ -19,6 +20,207 @@ pub const AUTOMATIC_DELIVERY_CLEANUP: &str =
 pub const OPERATOR_CONFIRMED_CLEANUP: &str = "operator-confirmed cleanup";
 const DAEMON_OWNER_LEASE_MILLIS: i64 = 10_000;
 const APPROVAL_RESERVATION_TTL_MILLIS: i64 = 10 * 60 * 1000;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResetSummary {
+    pub tasks: usize,
+    pub runs: usize,
+    pub active_tasks: usize,
+    pub active_runs: usize,
+    pub managed_containers: usize,
+    pub live_daemons: usize,
+    pub repositories: Vec<String>,
+    pub retained_workspaces: Vec<PathBuf>,
+}
+
+pub fn inspect_reset_state(database: &Path) -> Result<ResetSummary> {
+    let connection = Connection::open_with_flags(
+        database,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| {
+        format!(
+            "failed to open Factory database read-only {}",
+            database.display()
+        )
+    })?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .context("failed to configure reset inspection timeout")?;
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .context("failed to inspect Factory schema version")?;
+    if version > SCHEMA_VERSION {
+        bail!(
+            "Factory database schema version {version} is newer than supported version {SCHEMA_VERSION}"
+        );
+    }
+    let count = |table: &str, condition: &str| -> Result<usize> {
+        if !table_exists(&connection, table)? {
+            return Ok(0);
+        }
+        connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} {condition}"),
+                [],
+                |row| row.get(0),
+            )
+            .with_context(|| format!("failed to inspect Factory reset table {table}"))
+    };
+    let lease_cutoff = now_millis()?.saturating_sub(DAEMON_OWNER_LEASE_MILLIS);
+    let live_daemons = if table_exists(&connection, "daemon_owners")? {
+        let mut statement = connection
+            .prepare("SELECT pid, heartbeat_at FROM daemon_owners")
+            .context("failed to prepare Factory daemon inspection")?;
+        statement
+            .query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, i64>(1)?)))
+            .context("failed to inspect Factory daemons")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read Factory daemons")?
+            .into_iter()
+            .filter(|(pid, heartbeat)| *heartbeat >= lease_cutoff || process_is_alive(*pid))
+            .count()
+    } else {
+        0
+    };
+    let retained_workspaces = if table_exists(&connection, "task_workspaces")? {
+        let mut statement = connection
+            .prepare(
+                "SELECT path FROM task_workspaces
+                 WHERE state != 'cleaned' ORDER BY created_at, task_id",
+            )
+            .context("failed to prepare retained workspace inspection")?;
+        statement
+            .query_map([], |row| row.get::<_, String>(0).map(PathBuf::from))
+            .context("failed to inspect retained workspaces")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read retained workspaces")?
+    } else {
+        Vec::new()
+    };
+    let mut repositories = BTreeSet::new();
+    for table in [
+        "tasks",
+        "runs",
+        "trigger_observations",
+        "schedule_cursors",
+        "task_workspaces",
+    ] {
+        if !table_exists(&connection, table)? {
+            continue;
+        }
+        let mut statement = connection
+            .prepare(&format!("SELECT DISTINCT repository FROM {table}"))
+            .with_context(|| format!("failed to prepare repository inspection for {table}"))?;
+        repositories.extend(
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .with_context(|| format!("failed to inspect repositories in {table}"))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .with_context(|| format!("failed to read repositories in {table}"))?,
+        );
+    }
+    Ok(ResetSummary {
+        tasks: count("tasks", "")?,
+        runs: count("runs", "")?,
+        active_tasks: count("tasks", "WHERE state IN ('queued', 'running')")?,
+        active_runs: count("runs", "WHERE outcome = 'running'")?,
+        managed_containers: count("run_containers", "WHERE removed_at IS NULL")?,
+        live_daemons,
+        repositories: repositories.into_iter().collect(),
+        retained_workspaces,
+    })
+}
+
+fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1
+             )",
+            [table],
+            |row| row.get(0),
+        )
+        .context("failed to inspect Factory database schema")
+}
+
+pub fn acquire_state_reset_lock(database: &Path) -> Result<StateLockGuard> {
+    let file = open_state_lock(database)?;
+    file.try_lock_exclusive().with_context(|| {
+        format!(
+            "Factory state is in use and cannot be reset: {}",
+            database.display()
+        )
+    })?;
+    Ok(StateLockGuard { _file: file })
+}
+
+fn acquire_shared_state_lock(database: &Path) -> Result<File> {
+    let file = open_state_lock(database)?;
+    file.lock_shared()
+        .with_context(|| format!("failed to lock Factory state {}", database.display()))?;
+    Ok(file)
+}
+
+fn open_state_lock(database: &Path) -> Result<File> {
+    let path = path_with_suffix(database, ".lock");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create Factory state directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!(
+                "Factory state lock must not be a symlink: {}",
+                path.display()
+            );
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to inspect Factory state lock {}", path.display())
+            });
+        }
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("failed to open Factory state lock {}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("failed to inspect Factory state lock {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!(
+            "Factory state lock is not a regular file: {}",
+            path.display()
+        );
+    }
+    if fs::symlink_metadata(&path)
+        .with_context(|| format!("failed to inspect Factory state lock {}", path.display()))?
+        .file_type()
+        .is_symlink()
+    {
+        bail!(
+            "Factory state lock must not be a symlink: {}",
+            path.display()
+        );
+    }
+    Ok(file)
+}
+
+fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
 
 pub fn validate_data_directory(data_directory: &Path) -> Result<()> {
     fs::create_dir_all(data_directory).with_context(|| {
@@ -52,6 +254,7 @@ pub fn validate_data_directory(data_directory: &Path) -> Result<()> {
             database.display()
         );
     }
+    let _state_lock = acquire_shared_state_lock(&database)?;
     let connection = Connection::open_with_flags(
         &database,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -407,6 +610,11 @@ pub struct RecoveryReport {
 pub struct Ledger {
     connection: Connection,
     path: PathBuf,
+    _state_lock: File,
+}
+
+pub struct StateLockGuard {
+    _file: File,
 }
 
 impl Ledger {
@@ -688,6 +896,7 @@ impl Ledger {
                 format!("failed to create database directory {}", parent.display())
             })?;
         }
+        let state_lock = acquire_shared_state_lock(path)?;
         let connection = Connection::open(path)
             .with_context(|| format!("failed to open SQLite database {}", path.display()))?;
         connection
@@ -701,6 +910,7 @@ impl Ledger {
         Ok(Self {
             connection,
             path: path.to_owned(),
+            _state_lock: state_lock,
         })
     }
 

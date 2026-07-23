@@ -173,6 +173,10 @@ impl Config {
         Self::load_with_workspace_probe(path, ensure_workspace_writable, false)
     }
 
+    pub fn load_for_inspection(path: &Path) -> Result<Self> {
+        Self::load_without_workspace_probe(path)
+    }
+
     pub(crate) fn load_without_workspace_probe(path: &Path) -> Result<Self> {
         Self::load_with_workspace_probe(path, |_| Ok(()), true)
     }
