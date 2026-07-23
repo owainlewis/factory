@@ -48,25 +48,24 @@ Worktree mode runs the host Codex CLI in a Factory-owned Git worktree. It is
 fast and uses the host user credentials and process boundary. It is not a
 security sandbox and should be used only for trusted local work.
 
-Docker mode gives every task a disposable container and standalone HTTPS clone.
-Scheduled workflows mount their clone read-only. Status and label workflows
-mount it read-write because their prompts define what work they may perform. The
-canonical checkout, Factory database, Docker socket, host credentials, and
-unrelated repositories are not mounted.
+Docker Sandbox mode gives every task a disposable microVM and private in-VM Git
+clone. Its Factory-owned host source clone is read-only to the VM. The canonical
+checkout, Factory database, host Docker daemon, host credentials, and unrelated
+repositories are outside the VM boundary.
 
-The worker runs as the clone owner with a read-only root filesystem, dropped
-Linux capabilities, bounded CPU, memory and processes, and a temporary `/tmp`.
-The dedicated Codex auth file is mounted writable because OAuth refresh may
-update it. Keep it separate from normal interactive credentials and make it
-revocable. Factory records the exact image ID and limits before starting the
-container and captures bounded stdout and stderr. Containers are removed after
-their terminal evidence is durable.
+The worker has full privileges inside the microVM, including its own Docker
+daemon, while Docker Sandboxes applies the hypervisor and network boundaries.
+Codex and GitHub credentials are injected by a host proxy and their raw values
+do not enter the VM. Factory records the sandbox name, template, `sbx` version,
+and limits before creation. Before removal, Factory snapshots tracked and
+untracked changes in the VM and fetches that commit into trusted host Git
+metadata. If the handoff fails, Factory stops and retains the sandbox.
 
-Docker is not a VM. It shares the host kernel, permits outbound network access,
-and receives long-lived credentials for Codex and GitHub. Run only trusted
-authors' issues. Treat all issue, comment, attachment, and review text as
-untrusted input. Use a dedicated GitHub identity and protected branches so the
-worker cannot merge or bypass review.
+Docker Sandboxes blocks network access unless policy allows it, but allowed
+services and Git remotes still create external effects. Treat all
+issue, comment, attachment, and review text as untrusted input. Use a dedicated
+GitHub identity and protected branches so the worker cannot merge or bypass
+review.
 
 ## Prove an idle poll
 
@@ -79,10 +78,9 @@ factory run --once
 factory tasks --json
 ```
 
-The two task listings should show zero new tasks. In Docker mode, also run
-`docker ps --all --filter label=dev.factory.managed=true` and confirm that no
-Factory container was created. This proves the empty poll persisted and
-launched nothing.
+The two task listings should show zero new tasks. In Docker Sandbox mode, also
+run `sbx ls --quiet` and confirm that no `factory-` sandbox was created. This
+proves the empty poll persisted and launched nothing.
 
 ## Cancellation and recovery
 
@@ -94,10 +92,10 @@ factory cancel RUN_ID
 
 Ctrl-C stops new polling and claims, cancels active workers, records terminal
 outcomes, and leaves queued work durable. Worktree mode supervises the host
-process group. Docker mode also reconciles durable container ownership before
-stopping or removing only containers labelled for that exact Factory instance.
-It captures recovered evidence, then permits bounded recovery. Repeated failure
-remains inspectable and never turns into an automatic merge.
+process group. Docker Sandbox mode also reconciles durable sandbox ownership by
+its Factory instance name before stopping or removing a VM. It captures
+recovered evidence, then permits bounded recovery. Repeated failure remains
+inspectable and never turns into an automatic merge.
 
 ## Workspace retention and cleanup
 
@@ -138,10 +136,10 @@ and worktree directories are preserved.
 
 - `factory init --check` reports missing repository assets without writing.
 - `factory validate` reports invalid triggers, trusted users, host Codex
-  availability in worktree mode, Docker prerequisites in Docker mode, and
-  data-path permissions.
+  availability in worktree mode, `sbx` and secret prerequisites in Docker
+  Sandbox mode, and data-path permissions.
 - `factory run --once` proves polling without launching a model or worker.
-- `factory inspect RUN_ID` shows bounded task, workspace, optional container,
+- `factory inspect RUN_ID` shows bounded task, workspace, optional sandbox,
   branch, pull-request, and error evidence.
 
 Scheduled workflows use the same configured worker as ticket workflows.

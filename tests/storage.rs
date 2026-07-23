@@ -10,7 +10,7 @@ use std::process::Command;
 
 use factory::storage::{
     ApprovalEvidence, CancellationRequest, Ledger, MAX_ERROR_BYTES, MAX_RESULT_BYTES,
-    ObservedTicket, RunContainer, RunOutcome, TaskIdentity, TaskState, TaskWorkspace,
+    ObservedTicket, RunContainer, RunOutcome, RunSandbox, TaskIdentity, TaskState, TaskWorkspace,
 };
 use rusqlite::Connection;
 
@@ -168,7 +168,7 @@ fn concurrent_first_open_converges_on_one_complete_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
     let schedule_tables: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_schema
@@ -300,6 +300,72 @@ fn container_identity_and_terminal_evidence_are_durable() {
             .unwrap()
             .removed_at
             .is_some()
+    );
+}
+
+#[test]
+fn sandbox_identity_and_terminal_evidence_are_durable() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    ledger
+        .register_daemon_owner("sandbox-owner", std::process::id())
+        .unwrap();
+    ledger.enqueue(&ticket("sandbox-run")).unwrap();
+    let claimed = ledger
+        .claim_and_start_run(
+            &["owainlewis/factory".to_owned()],
+            &ticket_runtimes(),
+            "sandbox-owner",
+            std::process::id(),
+        )
+        .unwrap()
+        .unwrap();
+    let sandbox = RunSandbox {
+        run_id: claimed.run.id,
+        sandbox_name: "factory-instance-42".into(),
+        instance_id: "factory-instance".into(),
+        template_ref: "docker/sandbox-templates:codex".into(),
+        sbx_version: "sbx version 0.35.0".into(),
+        limits_json: r#"{"memory":"8g","cpus":4}"#.into(),
+        state: "created".into(),
+        exit_code: None,
+        logs: None,
+        created_at: 100,
+        updated_at: 100,
+        removed_at: None,
+    };
+
+    ledger.record_run_sandbox(&sandbox).unwrap();
+    ledger
+        .finish_run_sandbox(claimed.run.id, "exited", Some(0), Some("finished"), false)
+        .unwrap();
+    let persisted = ledger.run_sandbox(claimed.run.id).unwrap().unwrap();
+    assert_eq!(persisted.sandbox_name, sandbox.sandbox_name);
+    assert_eq!(persisted.template_ref, sandbox.template_ref);
+    assert_eq!(persisted.sbx_version, sandbox.sbx_version);
+    assert_eq!(persisted.logs.as_deref(), Some("finished"));
+    assert!(persisted.removed_at.is_none());
+    assert_eq!(
+        ledger.unremoved_run_sandboxes("factory-instance").unwrap(),
+        [persisted]
+    );
+
+    ledger
+        .finish_run_sandbox(claimed.run.id, "exited", Some(0), None, true)
+        .unwrap();
+    assert!(
+        ledger
+            .run_sandbox(claimed.run.id)
+            .unwrap()
+            .unwrap()
+            .removed_at
+            .is_some()
+    );
+    assert!(
+        ledger
+            .unremoved_run_sandboxes("factory-instance")
+            .unwrap()
+            .is_empty()
     );
 }
 
@@ -1131,7 +1197,7 @@ fn migrates_a_version_one_ledger_without_losing_tasks() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
 }
 
 #[test]
@@ -1143,9 +1209,11 @@ fn opens_an_existing_version_eight_ledger() {
     let connection = Connection::open(&path).unwrap();
     connection
         .execute_batch(
-            "DROP TABLE run_containers;
+            "DROP TABLE run_sandboxes;
+             DROP TABLE run_containers;
              ALTER TABLE task_workspaces DROP COLUMN backend;
              DROP TABLE project_claims;
+             DELETE FROM schema_migrations WHERE version = 11;
              DELETE FROM schema_migrations WHERE version = 10;
              DELETE FROM schema_migrations WHERE version = 9;
              PRAGMA user_version = 8;",
@@ -1162,7 +1230,7 @@ fn opens_an_existing_version_eight_ledger() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
 }
 
 #[test]

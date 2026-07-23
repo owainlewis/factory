@@ -27,9 +27,9 @@ reasonable period for a fix before publishing details.
 
 A managed worktree protects the canonical checkout, but it is not a security
 boundary. The worker still shares the host, network, processes, and credentials.
-Use Docker execution for stronger local isolation, narrow credentials, and
-protected branches. The configured source command is trusted repository code
-that runs on the daemon host. Review changes to `.factory/config.toml` and
+Use Docker Sandbox execution for a microVM boundary, narrow proxy-managed
+credentials, and protected branches. The configured source command is trusted
+repository code that runs on the daemon host. Review changes to `.factory/config.toml` and
 `.factory/sources/` as carefully as build scripts. Source adapters should only
 return work that passed an explicit authorization gate. The generated GitHub
 adapter requires a trusted issue author plus the configured label and exact

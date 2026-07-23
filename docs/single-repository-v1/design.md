@@ -25,7 +25,7 @@ The agent owns the engineering workflow and uses `gh` and `git` directly.
 - A schedule creates at most one task for each due instant.
 - The source adapter returns only explicitly authorized work.
 - Factory starts no model when no trigger matches.
-- Workers run in a managed Git worktree or disposable Docker clone.
+- Workers run in a managed Git worktree or disposable Docker Sandbox.
 - Factory survives restart without duplicating a durable task.
 - Agents can use authenticated GitHub tools to update tickets and open or update
   pull requests. GitHub behavior is prompt policy, not hard-coded orchestration.
@@ -182,31 +182,33 @@ working-tree state from the canonical checkout, but it shares host credentials,
 network, filesystem access, and process privileges. Only trusted work should use
 it.
 
-### Docker
+### Docker Sandboxes
 
-Docker mode prepares a standalone clone and starts the configured image with:
+Docker Sandbox mode prepares a standalone host clone, then asks `sbx --clone`
+to create a private in-VM clone with:
 
-- a read-only root filesystem;
-- bounded CPU, memory, and process count;
-- a writable clone and required temporary storage;
-- no Docker socket and no canonical repository mount;
-- a dedicated, revocable Codex `auth.json` mounted writable for OAuth refresh;
-- one GitHub token passed through the configured environment variable.
+- a separate Linux kernel and private Docker daemon;
+- bounded CPU and memory;
+- deny-by-default networking;
+- no canonical repository or Factory database mount;
+- proxy-managed Codex and GitHub credentials whose values stay on the host.
 
-Docker-specific config is explicit:
+Before removal, Factory snapshots tracked and untracked changes inside the VM
+and fetches that commit into trusted host Git metadata. The sandbox is stopped
+and retained if this handoff fails.
+
+Docker Sandbox config is explicit:
 
 ```toml
 [worker]
 runtime = "codex"
-sandbox = "docker"
+sandbox = "docker_sandbox"
 timeout = "2h"
 maximum_timeout = "8h"
 max_concurrent = 1
-image = "factory-codex:dev"
+template = "docker/sandbox-templates:codex"
 memory = "8g"
 cpus = 4
-pids = 512
-codex_auth = "/absolute/path/to/factory-codex/auth.json"
 github_token_env = "FACTORY_GITHUB_TOKEN"
 ```
 

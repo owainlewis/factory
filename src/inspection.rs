@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use regex::Regex;
 use serde::Serialize;
 
-use crate::storage::{Run, RunContainer, Task, TaskState};
+use crate::storage::{Run, RunContainer, RunSandbox, Task, TaskState};
 
 const MAX_SUMMARY_BYTES: usize = 240;
 const MAX_DETAIL_BYTES: usize = 16 * 1024;
@@ -125,6 +125,7 @@ pub struct RunInspection {
     pub error: Option<BoundedText>,
     pub activity: Option<BoundedText>,
     pub container: Option<ContainerView>,
+    pub sandbox: Option<SandboxView>,
 }
 
 #[derive(Debug, Serialize)]
@@ -139,8 +140,25 @@ pub struct ContainerView {
     pub removed_at: Option<i64>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SandboxView {
+    pub name: String,
+    pub instance_id: String,
+    pub template_ref: String,
+    pub sbx_version: String,
+    pub limits: String,
+    pub state: String,
+    pub exit_code: Option<i32>,
+    pub removed_at: Option<i64>,
+}
+
 impl RunInspection {
-    pub fn new(run: &Run, task: &Task, container: Option<&RunContainer>) -> Self {
+    pub fn new(
+        run: &Run,
+        task: &Task,
+        container: Option<&RunContainer>,
+        sandbox: Option<&RunSandbox>,
+    ) -> Self {
         Self {
             run: RunView::from(run),
             task: TaskView::from(task),
@@ -157,6 +175,16 @@ impl RunInspection {
                 state: container.state.clone(),
                 exit_code: container.exit_code,
                 removed_at: container.removed_at,
+            }),
+            sandbox: sandbox.map(|sandbox| SandboxView {
+                name: sandbox.sandbox_name.clone(),
+                instance_id: sandbox.instance_id.clone(),
+                template_ref: sandbox.template_ref.clone(),
+                sbx_version: sandbox.sbx_version.clone(),
+                limits: sandbox.limits_json.clone(),
+                state: sandbox.state.clone(),
+                exit_code: sandbox.exit_code,
+                removed_at: sandbox.removed_at,
             }),
         }
     }
@@ -273,6 +301,13 @@ pub fn print_inspection(inspection: &RunInspection) {
         println!("Container state: {}", safe_text(&container.state));
         println!("Container image: {}", safe_text(&container.image_id));
         println!("Container limits: {}", safe_text(&container.limits));
+    }
+    if let Some(sandbox) = &inspection.sandbox {
+        println!("Sandbox: {}", safe_text(&sandbox.name));
+        println!("Sandbox state: {}", safe_text(&sandbox.state));
+        println!("Sandbox template: {}", safe_text(&sandbox.template_ref));
+        println!("Sandbox version: {}", safe_text(&sandbox.sbx_version));
+        println!("Sandbox limits: {}", safe_text(&sandbox.limits));
     }
     print_detail("Result", inspection.result.as_ref());
     print_detail("Error", inspection.error.as_ref());

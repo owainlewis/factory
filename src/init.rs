@@ -13,7 +13,6 @@ use crate::config::{Config, ExecutionMode, repository_remote_identity};
 const TRIAGE_WORKFLOW: &str = include_str!("../.factory/workflows/triage/WORKFLOW.md");
 const IMPLEMENT_WORKFLOW: &str = include_str!("../.factory/workflows/implement/WORKFLOW.md");
 const GITHUB_SOURCE: &str = include_str!("../.factory/sources/github");
-const WORKER_DOCKERFILE: &str = include_str!("../.factory/Dockerfile");
 
 #[derive(Debug, Clone)]
 pub struct InitOptions {
@@ -111,11 +110,10 @@ impl fmt::Display for InitReport {
         } else if self.exit_code() == 0 {
             writeln!(formatter, "Next:")?;
             writeln!(formatter, "  edit .factory/config.toml for your Project")?;
-            if self.execution_mode == ExecutionMode::Docker {
-                writeln!(
-                    formatter,
-                    "  docker build -f .factory/Dockerfile -t factory-codex:dev ."
-                )?;
+            if self.execution_mode == ExecutionMode::DockerSandbox {
+                writeln!(formatter, "  sbx login")?;
+                writeln!(formatter, "  sbx secret set -g openai --oauth")?;
+                writeln!(formatter, "  gh auth token | sbx secret set -g github")?;
             }
             writeln!(formatter, "  factory validate")?;
             writeln!(formatter, "  factory run")
@@ -154,7 +152,7 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
     let repository = discover_repository(&options.repository)?;
     let workflows = plan_workflow_directory(&repository)?;
     let config = plan_config(&options.config_path, &repository, options.execution_mode)?;
-    let assets = plan_default_assets(&repository, config.execution_mode)?;
+    let assets = plan_default_assets(&repository)?;
 
     if options.check {
         return Ok(InitReport {
@@ -400,9 +398,9 @@ fn plan_workflow_directory(repository: &Path) -> Result<DirectoryPlan> {
     })
 }
 
-fn plan_default_assets(repository: &Path, execution_mode: ExecutionMode) -> Result<Vec<FilePlan>> {
+fn plan_default_assets(repository: &Path) -> Result<Vec<FilePlan>> {
     let factory = repository.join(".factory");
-    let mut assets = vec![
+    let assets = vec![
         plan_file(
             factory.join("workflows/triage/WORKFLOW.md"),
             TRIAGE_WORKFLOW,
@@ -419,13 +417,6 @@ fn plan_default_assets(repository: &Path, execution_mode: ExecutionMode) -> Resu
             "implementation workflow",
         )?,
     ];
-    if execution_mode == ExecutionMode::Docker {
-        assets.push(plan_file(
-            factory.join("Dockerfile"),
-            WORKER_DOCKERFILE,
-            "Docker worker image",
-        )?);
-    }
     Ok(assets)
 }
 
@@ -560,11 +551,10 @@ fn default_config(execution_mode: ExecutionMode) -> String {
     document["worker"]["timeout"] = value("2h");
     document["worker"]["maximum_timeout"] = value("8h");
     document["worker"]["max_concurrent"] = value(1);
-    if execution_mode == ExecutionMode::Docker {
-        document["worker"]["image"] = value("factory-codex:dev");
+    if execution_mode == ExecutionMode::DockerSandbox {
+        document["worker"]["template"] = value("docker/sandbox-templates:codex");
         document["worker"]["memory"] = value("8g");
         document["worker"]["cpus"] = value(4);
-        document["worker"]["pids"] = value(512);
     }
     document["source"] = Item::Table(Table::new());
     document["source"]["command"] =

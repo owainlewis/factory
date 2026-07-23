@@ -302,29 +302,26 @@ fn run_refuses_an_override_root_containing_an_unscoped_ledger() {
 }
 
 #[test]
-fn init_docker_mode_creates_worker_configuration_and_dockerfile() {
+fn init_docker_sandbox_mode_creates_worker_configuration() {
     let fixture = Fixture::new();
 
     fixture
         .command()
-        .args(["init", "--execution-mode", "docker"])
+        .args(["init", "--execution-mode", "docker-sandbox"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Dockerfile"))
-        .stdout(predicate::str::contains("docker build"));
+        .stdout(predicate::str::contains("sbx login"))
+        .stdout(predicate::str::contains("sbx secret set -g openai"));
 
     let config = fs::read_to_string(fixture.config_path()).unwrap();
-    assert!(config.contains("sandbox = \"docker\""));
+    assert!(config.contains("sandbox = \"docker_sandbox\""));
     assert!(config.contains("[worker]"));
     assert!(config.contains("runtime = \"codex\""));
-    assert!(config.contains("image = \"factory-codex:dev\""));
+    assert!(config.contains("template = \"docker/sandbox-templates:codex\""));
     assert!(config.contains("memory = \"8g\""));
     assert!(config.contains("cpus = 4"));
-    assert!(config.contains("pids = 512"));
-    assert_eq!(
-        fs::read_to_string(fixture.repository.join(".factory/Dockerfile")).unwrap(),
-        include_str!("../.factory/Dockerfile")
-    );
+    assert!(!config.contains("pids ="));
+    assert!(!fixture.repository.join(".factory/Dockerfile").exists());
 }
 
 #[test]
