@@ -1,110 +1,39 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="720" viewBox="0 0 960 720" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="620" viewBox="0 0 960 620" role="img" aria-labelledby="title desc">
   <title id="title">The AI-native software development lifecycle</title>
-  <desc id="desc">A repository-owned clockwise cycle moves through Intake, Spec, Task, Build, Validate, Review, Merge, and Learn. Factory runs bounded tasks inside repository-defined workflows while evidence, telemetry, incidents, and product feedback return learned context to intake.</desc>
+  <desc id="desc">A minimal clockwise cycle moves through Intake, Spec, Task, Build, Validate, Review, Merge, and Learn. Learning returns feedback and evidence to Intake for the next repository-owned pass.</desc>
   <defs>
-    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
-      <feDropShadow dx="0" dy="7" stdDeviation="10" flood-color="#172033" flood-opacity=".09"/>
-    </filter>
-    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0 0 10 5 0 10z" fill="#8793aa"/>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 10 5 0 10z" fill="#171717"/>
     </marker>
     <style>
-      .text{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;fill:#172033}
-      .eyebrow{font-size:14px;font-weight:760;letter-spacing:1.35px;fill:#2e5cc2}
-      .heading{font-size:28px;font-weight:740;letter-spacing:-.45px}
-      .stage{font-size:18px;font-weight:730}
-      .number{font-size:13px;font-weight:780}
-      .detail{font-size:14px;fill:#5f6c84}
-      .flow{fill:none;stroke:#8793aa;stroke-width:3;stroke-linecap:round;marker-end:url(#arrow)}
-      .card{fill:#fff;stroke:#dce2ee;stroke-width:2}
+      .text{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;fill:#171717}
+      .stage{font-size:20px;font-weight:450;letter-spacing:-.25px}
+      .center{font-size:34px;font-weight:400;letter-spacing:-1px}
     </style>
   </defs>
 
-  <rect width="960" height="720" rx="28" fill="#f7f8fc"/>
-  <text class="text eyebrow" x="48" y="58">AN AI-NATIVE DEVELOPMENT LOOP</text>
-  <text class="text heading" x="48" y="95">From trusted intent to validated evidence, then learn and repeat</text>
+  <rect width="960" height="620" fill="#fff"/>
 
-  <g transform="translate(-160)">
-    <g aria-hidden="true">
-      <path class="flow" d="M689 157A231 231 0 0 1 770 195"/>
-      <path class="flow" d="M841 246A231 231 0 0 1 880 327"/>
-      <path class="flow" d="M883 397A231 231 0 0 1 873 486"/>
-      <path class="flow" d="M790 545A231 231 0 0 1 718 579"/>
-      <path class="flow" d="M591 587A231 231 0 0 1 516 540"/>
-      <path class="flow" d="M439 498A231 231 0 0 1 429 416"/>
-      <path class="flow" d="M397 347A231 231 0 0 1 434 257"/>
-      <path class="flow" d="M490 199A231 231 0 0 1 562 172"/>
-    </g>
+  <circle cx="480" cy="340" r="176" fill="none" stroke="#171717" stroke-width="2.5"/>
+  <path d="M450 167Q480 157 510 167" fill="none" stroke="#171717" stroke-width="2.5" marker-end="url(#arrow)"/>
 
-    <circle cx="640" cy="372" r="142" fill="#fff" stroke="#dce2ee" stroke-width="2"/>
-    <circle cx="640" cy="372" r="125" fill="#f9f7ff" stroke="#e0d8f7" stroke-width="2" stroke-dasharray="5 7"/>
-    <circle cx="640" cy="320" r="23" fill="#7457d6"/>
-    <path d="M628 320h24M640 308v24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
-    <text class="text" x="640" y="365" text-anchor="middle" font-size="29" font-weight="760" letter-spacing="-.6">Factory</text>
-    <text class="text detail" x="640" y="394" text-anchor="middle">runs bounded tasks inside</text>
-    <text class="text detail" x="640" y="416" text-anchor="middle">repository-owned workflows</text>
+  <circle cx="480" cy="164" r="5.5" fill="#1267e9"/>
+  <path d="M480 130v28" fill="none" stroke="#1267e9" stroke-width="2" stroke-dasharray="4 5"/>
 
-  <g filter="url(#shadow)">
-    <g>
-      <rect class="card" x="570" y="121" width="140" height="72" rx="18"/>
-      <circle cx="594" cy="145" r="13" fill="#eaf1ff"/>
-      <text class="text number" x="594" y="150" text-anchor="middle" fill="#2e5cc2">1</text>
-      <text class="text stage" x="616" y="151">Intake</text>
-      <text class="text detail" x="640" y="177" text-anchor="middle">trusted intent</text>
-    </g>
-    <g>
-      <rect class="card" x="780" y="177" width="148" height="72" rx="18"/>
-      <circle cx="804" cy="201" r="13" fill="#eaf1ff"/>
-      <text class="text number" x="804" y="206" text-anchor="middle" fill="#2e5cc2">2</text>
-      <text class="text stage" x="826" y="207">Spec</text>
-      <text class="text detail" x="854" y="233" text-anchor="middle">define the outcome</text>
-    </g>
-    <g>
-      <rect class="card" x="841" y="336" width="140" height="72" rx="18"/>
-      <circle cx="865" cy="360" r="13" fill="#eaf1ff"/>
-      <text class="text number" x="865" y="365" text-anchor="middle" fill="#2e5cc2">3</text>
-      <text class="text stage" x="887" y="366">Task</text>
-      <text class="text detail" x="911" y="392" text-anchor="middle">bound agent work</text>
-    </g>
-    <g>
-      <rect class="card" x="780" y="495" width="148" height="72" rx="18"/>
-      <circle cx="804" cy="519" r="13" fill="#f1ecff"/>
-      <text class="text number" x="804" y="524" text-anchor="middle" fill="#6042b4">4</text>
-      <text class="text stage" x="826" y="525">Build</text>
-      <text class="text detail" x="854" y="551" text-anchor="middle">make the change</text>
-    </g>
-    <g>
-      <rect class="card" x="570" y="551" width="140" height="72" rx="18"/>
-      <circle cx="594" cy="575" r="13" fill="#f1ecff"/>
-      <text class="text number" x="594" y="580" text-anchor="middle" fill="#6042b4">5</text>
-      <text class="text stage" x="616" y="581">Validate</text>
-      <text class="text detail" x="640" y="607" text-anchor="middle">prove behavior</text>
-    </g>
-    <g>
-      <rect class="card" x="352" y="495" width="156" height="72" rx="18"/>
-      <circle cx="376" cy="519" r="13" fill="#fff2de"/>
-      <text class="text number" x="376" y="524" text-anchor="middle" fill="#9a6300">6</text>
-      <text class="text stage" x="398" y="525">Review</text>
-      <text class="text detail" x="430" y="551" text-anchor="middle">inspect evidence</text>
-    </g>
-    <g>
-      <rect x="299" y="336" width="140" height="72" rx="18" fill="#f0faf7" stroke="#b5e1d5" stroke-width="2"/>
-      <circle cx="323" cy="360" r="13" fill="#e5f6f1"/>
-      <text class="text number" x="323" y="365" text-anchor="middle" fill="#087a5d">7</text>
-      <text class="text stage" x="345" y="366">Merge</text>
-      <text class="text detail" x="369" y="392" text-anchor="middle">human decision</text>
-    </g>
-    <g>
-      <rect x="352" y="177" width="156" height="72" rx="18" fill="#eef4ff" stroke="#c5d5f7" stroke-width="2"/>
-      <circle cx="376" cy="201" r="13" fill="#eaf1ff"/>
-      <text class="text number" x="376" y="206" text-anchor="middle" fill="#2e5cc2">8</text>
-      <text class="text stage" x="398" y="207">Learn</text>
-      <text class="text detail" x="430" y="233" text-anchor="middle">feedback + signals</text>
-    </g>
+  <g class="text stage">
+    <text x="480" y="105" text-anchor="middle" fill="#1267e9">Intake</text>
+    <text x="686" y="207">Spec</text>
+    <text x="716" y="347">Task</text>
+    <text x="674" y="493">Build</text>
+    <text x="480" y="576" text-anchor="middle">Validate</text>
+    <text x="286" y="493" text-anchor="end">Review</text>
+    <text x="244" y="347" text-anchor="end">Merge</text>
+    <text x="274" y="207" text-anchor="end">Learn</text>
   </g>
 
-  <rect x="280" y="654" width="720" height="42" rx="21" fill="#eef4ff" stroke="#c5d5f7" stroke-width="2"/>
-  <circle cx="307" cy="675" r="8" fill="#2e5cc2"/>
-  <text class="text detail" x="326" y="680">Telemetry, incidents, and product feedback become trusted input for the next pass.</text>
+  <g class="text center" text-anchor="middle">
+    <text x="480" y="306">An AI-native</text>
+    <text x="480" y="348">software</text>
+    <text x="480" y="390">factory</text>
   </g>
 </svg>
