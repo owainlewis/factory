@@ -8,6 +8,7 @@ pub mod daemon;
 pub mod docker;
 pub mod execution;
 pub mod github;
+mod hash;
 pub mod init;
 pub mod inspection;
 pub mod runtime;

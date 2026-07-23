@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::hash::encode_lower;
 use crate::storage::DATABASE_NAME;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -809,7 +810,7 @@ pub fn repository_data_directory(repository: &Path) -> Result<PathBuf> {
     hasher.update(identity.as_bytes());
     hasher.update(b"\0");
     hasher.update(repository.as_os_str().as_encoded_bytes());
-    let digest = format!("{:x}", hasher.finalize());
+    let digest = encode_lower(hasher.finalize());
     let digest = &digest[..20];
     let configured_base = env::var_os("FACTORY_DATA_HOME").map(PathBuf::from);
     let base = match configured_base.as_ref() {
