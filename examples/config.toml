@@ -10,23 +10,17 @@ maximum_timeout = "8h"
 max_concurrent = 1
 
 [source]
-command = [
-  ".factory/sources/github",
-  "--project-owner", "owainlewis",
-  "--project-number", "16",
-  "--status-field", "Status",
-  "--trusted-user", "owainlewis",
-]
+command = [".factory/sources/github"]
 
 [trigger.triage]
 type = "source"
-state = "Ready For Spec"
-labels = ["factory:ready"]
+state = "open"
+labels = ["factory:ready-for-spec"]
 workflow = ".factory/workflows/triage/WORKFLOW.md"
 
 [trigger.implement]
 type = "source"
-state = "Ready To Implement"
-labels = ["factory:ready"]
+state = "open"
+labels = ["factory:ready-to-implement"]
 workflow = ".factory/workflows/implement/WORKFLOW.md"
 timeout = "4h"

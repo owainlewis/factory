@@ -54,36 +54,34 @@ maximum_timeout = "8h"
 max_concurrent = 1
 
 [source]
-command = [
-  ".factory/sources/github",
-  "--project-owner", "owainlewis",
-  "--project-number", "16",
-  "--status-field", "Status",
-  "--trusted-user", "owainlewis",
-]
+command = [".factory/sources/github"]
 
 [trigger.triage]
 type = "source"
-state = "Ready For Spec"
-labels = ["factory:ready"]
+state = "open"
+labels = ["factory:ready-for-spec"]
 workflow = ".factory/workflows/triage/WORKFLOW.md"
 
 [trigger.implement]
 type = "source"
-state = "Ready To Implement"
-labels = ["factory:ready"]
+state = "open"
+labels = ["factory:ready-to-implement"]
 workflow = ".factory/workflows/implement/WORKFLOW.md"
 timeout = "4h"
 ```
 
 The state and label names are passed to the repository's source adapter. They
-are not hard-coded pipeline roles. You can add another source trigger:
+are not hard-coded pipeline roles. `.factory/sources/github` matches plain
+issue state (open/closed) and labels directly; it does not read a GitHub
+Project or any board. A pipeline stage is whichever label a trigger is
+configured to match. You may still add the issue to a project board for your
+own visualization; Factory never reads it. You can add another source trigger:
 
 ```toml
 [trigger.urgent-fix]
 type = "source"
-state = "Ready To Implement"
-labels = ["urgent", "factory:ready"]
+state = "open"
+labels = ["urgent", "factory:ready-to-implement"]
 workflow = ".factory/workflows/urgent-fix/WORKFLOW.md"
 ```
 
@@ -123,8 +121,8 @@ factory run --once
 factory run
 ```
 
-Validation checks the repository, source, configured Project statuses, trusted
-users, workflow paths, worker runtime, and sandbox requirements. The one-shot
+Validation checks the repository, source, configured trigger states and labels,
+workflow paths, worker runtime, and sandbox requirements. The one-shot
 command records matching tasks but launches no workers. The continuous command
 polls cheaply and starts a worker only when work is eligible.
 

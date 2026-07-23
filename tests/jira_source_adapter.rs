@@ -62,7 +62,7 @@ fn jira_adapter_builds_exact_jql_and_normalizes_issues() {
 
     let invocation = fs::read_to_string(calls).unwrap();
     assert!(invocation.contains(
-        "project = \"SPS\" AND creator = currentUser() AND status = \"Ready To Implement\" AND labels = \"factory-ready\" ORDER BY updated ASC"
+        "project = \"SPS\" AND status = \"Ready To Implement\" AND labels = \"factory-ready\" ORDER BY updated ASC"
     ));
     assert!(invocation.contains("--fields summary,description,status,labels"));
 }

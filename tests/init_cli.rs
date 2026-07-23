@@ -122,9 +122,9 @@ fn init_creates_complete_repository_factory_without_overwriting() {
     assert!(config.contains("runtime = \"codex\""));
     assert!(config.contains("[source]"));
     assert!(config.contains("\".factory/sources/github\""));
-    assert!(config.contains("\"--project-owner\", \"example\""));
-    assert!(config.contains("\"--project-number\", \"16\""));
-    assert!(config.contains("\"--trusted-user\", \"example\""));
+    assert!(!config.contains("--project-owner"));
+    assert!(!config.contains("--project-number"));
+    assert!(!config.contains("--trusted-user"));
     assert!(config.contains("[worker]"));
     assert!(config.contains("max_concurrent = 1"));
     assert!(config.contains("[trigger.triage]"));

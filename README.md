@@ -49,8 +49,9 @@ A useful team workflow looks like this:
 
 ![A ticket moves from specification through implementation and review](docs/assets/readme/ticket-workflow.svg)
 
-These names are not built into Factory. They are ordinary GitHub Project status
-values and repository-owned prompts.
+These names are not built into Factory. They are ordinary issue labels and
+repository-owned prompts. You may also track them on a GitHub Project board for
+your own visualization; Factory does not read that board.
 
 ## A deliberately small model
 
@@ -104,24 +105,18 @@ maximum_timeout = "8h"
 max_concurrent = 1
 
 [source]
-command = [
-  ".factory/sources/github",
-  "--project-owner", "owainlewis",
-  "--project-number", "16",
-  "--status-field", "Status",
-  "--trusted-user", "owainlewis",
-]
+command = [".factory/sources/github"]
 
 [trigger.triage]
 type = "source"
-state = "Ready For Spec"
-labels = ["factory:ready"]
+state = "open"
+labels = ["factory:ready-for-spec"]
 workflow = ".factory/workflows/triage/WORKFLOW.md"
 
 [trigger.implement]
 type = "source"
-state = "Ready To Implement"
-labels = ["factory:ready"]
+state = "open"
+labels = ["factory:ready-to-implement"]
 workflow = ".factory/workflows/implement/WORKFLOW.md"
 timeout = "4h"
 ```
@@ -146,20 +141,25 @@ For each source trigger, Factory appends `--state <state>` and one `--label
 <label>` argument per configured label. The command must print one JSON object:
 
 ```json
-{"issues":[{"key":"#56","title":"Fix the daemon","description":"What is broken and why","state":"Ready To Implement","labels":["factory:ready"],"url":"https://github.com/example/repo/issues/56","author":"owainlewis"}]}
+{"issues":[{"key":"#56","title":"Fix the daemon","description":"What is broken and why","state":"open","labels":["factory:ready-to-implement"],"url":"https://github.com/example/repo/issues/56"}]}
 ```
 
 The generated GitHub adapter is a small shell script that uses your existing
-authenticated `gh` CLI. It searches the exact Project owner and number,
-paginates matching issues, and returns only issues created by a configured
-trusted user. A Jira repository can replace it with a script backed by
-`jiractrl` without changing Factory's core.
+authenticated `gh` CLI. It lists issues by their own state (open or closed) and
+labels directly with `gh issue list`; it does not read a GitHub Project or any
+board. Add an issue to a project board if you want a visual view of it, but
+Factory never reads that board, and it does not filter by author — treat
+label/triage access on the repository as the trust boundary, and do not point
+Factory at a repository where untrusted people have that access. A Jira
+repository can replace it with a script backed by `jiractrl` without changing
+Factory's core.
 
 ### Jira with `jiractrl`
 
 This repository includes a Jira adapter backed by `jiractrl` and `jq`. It asks
-Jira for only issues that match the trigger's exact state and labels, and
-restricts work to tickets created by the authenticated Jira user.
+Jira for only issues that match the trigger's exact state and labels. As with
+the GitHub adapter, it does not filter by author — restrict trust to people who
+can label issues in the target Jira project.
 
 Configure `jiractrl` first:
 
@@ -197,8 +197,7 @@ timeout = "4h"
 The adapter builds bounded JQL such as:
 
 ```text
-project = "SPS" AND creator = currentUser()
-AND status = "Ready To Implement" AND labels = "factory-ready"
+project = "SPS" AND status = "Ready To Implement" AND labels = "factory-ready"
 ```
 
 Factory passes only the Jira key, such as `SPS-123`, to the worker. The Jira
@@ -237,9 +236,8 @@ factory workflows
 
 For a first demonstration:
 
-1. Create an issue and add it to the configured GitHub Project.
-2. Give it the state and every label configured by `trigger.triage`.
-3. Start Factory:
+1. Create an issue with every label configured by `trigger.triage`.
+2. Start Factory:
 
 ```sh
 factory run
@@ -250,8 +248,7 @@ eligible. Use `factory run --once` to poll and record eligible work without
 launching an agent.
 
 This repository includes a repeatable setup script for the complete two-flow
-demo. It creates a real issue, adds it to GitHub Project 16, and moves it to
-`Ready For Spec`:
+demo. It creates a real issue labelled `factory:ready-for-spec`:
 
 ```sh
 ./scripts/create-demo-issue.sh \
@@ -259,11 +256,11 @@ demo. It creates a real issue, adds it to GitHub Project 16, and moves it to
   "src/config.rs contains a large test module guarded by cfg(all(test, any())), so it can never compile or run. Remove the unreachable module without changing active configuration behaviour."
 ```
 
-Then run `cargo run -- run`. The specification agent refines the idea and stops
-in `Creating Spec`. Review the ticket on the board and move it to
-`Ready To Implement`. The same Factory process starts the implementation agent,
-which writes the code, opens a pull request, waits for CI and review, and moves
-the ticket to `Reviewing`. Use a fresh idea each time you repeat the demo.
+Then run `cargo run -- run`. The specification agent refines the idea and
+removes `factory:ready-for-spec`. Review the ticket and add
+`factory:ready-to-implement`. The same Factory process starts the
+implementation agent, which writes the code and opens a pull request. Use a
+fresh idea each time you repeat the demo.
 
 Inspect and operate the durable queue with:
 

@@ -1,27 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_owner=""
-project_number=""
-status_field="Status"
 state=""
 labels=()
-has_labels=0
-trusted_users=()
 
 while (($# > 0)); do
   case "$1" in
-    --project-owner|--project-number|--status-field|--state|--label|--trusted-user)
+    --state|--label)
       [[ $# -ge 2 ]] || { echo "missing value for $1" >&2; exit 2; }
       option="$1"
       value="$2"
       case "$option" in
-        --project-owner) project_owner="$value" ;;
-        --project-number) project_number="$value" ;;
-        --status-field) status_field="$value" ;;
         --state) state="$value" ;;
-        --label) labels+=("$value"); has_labels=1 ;;
-        --trusted-user) trusted_users+=("$value") ;;
+        --label) labels+=("$value") ;;
       esac
       shift 2
       ;;
@@ -32,63 +23,23 @@ while (($# > 0)); do
   esac
 done
 
-[[ -n "$project_owner" ]] || { echo "--project-owner is required" >&2; exit 2; }
-[[ "$project_number" =~ ^[1-9][0-9]*$ ]] || { echo "--project-number must be positive" >&2; exit 2; }
-[[ -n "$status_field" ]] || { echo "--status-field is required" >&2; exit 2; }
 [[ -n "$state" ]] || { echo "--state is required" >&2; exit 2; }
-(( ${#trusted_users[@]} > 0 )) || { echo "at least one --trusted-user is required" >&2; exit 2; }
 
-repository=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
-project_id=$(gh project view "$project_number" \
-  --owner "$project_owner" \
-  --format json \
-  --jq '.id')
+args=(issue list --state "$state" --limit 1000 --json number,title,body,url,labels)
+for label in "${labels[@]}"; do
+  args+=(--label "$label")
+done
 
-search_query="repo:${repository} is:issue is:open"
-if (( has_labels )); then
-  for label in "${labels[@]}"; do
-    escaped=${label//\\/\\\\}
-    escaped=${escaped//\"/\\\"}
-    search_query+=" label:\"${escaped}\""
-  done
-fi
-
-graphql='query($searchQuery:String!,$endCursor:String,$statusField:String!){search(type:ISSUE,query:$searchQuery,first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{... on Issue{number title body url author{login} labels(first:100){nodes{name}} projectItems(first:100){nodes{project{id} fieldValueByName(name:$statusField){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}}'
-results=$(mktemp -t factory-github-source.XXXXXX)
-trap 'rm -f "$results"' EXIT
-
-trusted=$(printf '%s\n' "${trusted_users[@]}")
-if ! FACTORY_SOURCE_PROJECT_ID="$project_id" \
-  FACTORY_SOURCE_STATE="$state" \
-  FACTORY_SOURCE_TRUSTED_USERS="$trusted" \
-  gh api graphql --paginate \
-    -f query="$graphql" \
-    -F searchQuery="$search_query" \
-    -F statusField="$status_field" \
-    --jq '
-      .data.search.nodes[]
-      | . as $issue
-      | select(any(.projectItems.nodes[]?; .project.id == env.FACTORY_SOURCE_PROJECT_ID and .fieldValueByName.name == env.FACTORY_SOURCE_STATE))
-      | select(any(env.FACTORY_SOURCE_TRUSTED_USERS | split("\n")[]; . == $issue.author.login))
-      | {
-          key: ("#" + (.number | tostring)),
-          title: .title,
-          description: .body[0:2000],
-          state: env.FACTORY_SOURCE_STATE,
-          labels: [.labels.nodes[].name],
-          url: .url,
-          author: .author.login
-        }
-    ' >"$results"
-then
-  exit 1
-fi
-
-printf '{"issues":['
-separator=""
-while IFS= read -r issue; do
-  [[ -n "$issue" ]] || continue
-  printf '%s%s' "$separator" "$issue"
-  separator=","
-done <"$results"
-printf ']}\n'
+FACTORY_SOURCE_STATE="$state" gh "${args[@]}" --jq '
+  {issues: [
+    .[]
+    | {
+        key: ("#" + (.number | tostring)),
+        title: .title,
+        description: (.body // "")[0:2000],
+        state: env.FACTORY_SOURCE_STATE,
+        labels: [.labels[].name],
+        url: .url
+      }
+  ]}
+'
