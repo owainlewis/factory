@@ -97,15 +97,15 @@ fn catalog_display_groups_the_repository_and_aligns_workflows() {
         },
         WorkflowEntry {
             repository,
-            path: std::path::PathBuf::from("/tmp/pr-review.md"),
-            id: "pr-review".to_owned(),
+            path: std::path::PathBuf::from("/tmp/bug-finder.md"),
+            id: "bug-finder".to_owned(),
             trigger: Some(Trigger::Schedule {
-                expression: "*/10 * * * *".to_owned(),
+                expression: "0 9 * * 1".to_owned(),
                 timezone: chrono_tz::Europe::London,
             }),
             runtime: Some("codex".to_owned()),
-            timeout: Some(Duration::from_secs(30 * 60)),
-            prompt: Some("Review it.".to_owned()),
+            timeout: Some(Duration::from_secs(2 * 60 * 60)),
+            prompt: Some("Find a bug.".to_owned()),
             errors: Vec::new(),
         },
     ];
@@ -114,11 +114,40 @@ fn catalog_display_groups_the_repository_and_aligns_workflows() {
         WorkflowCatalog { entries }.to_string(),
         "Repository: /tmp/a-long-repository-path\n\
          \n\
-         WORKFLOW   TRIGGER                                                    RUNTIME  TIMEOUT  VALIDITY\n\
-         ─────────  ─────────────────────────────────────────────────────────  ───────  ───────  ────────\n\
-         implement  source state \"open\" labels [\"factory:ready-to-implement\"]  codex    4h       valid\n\
-         pr-review  schedule \"*/10 * * * *\" (Europe/London)                    codex    30m      valid\n"
+         WORKFLOW    TRIGGER                                                    RUNTIME  TIMEOUT  VALIDITY\n\
+         ──────────  ─────────────────────────────────────────────────────────  ───────  ───────  ────────\n\
+         implement   source state \"open\" labels [\"factory:ready-to-implement\"]  codex    4h       valid\n\
+         bug-finder  schedule \"0 9 * * 1\" (Europe/London)                       codex    2h       valid\n"
     );
+}
+
+#[test]
+fn jira_example_uses_flat_executable_workflow_paths() {
+    let config = include_str!("../examples/jira-config.toml").replace(
+        r#"command = [
+  ".factory/sources/jira",
+  "--project", "SPS",
+  "--max-results", "100",
+]"#,
+        r#"command = [".factory/sources/github"]"#,
+    );
+    let fixture = Fixture::new(&config);
+    for name in ["triage", "implement"] {
+        fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("examples/jira-{name}.md")),
+            fixture
+                .repository
+                .join(format!(".factory/workflows/jira-{name}.md")),
+        )
+        .unwrap();
+    }
+
+    let config = fixture.config().unwrap();
+    WorkflowCatalog::load(&config)
+        .unwrap()
+        .validate_all()
+        .unwrap();
 }
 
 #[test]

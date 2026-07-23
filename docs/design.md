@@ -48,20 +48,20 @@ command = [".factory/sources/github"]
 type = "source"
 state = "open"
 labels = ["factory:ready-for-spec"]
-workflow = ".factory/workflows/triage/WORKFLOW.md"
+workflow = ".factory/workflows/triage.md"
 
 [trigger.implement]
 type = "source"
 state = "open"
 labels = ["factory:ready-to-implement"]
-workflow = ".factory/workflows/implement/WORKFLOW.md"
+workflow = ".factory/workflows/implement.md"
 timeout = "4h"
 
-[trigger.maintenance]
+[trigger.bug-finder]
 type = "schedule"
 schedule = "0 9 * * 1"
 timezone = "Europe/London"
-workflow = ".factory/workflows/maintenance/WORKFLOW.md"
+workflow = ".factory/workflows/bug-finder.md"
 ```
 
 The tagged trigger type is important. It makes the data model unambiguous and

@@ -21,6 +21,13 @@ put it in issue content, logs, or workflow files.
 
 ## Configure the adapter
 
+Copy the Jira workflow examples into Factory's executable workflow directory:
+
+```sh
+cp examples/jira-triage.md .factory/workflows/jira-triage.md
+cp examples/jira-implement.md .factory/workflows/jira-implement.md
+```
+
 Replace the source and workflow paths in `.factory/config.toml`. Adapt the
 project key, state names, and label to your Jira project:
 
@@ -36,13 +43,13 @@ command = [
 type = "source"
 state = "Ready For Spec"
 labels = ["factory-ready"]
-workflow = ".factory/workflows/jira/triage/WORKFLOW.md"
+workflow = ".factory/workflows/jira-triage.md"
 
 [trigger.implement]
 type = "source"
 state = "Ready To Implement"
 labels = ["factory-ready"]
-workflow = ".factory/workflows/jira/implement/WORKFLOW.md"
+workflow = ".factory/workflows/jira-implement.md"
 timeout = "4h"
 ```
 
@@ -52,10 +59,11 @@ The adapter builds bounded JQL such as:
 project = "SPS" AND status = "Ready To Implement" AND labels = "factory-ready"
 ```
 
-Factory passes only the Jira key, such as `SPS-123`, to the worker. The Jira
-workflow tells the agent to fetch, comment, update, and transition the live
-ticket with `jiractrl`; `git` and `gh` remain responsible for code and pull
-requests.
+Factory passes only the Jira key, such as `SPS-123`, to the worker. The example
+Jira workflows tell the agent to fetch, comment, update, and transition the
+live ticket with `jiractrl`; `git` and `gh` remain responsible for code and pull
+requests. Their source templates live under `examples/`, so the default
+`.factory/workflows` directory stays limited to the three GitHub workflows.
 
 ## Worker requirements
 

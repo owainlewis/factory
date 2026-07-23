@@ -72,7 +72,7 @@ fn manual_workflow_run_resolves_context_and_invokes_codex() {
     fs::create_dir(&binaries).unwrap();
     initialize_repository(&repository, &data_home);
     fs::write(
-        workflows.join("triage/WORKFLOW.md"),
+        workflows.join("triage.md"),
         "Inspect without changing files.\n",
     )
     .unwrap();
@@ -146,24 +146,12 @@ fn run_executes_a_schedule_triggered_workflow_once() {
     fs::create_dir_all(&workflows).unwrap();
     fs::create_dir(&binaries).unwrap();
     initialize_repository(&repository, &data_home);
-    fs::create_dir(workflows.join("pr-review")).unwrap();
     fs::write(
-        workflows.join("pr-review/WORKFLOW.md"),
-        "Review open pull requests.\n",
+        workflows.join("bug-finder.md"),
+        "Find one real bug in the code.\n",
     )
     .unwrap();
     let config_path = repository.join(".factory/config.toml");
-    let mut config = fs::read_to_string(&config_path).unwrap();
-    config.push_str(
-        r#"
-[trigger.pr-review]
-type = "schedule"
-schedule = "*/10 * * * *"
-timezone = "UTC"
-workflow = ".factory/workflows/pr-review/WORKFLOW.md"
-"#,
-    );
-    fs::write(&config_path, config).unwrap();
 
     let prompt_capture = temp.path().join("prompt.txt");
     let executable = binaries.join("codex");
@@ -205,7 +193,7 @@ printf 'Scheduled workflow complete.' > "$output"
         .unwrap()
         .args([
             "run",
-            "pr-review",
+            "bug-finder",
             "--config",
             config_path.to_str().unwrap(),
         ])
@@ -216,11 +204,11 @@ printf 'Scheduled workflow complete.' > "$output"
         .assert()
         .success()
         .stdout(predicate::str::contains("Scheduled workflow complete."))
-        .stderr(predicate::str::contains("Running workflow \"pr-review\""));
+        .stderr(predicate::str::contains("Running workflow \"bug-finder\""));
 
     let prompt = fs::read_to_string(prompt_capture).unwrap();
-    assert!(prompt.contains("Review open pull requests."));
-    assert!(prompt.contains("Workflow: pr-review"));
+    assert!(prompt.contains("Find one real bug in the code."));
+    assert!(prompt.contains("Workflow: bug-finder"));
 }
 
 #[test]
@@ -233,12 +221,6 @@ fn run_rejects_a_direct_schedule_when_docker_is_configured() {
     let codex_marker = temp.path().join("codex-invoked");
     fs::create_dir_all(&workflows).unwrap();
     initialize_repository(&repository, &data_home);
-    fs::create_dir(workflows.join("pr-review")).unwrap();
-    fs::write(
-        workflows.join("pr-review/WORKFLOW.md"),
-        "Review open pull requests.\n",
-    )
-    .unwrap();
     let config_path = repository.join(".factory/config.toml");
     let config = fs::read_to_string(&config_path)
         .unwrap()
@@ -247,15 +229,12 @@ fn run_rejects_a_direct_schedule_when_docker_is_configured() {
             "max_concurrent = 1",
             "max_concurrent = 1\ntemplate = \"docker/sandbox-templates:codex\"\nmemory = \"1g\"\ncpus = 1",
         );
-    let config = format!(
-        "{config}\n[trigger.pr-review]\ntype = \"schedule\"\nschedule = \"*/10 * * * *\"\ntimezone = \"UTC\"\nworkflow = \".factory/workflows/pr-review/WORKFLOW.md\"\n"
-    );
     fs::write(&config_path, config).unwrap();
     let path = install_codex_invocation_sentinel(&binaries);
 
     Command::cargo_bin("factory")
         .unwrap()
-        .args(["run", "pr-review"])
+        .args(["run", "bug-finder"])
         .current_dir(&repository)
         .env("FACTORY_DATA_HOME", &data_home)
         .env("FACTORY_CODEX_MARKER", &codex_marker)
@@ -281,11 +260,7 @@ fn run_rejects_source_triggered_workflows_before_launch() {
     let codex_marker = temp.path().join("codex-invoked");
     fs::create_dir_all(&workflows).unwrap();
     initialize_repository(&repository, &data_home);
-    fs::write(
-        workflows.join("triage/WORKFLOW.md"),
-        "Triage the supplied issue.\n",
-    )
-    .unwrap();
+    fs::write(workflows.join("triage.md"), "Triage the supplied issue.\n").unwrap();
     let path = install_codex_invocation_sentinel(&binaries);
 
     Command::cargo_bin("factory")
@@ -313,7 +288,7 @@ fn concurrent_manual_runs_exit_when_shared_output_is_full_and_unread() {
     fs::create_dir_all(&workflows).unwrap();
     fs::create_dir(&binaries).unwrap();
     initialize_repository(&repository, &data_home);
-    fs::write(workflows.join("triage/WORKFLOW.md"), "Be verbose.\n").unwrap();
+    fs::write(workflows.join("triage.md"), "Be verbose.\n").unwrap();
     let executable = binaries.join("codex");
     fs::write(
         &executable,

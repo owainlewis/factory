@@ -43,7 +43,7 @@ fn fixture() -> (
             .success()
     );
     let repository = repository.canonicalize().unwrap();
-    let workflow = repository.join(".factory/workflows/implement/WORKFLOW.md");
+    let workflow = repository.join(".factory/workflows/implement.md");
     fs::create_dir_all(workflow.parent().unwrap()).unwrap();
     fs::write(&workflow, "Implement the issue.\n").unwrap();
     let source = repository.join(".factory/sources/test");
