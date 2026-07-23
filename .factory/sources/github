@@ -25,21 +25,28 @@ done
 
 [[ -n "$state" ]] || { echo "--state is required" >&2; exit 2; }
 
-args=(issue list --state "$state" --limit 1000 --json number,title,body,url,labels)
-for label in "${labels[@]}"; do
-  args+=(--label "$label")
-done
+max_results=1000
+args=(issue list --state "$state" --limit "$((max_results + 1))" --json number,title,body,url,labels)
+if ((${#labels[@]} > 0)); then
+  for label in "${labels[@]}"; do
+    args+=(--label "$label")
+  done
+fi
 
-FACTORY_SOURCE_STATE="$state" gh "${args[@]}" --jq '
-  {issues: [
-    .[]
-    | {
-        key: ("#" + (.number | tostring)),
-        title: .title,
-        description: (.body // "")[0:2000],
-        state: env.FACTORY_SOURCE_STATE,
-        labels: [.labels[].name],
-        url: .url
-      }
-  ]}
+FACTORY_SOURCE_STATE="$state" FACTORY_SOURCE_MAX_RESULTS="$max_results" gh "${args[@]}" --jq '
+  if (length > (env.FACTORY_SOURCE_MAX_RESULTS | tonumber)) then
+    error("gh issue list result was truncated; narrow the trigger state or labels")
+  else
+    {issues: [
+      .[]
+      | {
+          key: ("#" + (.number | tostring)),
+          title: .title,
+          description: (.body // "")[0:2000],
+          state: env.FACTORY_SOURCE_STATE,
+          labels: [.labels[].name],
+          url: .url
+        }
+    ]}
+  end
 '
