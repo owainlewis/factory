@@ -21,15 +21,11 @@ prompts, skills, checks, and handoff conventions. Humans remain responsible for
 noticing ready work, starting an agent, waiting for CI, forwarding review
 feedback, and remembering to try again.
 
-That does not scale. Bugs sit in backlogs while capable agents are idle, and the
-quality of the result depends on who happened to run the session.
+Factory makes this process repeatable. It plays a similar role to CI/CD: work
+enters a consistent system, receives the same checks and feedback loops, and
+keeps moving until it reaches a human decision.
 
-Factory makes the agentic process repeatable. It plays a similar role to CI/CD:
-it does not replace engineering judgement, but it ensures that work enters a
-consistent system, receives the same checks and feedback loops, and keeps moving
-until it reaches a human decision.
-
-The goal is not to replace developers. Humans still decide what matters, supply
+The goal is not to replace developers. Humans decide what matters, supply
 product context, review the result, and remain accountable for what ships.
 Factory removes the manual coordination between those decisions.
 
@@ -45,13 +41,12 @@ problem, clarify scope, add testable acceptance criteria, and ask for the
 smallest missing human decision. Once the ticket is clear, it becomes the spec
 for implementation.
 
-A useful team workflow looks like this:
-
 ![A ticket moves from specification through implementation and review](docs/assets/readme/ticket-workflow.svg)
 
-These names are not built into Factory. They are ordinary issue labels and
-repository-owned prompts. You may also track them on a GitHub Project board for
-your own visualization; Factory does not read that board.
+The status names in this example are not built into Factory. They are ordinary
+issue labels and repository-owned prompts. You may also track them on a
+GitHub Project board for your own visualization; Factory does not read that
+board.
 
 ## A deliberately small model
 
@@ -77,143 +72,27 @@ The boundary is intentional:
 Factory does not encode a fixed SDLC, a workflow graph, or deterministic GitHub
 effects. A trigger means only: **when this condition is true, run this prompt**.
 
-## Configuration
+## Human review is the shipping boundary
 
-Factory v1 is scoped to one repository and one GitHub source. Configuration and
-workflows live with the code:
+Factory revalidates live source state immediately before execution, but does
+not filter tickets by author: the trust boundary for a source trigger is
+whoever can apply labels on the repository or project, not who opened the
+ticket. Do not point Factory at a repository or project where untrusted people
+have label or triage access. Ticket bodies, comments, linked pull requests, and
+attachments remain untrusted input regardless. Use narrow credentials and
+protected branches that the worker cannot bypass.
 
-```text
-.factory/
-  config.toml
-  sources/github
-  workflows/
-    triage/WORKFLOW.md
-    implement/WORKFLOW.md
-```
+Factory-created software pull requests remain for human review. Factory and its
+default workflows never merge them or enable automatic merge. The human who
+merges remains accountable for what ships.
 
-A complete worktree configuration looks like this:
+For the complete trust and isolation model, read the
+[operations guide](docs/operations.md) and [security policy](SECURITY.md).
 
-```toml
-version = 1
-poll_every = "30s"
+## Get started
 
-[worker]
-runtime = "codex"
-sandbox = "worktree"
-timeout = "2h"
-maximum_timeout = "8h"
-max_concurrent = 1
-
-[source]
-command = [".factory/sources/github"]
-
-[trigger.triage]
-type = "source"
-state = "open"
-labels = ["factory:ready-for-spec"]
-workflow = ".factory/workflows/triage/WORKFLOW.md"
-
-[trigger.implement]
-type = "source"
-state = "open"
-labels = ["factory:ready-to-implement"]
-workflow = ".factory/workflows/implement/WORKFLOW.md"
-timeout = "4h"
-```
-
-Every trigger has an explicit type:
-
-- `source` runs when the source command finds an issue matching every configured
-  condition.
-- `schedule` runs once for each due cron instant.
-
-Source triggers run once during one continuous visit to the condition.
-Leaving and later re-entering rearms the trigger, which gives humans a simple
-way to request another agent pass. Schedule triggers run once per scheduled
-instant.
-
-Workflow files contain instructions only. They have no frontmatter and cannot
-change the trigger, runtime, sandbox, or timeout. A workflow may tell the agent
-to read repository-local skills such as `.agents/skills/verify-behavior`, but
-Factory does not install, load, or assign special meaning to skills.
-
-For each source trigger, Factory appends `--state <state>` and one `--label
-<label>` argument per configured label. The command must print one JSON object:
-
-```json
-{"issues":[{"key":"#56","title":"Fix the daemon","description":"What is broken and why","state":"open","labels":["factory:ready-to-implement"],"url":"https://github.com/example/repo/issues/56"}]}
-```
-
-The generated GitHub adapter is a small shell script that uses your existing
-authenticated `gh` CLI. It lists issues by their own state (open or closed) and
-labels directly with `gh issue list`; it does not read a GitHub Project or any
-board. Add an issue to a project board if you want a visual view of it, but
-Factory never reads that board, and it does not filter by author — treat
-label/triage access on the repository as the trust boundary, and do not point
-Factory at a repository where untrusted people have that access. A Jira
-repository can replace it with a script backed by `jiractrl` without changing
-Factory's core.
-
-### Jira with `jiractrl`
-
-This repository includes a Jira adapter backed by `jiractrl` and `jq`. It asks
-Jira for only issues that match the trigger's exact state and labels. As with
-the GitHub adapter, it does not filter by author — restrict trust to people who
-can label issues in the target Jira project.
-
-Configure `jiractrl` first:
-
-```sh
-export JIRACTRL_BASE_URL="https://jira.example.com"
-export JIRACTRL_TOKEN="..."
-jiractrl auth check
-```
-
-Then replace the source and workflow paths in `.factory/config.toml`. Adapt the
-project key, state names, and label to your Jira project:
-
-```toml
-[source]
-command = [
-  ".factory/sources/jira",
-  "--project", "SPS",
-  "--max-results", "100",
-]
-
-[trigger.triage]
-type = "source"
-state = "Ready For Spec"
-labels = ["factory-ready"]
-workflow = ".factory/workflows/jira/triage/WORKFLOW.md"
-
-[trigger.implement]
-type = "source"
-state = "Ready To Implement"
-labels = ["factory-ready"]
-workflow = ".factory/workflows/jira/implement/WORKFLOW.md"
-timeout = "4h"
-```
-
-The adapter builds bounded JQL such as:
-
-```text
-project = "SPS" AND status = "Ready To Implement" AND labels = "factory-ready"
-```
-
-Factory passes only the Jira key, such as `SPS-123`, to the worker. The Jira
-workflow tells the agent to fetch, comment, update, and transition the live
-ticket with `jiractrl`; `git` and `gh` remain responsible for code and pull
-requests.
-
-The Jira demo currently uses `sandbox = "worktree"`, so the worker inherits the
-host's `jiractrl` binary and Jira environment variables. A Docker worker would
-also need `jiractrl` in its image and an explicit Jira credential mount or
-environment policy; that is not included in this demo path.
-
-## Run it
-
-Install Rust, Git, the GitHub CLI, and the Codex CLI. Authenticate the host tools
-and install Factory:
+Install Rust, Git, the GitHub CLI, and the Codex CLI, then authenticate the host
+tools and install Factory:
 
 ```sh
 gh auth login
@@ -227,89 +106,19 @@ From the repository Factory will manage:
 factory init
 ```
 
-Edit `.factory/config.toml`, then validate the source and resolved workflows:
+Edit the generated configuration and workflows for your repository, then
+validate them and start Factory:
 
 ```sh
 factory validate
-factory workflows
-```
-
-For a first demonstration:
-
-1. Create an issue with every label configured by `trigger.triage`.
-2. Start Factory:
-
-```sh
+factory run --once
 factory run
 ```
 
-Factory will poll continuously, but it starts an agent only when work becomes
-eligible. Use `factory run --once` to poll and record eligible work without
-launching an agent.
-
-This repository includes a repeatable setup script for the complete two-flow
-demo. It creates a real issue labelled `factory:ready-for-spec`:
-
-```sh
-./scripts/create-demo-issue.sh \
-  "Remove the unreachable legacy configuration test module" \
-  "src/config.rs contains a large test module guarded by cfg(all(test, any())), so it can never compile or run. Remove the unreachable module without changing active configuration behaviour."
-```
-
-Then run `cargo run -- run`. The specification agent refines the idea and
-removes `factory:ready-for-spec`. Review the ticket and add
-`factory:ready-to-implement`. The same Factory process starts the
-implementation agent, which writes the code and opens a pull request. Use a
-fresh idea each time you repeat the demo.
-
-Inspect and operate the durable queue with:
-
-```sh
-factory tasks
-factory runs
-factory inspect RUN_ID
-factory cancel RUN_ID
-factory cleanup RUN_ID
-factory reset
-```
-
-Run a schedule-triggered workflow immediately with `factory run ID`. This form
-rejects source-triggered workflows because the loop is what binds the issue
-identity and live source state to the task. The explicit `factory workflow run
-ID` command remains available for manual repository-only workflow runs.
-
-`factory reset` previews the repository ledger and any legacy global ledger.
-After retained runs have been cleaned, use `factory reset --confirm` to remove
-durable task history and start fresh. Configuration, workflows, branches, and
-worktree directories are preserved.
-
-## Sandboxes and trust
-
-`sandbox = "worktree"` is the simplest local path. It protects the canonical Git
-checkout, but the worker still shares the host, network, credentials, and
-process boundary. Use it only for trusted work.
-
-For stronger local isolation, initialize with:
-
-```sh
-factory init --execution-mode docker
-```
-
-Docker workers use a standalone clone, a read-only root filesystem, resource
-limits, a dedicated Codex authentication file, and an explicitly named GitHub
-token. The auth file is writable inside the container because Codex may refresh
-OAuth credentials. Keep it separate from your normal login and make it easy to
-revoke. Docker is still not a VM and the worker still has network access and
-repository credentials.
-
-Factory revalidates live source state immediately before execution, but does
-not filter tickets by author: the trust boundary for a source trigger is
-whoever can apply labels on the repository or project, not who opened the
-ticket. Do not point Factory at a repository or project where untrusted people
-have label or triage access. Ticket bodies, comments, linked pull requests, and
-attachments remain untrusted input regardless. Use narrow credentials and
-protected branches that the worker cannot bypass. The default implementation
-workflow leaves pull requests for human review and never merges them.
+The [runnable guide](docs/local-v1.md) covers the complete configuration, source
+contract, first demonstration, and sandbox setup. The
+[operations guide](docs/operations.md) covers inspection, cancellation,
+recovery, and cleanup.
 
 ## V1 scope
 
@@ -322,28 +131,20 @@ V1 intentionally supports:
 - durable queueing, supervision, history, cancellation, and recovery.
 
 Jira, Linear, multiple repositories, other agent runtimes, hosted workers, and
-webhook wake-ups can fit behind the same source/trigger/worker boundaries later.
-They are not reasons to complicate the local system before operating evidence
-demands them.
+webhook wake-ups can fit behind the same source, trigger, workflow, and worker
+boundaries later. This repository includes a [Jira source adapter](docs/jira.md)
+as an example of that extension point, but Jira is not part of the supported V1
+scope.
 
-Read [the architecture](docs/design.md), [the runnable guide](docs/local-v1.md),
-and [the operations guide](docs/operations.md).
+## Learn more
 
-## Development
-
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
-scope, and pull request guidance. Report security issues privately according to
-[SECURITY.md](SECURITY.md).
-
-To develop with Codex in an isolated environment, build and use the
-[Docker Sandbox template](docs/docker-sandbox-template.md). It includes the
-pinned Rust toolchain and a private Docker daemon.
-
-```sh
-cargo fmt --all --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --all-targets
-```
+- [Architecture](docs/design.md)
+- [Setup, configuration, and first run](docs/local-v1.md)
+- [Operations and recovery](docs/operations.md)
+- [Jira source adapter](docs/jira.md)
+- [Docker Sandbox development environment](docs/docker-sandbox-template.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security](SECURITY.md)
 
 ## License
 
