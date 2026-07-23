@@ -515,12 +515,9 @@ fn plan_config(
             })
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let identity = repository_remote_identity(repository)?;
-            let owner = identity
-                .split_once('/')
-                .map(|(owner, _)| owner)
-                .context("GitHub repository identity has no owner")?;
-            let candidate = default_config(requested_mode, owner);
+            repository_remote_identity(repository)
+                .context("repository has no resolvable GitHub remote")?;
+            let candidate = default_config(requested_mode);
             let validated = Config::validate_candidate(&candidate, repository)
                 .context("generated configuration is invalid")?;
             let workspace = validated.workspace_root;
@@ -553,7 +550,7 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn default_config(execution_mode: ExecutionMode, owner: &str) -> String {
+fn default_config(execution_mode: ExecutionMode) -> String {
     let mut document = DocumentMut::new();
     document["version"] = value(1);
     document["poll_every"] = value("30s");
@@ -570,29 +567,20 @@ fn default_config(execution_mode: ExecutionMode, owner: &str) -> String {
         document["worker"]["pids"] = value(512);
     }
     document["source"] = Item::Table(Table::new());
-    document["source"]["command"] = toml_edit::value(toml_edit::Array::from_iter([
-        ".factory/sources/github",
-        "--project-owner",
-        owner,
-        "--project-number",
-        "16",
-        "--status-field",
-        "Status",
-        "--trusted-user",
-        owner,
-    ]));
+    document["source"]["command"] =
+        toml_edit::value(toml_edit::Array::from_iter([".factory/sources/github"]));
     document["trigger"] = Item::Table(Table::new());
     document["trigger"]["triage"] = Item::Table(Table::new());
     document["trigger"]["triage"]["type"] = value("source");
-    document["trigger"]["triage"]["state"] = value("Ready For Spec");
+    document["trigger"]["triage"]["state"] = value("open");
     document["trigger"]["triage"]["labels"] =
-        toml_edit::value(toml_edit::Array::from_iter(["factory:ready"]));
+        toml_edit::value(toml_edit::Array::from_iter(["factory:ready-for-spec"]));
     document["trigger"]["triage"]["workflow"] = value(".factory/workflows/triage/WORKFLOW.md");
     document["trigger"]["implement"] = Item::Table(Table::new());
     document["trigger"]["implement"]["type"] = value("source");
-    document["trigger"]["implement"]["state"] = value("Ready To Implement");
+    document["trigger"]["implement"]["state"] = value("open");
     document["trigger"]["implement"]["labels"] =
-        toml_edit::value(toml_edit::Array::from_iter(["factory:ready"]));
+        toml_edit::value(toml_edit::Array::from_iter(["factory:ready-to-implement"]));
     document["trigger"]["implement"]["workflow"] =
         value(".factory/workflows/implement/WORKFLOW.md");
     document["trigger"]["implement"]["timeout"] = value("4h");

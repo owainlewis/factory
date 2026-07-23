@@ -14,12 +14,7 @@ set -eu
 printf '%s\n' "$*" >> "$GH_LOG"
 case "$1 $2" in
   "auth status") exit 0 ;;
-  "api user") printf '%s\n' "${GH_USER:-owainlewis}" ;;
-  "project view") printf '%s\n' 'PROJECT_ID' ;;
-  "project field-list") printf 'FIELD_ID\tOPTION_ID\n' ;;
   "issue create") printf '%s\n' 'https://github.com/owainlewis/factory/issues/123' ;;
-  "project item-add") printf '%s\n' 'ITEM_ID' ;;
-  "project item-edit") exit 0 ;;
   *) exit 64 ;;
 esac
 "#,
@@ -31,7 +26,7 @@ esac
     }
 
     #[test]
-    fn creates_and_routes_a_demo_issue() {
+    fn creates_a_demo_issue() {
         let temp = tempfile::tempdir().unwrap();
         let bin = temp.path().join("bin");
         let log = temp.path().join("gh.log");
@@ -59,14 +54,12 @@ esac
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("https://github.com/owainlewis/factory/issues/123"));
-        assert!(stdout.contains("Status: Ready For Spec"));
+        assert!(stdout.contains("factory:ready-for-spec"));
         assert!(stdout.contains("cargo run -- run"));
 
         let calls = fs::read_to_string(log).unwrap();
         assert!(calls.contains("issue create --repo owainlewis/factory"));
-        assert!(calls.contains("--label factory:ready"));
-        assert!(calls.contains("project item-add 16 --owner owainlewis"));
-        assert!(calls.contains("project item-edit --id ITEM_ID --project-id PROJECT_ID"));
+        assert!(calls.contains("--label factory:ready-for-spec"));
     }
 
     #[test]
@@ -77,32 +70,5 @@ esac
 
         assert_eq!(output.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&output.stderr).contains("Usage:"));
-    }
-
-    #[test]
-    fn rejects_an_untrusted_github_user_before_creating_an_issue() {
-        let temp = tempfile::tempdir().unwrap();
-        let bin = temp.path().join("bin");
-        let log = temp.path().join("gh.log");
-        fs::create_dir(&bin).unwrap();
-        write_fake_gh(&bin);
-        let path = format!(
-            "{}:{}",
-            bin.display(),
-            std::env::var("PATH").unwrap_or_default()
-        );
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/create-demo-issue.sh");
-
-        let output = Command::new(script)
-            .arg("A rough idea")
-            .env("PATH", path)
-            .env("GH_LOG", &log)
-            .env("GH_USER", "someone-else")
-            .output()
-            .unwrap();
-
-        assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("is not trusted"));
-        assert!(!fs::read_to_string(log).unwrap().contains("issue create"));
     }
 }

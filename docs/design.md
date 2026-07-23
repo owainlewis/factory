@@ -42,24 +42,18 @@ maximum_timeout = "8h"
 max_concurrent = 1
 
 [source]
-command = [
-  ".factory/sources/github",
-  "--project-owner", "owainlewis",
-  "--project-number", "16",
-  "--status-field", "Status",
-  "--trusted-user", "owainlewis",
-]
+command = [".factory/sources/github"]
 
 [trigger.triage]
 type = "source"
-state = "Ready For Spec"
-labels = ["factory:ready"]
+state = "open"
+labels = ["factory:ready-for-spec"]
 workflow = ".factory/workflows/triage/WORKFLOW.md"
 
 [trigger.implement]
 type = "source"
-state = "Ready To Implement"
-labels = ["factory:ready"]
+state = "open"
+labels = ["factory:ready-to-implement"]
 workflow = ".factory/workflows/implement/WORKFLOW.md"
 timeout = "4h"
 
@@ -141,12 +135,12 @@ it:
 New idea or bug
       |
       v
-Ready For Spec --triage prompt--> Creating Spec
+factory:ready-for-spec --triage prompt--> (label removed)
                                         |
                                  human reviews ticket
                                         |
                                         v
-Ready To Implement --implementation prompt--> Reviewing
+factory:ready-to-implement --implementation prompt--> (label removed)
       ^                                             |
       |                                             v
       +-------- human review, CI, agent feedback ---+
@@ -154,14 +148,15 @@ Ready To Implement --implementation prompt--> Reviewing
 
 Triage turns vague work into an executable ticket with context, scope,
 acceptance criteria, constraints, and verification, then stops. A human reviews
-the ticket and moves it to the implementation trigger. Implementation treats
+the ticket and applies the implementation trigger's label. Implementation treats
 the approved ticket as the spec, makes the change, and produces review evidence.
 Humans still choose work and remain accountable for quality. Their feedback
-goes through the issue, review, CI, or Project state so the next agent run can
-continue the loop.
+goes through the issue, review, or CI so the next agent run can continue the
+loop.
 
-The exact names and transitions belong to the team's GitHub Project and prompts.
-Another repository could use `Todo`, `Agent Ready`, or a label instead.
+The exact label names belong to the team's prompts and config, not to Factory.
+A human may still track progress on a GitHub Project board for their own
+visualization; Factory only ever reads issue state and labels, never a board.
 
 ## Durable execution
 
@@ -182,10 +177,12 @@ of deterministic steps.
 
 ## Security boundary
 
-Ticket content is untrusted input. Factory only accepts configured users and
-keeps orchestration policy outside the ticket. Credentials must be scoped to the
-repository and Project being managed. Branch protection should prevent the
-worker identity from bypassing required review.
+Ticket content is untrusted input and keeps orchestration policy outside the
+ticket. Source triggers do not filter by ticket author; the trust boundary is
+whoever can apply labels on the repository, so Factory should not be pointed at
+a repository where untrusted people have label or triage access. Credentials
+must be scoped to the repository being managed. Branch protection should
+prevent the worker identity from bypassing required review.
 
 Worktrees isolate Git state from the canonical checkout but share the host,
 network, credentials, and processes. Docker mode gives each run a standalone

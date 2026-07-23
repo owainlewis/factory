@@ -194,15 +194,15 @@ fn rejects_an_existing_database_that_is_not_writable() {
 }
 
 #[test]
-fn validates_a_configurable_source_state_trigger() {
+fn validates_a_configurable_source_label_trigger() {
     let (temp, path, repository, data_home) = valid_config();
     let contents =
         fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/config.toml")).unwrap();
     fs::write(
         &path,
         contents.replace(
-            "state = \"Ready For Spec\"",
-            "state = \"Queued for engineering\"",
+            "labels = [\"factory:ready-for-spec\"]",
+            "labels = [\"factory:custom-stage\"]",
         ),
     )
     .unwrap();
@@ -226,16 +226,7 @@ fn validates_a_configurable_source_state_trigger() {
         r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "gh version 2.80.0"; exit 0; fi
 if [ "$1" = "auth" ]; then exit 0; fi
-if [ "$1" = "repo" ]; then echo "example/repository"; exit 0; fi
 if [ "$1" = "issue" ] && [ "$2" = "list" ]; then echo '{"issues":[]}'; exit 0; fi
-if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then exit 0; fi
-if [ "$1" = "api" ] && [ "$2" = "user" ] && [ "$GH_TOKEN" = "dedicated-test-token" ]; then echo '{"id":99,"login":"factory-bot"}'; exit 0; fi
-if [ "$1" = "api" ] && [ "$2" = "users/owainlewis" ]; then echo '{"id":1,"login":"owainlewis","node_id":"U_1"}'; exit 0; fi
-if [ "$1" = "project" ] && [ "$2" = "view" ]; then echo '{"id":"PVT_16"}'; exit 0; fi
-if [ "$1" = "project" ] && [ "$2" = "field-list" ]; then
-  echo '{"fields":[{"id":"STATUS","name":"Status","type":"ProjectV2SingleSelectField","options":[{"id":"1","name":"Ready For Spec"},{"id":"2","name":"Creating Spec"},{"id":"3","name":"Queued for engineering"},{"id":"4","name":"Ready To Implement"},{"id":"5","name":"Implementing"},{"id":"6","name":"Reviewing"},{"id":"7","name":"Done"}]}]}'
-  exit 0
-fi
 exit 64
 "#,
     )
@@ -279,16 +270,7 @@ fn rejects_an_empty_source_command() {
         fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/config.toml")).unwrap();
     fs::write(
         &path,
-        contents.replace(
-            r#"command = [
-  ".factory/sources/github",
-  "--project-owner", "owainlewis",
-  "--project-number", "16",
-  "--status-field", "Status",
-  "--trusted-user", "owainlewis",
-]"#,
-            "command = []",
-        ),
+        contents.replace(r#"command = [".factory/sources/github"]"#, "command = []"),
     )
     .unwrap();
 

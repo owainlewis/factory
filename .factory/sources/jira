@@ -39,7 +39,7 @@ escape_jql() {
   printf '%s' "$escaped"
 }
 
-jql="project = \"$(escape_jql "$project")\" AND creator = currentUser() AND status = \"$(escape_jql "$state")\""
+jql="project = \"$(escape_jql "$project")\" AND status = \"$(escape_jql "$state")\""
 if (( has_labels )); then
   for label in "${labels[@]}"; do
     jql+=" AND labels = \"$(escape_jql "$label")\""
