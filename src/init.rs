@@ -552,7 +552,7 @@ fn default_config(execution_mode: ExecutionMode) -> String {
     document["worker"]["maximum_timeout"] = value("8h");
     document["worker"]["max_concurrent"] = value(1);
     if execution_mode == ExecutionMode::DockerSandbox {
-        document["worker"]["template"] = value("docker/sandbox-templates:codex");
+        document["worker"]["template"] = value("docker/sandbox-templates:codex-docker");
         document["worker"]["memory"] = value("8g");
         document["worker"]["cpus"] = value(4);
     }

@@ -549,7 +549,7 @@ fn resolve_worker(raw: RawWorkerConfig) -> Result<WorkerConfig> {
     let template = raw
         .template
         .as_deref()
-        .unwrap_or("docker/sandbox-templates:codex")
+        .unwrap_or("docker/sandbox-templates:codex-docker")
         .trim();
     if template.is_empty()
         || template.chars().count() > 255

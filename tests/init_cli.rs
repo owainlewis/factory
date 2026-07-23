@@ -317,7 +317,7 @@ fn init_docker_sandbox_mode_creates_worker_configuration() {
     assert!(config.contains("sandbox = \"docker_sandbox\""));
     assert!(config.contains("[worker]"));
     assert!(config.contains("runtime = \"codex\""));
-    assert!(config.contains("template = \"docker/sandbox-templates:codex\""));
+    assert!(config.contains("template = \"docker/sandbox-templates:codex-docker\""));
     assert!(config.contains("memory = \"8g\""));
     assert!(config.contains("cpus = 4"));
     assert!(!config.contains("pids ="));

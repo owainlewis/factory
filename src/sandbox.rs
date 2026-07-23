@@ -469,26 +469,51 @@ impl SandboxWorker {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let child = command.spawn().with_context(|| {
+        let mut child = command.spawn().with_context(|| {
             format!(
                 "failed to start Docker Sandboxes CLI at {}",
                 self.executable.display()
             )
         })?;
-        let output = tokio::select! {
-            () = cancellation.cancelled() => bail!("Docker Sandboxes command cancelled"),
-            output = tokio::time::timeout(timeout, child.wait_with_output()) => {
-                output.context("Docker Sandboxes command timed out")??
+        let stdout = child
+            .stdout
+            .take()
+            .context("Docker Sandboxes command has no stdout pipe")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("Docker Sandboxes command has no stderr pipe")?;
+        let stdout_task = tokio::spawn(read_bounded(stdout, MAX_STREAM_BYTES));
+        let stderr_task = tokio::spawn(read_bounded(stderr, MAX_STDERR_BYTES));
+        let status = tokio::select! {
+            () = cancellation.cancelled() => {
+                stdout_task.abort();
+                stderr_task.abort();
+                bail!("Docker Sandboxes command cancelled");
+            }
+            result = tokio::time::timeout(timeout, child.wait()) => {
+                let Ok(status) = result else {
+                    stdout_task.abort();
+                    stderr_task.abort();
+                    bail!("Docker Sandboxes command timed out");
+                };
+                status.context("failed to wait for Docker Sandboxes command")?
             }
         };
-        if !output.status.success() {
+        let stdout = stdout_task
+            .await
+            .context("Docker Sandboxes stdout task panicked")??;
+        let stderr = stderr_task
+            .await
+            .context("Docker Sandboxes stderr task panicked")??;
+        if !status.success() {
             bail!(
                 "Docker Sandboxes command failed with {}: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
+                status,
+                String::from_utf8_lossy(&stderr).trim()
             );
         }
-        String::from_utf8(output.stdout).context("Docker Sandboxes output was not UTF-8")
+        Ok(String::from_utf8_lossy(&stdout).into_owned())
     }
 
     async fn git(&self, clone: &Path, arguments: &[&str]) -> Result<()> {
@@ -703,6 +728,19 @@ fn append_bounded(target: &mut Vec<u8>, chunk: &[u8], maximum: usize) {
     if target.len() > maximum {
         target.drain(..target.len() - maximum);
     }
+}
+
+async fn read_bounded<R: AsyncRead + Unpin>(mut reader: R, maximum: usize) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let read = reader.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        append_bounded(&mut bytes, &chunk[..read], maximum);
+    }
+    Ok(bytes)
 }
 
 fn truncate_tail(value: &str, maximum: usize) -> String {
@@ -1260,5 +1298,25 @@ printf '%s\n' factory-test-instance-11 factory-other-instance-12 codex-project
         assert_eq!(captured.lines, 2);
         assert!(captured.malformed.as_deref().unwrap().contains("exceeded"));
         assert!(captured.text.len() <= MAX_STREAM_BYTES);
+    }
+
+    #[tokio::test]
+    async fn command_output_bounds_stdout_while_it_is_being_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let sbx = temp.path().join("sbx");
+        executable(
+            &sbx,
+            &format!(
+                "#!/bin/sh\nset -eu\nyes x | head -c {}\n",
+                MAX_STREAM_BYTES * 4
+            ),
+        );
+
+        let output = worker(&sbx)
+            .command_output(&["version"], COMMAND_TIMEOUT, &CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert_eq!(output.len(), MAX_STREAM_BYTES);
     }
 }

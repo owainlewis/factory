@@ -7,8 +7,8 @@ daemon are available inside the sandbox.
 
 This template is separate from the sandbox template Factory's own workers use
 when `worker.sandbox = "docker_sandbox"` (configured with `worker.template`,
-e.g. `docker/sandbox-templates:codex`); this template is only the development
-environment used to work on Factory itself with `sbx`.
+e.g. `docker/sandbox-templates:codex-docker`); this template is only the
+development environment used to work on Factory itself with `sbx`.
 
 ## Build and load the template
 
