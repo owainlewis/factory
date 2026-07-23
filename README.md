@@ -11,7 +11,7 @@ creates a durable task, prepares an isolated workspace, and gives one Markdown
 workflow to an agent. The agent uses normal tools such as `gh` and `git` to do
 the work. When nothing matches, Factory does nothing and spends no model tokens.
 
-![Factory turns trusted triggers into durable, reviewable agent work](docs/assets/readme/factory-loop.svg)
+![Development cycle: Intake, Design, Plan, Build, Test, Review, Merge, Deploy, then feedback returns to Intake](docs/assets/readme/factory-loop.svg)
 
 ## Why Factory exists
 
