@@ -1,0 +1,35 @@
+version = 1
+
+[type]
+storage = "labels"
+
+[type.values]
+bug = "bug"
+enhancement = "enhancement"
+documentation = "documentation"
+
+[priority]
+storage = "project_field"
+project_owner = "owainlewis"
+project_number = 16
+field = "Priority"
+
+[priority.values]
+p0 = "P0"
+p1 = "P1"
+p2 = "P2"
+p3 = "P3"
+
+[status]
+storage = "project_field"
+project_owner = "owainlewis"
+project_number = 16
+field = "Status"
+
+[status.values]
+ready_for_spec = "Ready For Spec"
+creating_spec = "Creating Spec"
+ready_to_implement = "Ready To Implement"
+implementing = "Implementing"
+reviewing = "Reviewing"
+done = "Done"
