@@ -331,8 +331,9 @@ impl WorkspaceManager {
     fn remove_orphaned(&self, path: &Path) -> Result<CleanupPreview> {
         let path = absolute_lexical(path)?;
         if path.exists() {
-            fs::remove_dir_all(&path)
-                .with_context(|| format!("failed to remove orphaned workspace {}", path.display()))?;
+            fs::remove_dir_all(&path).with_context(|| {
+                format!("failed to remove orphaned workspace {}", path.display())
+            })?;
         }
         Ok(CleanupPreview {
             path,

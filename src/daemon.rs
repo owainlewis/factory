@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -157,13 +158,23 @@ impl FactoryDaemon {
         let owner = DaemonOwner::new()?;
         ledger.register_daemon_owner(&owner.id, owner.pid)?;
         let owner_heartbeat_shutdown = CancellationToken::new();
+        let owner_resumed_after_pause = Arc::new(AtomicBool::new(false));
         let owner_heartbeat_task = {
             let ledger_path = self.ledger_path.clone();
             let owner_id = owner.id.clone();
+            let owner_pid = owner.pid;
+            let resumed_after_pause = owner_resumed_after_pause.clone();
             let shutdown = owner_heartbeat_shutdown.clone();
             let daemon_cancellation = cancellation.clone();
             tokio::spawn(async move {
-                let result = maintain_owner_lease(&ledger_path, &owner_id, shutdown).await;
+                let result = maintain_owner_lease(
+                    &ledger_path,
+                    &owner_id,
+                    owner_pid,
+                    resumed_after_pause,
+                    shutdown,
+                )
+                .await;
                 if let Err(error) = &result {
                     eprintln!("Factory daemon owner heartbeat failed: {error:#}");
                     daemon_cancellation.cancel();
@@ -236,6 +247,9 @@ impl FactoryDaemon {
 
         let loop_result: Result<()> = async {
             loop {
+                if renew_owner_lease(&mut ledger, &owner)? {
+                    owner_resumed_after_pause.store(true, Ordering::Release);
+                }
                 dispatch_available(
                     &mut ledger,
                     &targets,
@@ -253,27 +267,38 @@ impl FactoryDaemon {
                     &mut retention_warning_shown,
                     &cancellation,
                     &owner,
+                    &owner_resumed_after_pause,
                 )?;
 
                 tokio::select! {
                     _ = cancellation.cancelled() => return Ok(()),
                     _ = recovery_interval.tick() => {
-                        ledger.heartbeat_daemon_owner(&owner.id)?;
-                        reconcile_recovery_state(
+                        if reconcile_recovery_state_for_owner(
                             &mut ledger,
                             &self.ledger_path,
                             &self.config.repositories[0],
                             &self.config.workspace_root,
                             self.sandbox.as_ref().map(SandboxWorker::github_token_env),
-                        )?;
+                            &owner,
+                        )? {
+                            owner_resumed_after_pause.store(true, Ordering::Release);
+                        }
                     }
                     _ = schedule_interval.tick() => {
-                        schedules = initialize_schedules(
-                            &mut ledger,
-                            &targets,
-                            Utc::now(),
-                            &owner.id,
-                        );
+                        if renew_owner_lease(&mut ledger, &owner)? {
+                            owner_resumed_after_pause.store(true, Ordering::Release);
+                        }
+                        let now = Utc::now();
+                        schedules = if owner_resumed_after_pause.swap(false, Ordering::AcqRel) {
+                            initialize_schedules_after_pause(
+                                &mut ledger,
+                                &targets,
+                                now,
+                                &owner.id,
+                            )
+                        } else {
+                            initialize_schedules(&mut ledger, &targets, now, &owner.id)
+                        };
                         evaluate_schedules(&mut ledger, &mut schedules, Utc::now());
                     }
                     completed = source_polls.join_next(), if !source_polls.is_empty() => {
@@ -501,6 +526,49 @@ fn reconcile_recovery_state(
     clone_token_env: Option<&str>,
 ) -> Result<()> {
     report_recovery(ledger.recover_orphaned_runs()?);
+    reconcile_recovery_workspaces(
+        ledger,
+        ledger_path,
+        canonical_repository,
+        workspace_root,
+        clone_token_env,
+    )
+}
+
+fn reconcile_recovery_state_for_owner(
+    ledger: &mut Ledger,
+    ledger_path: &Path,
+    canonical_repository: &Path,
+    workspace_root: &Path,
+    clone_token_env: Option<&str>,
+    owner: &DaemonOwner,
+) -> Result<bool> {
+    let (resumed_after_pause, report) = ledger
+        .renew_daemon_owner_and_recover_orphaned_runs(&owner.id, owner.pid)
+        .with_context(|| {
+            format!(
+                "failed to renew daemon owner {:?} for PID {} during recovery",
+                owner.id, owner.pid
+            )
+        })?;
+    report_recovery(report);
+    reconcile_recovery_workspaces(
+        ledger,
+        ledger_path,
+        canonical_repository,
+        workspace_root,
+        clone_token_env,
+    )?;
+    Ok(resumed_after_pause)
+}
+
+fn reconcile_recovery_workspaces(
+    ledger: &mut Ledger,
+    ledger_path: &Path,
+    canonical_repository: &Path,
+    workspace_root: &Path,
+    clone_token_env: Option<&str>,
+) -> Result<()> {
     reconcile_pending_cleanup(
         ledger,
         canonical_repository,
@@ -806,6 +874,8 @@ fn report_recovery(report: crate::storage::RecoveryReport) {
 async fn maintain_owner_lease(
     ledger_path: &Path,
     owner_id: &str,
+    owner_pid: u32,
+    resumed_after_pause: Arc<AtomicBool>,
     shutdown: CancellationToken,
 ) -> Result<()> {
     let mut ledger = Ledger::open(ledger_path)?;
@@ -814,9 +884,29 @@ async fn maintain_owner_lease(
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return Ok(()),
-            _ = interval.tick() => ledger.heartbeat_daemon_owner(owner_id)?,
+            _ = interval.tick() => {
+                let resumed = ledger
+                    .renew_daemon_owner(owner_id, owner_pid)
+                    .with_context(|| format!(
+                    "failed to renew daemon owner {owner_id:?} for PID {owner_pid}"
+                    ))?;
+                if resumed {
+                    resumed_after_pause.store(true, Ordering::Release);
+                }
+            }
         }
     }
+}
+
+fn renew_owner_lease(ledger: &mut Ledger, owner: &DaemonOwner) -> Result<bool> {
+    ledger
+        .renew_daemon_owner(&owner.id, owner.pid)
+        .with_context(|| {
+            format!(
+                "failed to renew daemon owner {:?} for PID {}",
+                owner.id, owner.pid
+            )
+        })
 }
 
 fn resolve_workflow_target(entry: &WorkflowEntry) -> Option<(String, WorkflowTarget)> {
@@ -849,6 +939,7 @@ fn dispatch_available(
     retention_warning_shown: &mut bool,
     cancellation: &CancellationToken,
     owner: &DaemonOwner,
+    owner_resumed_after_pause: &AtomicBool,
 ) -> Result<()> {
     while runs.len() < global_limit && !cancellation.is_cancelled() {
         let available = targets
@@ -891,15 +982,19 @@ fn dispatch_available(
             *retention_warning_shown = false;
         }
         let mut worker_ledger = Ledger::open(ledger_path)?;
-        let Some(claimed) = ledger.claim_and_start_run_with_workdirs_filtered(
-            &available,
-            &workflow_runtimes,
-            &owner.id,
-            owner.pid,
-            &working_directories,
-            delivery_slots_available,
-        )?
-        else {
+        let (resumed_after_pause, claimed) = ledger
+            .renew_daemon_owner_and_claim_with_workdirs_filtered(
+                &available,
+                &workflow_runtimes,
+                &owner.id,
+                owner.pid,
+                &working_directories,
+                delivery_slots_available,
+            )?;
+        if resumed_after_pause {
+            owner_resumed_after_pause.store(true, Ordering::Release);
+        }
+        let Some(claimed) = claimed else {
             break;
         };
         let task = claimed.task;
@@ -2198,12 +2293,48 @@ fn initialize_schedules_preserving_due(
     initialize_schedules_with_policy(ledger, targets, startup_at, owner_id, true)
 }
 
+fn initialize_schedules_after_pause(
+    ledger: &mut Ledger,
+    targets: &HashMap<String, RepositoryTarget>,
+    startup_at: DateTime<Utc>,
+    owner_id: &str,
+) -> Vec<ScheduledTarget> {
+    initialize_schedules_with_policy_after_pause(ledger, targets, startup_at, owner_id)
+}
+
 fn initialize_schedules_with_policy(
     ledger: &mut Ledger,
     targets: &HashMap<String, RepositoryTarget>,
     startup_at: DateTime<Utc>,
     owner_id: &str,
     preserve_existing_due: bool,
+) -> Vec<ScheduledTarget> {
+    initialize_schedules_with_options(
+        ledger,
+        targets,
+        startup_at,
+        owner_id,
+        preserve_existing_due,
+        false,
+    )
+}
+
+fn initialize_schedules_with_policy_after_pause(
+    ledger: &mut Ledger,
+    targets: &HashMap<String, RepositoryTarget>,
+    startup_at: DateTime<Utc>,
+    owner_id: &str,
+) -> Vec<ScheduledTarget> {
+    initialize_schedules_with_options(ledger, targets, startup_at, owner_id, false, true)
+}
+
+fn initialize_schedules_with_options(
+    ledger: &mut Ledger,
+    targets: &HashMap<String, RepositoryTarget>,
+    startup_at: DateTime<Utc>,
+    owner_id: &str,
+    preserve_existing_due: bool,
+    resumed_after_pause: bool,
 ) -> Vec<ScheduledTarget> {
     let mut schedules = Vec::new();
     for (repository, target) in targets {
@@ -2226,7 +2357,13 @@ fn initialize_schedules_with_policy(
                     target.timeout,
                     &target.prompt,
                 )?;
-                let cursor = ledger.initialize_schedule_cursor(
+                let initialize_cursor = if resumed_after_pause {
+                    Ledger::initialize_schedule_cursor_after_pause
+                } else {
+                    Ledger::initialize_schedule_cursor
+                };
+                let cursor = initialize_cursor(
+                    ledger,
                     repository,
                     workflow,
                     &fingerprint,
@@ -2526,6 +2663,396 @@ mod tests {
                 )]),
             },
         )])
+    }
+
+    #[test]
+    fn resumed_daemon_reconciles_and_claims_without_cancelling_active_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("ledger.db");
+        let targets = scheduled_targets(temp.path(), "* * * * *", chrono_tz::UTC);
+        let owner = DaemonOwner {
+            id: "resumed-owner".to_owned(),
+            pid: std::process::id(),
+        };
+        let mut ledger = Ledger::open(&path).unwrap();
+        ledger.register_daemon_owner(&owner.id, owner.pid).unwrap();
+        let schedules = initialize_schedules(
+            &mut ledger,
+            &targets,
+            utc("2026-07-18T12:00:10Z"),
+            &owner.id,
+        );
+        assert_eq!(schedules[0].next_due, utc("2026-07-18T12:01:00Z"));
+
+        ledger
+            .enqueue(
+                &TaskIdentity::ticket("example/repo", "active-work", "#1", "revision-1").unwrap(),
+            )
+            .unwrap();
+        let runtimes = HashMap::from([
+            (
+                (
+                    "example/repo".to_owned(),
+                    "active-work".to_owned(),
+                    "ticket".to_owned(),
+                ),
+                "codex".to_owned(),
+            ),
+            (
+                (
+                    "example/repo".to_owned(),
+                    "next-work".to_owned(),
+                    "ticket".to_owned(),
+                ),
+                "codex".to_owned(),
+            ),
+        ]);
+        let active_run = ledger
+            .claim_and_start_run(
+                &["example/repo".to_owned()],
+                &runtimes,
+                &owner.id,
+                owner.pid,
+            )
+            .unwrap()
+            .unwrap()
+            .run;
+        ledger
+            .enqueue(
+                &TaskIdentity::ticket("example/repo", "next-work", "#2", "revision-2").unwrap(),
+            )
+            .unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute(
+                "UPDATE daemon_owners SET heartbeat_at = 0 WHERE owner_id = ?1",
+                [&owner.id],
+            )
+            .unwrap();
+
+        let (resumed_after_pause, recovery) = ledger
+            .renew_daemon_owner_and_recover_orphaned_runs(&owner.id, owner.pid)
+            .unwrap();
+        assert!(resumed_after_pause);
+        assert!(recovery.recovered_run_ids.is_empty());
+        assert_eq!(
+            ledger.run(active_run.id).unwrap().unwrap().outcome,
+            "running"
+        );
+
+        let mut resumed = initialize_schedules_after_pause(
+            &mut ledger,
+            &targets,
+            utc("2026-07-18T12:02:10Z"),
+            &owner.id,
+        );
+        assert_eq!(resumed[0].next_due, utc("2026-07-18T12:03:00Z"));
+        evaluate_schedules(&mut ledger, &mut resumed, utc("2026-07-18T12:02:10Z"));
+        assert_eq!(
+            ledger
+                .tasks()
+                .unwrap()
+                .iter()
+                .filter(|task| task.kind == "scheduled")
+                .count(),
+            0
+        );
+
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute(
+                "UPDATE daemon_owners SET heartbeat_at = 0 WHERE owner_id = ?1",
+                [&owner.id],
+            )
+            .unwrap();
+        let (claim_resumed_after_pause, claimed) = ledger
+            .renew_daemon_owner_and_claim_with_workdirs_filtered(
+                &["example/repo".to_owned()],
+                &runtimes,
+                &owner.id,
+                owner.pid,
+                &HashMap::from([("example/repo".to_owned(), temp.path().display().to_string())]),
+                true,
+            )
+            .unwrap();
+        assert!(claim_resumed_after_pause);
+        let claimed = claimed.unwrap();
+        assert_eq!(claimed.task.workflow, "next-work");
+        assert_eq!(
+            ledger.run(active_run.id).unwrap().unwrap().outcome,
+            "running"
+        );
+        let after_claim_pause = initialize_schedules_after_pause(
+            &mut ledger,
+            &targets,
+            utc("2026-07-18T12:04:10Z"),
+            &owner.id,
+        );
+        assert_eq!(after_claim_pause[0].next_due, utc("2026-07-18T12:05:00Z"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn daemon_run_keeps_an_active_worker_and_claims_later_work_after_a_stale_heartbeat() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repository");
+        let remote = temp.path().join("origin.git");
+        let workspace_root = temp.path().join("worktrees");
+        let data_directory = temp.path().join("data");
+        fs::create_dir_all(repository.join(".factory/workflows")).unwrap();
+        fs::create_dir(&workspace_root).unwrap();
+        let git = |directory: &Path, arguments: &[&str]| {
+            let output = Command::new("git")
+                .args(arguments)
+                .current_dir(directory)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {} failed: {}",
+                arguments.join(" "),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&repository, &["init", "-q", "-b", "main"]);
+        git(
+            &repository,
+            &["config", "user.email", "factory@example.test"],
+        );
+        git(&repository, &["config", "user.name", "Factory Test"]);
+        fs::write(repository.join("README.md"), "fixture\n").unwrap();
+        git(&repository, &["add", "README.md"]);
+        git(&repository, &["commit", "-q", "-m", "fixture"]);
+        git(
+            temp.path(),
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                repository.to_str().unwrap(),
+                remote.to_str().unwrap(),
+            ],
+        );
+        git(
+            &repository,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:example/repository.git",
+            ],
+        );
+        git(
+            &repository,
+            &[
+                "config",
+                &format!("url.file://{}.insteadOf", remote.display()),
+                "git@github.com:example/repository.git",
+            ],
+        );
+        let repository = repository.canonicalize().unwrap();
+
+        let workflow = repository.join(".factory/workflows/implement.md");
+        fs::write(&workflow, "Implement the source ticket.\n").unwrap();
+        let source_mode = temp.path().join("source-mode");
+        fs::write(&source_mode, "one\n").unwrap();
+        let source = temp.path().join("source");
+        fs::write(
+            &source,
+            format!(
+                r#"#!/bin/sh
+first='{{"key":"1","title":"First","state":"ready","labels":["factory"],"url":"https://example.test/1","revision":"one"}}'
+if [ "$(cat '{}')" = "two" ]; then
+  second='{{"key":"2","title":"Second","state":"ready","labels":["factory"],"url":"https://example.test/2","revision":"two"}}'
+  printf '{{"issues":[%s,%s]}}\n' "$first" "$second"
+else
+  printf '{{"issues":[%s]}}\n' "$first"
+fi
+"#,
+                source_mode.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&source).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&source, permissions).unwrap();
+
+        let invocation_count = temp.path().join("codex-count");
+        let first_started = temp.path().join("first-started");
+        let release_first = temp.path().join("release-first");
+        let codex = temp.path().join("codex");
+        fs::write(
+            &codex,
+            format!(
+                r#"#!/bin/sh
+if [ "$1" = "--version" ]; then echo "codex-cli 1.2.3"; exit 0; fi
+if [ "$1" = "login" ] && [ "$2" = "status" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+count=0
+if [ -f '{count}' ]; then count=$(cat '{count}'); fi
+count=$((count + 1))
+printf '%s\n' "$count" > '{count}'
+output=''
+previous=''
+for argument in "$@"; do
+  if [ "$previous" = "--output-last-message" ]; then output="$argument"; fi
+  previous="$argument"
+done
+cat >/dev/null
+if [ "$count" -eq 1 ]; then
+  touch '{started}'
+  while [ ! -f '{release}' ]; do sleep 0.02; done
+fi
+printf 'completed %s' "$count" > "$output"
+printf '{{"type":"thread.started","thread_id":"thread-%s"}}\n' "$count"
+"#,
+                count = invocation_count.display(),
+                started = first_started.display(),
+                release = release_first.display(),
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&codex).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&codex, permissions).unwrap();
+
+        let gh = temp.path().join("gh");
+        fs::write(
+            &gh,
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then echo "gh version 2.80.0"; exit 0; fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then echo authenticated; exit 0; fi
+if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+  case "$*" in
+    *defaultBranchRef*) echo "main" ;;
+    *) echo "example/repository" ;;
+  esac
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "repos/example/repository" ]; then
+  printf '{"default_branch":"main"}'
+  exit 0
+fi
+echo "unexpected gh command: $*" >&2
+exit 1
+"#,
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&gh).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&gh, permissions).unwrap();
+
+        let config = Config {
+            repositories: vec![repository.clone()],
+            poll_every: Duration::from_millis(25),
+            default_runtime: "codex".to_owned(),
+            default_timeout: Duration::from_secs(60),
+            maximum_timeout: Duration::from_secs(120),
+            max_concurrent_runs: 1,
+            max_concurrent_runs_per_repository: 1,
+            workspace_root,
+            data_directory: data_directory.clone(),
+            execution_mode: crate::config::ExecutionMode::Worktree,
+            worker: None,
+            triggers: vec![crate::config::TriggerConfig {
+                id: "implement".to_owned(),
+                workflow,
+                timeout: Duration::from_secs(60),
+                kind: crate::config::TriggerKind::Source {
+                    state: "ready".to_owned(),
+                    labels: vec!["factory".to_owned()],
+                },
+            }],
+            source: Some(SourceConfig {
+                command: vec![source.display().to_string()],
+                owner: String::new(),
+                project_number: 0,
+                status_field: String::new(),
+                trusted_users: Vec::new(),
+            }),
+        };
+        let catalog = WorkflowCatalog::load(&config).unwrap();
+        let ledger_path = data_directory.join("factory.db");
+        let daemon = FactoryDaemon::with_clients(
+            config,
+            catalog,
+            &ledger_path,
+            GitHubClient::new(gh),
+            CodexRuntime::new(codex),
+        );
+        let cancellation = CancellationToken::new();
+        let daemon_cancellation = cancellation.clone();
+        let daemon_task = tokio::spawn(async move { daemon.run(daemon_cancellation).await });
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !first_started.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        rusqlite::Connection::open(&ledger_path)
+            .unwrap()
+            .execute("UPDATE daemon_owners SET heartbeat_at = 0", [])
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let heartbeat: i64 = rusqlite::Connection::open(&ledger_path)
+                    .unwrap()
+                    .query_row("SELECT MAX(heartbeat_at) FROM daemon_owners", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                if heartbeat > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!daemon_task.is_finished());
+
+        fs::write(&source_mode, "two\n").unwrap();
+        fs::write(&release_first, "release\n").unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let ledger = Ledger::open(&ledger_path).unwrap();
+                let second_succeeded = ledger.runs(None).unwrap().iter().any(|run| {
+                    run.source_item.as_deref() == Some("2") && run.outcome == "succeeded"
+                });
+                if fs::read_to_string(&invocation_count).is_ok_and(|count| count.trim() == "2")
+                    && second_succeeded
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        cancellation.cancel();
+        daemon_task.await.unwrap().unwrap();
+        let ledger = Ledger::open(&ledger_path).unwrap();
+        let runs = ledger.runs(None).unwrap();
+        assert_eq!(
+            runs.iter()
+                .find(|run| run.source_item.as_deref() == Some("1"))
+                .unwrap()
+                .outcome,
+            "succeeded"
+        );
+        assert_eq!(
+            runs.iter()
+                .find(|run| run.source_item.as_deref() == Some("2"))
+                .unwrap()
+                .outcome,
+            "succeeded"
+        );
     }
 
     #[test]

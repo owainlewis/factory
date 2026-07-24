@@ -1562,6 +1562,48 @@ impl Ledger {
         startup_at: i64,
         owner_id: &str,
     ) -> Result<ScheduleCursor> {
+        self.initialize_schedule_cursor_with_policy(
+            repository,
+            workflow,
+            fingerprint,
+            next_due_at,
+            startup_at,
+            owner_id,
+            false,
+        )
+    }
+
+    pub fn initialize_schedule_cursor_after_pause(
+        &mut self,
+        repository: &str,
+        workflow: &str,
+        fingerprint: &str,
+        next_due_at: i64,
+        startup_at: i64,
+        owner_id: &str,
+    ) -> Result<ScheduleCursor> {
+        self.initialize_schedule_cursor_with_policy(
+            repository,
+            workflow,
+            fingerprint,
+            next_due_at,
+            startup_at,
+            owner_id,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn initialize_schedule_cursor_with_policy(
+        &mut self,
+        repository: &str,
+        workflow: &str,
+        fingerprint: &str,
+        next_due_at: i64,
+        startup_at: i64,
+        owner_id: &str,
+        resumed_after_pause: bool,
+    ) -> Result<ScheduleCursor> {
         if repository.trim().is_empty()
             || workflow.trim().is_empty()
             || fingerprint.trim().is_empty()
@@ -1639,7 +1681,7 @@ impl Ledger {
                 if prior_fingerprint == fingerprint
                     && (prior_due > startup_at
                         || other_matching_owner
-                        || current_owner_matches) =>
+                        || (current_owner_matches && !resumed_after_pause)) =>
             {
                 prior_due
             }
@@ -1817,8 +1859,51 @@ impl Ledger {
         working_directories: &HashMap<String, String>,
         allow_new_ticket_tasks: bool,
     ) -> Result<Option<ClaimedRun>> {
+        self.claim_and_start_run_with_workdirs_filtered_inner(
+            available_repositories,
+            workflow_runtimes,
+            owner_id,
+            owner_pid,
+            working_directories,
+            allow_new_ticket_tasks,
+            false,
+        )
+        .map(|(_, claimed)| claimed)
+    }
+
+    pub fn renew_daemon_owner_and_claim_with_workdirs_filtered(
+        &mut self,
+        available_repositories: &[String],
+        workflow_runtimes: &HashMap<(String, String, String), String>,
+        owner_id: &str,
+        owner_pid: u32,
+        working_directories: &HashMap<String, String>,
+        allow_new_ticket_tasks: bool,
+    ) -> Result<(bool, Option<ClaimedRun>)> {
+        self.claim_and_start_run_with_workdirs_filtered_inner(
+            available_repositories,
+            workflow_runtimes,
+            owner_id,
+            owner_pid,
+            working_directories,
+            allow_new_ticket_tasks,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn claim_and_start_run_with_workdirs_filtered_inner(
+        &mut self,
+        available_repositories: &[String],
+        workflow_runtimes: &HashMap<(String, String, String), String>,
+        owner_id: &str,
+        owner_pid: u32,
+        working_directories: &HashMap<String, String>,
+        allow_new_ticket_tasks: bool,
+        renew_owner: bool,
+    ) -> Result<(bool, Option<ClaimedRun>)> {
         if available_repositories.is_empty() {
-            return Ok(None);
+            return Ok((false, None));
         }
         let available = available_repositories
             .iter()
@@ -1828,6 +1913,37 @@ impl Ledger {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("failed to begin atomic task and run claim")?;
         let now = now_millis()?;
+        let resumed_after_pause = if renew_owner {
+            let previous_heartbeat = transaction
+                .query_row(
+                    "SELECT heartbeat_at FROM daemon_owners
+                     WHERE owner_id = ?1 AND pid = ?2",
+                    params![owner_id, owner_pid],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .context("failed to inspect daemon owner during task claim")?
+                .with_context(|| {
+                    format!(
+                        "daemon owner {owner_id:?} is missing, fenced, or belongs to a different PID"
+                    )
+                })?;
+            let changed = transaction
+                .execute(
+                    "UPDATE daemon_owners SET heartbeat_at = ?1
+                     WHERE owner_id = ?2 AND pid = ?3",
+                    params![now, owner_id, owner_pid],
+                )
+                .context("failed to renew daemon owner during task claim")?;
+            if changed != 1 {
+                bail!(
+                    "daemon owner {owner_id:?} is missing, fenced, or belongs to a different PID"
+                );
+            }
+            previous_heartbeat < now.saturating_sub(DAEMON_OWNER_LEASE_MILLIS)
+        } else {
+            false
+        };
         let owner_is_live = transaction
             .query_row(
                 "SELECT EXISTS(
@@ -1954,7 +2070,7 @@ impl Ledger {
             transaction
                 .commit()
                 .context("failed to finish empty task claim")?;
-            return Ok(None);
+            return Ok((resumed_after_pause, None));
         };
         let runtime = workflow_runtimes
             .get(&(
@@ -2021,7 +2137,7 @@ impl Ledger {
         transaction
             .commit()
             .context("failed to commit atomic task and run claim")?;
-        Ok(Some(ClaimedRun { task, run }))
+        Ok((resumed_after_pause, Some(ClaimedRun { task, run })))
     }
 
     fn claim_next_matching(&mut self, repositories: Option<&str>) -> Result<Option<Task>> {
@@ -2513,10 +2629,85 @@ impl Ledger {
     }
 
     pub fn recover_orphaned_runs(&mut self) -> Result<RecoveryReport> {
+        self.recover_orphaned_runs_inner(None)
+            .map(|(_, report)| report)
+    }
+
+    pub fn renew_daemon_owner_and_recover_orphaned_runs(
+        &mut self,
+        owner_id: &str,
+        owner_pid: u32,
+    ) -> Result<(bool, RecoveryReport)> {
+        self.recover_orphaned_runs_inner(Some((owner_id, owner_pid)))
+    }
+
+    fn recover_orphaned_runs_inner(
+        &mut self,
+        renewing_owner: Option<(&str, u32)>,
+    ) -> Result<(bool, RecoveryReport)> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("failed to begin orphan recovery transaction")?;
+        let recovery_now = now_millis()?;
+        let lease_cutoff = recovery_now.saturating_sub(DAEMON_OWNER_LEASE_MILLIS);
+        let resumed_after_pause = if let Some((owner_id, owner_pid)) = renewing_owner {
+            let registered = transaction
+                .query_row(
+                    "SELECT pid, heartbeat_at FROM daemon_owners WHERE owner_id = ?1",
+                    [owner_id],
+                    |row| Ok((row.get::<_, u32>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()
+                .context("failed to inspect daemon owner during orphan recovery")?;
+            let previous_heartbeat = match registered {
+                Some((registered_pid, _)) if registered_pid != owner_pid => bail!(
+                    "daemon owner {owner_id:?} belongs to PID {registered_pid}, not recovering as PID {owner_pid}"
+                ),
+                Some((_, previous_heartbeat)) => previous_heartbeat,
+                None => bail!("daemon owner {owner_id:?} is fenced or not registered"),
+            };
+            let changed = transaction
+                .execute(
+                    "UPDATE daemon_owners SET heartbeat_at = ?1
+                     WHERE owner_id = ?2 AND pid = ?3",
+                    params![recovery_now, owner_id, owner_pid],
+                )
+                .context("failed to renew daemon owner during orphan recovery")?;
+            if changed != 1 {
+                bail!("daemon owner {owner_id:?} changed while recovery renewed its lease");
+            }
+            previous_heartbeat < lease_cutoff
+        } else {
+            false
+        };
+        let owners = {
+            let mut statement = transaction
+                .prepare("SELECT owner_id, pid, heartbeat_at FROM daemon_owners")
+                .context("failed to prepare daemon owner fencing query")?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u32>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })
+                .context("failed to query daemon owners for fencing")?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .context("failed to read daemon owners for fencing")?
+        };
+        for (owner_id, owner_pid, heartbeat_at) in owners {
+            if heartbeat_at >= lease_cutoff && process_is_alive(owner_pid) {
+                continue;
+            }
+            transaction
+                .execute(
+                    "DELETE FROM daemon_owners WHERE owner_id = ?1 AND pid = ?2",
+                    params![owner_id, owner_pid],
+                )
+                .context("failed to fence stale daemon owner during orphan recovery")?;
+        }
         let active = {
             let mut statement = transaction
                 .prepare("SELECT * FROM runs WHERE outcome = 'running' ORDER BY id")
@@ -2529,7 +2720,6 @@ impl Ledger {
         };
         let mut recovered_run_ids = Vec::new();
         let mut exhausted_run_ids = Vec::new();
-        let lease_cutoff = now_millis()?.saturating_sub(DAEMON_OWNER_LEASE_MILLIS);
         for run in active {
             let owner_is_live = match (&run.owner_id, run.owner_pid) {
                 (Some(owner_id), Some(owner_pid)) => {
@@ -2547,6 +2737,15 @@ impl Ledger {
             };
             if owner_is_live {
                 continue;
+            }
+            if let (Some(owner_id), Some(owner_pid)) = (&run.owner_id, run.owner_pid) {
+                transaction
+                    .execute(
+                        "DELETE FROM daemon_owners
+                         WHERE owner_id = ?1 AND pid = ?2",
+                        params![owner_id, owner_pid],
+                    )
+                    .context("failed to fence stale daemon owner during orphan recovery")?;
             }
             if let (Some(process_id), Some(recorded_identity)) =
                 (run.process_id, run.process_identity.as_deref())
@@ -2608,10 +2807,13 @@ impl Ledger {
         transaction
             .commit()
             .context("failed to commit orphan recovery")?;
-        Ok(RecoveryReport {
-            recovered_run_ids,
-            exhausted_run_ids,
-        })
+        Ok((
+            resumed_after_pause,
+            RecoveryReport {
+                recovered_run_ids,
+                exhausted_run_ids,
+            },
+        ))
     }
 
     pub fn register_daemon_owner(&mut self, owner_id: &str, pid: u32) -> Result<()> {
@@ -2631,20 +2833,36 @@ impl Ledger {
         Ok(())
     }
 
-    pub fn heartbeat_daemon_owner(&mut self, owner_id: &str) -> Result<()> {
+    pub fn renew_daemon_owner(&mut self, owner_id: &str, pid: u32) -> Result<bool> {
+        let registered = self
+            .connection
+            .query_row(
+                "SELECT pid, heartbeat_at FROM daemon_owners WHERE owner_id = ?1",
+                [owner_id],
+                |row| Ok((row.get::<_, u32>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .context("failed to inspect daemon owner before renewal")?;
+        let (registered_pid, previous_heartbeat) = match registered {
+            Some((registered_pid, _)) if registered_pid != pid => bail!(
+                "daemon owner {owner_id:?} belongs to PID {registered_pid}, not renewing PID {pid}"
+            ),
+            Some(registered) => registered,
+            None => bail!("daemon owner {owner_id:?} is not registered"),
+        };
         let now = now_millis()?;
         let changed = self
             .connection
             .execute(
                 "UPDATE daemon_owners SET heartbeat_at = ?1
-                 WHERE owner_id = ?2 AND heartbeat_at >= ?3",
-                params![now, owner_id, now - DAEMON_OWNER_LEASE_MILLIS],
+                 WHERE owner_id = ?2 AND pid = ?3",
+                params![now, owner_id, registered_pid],
             )
-            .context("failed to update daemon owner heartbeat")?;
+            .context("failed to renew daemon owner heartbeat")?;
         if changed != 1 {
-            bail!("daemon owner {owner_id:?} is not registered or its lease expired");
+            bail!("daemon owner {owner_id:?} changed while its lease was being renewed");
         }
-        Ok(())
+        Ok(previous_heartbeat < now.saturating_sub(DAEMON_OWNER_LEASE_MILLIS))
     }
 
     pub fn remove_daemon_owner(&mut self, owner_id: &str) -> Result<()> {

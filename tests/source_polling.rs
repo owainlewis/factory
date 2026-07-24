@@ -3,6 +3,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use factory::config::{Config, ExecutionMode, SourceConfig, TriggerConfig, TriggerKind};
@@ -165,4 +166,52 @@ async fn source_conditions_are_passed_and_matching_work_is_revalidated() {
         .unwrap();
     assert_eq!(reentered.tasks_created(), 1);
     assert_eq!(ledger.tasks().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn failed_source_command_is_reported_and_polling_continues() {
+    let (_temp, config, catalog, mut ledger, source_path) = fixture();
+    let attempts_path = config.repositories[0].join(".source-attempts");
+    fs::write(
+        &source_path,
+        format!(
+            "#!/bin/sh\n\
+             attempts_file='{}'\n\
+             attempts=0\n\
+             if [ -f \"$attempts_file\" ]; then attempts=$(cat \"$attempts_file\"); fi\n\
+             attempts=$((attempts + 1))\n\
+             printf '%s\\n' \"$attempts\" > \"$attempts_file\"\n\
+             if [ \"$attempts\" -eq 1 ]; then printf '%s\\n' 'rate limited' >&2; exit 1; fi\n\
+             printf '%s\\n' '{{\"issues\":[]}}'\n",
+            attempts_path.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&source_path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&source_path, permissions).unwrap();
+
+    let cancellation = CancellationToken::new();
+    let stop = cancellation.clone();
+    let reports = Arc::new(Mutex::new(Vec::new()));
+    let captured = reports.clone();
+    SourceClient
+        .poll_until_cancelled(
+            &config,
+            &catalog,
+            &mut ledger,
+            cancellation,
+            move |report| {
+                let mut captured = captured.lock().unwrap();
+                captured.push((report.failures(), report.tasks_created()));
+                if captured.len() == 2 {
+                    stop.cancel();
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(*reports.lock().unwrap(), vec![(1, 0), (0, 0)]);
+    assert_eq!(fs::read_to_string(attempts_path).unwrap(), "2\n");
 }
