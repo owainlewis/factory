@@ -167,21 +167,32 @@ enum RawTriggerConfig {
 
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
-        Self::load_with_workspace_probe(path, ensure_workspace_writable, false)
+        Self::load_with_workspace_probe(path, ensure_workspace_writable, false, None)
     }
 
     pub fn load_for_inspection(path: &Path) -> Result<Self> {
         Self::load_without_workspace_probe(path)
     }
 
+    #[doc(hidden)]
+    pub fn load_with_data_home(path: &Path, data_home: &Path) -> Result<Self> {
+        Self::load_with_workspace_probe(
+            path,
+            ensure_workspace_writable,
+            false,
+            Some(data_home.to_owned()),
+        )
+    }
+
     pub(crate) fn load_without_workspace_probe(path: &Path) -> Result<Self> {
-        Self::load_with_workspace_probe(path, |_| Ok(()), true)
+        Self::load_with_workspace_probe(path, |_| Ok(()), true, None)
     }
 
     fn load_with_workspace_probe<F>(
         path: &Path,
         workspace_probe: F,
         allow_missing_workspace: bool,
+        data_home: Option<PathBuf>,
     ) -> Result<Self>
     where
         F: FnOnce(&Path) -> Result<()>,
@@ -217,6 +228,7 @@ impl Config {
             repository,
             workspace_probe,
             allow_missing_workspace,
+            data_home,
         )
         .with_context(|| format!("invalid Factory configuration in {}", path.display()))
     }
@@ -224,7 +236,7 @@ impl Config {
     pub(crate) fn validate_candidate(contents: &str, repository: &Path) -> Result<Self> {
         let raw: RawConfig =
             toml::from_str(contents).context("failed to parse candidate config")?;
-        Self::resolve_with_workspace_probe(raw, repository, |_| Ok(()), true)
+        Self::resolve_with_workspace_probe(raw, repository, |_| Ok(()), true, None)
             .context("invalid candidate Factory configuration")
     }
 
@@ -233,6 +245,7 @@ impl Config {
         repository: &Path,
         workspace_probe: F,
         allow_missing_workspace: bool,
+        data_home: Option<PathBuf>,
     ) -> Result<Self>
     where
         F: FnOnce(&Path) -> Result<()>,
@@ -264,7 +277,10 @@ impl Config {
         let repository = canonical_directory("repository", repository, repository)?;
         let triggers =
             resolve_triggers(raw.triggers, &repository, default_timeout, maximum_timeout)?;
-        let data_directory = repository_data_directory(&repository)?;
+        let data_directory = match data_home {
+            Some(data_home) => repository_data_directory_with_base(&repository, Some(data_home))?,
+            None => repository_data_directory(&repository)?,
+        };
         let worker = match execution_mode {
             ExecutionMode::Worktree => {
                 reject_sandbox_options(&raw.worker)?;
@@ -740,6 +756,16 @@ pub fn repository_config_path(repository: &Path) -> PathBuf {
 }
 
 pub fn repository_data_directory(repository: &Path) -> Result<PathBuf> {
+    repository_data_directory_with_base(
+        repository,
+        env::var_os("FACTORY_DATA_HOME").map(PathBuf::from),
+    )
+}
+
+fn repository_data_directory_with_base(
+    repository: &Path,
+    configured_base: Option<PathBuf>,
+) -> Result<PathBuf> {
     let repository = repository
         .canonicalize()
         .with_context(|| format!("failed to resolve repository {}", repository.display()))?;
@@ -751,7 +777,6 @@ pub fn repository_data_directory(repository: &Path) -> Result<PathBuf> {
     hasher.update(repository.as_os_str().as_encoded_bytes());
     let digest = encode_lower(hasher.finalize());
     let digest = &digest[..20];
-    let configured_base = env::var_os("FACTORY_DATA_HOME").map(PathBuf::from);
     let base = match configured_base.as_ref() {
         Some(base) => resolve_data_base(base.clone())?,
         None => dirs::home_dir()
