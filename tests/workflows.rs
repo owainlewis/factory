@@ -8,12 +8,15 @@ use factory::workflow::{Trigger, WorkflowCatalog, WorkflowEntry};
 struct Fixture {
     _temp: tempfile::TempDir,
     repository: std::path::PathBuf,
+    data_home: std::path::PathBuf,
 }
 
 impl Fixture {
     fn new(config: &str) -> Self {
         let temp = tempfile::tempdir().unwrap();
-        let repository = temp.path().join("repository");
+        let temp_path = temp.path().canonicalize().unwrap();
+        let repository = temp_path.join("repository");
+        let data_home = temp_path.join("factory-data");
         fs::create_dir_all(repository.join(".factory/workflows")).unwrap();
         assert!(
             Command::new("git")
@@ -39,6 +42,7 @@ impl Fixture {
         assert_cmd::Command::cargo_bin("factory")
             .unwrap()
             .current_dir(&repository)
+            .env("FACTORY_DATA_HOME", &data_home)
             .arg("init")
             .assert()
             .success();
@@ -46,11 +50,15 @@ impl Fixture {
         Self {
             _temp: temp,
             repository,
+            data_home,
         }
     }
 
     fn config(&self) -> anyhow::Result<Config> {
-        Config::load(&self.repository.join(".factory/config.toml"))
+        Config::load_with_data_home(
+            &self.repository.join(".factory/config.toml"),
+            &self.data_home,
+        )
     }
 }
 
