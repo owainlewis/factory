@@ -260,6 +260,14 @@ impl WorkspaceManager {
     }
 
     pub fn cleanup(&self, path: &Path, confirm: bool) -> Result<(CleanupOutcome, CleanupPreview)> {
+        self.ensure_managed_path(path)?;
+        if self.registered_worktree(path)?.is_none() {
+            if !confirm {
+                let preview = self.preview_cleanup(path)?;
+                return Ok((CleanupOutcome::Previewed, preview));
+            }
+            return Ok((CleanupOutcome::Removed, self.remove_orphaned(path)?));
+        }
         let preview = self.preview_cleanup(path)?;
         if !confirm {
             return Ok((CleanupOutcome::Previewed, preview));
@@ -282,6 +290,10 @@ impl WorkspaceManager {
     }
 
     pub fn cleanup_clean(&self, path: &Path) -> Result<CleanupPreview> {
+        self.ensure_managed_path(path)?;
+        if self.registered_worktree(path)?.is_none() {
+            return self.remove_orphaned(path);
+        }
         let preview = self.preview_cleanup(path)?;
         if preview.dirty {
             bail!(
@@ -298,6 +310,10 @@ impl WorkspaceManager {
     }
 
     pub fn cleanup_disposable(&self, path: &Path) -> Result<CleanupPreview> {
+        self.ensure_managed_path(path)?;
+        if self.registered_worktree(path)?.is_none() {
+            return self.remove_orphaned(path);
+        }
         let preview = self.preview_cleanup(path)?;
         self.git_os([
             OsStr::new("worktree"),
@@ -306,6 +322,23 @@ impl WorkspaceManager {
             preview.path.as_os_str(),
         ])?;
         Ok(preview)
+    }
+
+    /// Removes a managed path that Git no longer recognizes as a worktree, e.g. leftover
+    /// directory debris from a previously interrupted `git worktree remove`. Without this,
+    /// such a path would fail `preview_cleanup`'s registration check forever, permanently
+    /// stranding the task in `cleanup_pending`.
+    fn remove_orphaned(&self, path: &Path) -> Result<CleanupPreview> {
+        let path = absolute_lexical(path)?;
+        if path.exists() {
+            fs::remove_dir_all(&path)
+                .with_context(|| format!("failed to remove orphaned workspace {}", path.display()))?;
+        }
+        Ok(CleanupPreview {
+            path,
+            branch: None,
+            dirty: false,
+        })
     }
 
     pub fn branch_is_pushed(&self, branch: &str) -> Result<bool> {
@@ -853,6 +886,27 @@ mod tests {
             "HEAD"
         );
         manager.cleanup(&workspace.path, true).unwrap();
+        assert!(!workspace.path.exists());
+    }
+
+    #[test]
+    fn cleanup_removes_directory_orphaned_by_an_interrupted_worktree_remove() {
+        let fixture = Fixture::new();
+        let manager = fixture.manager();
+        let workspace = manager
+            .prepare_proposal(93, "main", &fixture.head, DeliveryReuse::Reject)
+            .unwrap();
+
+        // Simulate a prior `git worktree remove` that dropped Git's registration but was
+        // killed before it finished deleting the working directory: the admin metadata is
+        // gone, yet the directory itself is still sitting on disk.
+        let name = workspace.path.file_name().unwrap();
+        fs::remove_dir_all(fixture.repository.join(".git/worktrees").join(name)).unwrap();
+        run(&fixture.repository, ["worktree", "prune"]);
+        assert!(workspace.path.exists());
+
+        let preview = manager.cleanup_disposable(&workspace.path).unwrap();
+        assert_eq!(preview.path, workspace.path);
         assert!(!workspace.path.exists());
     }
 
