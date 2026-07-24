@@ -593,13 +593,11 @@ fn schedule_cursor_atomically_enqueues_advances_and_skips_downtime() {
         .unwrap();
     assert!(
         ledger
-            .heartbeat_daemon_owner("schedule-storage-owner")
-            .unwrap_err()
-            .to_string()
-            .contains("lease expired")
+            .renew_daemon_owner("schedule-storage-owner", std::process::id())
+            .unwrap()
     );
     let after_sleep = ledger
-        .initialize_schedule_cursor(
+        .initialize_schedule_cursor_after_pause(
             "owainlewis/factory",
             "find-bugs",
             "* * * * *|UTC",
@@ -974,6 +972,57 @@ fn expired_daemon_owner_cannot_claim_or_start_work() {
 }
 
 #[test]
+fn stale_daemon_owner_can_only_be_renewed_by_its_registered_identity_and_pid() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
+    let pid = std::process::id();
+    ledger.register_daemon_owner("sleeping-owner", pid).unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE daemon_owners SET heartbeat_at = 0 WHERE owner_id = ?1",
+            ["sleeping-owner"],
+        )
+        .unwrap();
+
+    let wrong_pid = ledger
+        .renew_daemon_owner("sleeping-owner", pid.saturating_add(1))
+        .unwrap_err();
+    assert!(format!("{wrong_pid:#}").contains("belongs to PID"));
+    let wrong_owner = ledger
+        .renew_daemon_owner("different-owner", pid)
+        .unwrap_err();
+    assert!(format!("{wrong_owner:#}").contains("is not registered"));
+
+    let connection = Connection::open(&path).unwrap();
+    let stored: (u32, i64) = connection
+        .query_row(
+            "SELECT pid, heartbeat_at FROM daemon_owners WHERE owner_id = ?1",
+            ["sleeping-owner"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored, (pid, 0));
+    let rows: i64 = connection
+        .query_row("SELECT COUNT(*) FROM daemon_owners", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 1);
+    drop(connection);
+
+    assert!(ledger.renew_daemon_owner("sleeping-owner", pid).unwrap());
+    let heartbeat: i64 = Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT heartbeat_at FROM daemon_owners WHERE owner_id = ?1",
+            ["sleeping-owner"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(heartbeat > 0);
+}
+
+#[test]
 fn owner_lease_is_checked_after_waiting_for_the_claim_lock() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("ledger.db");
@@ -1026,6 +1075,91 @@ fn owner_lease_is_checked_after_waiting_for_the_claim_lock() {
         TaskState::Queued
     );
     assert!(ledger.runs(None).unwrap().is_empty());
+}
+
+#[test]
+fn daemon_claim_renews_the_owner_after_waiting_past_the_lease() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut setup = Ledger::open(&path).unwrap();
+    setup.enqueue(&ticket("renewing-claim-lock-wait")).unwrap();
+    setup
+        .register_daemon_owner("renewing-claim-owner", std::process::id())
+        .unwrap();
+    let now = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE daemon_owners SET heartbeat_at = ?1 WHERE owner_id = ?2",
+            rusqlite::params![now - 9_500, "renewing-claim-owner"],
+        )
+        .unwrap();
+    drop(setup);
+
+    let mut claimant = Ledger::open(&path).unwrap();
+    let blocker = Connection::open(&path).unwrap();
+    blocker.execute_batch("BEGIN IMMEDIATE;").unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let waiting = {
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            claimant.renew_daemon_owner_and_claim_with_workdirs_filtered(
+                &["owainlewis/factory".to_owned()],
+                &ticket_runtimes(),
+                "renewing-claim-owner",
+                std::process::id(),
+                &HashMap::from([(
+                    "owainlewis/factory".to_owned(),
+                    "/worktrees/factory-3".to_owned(),
+                )]),
+                true,
+            )
+        })
+    };
+    barrier.wait();
+    thread::sleep(Duration::from_millis(700));
+    blocker.execute_batch("COMMIT;").unwrap();
+
+    let (resumed_after_pause, claimed) = waiting.join().unwrap().unwrap();
+    assert!(resumed_after_pause);
+    let claimed = claimed.unwrap();
+    assert_eq!(claimed.task.state, TaskState::Running);
+    assert_eq!(
+        claimed.run.owner_id.as_deref(),
+        Some("renewing-claim-owner")
+    );
+}
+
+#[test]
+fn orphan_recovery_fences_a_stale_idle_owner() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
+    ledger
+        .register_daemon_owner("idle-stale-owner", std::process::id())
+        .unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE daemon_owners SET heartbeat_at = 0 WHERE owner_id = ?1",
+            ["idle-stale-owner"],
+        )
+        .unwrap();
+
+    let report = ledger.recover_orphaned_runs().unwrap();
+    assert!(report.recovered_run_ids.is_empty());
+    assert!(report.exhausted_run_ids.is_empty());
+    let error = ledger
+        .renew_daemon_owner("idle-stale-owner", std::process::id())
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("is not registered"));
 }
 
 #[test]
@@ -1339,11 +1473,21 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
             Some("PR https://github.com/owainlewis/factory/pull/99 SECRET=hunter2"),
         )
         .unwrap();
-    ledger.remove_daemon_owner("interrupted-owner").unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE daemon_owners SET heartbeat_at = 0 WHERE owner_id = ?1",
+            ["interrupted-owner"],
+        )
+        .unwrap();
 
     let report = ledger.recover_orphaned_runs().unwrap();
     assert_eq!(report.recovered_run_ids, [interrupted.id]);
     assert!(report.exhausted_run_ids.is_empty());
+    let fenced = ledger
+        .renew_daemon_owner("interrupted-owner", std::process::id())
+        .unwrap_err();
+    assert!(format!("{fenced:#}").contains("is not registered"));
     let report = ledger.recover_orphaned_runs().unwrap();
     assert!(report.recovered_run_ids.is_empty());
     assert!(report.exhausted_run_ids.is_empty());
@@ -1651,7 +1795,11 @@ fn concurrent_completion_and_cancellation_always_leave_a_terminal_run() {
         .unwrap();
 
     for index in 0..25 {
-        setup.heartbeat_daemon_owner("race-owner").unwrap();
+        assert!(
+            !setup
+                .renew_daemon_owner("race-owner", std::process::id())
+                .unwrap()
+        );
         let task = setup
             .enqueue(&ticket(&format!("race-revision-{index}")))
             .unwrap()
