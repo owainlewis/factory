@@ -89,7 +89,7 @@ if ((has_labels)); then
   done
 fi
 
-graphql='query($searchQuery:String!,$endCursor:String,$statusField:String!){search(type:ISSUE,query:$searchQuery,first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{... on Issue{number title body url labels(first:100){nodes{name}} projectItems(first:100){nodes{project{id} fieldValueByName(name:$statusField){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}}'
+graphql='query($searchQuery:String!,$endCursor:String,$statusField:String!){search(type:ISSUE,query:$searchQuery,first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{... on Issue{number title body url labels(first:20){nodes{name}} projectItems(first:10){nodes{project{id} fieldValueByName(name:$statusField){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}}'
 results=$(mktemp -t factory-github-project-source.XXXXXX)
 trap 'rm -f "$results"' EXIT
 
