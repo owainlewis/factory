@@ -263,8 +263,7 @@ impl WorkspaceManager {
         self.ensure_managed_path(path)?;
         if self.registered_worktree(path)?.is_none() {
             if !confirm {
-                let preview = self.preview_cleanup(path)?;
-                return Ok((CleanupOutcome::Previewed, preview));
+                return Ok((CleanupOutcome::Previewed, self.preview_orphaned(path)?));
             }
             return Ok((CleanupOutcome::Removed, self.remove_orphaned(path)?));
         }
@@ -329,13 +328,21 @@ impl WorkspaceManager {
     /// such a path would fail `preview_cleanup`'s registration check forever, permanently
     /// stranding the task in `cleanup_pending`.
     fn remove_orphaned(&self, path: &Path) -> Result<CleanupPreview> {
-        let path = absolute_lexical(path)?;
-        if path.exists() {
-            fs::remove_dir_all(&path)
-                .with_context(|| format!("failed to remove orphaned workspace {}", path.display()))?;
+        let preview = self.preview_orphaned(path)?;
+        if preview.path.exists() {
+            fs::remove_dir_all(&preview.path).with_context(|| {
+                format!(
+                    "failed to remove orphaned workspace {}",
+                    preview.path.display()
+                )
+            })?;
         }
+        Ok(preview)
+    }
+
+    fn preview_orphaned(&self, path: &Path) -> Result<CleanupPreview> {
         Ok(CleanupPreview {
-            path,
+            path: absolute_lexical(path)?,
             branch: None,
             dirty: false,
         })

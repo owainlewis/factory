@@ -486,7 +486,7 @@ async fn run_cli() -> Result<u8> {
             let preview = if workspace.backend == "clone" {
                 clone_manager.preview_cleanup(&workspace.path)?
             } else {
-                manager.preview_cleanup(&workspace.path)?
+                manager.cleanup(&workspace.path, false)?.1
             };
             println!("run: {run_id}");
             println!("workspace: {}", preview.path.display());
