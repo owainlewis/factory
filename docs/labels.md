@@ -7,14 +7,9 @@ Factory stores three independent ticket dimensions:
 - status records lifecycle.
 
 `.factory/tickets.toml` defines whether each dimension uses labels or a
-single-select project field. Do not represent the same fact in more than one
-place.
-
-Status storage and Factory dispatch must use the same backend.
-`.factory/tickets.toml` tells workflows how to move a ticket, while the source
-and triggers in `.factory/config.toml` tell Factory which tickets are eligible.
-When changing status storage, update both files together and run
-`factory validate`.
+single-select project field. `.factory/config.toml` separately defines the
+one-shot labels that authorize Factory workflows. A workflow consumes its
+authorization label before moving the ticket through its configured lifecycle.
 
 ## Type
 
@@ -67,11 +62,11 @@ superseded, or missing-information outcomes. Record risk, dependencies,
 verification requirements, and unresolved decisions in the ticket
 specification rather than adding more labels or fields.
 
-Moving a ticket to `Ready For Spec` or `Ready To Implement` authorizes the
-corresponding Factory workflow. This repository stores status in the Project
-`Status` field. The repository-owned Project source accepts issues based on
-status regardless of author; Project write access is the authorization
-boundary.
+This repository stores lifecycle status in the Project `Status` field, but
+Factory does not poll that field. Adding `factory:ready-for-spec` or
+`factory:ready-to-implement` to an open issue authorizes the corresponding
+workflow. Each workflow removes its authorization label before moving the
+Project status forward, so the same trigger cannot refire.
 
 ## Automated classification
 
@@ -97,11 +92,10 @@ Use `storage = "labels"` when it does not. In that mode, the values in the
 section are the exact label names. The workflow replaces conflicting labels
 within that dimension.
 
-For label-backed status, configure the source to read issue state and labels,
-and give each source trigger the corresponding configured status label. For
-Project-backed status, configure a source that reads the same Project and field,
-and give each trigger the corresponding status option. This repository's
-`.factory/config.toml` is the Project-backed example.
+Configure the source to read issue state and labels, and give each source
+trigger an explicit authorization label. Lifecycle status may still use a
+Project field because workflows update it only when they already have work;
+the high-frequency polling path remains the simple GitHub Issues query.
 
 The workflow must not invent fields, options, statuses, or labels. Missing
 configured values are configuration errors: report them and make no partial

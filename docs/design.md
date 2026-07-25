@@ -98,10 +98,10 @@ source -> matching event -> durable task -> atomic claim -> revalidate
    +---- ticket, pull request, CI, and review <- worker in sandbox
 ```
 
-The generated GitHub adapter queries native issue state and labels. A
-repository-owned source may query another trusted control plane instead. This
-repository's `github-project` source queries Project status so Status is its
-machine-facing gate.
+The GitHub adapter queries native issue state and labels. This repository uses
+one-shot readiness labels as its machine-facing gates. Project fields may
+track lifecycle and priority for humans, but the polling loop does not query
+them.
 
 ## Repository contract
 
@@ -195,8 +195,8 @@ the same boundary for another provider.
 
 The source command is part of the trust boundary. Source adapters do not need
 to filter by issue author, but only trusted people may satisfy their configured
-condition. For the generated adapter that means applying a triggering label;
-for this repository's Project adapter it means changing Project status.
+condition. For the generated adapter and this repository, that means applying
+the configured triggering label.
 
 ## Trigger semantics
 

@@ -5,6 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 use serde_json::Value;
+use toml_edit::DocumentMut;
 
 const RAW_ISSUES: &str = r#"[{"number":42,"title":"Fix polling","body":"The daemon misses eligible work.","url":"https://github.com/example/repository/issues/42","labels":[{"name":"factory:ready-to-implement"}]}]"#;
 
@@ -66,6 +67,48 @@ exit 64
     let mut permissions = fs::metadata(&executable).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(executable, permissions).unwrap();
+}
+
+#[test]
+fn repository_factory_config_polls_github_issues_by_readiness_label() {
+    let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".factory/config.toml");
+    let config = fs::read_to_string(config_path)
+        .unwrap()
+        .parse::<DocumentMut>()
+        .unwrap();
+
+    let source = config["source"]["command"].as_array().unwrap();
+    assert_eq!(source.len(), 1);
+    assert_eq!(
+        source.get(0).and_then(|item| item.as_str()),
+        Some(".factory/sources/github")
+    );
+
+    for (trigger, label) in [
+        ("triage", "factory:ready-for-spec"),
+        ("implement", "factory:ready-to-implement"),
+    ] {
+        assert_eq!(config["trigger"][trigger]["state"].as_str(), Some("open"));
+        let labels = config["trigger"][trigger]["labels"].as_array().unwrap();
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels.get(0).and_then(|item| item.as_str()), Some(label));
+    }
+}
+
+#[test]
+fn repository_workflows_consume_readiness_labels_without_rearming() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    for (workflow, label) in [
+        ("triage.md", "factory:ready-for-spec"),
+        ("implement.md", "factory:ready-to-implement"),
+    ] {
+        let prompt = fs::read_to_string(root.join(".factory/workflows").join(workflow)).unwrap();
+        assert!(prompt.contains(&format!("`{label}` label")));
+        assert!(prompt.contains("so this trigger cannot refire"));
+        assert!(prompt.contains("leave the authorization consumed"));
+        assert!(!prompt.contains("restore the original gate"));
+    }
 }
 
 #[test]
