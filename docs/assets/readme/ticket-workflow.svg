@@ -1,67 +1,72 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="640" height="900" viewBox="0 0 640 900" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="940" viewBox="0 0 720 940" role="img" aria-labelledby="title desc">
   <title id="title">Example repository-owned ticket workflow</title>
   <desc id="desc">A ticket moves from Ready For Spec to Creating Spec, then through human approval to Ready To Implement. An agent implements and proves the change before human review marks it done or sends feedback back for another implementation pass. These states are an example policy and are not built into Factory.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
-      <path d="M0 0 10 5 0 10z" fill="#858176"/>
+      <path d="M0 0 10 5 0 10z" fill="#888378"/>
     </marker>
     <marker id="feedback-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
-      <path d="M0 0 10 5 0 10z" fill="#7560c5"/>
+      <path d="M0 0 10 5 0 10z" fill="#6652b3"/>
     </marker>
     <style>
-      .text{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;fill:#1e1d1a}
-      .label{font-size:21px;font-weight:700}
-      .detail{font-size:17px;fill:#6f6a60}
-      .caption{font-size:17px;font-weight:700;letter-spacing:.8px}
-      .box{fill:#fff;stroke:#d8d3c7;stroke-width:2}
-      .flow{fill:none;stroke:#858176;stroke-width:3;marker-end:url(#arrow)}
-      .feedback{fill:none;stroke:#7560c5;stroke-width:3;stroke-dasharray:8 8;marker-end:url(#feedback-arrow)}
+      .text{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;fill:#201f1c}
+      .label{font-size:20px;font-weight:700;letter-spacing:-.2px}
+      .detail{font-size:16px;fill:#6e6960}
+      .kicker{font-size:13px;font-weight:750;letter-spacing:1.25px}
+      .card{fill:#fff;stroke:#d8d3c8;stroke-width:1.75}
+      .flow{fill:none;stroke:#888378;stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round;marker-end:url(#arrow)}
+      .feedback{fill:none;stroke:#6652b3;stroke-width:2.75;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:7 8;marker-end:url(#feedback-arrow)}
     </style>
   </defs>
 
-  <rect width="640" height="900" rx="24" fill="#faf8f2"/>
-  <text class="text caption" x="40" y="48" fill="#3262b7">DEFINE THE WORK</text>
+  <rect width="720" height="940" rx="28" fill="#faf8f2"/>
 
-  <rect class="box" x="40" y="80" width="240" height="112" rx="17"/>
-  <text class="text label" x="160" y="126" text-anchor="middle">Ready for spec</text>
-  <text class="text detail" x="160" y="161" text-anchor="middle">human intent</text>
+  <text class="text kicker" x="48" y="49" fill="#315ca8">DEFINE THE WORK</text>
 
-  <rect class="box" x="360" y="80" width="240" height="112" rx="17"/>
-  <text class="text label" x="480" y="126" text-anchor="middle">Creating spec</text>
-  <text class="text detail" x="480" y="161" text-anchor="middle">agent clarifies</text>
-  <path class="flow" d="M280 136H360"/>
+  <rect class="card" x="48" y="80" width="272" height="120" rx="18"/>
+  <text class="text label" x="184" y="129" text-anchor="middle">Ready for spec</text>
+  <text class="text detail" x="184" y="165" text-anchor="middle">human intent</text>
 
-  <rect x="40" y="248" width="240" height="136" rx="18" fill="#fff0c9" stroke="#d8a03c" stroke-width="2"/>
-  <text class="text label" x="160" y="297" text-anchor="middle">Human approval</text>
-  <text class="text detail" x="160" y="334" text-anchor="middle">review intent</text>
-  <text class="text caption" x="160" y="367" text-anchor="middle" fill="#845100">GATE</text>
+  <rect class="card" x="400" y="80" width="272" height="120" rx="18"/>
+  <text class="text label" x="536" y="129" text-anchor="middle">Creating spec</text>
+  <text class="text detail" x="536" y="165" text-anchor="middle">agent clarifies</text>
 
-  <rect x="360" y="260" width="240" height="112" rx="17" fill="#edf4e9" stroke="#aec5a3" stroke-width="2"/>
-  <text class="text label" x="480" y="305" text-anchor="middle">Ready to implement</text>
-  <text class="text detail" x="480" y="340" text-anchor="middle">clear contract</text>
-  <path class="flow" d="M480 192V220C480 236 464 248 440 248H280"/>
-  <path class="flow" d="M280 316H360"/>
+  <path class="flow" d="M320 140H400"/>
+  <path class="flow" d="M536 200V226Q536 240 522 240H184Q184 240 184 260"/>
 
-  <text class="text caption" x="40" y="424" fill="#7560c5">BUILD AND PROVE</text>
+  <rect x="48" y="260" width="272" height="144" rx="20" fill="#fff0ca" stroke="#d39a32" stroke-width="2"/>
+  <text class="text label" x="184" y="310" text-anchor="middle">Human approval</text>
+  <text class="text detail" x="184" y="347" text-anchor="middle">review intent</text>
+  <text class="text kicker" x="184" y="382" text-anchor="middle" fill="#845100">GATE</text>
 
-  <rect x="40" y="486" width="240" height="112" rx="17" fill="#eaf1ff" stroke="#a9c1ee" stroke-width="2"/>
-  <text class="text label" x="160" y="532" text-anchor="middle">Implementing</text>
-  <text class="text detail" x="160" y="567" text-anchor="middle">change + proof</text>
+  <rect x="400" y="272" width="272" height="120" rx="18" fill="#edf3e9" stroke="#adc1a3" stroke-width="1.75"/>
+  <text class="text label" x="536" y="321" text-anchor="middle">Ready to implement</text>
+  <text class="text detail" x="536" y="357" text-anchor="middle">clear contract</text>
 
-  <rect x="360" y="474" width="240" height="136" rx="18" fill="#fff0c9" stroke="#d8a03c" stroke-width="2"/>
-  <text class="text label" x="480" y="523" text-anchor="middle">Human review</text>
-  <text class="text detail" x="480" y="560" text-anchor="middle">accept or respond</text>
-  <text class="text caption" x="480" y="593" text-anchor="middle" fill="#845100">GATE</text>
-  <path class="flow" d="M480 372V414C480 430 464 442 440 442H200C176 442 160 454 160 470V486"/>
-  <path class="flow" d="M280 542H360"/>
+  <path class="flow" d="M320 332H400"/>
+  <path class="flow" d="M536 392V438Q536 452 522 452H184Q184 452 184 496"/>
 
-  <rect x="360" y="692" width="240" height="112" rx="17" fill="#e4f3eb" stroke="#8db9a0" stroke-width="2"/>
-  <text class="text label" x="480" y="738" text-anchor="middle">Done</text>
-  <text class="text detail" x="480" y="773" text-anchor="middle">human decision</text>
-  <path class="flow" d="M480 610V692"/>
+  <text class="text kicker" x="48" y="468" fill="#6652b3">BUILD + PROVE</text>
 
-  <path class="feedback" d="M360 574H320C304 574 296 590 296 614V846H616V316C616 292 608 280 600 280"/>
-  <text class="text label" x="160" y="660" text-anchor="middle" fill="#6652b3">Feedback requests</text>
-  <text class="text label" x="160" y="687" text-anchor="middle" fill="#6652b3">another bounded pass</text>
-  <text class="text detail" x="320" y="876" text-anchor="middle">Example policy. Factory does not hard-code these states.</text>
+  <rect x="48" y="496" width="272" height="120" rx="18" fill="#eaf0fb" stroke="#a9bee6" stroke-width="1.75"/>
+  <text class="text label" x="184" y="545" text-anchor="middle">Implementing</text>
+  <text class="text detail" x="184" y="581" text-anchor="middle">change + proof</text>
+
+  <rect x="400" y="484" width="272" height="144" rx="20" fill="#fff0ca" stroke="#d39a32" stroke-width="2"/>
+  <text class="text label" x="536" y="534" text-anchor="middle">Human review</text>
+  <text class="text detail" x="536" y="571" text-anchor="middle">accept or respond</text>
+  <text class="text kicker" x="536" y="606" text-anchor="middle" fill="#845100">GATE</text>
+
+  <path class="flow" d="M320 556H400"/>
+  <path class="flow" d="M536 628V724"/>
+
+  <rect x="400" y="724" width="272" height="120" rx="18" fill="#e5f1ea" stroke="#8fb3a0" stroke-width="1.75"/>
+  <text class="text label" x="536" y="773" text-anchor="middle">Done</text>
+  <text class="text detail" x="536" y="809" text-anchor="middle">human decision</text>
+
+  <path class="feedback" d="M672 556H696V332H672"/>
+  <path d="M48 676H80" fill="none" stroke="#6652b3" stroke-width="2.75" stroke-linecap="round" stroke-dasharray="7 8"/>
+  <text class="text kicker" x="92" y="681" fill="#6652b3">REVIEW FEEDBACK → ANOTHER PASS</text>
+
+  <text class="text detail" x="360" y="902" text-anchor="middle">Example repository policy. Factory does not hard-code these states.</text>
 </svg>
