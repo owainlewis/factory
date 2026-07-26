@@ -11,7 +11,7 @@ creates a durable task, prepares an isolated workspace, and gives one Markdown
 workflow to an agent. The agent uses normal tools such as `gh` and `git` to do
 the work. When nothing matches, Factory does nothing and spends no model tokens.
 
-![AI-native development cycle: Intake, Spec, Task, Build, Validate, Review, Merge, Learn, then feedback returns to Intake](docs/assets/readme/factory-loop.svg)
+![Human intent enters a trusted ticket queue; Factory runs isolated work and produces evidence; human review gates the team's merge; shipped changes return signals to the queue](docs/assets/readme/factory-loop.svg)
 
 ## Why Factory exists
 
@@ -41,7 +41,7 @@ problem, clarify scope, add testable acceptance criteria, and ask for the
 smallest missing human decision. Once the ticket is clear, it becomes the spec
 for implementation.
 
-![A ticket moves from specification through implementation and review](docs/assets/readme/ticket-workflow.svg)
+![An example ticket moves through specification, human approval, implementation, and human review, with feedback requesting another implementation pass](docs/assets/readme/ticket-workflow.svg)
 
 The status names in this example are not built into Factory. They are ordinary
 issue labels and repository-owned prompts. You may also track them on a

@@ -1,64 +1,67 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-labelledby="title desc">
-  <title id="title">Example ticket workflow</title>
-  <desc id="desc">A ticket moves from Ready For Spec to Creating Spec. Human approval moves it to Ready To Implement, then it moves through Implementing and Reviewing to Done. CI and human feedback can return the ticket through Ready To Implement for a new pass.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="900" viewBox="0 0 640 900" role="img" aria-labelledby="title desc">
+  <title id="title">Example repository-owned ticket workflow</title>
+  <desc id="desc">A ticket moves from Ready For Spec to Creating Spec, then through human approval to Ready To Implement. An agent implements and proves the change before human review marks it done or sends feedback back for another implementation pass. These states are an example policy and are not built into Factory.</desc>
   <defs>
-    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
-      <feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#172033" flood-opacity=".08"/>
-    </filter>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
-      <path d="M0 0 10 5 0 10z" fill="#71809d"/>
+      <path d="M0 0 10 5 0 10z" fill="#858176"/>
     </marker>
-    <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
-      <path d="M0 0 10 5 0 10z" fill="#7457d6"/>
+    <marker id="feedback-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 10 5 0 10z" fill="#7560c5"/>
     </marker>
     <style>
-      .text{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;fill:#172033}
-      .eyebrow{font-size:14px;font-weight:750;letter-spacing:1.2px}
-      .label{font-size:17px;font-weight:720}
-      .detail{font-size:14px;fill:#5f6c84}
-      .card{fill:#fff;stroke:#dce2ee;stroke-width:2}
-      .flow{fill:none;stroke:#71809d;stroke-width:3;marker-end:url(#arrow)}
+      .text{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;fill:#1e1d1a}
+      .label{font-size:21px;font-weight:700}
+      .detail{font-size:17px;fill:#6f6a60}
+      .caption{font-size:17px;font-weight:700;letter-spacing:.8px}
+      .box{fill:#fff;stroke:#d8d3c7;stroke-width:2}
+      .flow{fill:none;stroke:#858176;stroke-width:3;marker-end:url(#arrow)}
+      .feedback{fill:none;stroke:#7560c5;stroke-width:3;stroke-dasharray:8 8;marker-end:url(#feedback-arrow)}
     </style>
   </defs>
-  <rect width="1280" height="520" rx="28" fill="#f7f8fc"/>
 
-  <text class="text eyebrow" x="64" y="58" fill="#2e5cc2">DEFINE THE WORK</text>
-  <rect x="52" y="80" width="580" height="166" rx="22" fill="#eef4ff" stroke="#c5d5f7" stroke-width="2"/>
-  <g filter="url(#shadow)">
-    <rect class="card" x="72" y="112" width="126" height="102" rx="17"/>
-    <rect class="card" x="214" y="112" width="126" height="102" rx="17"/>
-    <rect x="356" y="112" width="126" height="102" rx="17" fill="#fff2de" stroke="#f0c982" stroke-width="2"/>
-    <rect x="498" y="112" width="126" height="102" rx="17" fill="#e5f6f1" stroke="#9dd9c8" stroke-width="2"/>
-  </g>
-  <g class="text" text-anchor="middle">
-    <text class="label" x="135" y="143">Ready For</text><text class="label" x="135" y="166">Spec</text><text class="detail" x="135" y="194">human intent</text>
-    <text class="label" x="277" y="143">Creating</text><text class="label" x="277" y="166">Spec</text><text class="detail" x="277" y="194">agent clarifies</text>
-    <text class="label" x="419" y="143">Human</text><text class="label" x="419" y="166">approval</text><text class="detail" x="419" y="194">review intent</text>
-    <text class="label" x="561" y="143">Ready To</text><text class="label" x="561" y="166">Implement</text><text class="detail" x="561" y="194">clear contract</text>
-  </g>
-  <path class="flow" d="M198 163h16M340 163h16M482 163h16"/>
+  <rect width="640" height="900" rx="24" fill="#faf8f2"/>
+  <text class="text caption" x="40" y="48" fill="#3262b7">DEFINE THE WORK</text>
 
-  <text class="text eyebrow" x="676" y="58" fill="#6042b4">BUILD AND PROVE</text>
-  <rect x="652" y="80" width="576" height="166" rx="22" fill="#f3efff" stroke="#d3c7f5" stroke-width="2"/>
-  <g filter="url(#shadow)">
-    <rect class="card" x="678" y="112" width="160" height="102" rx="17"/>
-    <rect class="card" x="862" y="112" width="160" height="102" rx="17"/>
-    <rect x="1046" y="112" width="156" height="102" rx="17" fill="#e5f6f1" stroke="#9dd9c8" stroke-width="2"/>
-  </g>
-  <g class="text" text-anchor="middle">
-    <text class="label" x="758" y="151">Implementing</text><text class="detail" x="758" y="180">change + tests</text>
-    <text class="label" x="942" y="151">Reviewing</text><text class="detail" x="942" y="180">CI + humans</text>
-    <text class="label" x="1124" y="151">Done</text><text class="detail" x="1124" y="180">human decision</text>
-  </g>
-  <path class="flow" d="M838 163h24M1022 163h24"/>
-  <path class="flow" d="M624 163h54"/>
+  <rect class="box" x="40" y="80" width="240" height="112" rx="17"/>
+  <text class="text label" x="160" y="126" text-anchor="middle">Ready for spec</text>
+  <text class="text detail" x="160" y="161" text-anchor="middle">human intent</text>
 
-  <rect x="262" y="330" width="760" height="96" rx="20" fill="#fff" stroke="#dce2ee" stroke-width="2"/>
-  <circle cx="310" cy="378" r="18" fill="#7457d6"/>
-  <path d="M301 378h18M310 369v18" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
-  <text class="text label" x="346" y="369">Feedback can request another pass</text>
-  <text class="text detail" x="346" y="397">The ticket re-enters the configured trigger, creating a new bounded implementation task.</text>
-  <path d="M942 214v116" fill="none" stroke="#7457d6" stroke-width="3" marker-end="url(#arrow-purple)"/>
-  <path d="M561 330V214" fill="none" stroke="#7457d6" stroke-width="3" marker-end="url(#arrow-purple)"/>
-  <text class="text detail" x="640" y="474" text-anchor="middle">Status names are repository-owned policy, not hard-coded Factory behavior.</text>
+  <rect class="box" x="360" y="80" width="240" height="112" rx="17"/>
+  <text class="text label" x="480" y="126" text-anchor="middle">Creating spec</text>
+  <text class="text detail" x="480" y="161" text-anchor="middle">agent clarifies</text>
+  <path class="flow" d="M280 136H360"/>
+
+  <rect x="40" y="248" width="240" height="136" rx="18" fill="#fff0c9" stroke="#d8a03c" stroke-width="2"/>
+  <text class="text label" x="160" y="297" text-anchor="middle">Human approval</text>
+  <text class="text detail" x="160" y="334" text-anchor="middle">review intent</text>
+  <text class="text caption" x="160" y="367" text-anchor="middle" fill="#845100">GATE</text>
+
+  <rect x="360" y="260" width="240" height="112" rx="17" fill="#edf4e9" stroke="#aec5a3" stroke-width="2"/>
+  <text class="text label" x="480" y="305" text-anchor="middle">Ready to implement</text>
+  <text class="text detail" x="480" y="340" text-anchor="middle">clear contract</text>
+  <path class="flow" d="M480 192V220C480 236 464 248 440 248H280"/>
+  <path class="flow" d="M280 316H360"/>
+
+  <text class="text caption" x="40" y="424" fill="#7560c5">BUILD AND PROVE</text>
+
+  <rect x="40" y="486" width="240" height="112" rx="17" fill="#eaf1ff" stroke="#a9c1ee" stroke-width="2"/>
+  <text class="text label" x="160" y="532" text-anchor="middle">Implementing</text>
+  <text class="text detail" x="160" y="567" text-anchor="middle">change + proof</text>
+
+  <rect x="360" y="474" width="240" height="136" rx="18" fill="#fff0c9" stroke="#d8a03c" stroke-width="2"/>
+  <text class="text label" x="480" y="523" text-anchor="middle">Human review</text>
+  <text class="text detail" x="480" y="560" text-anchor="middle">accept or respond</text>
+  <text class="text caption" x="480" y="593" text-anchor="middle" fill="#845100">GATE</text>
+  <path class="flow" d="M480 372V414C480 430 464 442 440 442H200C176 442 160 454 160 470V486"/>
+  <path class="flow" d="M280 542H360"/>
+
+  <rect x="360" y="692" width="240" height="112" rx="17" fill="#e4f3eb" stroke="#8db9a0" stroke-width="2"/>
+  <text class="text label" x="480" y="738" text-anchor="middle">Done</text>
+  <text class="text detail" x="480" y="773" text-anchor="middle">human decision</text>
+  <path class="flow" d="M480 610V692"/>
+
+  <path class="feedback" d="M360 574H320C304 574 296 590 296 614V846H616V316C616 292 608 280 600 280"/>
+  <text class="text label" x="160" y="660" text-anchor="middle" fill="#6652b3">Feedback requests</text>
+  <text class="text label" x="160" y="687" text-anchor="middle" fill="#6652b3">another bounded pass</text>
+  <text class="text detail" x="320" y="876" text-anchor="middle">Example policy. Factory does not hard-code these states.</text>
 </svg>

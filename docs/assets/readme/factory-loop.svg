@@ -1,39 +1,74 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="620" viewBox="0 0 960 620" role="img" aria-labelledby="title desc">
-  <title id="title">The AI-native software development lifecycle</title>
-  <desc id="desc">A minimal clockwise cycle moves through Intake, Spec, Task, Build, Validate, Review, Merge, and Learn. Learning returns feedback and evidence to Intake for the next repository-owned pass.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="900" viewBox="0 0 640 900" role="img" aria-labelledby="title desc">
+  <title id="title">How Factory moves work from intent to a human shipping decision</title>
+  <desc id="desc">Human intent enters a trusted ticket queue. Factory matches a trigger, creates a durable task, and runs a workflow in an isolated worker. Checks produce evidence and a reviewable pull request. A human reviews and decides whether to merge. Shipped changes create signals that return to the ticket queue.</desc>
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto">
-      <path d="M0 0 10 5 0 10z" fill="#171717"/>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 10 5 0 10z" fill="#858176"/>
+    </marker>
+    <marker id="feedback-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 10 5 0 10z" fill="#9b5f5b"/>
     </marker>
     <style>
-      .text{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;fill:#171717}
-      .stage{font-size:20px;font-weight:450;letter-spacing:-.25px}
-      .center{font-size:34px;font-weight:400;letter-spacing:-1px}
+      .text{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;fill:#1e1d1a}
+      .label{font-size:24px;font-weight:700}
+      .detail{font-size:19px;fill:#6f6a60}
+      .caption{font-size:17px;font-weight:700;letter-spacing:.8px}
+      .box{fill:#fff;stroke:#d8d3c7;stroke-width:2}
+      .flow{fill:none;stroke:#858176;stroke-width:3;marker-end:url(#arrow)}
+      .feedback{fill:none;stroke:#9b5f5b;stroke-width:3;stroke-dasharray:8 8;marker-end:url(#feedback-arrow)}
     </style>
   </defs>
 
-  <rect width="960" height="620" fill="#fff"/>
+  <rect width="640" height="900" rx="24" fill="#faf8f2"/>
+  <text class="text caption" x="40" y="48" fill="#777166">INTENT IN</text>
+  <text class="text caption" x="600" y="48" text-anchor="end" fill="#777166">CHANGE OUT</text>
 
-  <circle cx="480" cy="340" r="176" fill="none" stroke="#171717" stroke-width="2.5"/>
-  <path d="M450 167Q480 157 510 167" fill="none" stroke="#171717" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <rect x="40" y="80" width="240" height="126" rx="18" fill="#edf4e9" stroke="#aec5a3" stroke-width="2"/>
+  <text class="text label" x="160" y="132" text-anchor="middle">Human intent</text>
+  <text class="text detail" x="160" y="170" text-anchor="middle">problem · priority</text>
 
-  <circle cx="480" cy="164" r="5.5" fill="#1267e9"/>
-  <path d="M480 130v28" fill="none" stroke="#1267e9" stroke-width="2" stroke-dasharray="4 5"/>
+  <rect class="box" x="360" y="80" width="240" height="126" rx="18"/>
+  <text class="text label" x="480" y="132" text-anchor="middle">Trusted queue</text>
+  <text class="text detail" x="480" y="170" text-anchor="middle">ticket is the control plane</text>
+  <path class="flow" d="M280 143H360"/>
 
-  <g class="text stage">
-    <text x="480" y="105" text-anchor="middle" fill="#1267e9">Intake</text>
-    <text x="686" y="207">Spec</text>
-    <text x="716" y="347">Task</text>
-    <text x="674" y="493">Build</text>
-    <text x="480" y="576" text-anchor="middle">Validate</text>
-    <text x="286" y="493" text-anchor="end">Review</text>
-    <text x="244" y="347" text-anchor="end">Merge</text>
-    <text x="274" y="207" text-anchor="end">Learn</text>
-  </g>
+  <rect x="40" y="258" width="560" height="178" rx="22" fill="#eaf1ff" stroke="#a9c1ee" stroke-width="2"/>
+  <text class="text caption" x="66" y="296" fill="#3262b7">FACTORY</text>
+  <rect x="66" y="318" width="146" height="86" rx="14" fill="#fff" stroke="#c8d7f3" stroke-width="2"/>
+  <rect x="247" y="318" width="146" height="86" rx="14" fill="#fff" stroke="#c8d7f3" stroke-width="2"/>
+  <rect x="428" y="318" width="146" height="86" rx="14" fill="#fff" stroke="#c8d7f3" stroke-width="2"/>
+  <text class="text label" x="139" y="352" text-anchor="middle">Trigger</text>
+  <text class="text detail" x="139" y="384" text-anchor="middle">match</text>
+  <text class="text label" x="320" y="352" text-anchor="middle">Task</text>
+  <text class="text detail" x="320" y="384" text-anchor="middle">durable</text>
+  <text class="text label" x="501" y="352" text-anchor="middle">Worker</text>
+  <text class="text detail" x="501" y="384" text-anchor="middle">isolated</text>
+  <path class="flow" d="M480 206V258"/>
 
-  <g class="text center" text-anchor="middle">
-    <text x="480" y="306">An AI-native</text>
-    <text x="480" y="348">software</text>
-    <text x="480" y="390">factory</text>
-  </g>
+  <rect class="box" x="40" y="488" width="240" height="132" rx="18"/>
+  <text class="text label" x="160" y="537" text-anchor="middle">Evidence</text>
+  <text class="text detail" x="160" y="572" text-anchor="middle">tests · CI</text>
+  <text class="text detail" x="160" y="599" text-anchor="middle">reviewable PR</text>
+
+  <rect x="360" y="476" width="240" height="156" rx="20" fill="#fff0c9" stroke="#cf8d18" stroke-width="3"/>
+  <text class="text label" x="480" y="525" text-anchor="middle">Human review</text>
+  <text class="text detail" x="480" y="564" text-anchor="middle">approve or respond</text>
+  <text class="text caption" x="480" y="608" text-anchor="middle" fill="#845100">SHIPPING GATE</text>
+  <path class="flow" d="M320 436V462C320 478 304 488 280 488"/>
+  <path class="flow" d="M280 554H360"/>
+
+  <rect x="360" y="694" width="240" height="126" rx="18" fill="#e4f3eb" stroke="#8db9a0" stroke-width="2"/>
+  <text class="text label" x="480" y="746" text-anchor="middle">Shipped change</text>
+  <text class="text detail" x="480" y="784" text-anchor="middle">owned by the team</text>
+  <path class="flow" d="M480 632V694"/>
+  <text class="text caption" x="498" y="672" fill="#777166">MERGE</text>
+
+  <rect x="40" y="694" width="240" height="126" rx="18" fill="#f6e8e6" stroke="#cf9995" stroke-width="2"/>
+  <text class="text label" x="160" y="746" text-anchor="middle">Signals</text>
+  <text class="text detail" x="160" y="780" text-anchor="middle">feedback · incidents</text>
+  <text class="text detail" x="160" y="807" text-anchor="middle">feature requests</text>
+  <path class="flow" d="M360 757H280"/>
+
+  <path class="feedback" d="M160 820V850H616V143C616 126 608 116 600 116"/>
+  <text class="text detail" x="320" y="866" text-anchor="middle" fill="#9b5f5b">Useful signals return to the trusted queue.</text>
 </svg>
