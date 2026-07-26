@@ -8,8 +8,9 @@ Factory stores three independent ticket dimensions:
 
 `.factory/tickets.toml` defines whether each dimension uses labels or a
 single-select project field. `.factory/config.toml` separately defines the
-one-shot labels that authorize Factory workflows. A workflow consumes its
-authorization label before moving the ticket through its configured lifecycle.
+one-shot labels that authorize Factory workflows. A workflow establishes and
+advances any configured lifecycle state before consuming its authorization
+label.
 
 ## Type
 
@@ -65,8 +66,9 @@ specification rather than adding more labels or fields.
 This repository stores lifecycle status in the Project `Status` field, but
 Factory does not poll that field. Adding `factory:ready-for-spec` or
 `factory:ready-to-implement` to an open issue authorizes the corresponding
-workflow. Each workflow removes its authorization label before moving the
-Project status forward, so the same trigger cannot refire.
+workflow. Each workflow initializes missing Project tracking when necessary,
+moves the Project status forward, and then removes its authorization label so
+the same trigger cannot refire.
 
 ## Automated classification
 

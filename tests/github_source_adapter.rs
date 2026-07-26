@@ -96,18 +96,27 @@ fn repository_factory_config_polls_github_issues_by_readiness_label() {
 }
 
 #[test]
-fn repository_workflows_consume_readiness_labels_without_rearming() {
+fn repository_workflows_establish_lifecycle_before_consuming_readiness_labels() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
-    for (workflow, label) in [
-        ("triage.md", "factory:ready-for-spec"),
-        ("implement.md", "factory:ready-to-implement"),
+    for (workflow, ready_value, label) in [
+        (
+            "triage.md",
+            "`ready_for_spec` value",
+            "factory:ready-for-spec",
+        ),
+        (
+            "implement.md",
+            "`ready_to_implement` value",
+            "factory:ready-to-implement",
+        ),
     ] {
         let prompt = fs::read_to_string(root.join(".factory/workflows").join(workflow)).unwrap();
-        assert!(prompt.contains(&format!("`{label}` label")));
+        let establish = prompt.find(ready_value).unwrap();
+        let consume = prompt.find(&format!("remove the `{label}` label")).unwrap();
+        assert!(prompt.contains("adding it and initializing a missing lifecycle"));
+        assert!(establish < consume);
         assert!(prompt.contains("so this trigger cannot refire"));
-        assert!(prompt.contains("leave the authorization consumed"));
-        assert!(!prompt.contains("restore the original gate"));
     }
 }
 
