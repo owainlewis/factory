@@ -1430,6 +1430,44 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
     );
 }
 
+#[test]
+fn repository_scoped_orphan_recovery_retains_unresolvable_runs() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    let task = ledger.enqueue(&ticket("repository-owner")).unwrap().task;
+    ledger.claim_next().unwrap().unwrap();
+    let run = ledger.start_run(task.id, "codex").unwrap();
+
+    let unresolved = ledger
+        .recover_orphaned_runs_for_repository("another/repository")
+        .unwrap();
+    assert_eq!(unresolved.unresolved_run_ids, [run.id]);
+    assert!(unresolved.recovery.recovered_run_ids.is_empty());
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Running
+    );
+    let retained = ledger.run(run.id).unwrap().unwrap();
+    assert_eq!(retained.outcome, "running");
+    assert!(
+        retained
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("could not resolve interrupted run")
+    );
+
+    let recovered = ledger
+        .recover_orphaned_runs_for_repository(&task.repository)
+        .unwrap();
+    assert_eq!(recovered.recovery.recovered_run_ids, [run.id]);
+    assert!(recovered.unresolved_run_ids.is_empty());
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Queued
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn orphan_recovery_does_not_signal_a_reused_process_group() {

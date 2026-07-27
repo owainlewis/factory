@@ -70,6 +70,13 @@ struct WorkflowTarget {
     trigger: Trigger,
 }
 
+#[derive(Clone)]
+struct RepositoryOwner {
+    identity: String,
+    path: PathBuf,
+    workspace_root: PathBuf,
+}
+
 struct ScheduledTarget {
     repository: String,
     workflow: String,
@@ -80,6 +87,7 @@ struct ScheduledTarget {
 }
 
 pub struct FactoryDaemon {
+    repository: PathBuf,
     config: Config,
     catalog: WorkflowCatalog,
     ledger_path: PathBuf,
@@ -119,6 +127,36 @@ impl FactoryDaemon {
         daemon
     }
 
+    pub fn new_pinned_for_repository(
+        identity: String,
+        repository: PathBuf,
+        config: Config,
+        catalog: WorkflowCatalog,
+        ledger_path: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        if identity.trim().is_empty() {
+            bail!("pinned repository identity must not be empty");
+        }
+        if config.repositories.as_slice() != [repository.as_path()] {
+            bail!(
+                "pinned repository path {} does not match repository-owned configuration",
+                repository.display()
+            );
+        }
+        let ledger_path = ledger_path.into();
+        let expected_ledger_path = config.data_directory.join(crate::storage::DATABASE_NAME);
+        if ledger_path != expected_ledger_path {
+            bail!(
+                "pinned repository ledger {} does not match repository-owned ledger {}",
+                ledger_path.display(),
+                expected_ledger_path.display()
+            );
+        }
+        let mut daemon = Self::new_pinned(identity, config, catalog, ledger_path);
+        daemon.repository = repository;
+        Ok(daemon)
+    }
+
     pub fn with_clients(
         config: Config,
         catalog: WorkflowCatalog,
@@ -131,6 +169,7 @@ impl FactoryDaemon {
                 .with_activity_streaming(false)
         });
         Self {
+            repository: config.repositories[0].clone(),
             config,
             catalog,
             ledger_path: ledger_path.into(),
@@ -140,6 +179,27 @@ impl FactoryDaemon {
             runtime,
             sandbox,
         }
+    }
+
+    pub fn reconcile_disabled_repository(&self) -> Result<()> {
+        let identity = self
+            .pinned_identity
+            .as_deref()
+            .context("disabled repository reconciliation requires a pinned repository identity")?;
+        Self::reconcile_disabled_ledger(identity, &self.ledger_path)
+    }
+
+    pub fn reconcile_disabled_ledger(identity: &str, ledger_path: &Path) -> Result<()> {
+        if identity.trim().is_empty() {
+            bail!("disabled repository identity must not be empty");
+        }
+        let mut ledger = Ledger::open(ledger_path)?;
+        let owner = RepositoryOwner {
+            identity: identity.to_owned(),
+            path: PathBuf::new(),
+            workspace_root: PathBuf::new(),
+        };
+        reconcile_recovery_state(&mut ledger, ledger_path, &owner, None, false)
     }
 
     pub async fn run(&self, cancellation: CancellationToken) -> Result<()> {
@@ -155,17 +215,20 @@ impl FactoryDaemon {
             Err(_) if cancellation.is_cancelled() => return Ok(()),
             Err(error) => return Err(error),
         };
+        let repository_owner = self.repository_owner(&targets)?;
         let mut ledger = Ledger::open(&self.ledger_path)?;
-        validate_workspace_backends(&ledger, self.sandbox.is_some())?;
+        retain_unresolvable_workspaces(&ledger, &repository_owner)?;
+        validate_workspace_backends(&ledger, &repository_owner, self.sandbox.is_some())?;
         if let Some(sandbox) = &self.sandbox {
-            reconcile_sandbox_workers(sandbox, &mut ledger, &cancellation).await?;
+            reconcile_sandbox_workers(sandbox, &mut ledger, &repository_owner, &cancellation)
+                .await?;
         }
         if let Err(error) = reconcile_recovery_state(
             &mut ledger,
             &self.ledger_path,
-            &self.config.repositories[0],
-            &self.config.workspace_root,
+            &repository_owner,
             self.sandbox.as_ref().map(SandboxWorker::github_token_env),
+            true,
         ) {
             eprintln!("Factory workspace startup reconciliation failed: {error:#}");
             return Err(error);
@@ -278,9 +341,9 @@ impl FactoryDaemon {
                         reconcile_recovery_state(
                             &mut ledger,
                             &self.ledger_path,
-                            &self.config.repositories[0],
-                            &self.config.workspace_root,
+                            &repository_owner,
                             self.sandbox.as_ref().map(SandboxWorker::github_token_env),
+                            true,
                         )?;
                     }
                     _ = schedule_interval.tick() => {
@@ -541,34 +604,72 @@ impl FactoryDaemon {
         }
         Ok(targets)
     }
+
+    fn repository_owner(
+        &self,
+        targets: &HashMap<String, RepositoryTarget>,
+    ) -> Result<RepositoryOwner> {
+        let (identity, target) = match self.pinned_identity.as_deref() {
+            Some(identity) => (
+                identity.to_owned(),
+                targets.get(identity).with_context(|| {
+                    format!(
+                        "pinned repository identity {identity} has no resolved execution target"
+                    )
+                })?,
+            ),
+            None => {
+                let mut targets = targets.iter();
+                let (identity, target) = targets
+                    .next()
+                    .context("Factory has no resolved repository target")?;
+                if targets.next().is_some() {
+                    bail!("repository ownership is ambiguous across multiple execution targets");
+                }
+                (identity.clone(), target)
+            }
+        };
+        if target.path != self.repository {
+            bail!(
+                "resolved repository path {} does not match owning repository path {}",
+                target.path.display(),
+                self.repository.display()
+            );
+        }
+        Ok(RepositoryOwner {
+            identity,
+            path: self.repository.clone(),
+            workspace_root: self.config.workspace_root.clone(),
+        })
+    }
 }
 
 fn reconcile_recovery_state(
     ledger: &mut Ledger,
     ledger_path: &Path,
-    canonical_repository: &Path,
-    workspace_root: &Path,
+    owner: &RepositoryOwner,
     clone_token_env: Option<&str>,
+    destructive: bool,
 ) -> Result<()> {
-    report_recovery(ledger.recover_orphaned_runs()?);
-    reconcile_pending_cleanup(
-        ledger,
-        canonical_repository,
-        workspace_root,
-        clone_token_env,
-    )?;
-    reconcile_terminal_workspaces(
-        ledger,
-        ledger_path,
-        canonical_repository,
-        workspace_root,
-        clone_token_env,
-    )
+    let recovery = ledger.recover_orphaned_runs_for_repository(&owner.identity)?;
+    report_recovery(recovery.recovery);
+    for run_id in recovery.unresolved_run_ids {
+        eprintln!(
+            "Factory retained interrupted run {run_id} because its owning repository could not be resolved"
+        );
+    }
+    retain_unresolvable_workspaces(ledger, owner)?;
+    if !destructive {
+        return Ok(());
+    }
+    reconcile_pending_cleanup(ledger, owner, clone_token_env)?;
+    reconcile_terminal_workspaces(ledger, ledger_path, owner, clone_token_env)
 }
 
 async fn reconcile_sandbox_workers(
     sandbox: &SandboxWorker,
     ledger: &mut Ledger,
+    owner: &RepositoryOwner,
     cancellation: &CancellationToken,
 ) -> Result<()> {
     let owned = sandbox.owned_sandboxes(cancellation).await?;
@@ -603,6 +704,16 @@ async fn reconcile_sandbox_workers(
         let workspace = ledger
             .task_workspace(run.task_id)?
             .with_context(|| format!("task {} for owned sandbox has no workspace", run.task_id))?;
+        if !workspace_owner_is_resolved(ledger, &workspace, owner)? {
+            ledger.finish_run_sandbox(
+                identity.run_id,
+                "retained",
+                None,
+                Some("sandbox retained because workspace owner could not be resolved"),
+                false,
+            )?;
+            continue;
+        }
         let recovered = sandbox.recover_sandbox(&identity, cancellation).await?;
         if recorded.state == "retained" {
             continue;
@@ -663,14 +774,22 @@ fn sandbox_instance_id(data_directory: &Path) -> String {
     sha256_hex_prefix(data_directory.as_os_str().as_encoded_bytes(), 20)
 }
 
-fn validate_workspace_backends(ledger: &Ledger, sandbox_mode: bool) -> Result<()> {
+fn validate_workspace_backends(
+    ledger: &Ledger,
+    owner: &RepositoryOwner,
+    sandbox_mode: bool,
+) -> Result<()> {
     let expected = if sandbox_mode { "clone" } else { "worktree" };
-    let incompatible = ledger
-        .active_task_workspaces()?
-        .into_iter()
-        .filter(|workspace| workspace.backend != expected)
-        .map(|workspace| format!("task {} ({})", workspace.task_id, workspace.backend))
-        .collect::<Vec<_>>();
+    let mut incompatible = Vec::new();
+    for workspace in ledger.active_task_workspaces()? {
+        if workspace_owner_is_resolved(ledger, &workspace, owner)? && workspace.backend != expected
+        {
+            incompatible.push(format!(
+                "task {} ({})",
+                workspace.task_id, workspace.backend
+            ));
+        }
+    }
     if !incompatible.is_empty() {
         bail!(
             "configured execution mode requires {expected} workspaces, but active work uses {}; finish or clean up those tasks before changing execution_mode",
@@ -682,14 +801,22 @@ fn validate_workspace_backends(ledger: &Ledger, sandbox_mode: bool) -> Result<()
 
 fn reconcile_pending_cleanup(
     ledger: &Ledger,
-    canonical_repository: &Path,
-    workspace_root: &Path,
+    owner: &RepositoryOwner,
     clone_token_env: Option<&str>,
 ) -> Result<()> {
-    let manager = WorkspaceManager::new(canonical_repository, workspace_root)?;
-    let clone_manager = CloneManager::new(workspace_root)?;
-    manager.reconcile_startup()?;
+    let mut workspaces = Vec::new();
     for workspace in ledger.task_workspaces_in_state("cleanup_pending")? {
+        if workspace_owner_is_resolved(ledger, &workspace, owner)? {
+            workspaces.push(workspace);
+        }
+    }
+    if workspaces.is_empty() {
+        return Ok(());
+    }
+    let manager = WorkspaceManager::new(&owner.path, &owner.workspace_root)?;
+    let clone_manager = CloneManager::new(&owner.workspace_root)?;
+    manager.reconcile_startup()?;
+    for workspace in workspaces {
         if !workspace.path.exists() {
             ledger.update_task_workspace_state(
                 workspace.task_id,
@@ -803,12 +930,14 @@ fn automatic_cleanup_is_still_safe(
 fn reconcile_terminal_workspaces(
     ledger: &Ledger,
     ledger_path: &Path,
-    canonical_repository: &Path,
-    workspace_root: &Path,
+    owner: &RepositoryOwner,
     clone_token_env: Option<&str>,
 ) -> Result<()> {
     for workspace in ledger.active_task_workspaces()? {
         if matches!(workspace.state.as_str(), "cleanup_pending" | "retained") {
+            continue;
+        }
+        if !workspace_owner_is_resolved(ledger, &workspace, owner)? {
             continue;
         }
         let task = ledger
@@ -825,14 +954,9 @@ fn reconcile_terminal_workspaces(
             )?;
             continue;
         };
-        if let Err(error) = finalize_task_workspace(
-            ledger_path,
-            canonical_repository,
-            workspace_root,
-            task.id,
-            run.id,
-            clone_token_env,
-        ) {
+        if let Err(error) =
+            finalize_task_workspace(ledger_path, owner, task.id, run.id, clone_token_env)
+        {
             eprintln!(
                 "Factory retained terminal workspace for task {} during startup reconciliation: {error:#}",
                 task.id
@@ -851,6 +975,36 @@ fn report_recovery(report: crate::storage::RecoveryReport) {
             "Factory left interrupted run {run_id} failed after exhausting recovery attempts"
         );
     }
+}
+
+fn retain_unresolvable_workspaces(ledger: &Ledger, owner: &RepositoryOwner) -> Result<()> {
+    for workspace in ledger.active_task_workspaces()? {
+        workspace_owner_is_resolved(ledger, &workspace, owner)?;
+    }
+    Ok(())
+}
+
+fn workspace_owner_is_resolved(
+    ledger: &Ledger,
+    workspace: &TaskWorkspace,
+    owner: &RepositoryOwner,
+) -> Result<bool> {
+    let task = ledger
+        .task(workspace.task_id)?
+        .with_context(|| format!("task {} disappeared", workspace.task_id))?;
+    if task.repository == owner.identity && workspace.repository == owner.identity {
+        return Ok(true);
+    }
+    let summary = format!(
+        "retained because workspace owner could not be resolved: expected={} task={} workspace={}",
+        owner.identity, task.repository, workspace.repository
+    );
+    ledger.update_task_workspace_state(workspace.task_id, "retained", Some(&summary))?;
+    eprintln!(
+        "Factory retained workspace for task {}: {summary}",
+        workspace.task_id
+    );
+    Ok(false)
 }
 
 async fn maintain_owner_lease(
@@ -1083,6 +1237,7 @@ fn dispatch_available(
                 &mut worker_ledger,
                 &github,
                 &target,
+                &repository,
                 &workspace_root,
                 &task,
                 run_id,
@@ -1177,8 +1332,11 @@ fn dispatch_available(
             };
             if let Err(error) = finalize_task_workspace(
                 &finalization_ledger_path,
-                &target.path,
-                &workspace_root,
+                &RepositoryOwner {
+                    identity: repository.clone(),
+                    path: target.path.clone(),
+                    workspace_root: workspace_root.clone(),
+                },
                 task.id,
                 run_id,
                 sandbox.as_ref().map(SandboxWorker::github_token_env),
@@ -1196,6 +1354,7 @@ async fn prepare_task_workspace(
     ledger: &mut Ledger,
     github: &GitHubClient,
     canonical_target: &RepositoryTarget,
+    repository_identity: &str,
     workspace_root: &Path,
     task: &Task,
     run_id: i64,
@@ -1206,8 +1365,31 @@ async fn prepare_task_workspace(
     let workspace_root = workspace_root
         .canonicalize()
         .context("failed to canonicalize Factory workspace root")?;
-    let manager = WorkspaceManager::new(&canonical_target.path, &workspace_root)?;
     let existing = ledger.task_workspace(task.id)?;
+    if task.repository != repository_identity {
+        bail!(
+            "task {} belongs to repository {} instead of owning repository {}",
+            task.id,
+            task.repository,
+            repository_identity
+        );
+    }
+    if let Some(existing) = &existing
+        && existing.repository != repository_identity
+    {
+        ledger.update_task_workspace_state(
+            task.id,
+            "retained",
+            Some("retained because workspace owner could not be resolved during execution"),
+        )?;
+        bail!(
+            "task {} workspace belongs to repository {} instead of owning repository {}",
+            task.id,
+            existing.repository,
+            repository_identity
+        );
+    }
+    let manager = WorkspaceManager::new(&canonical_target.path, &workspace_root)?;
     let reuse = match existing.as_ref().map(|workspace| workspace.state.as_str()) {
         None => DeliveryReuse::Reject,
         Some("preparing") => DeliveryReuse::ExactBase,
@@ -1422,8 +1604,7 @@ fn numeric_ticket_id(key: &str) -> Result<u64> {
 
 fn finalize_task_workspace(
     ledger_path: &Path,
-    canonical_repository: &Path,
-    workspace_root: &Path,
+    owner: &RepositoryOwner,
     task_id: i64,
     _run_id: i64,
     clone_token_env: Option<&str>,
@@ -1438,8 +1619,14 @@ fn finalize_task_workspace(
     if !task.state.is_terminal() {
         return Ok(());
     }
-    let manager = WorkspaceManager::new(canonical_repository, workspace_root)?;
-    let clone_manager = CloneManager::new(workspace_root)?;
+    if !workspace_owner_is_resolved(&ledger, &workspace, owner)? {
+        bail!(
+            "task {task_id} workspace owner could not be resolved to {}",
+            owner.identity
+        );
+    }
+    let manager = WorkspaceManager::new(&owner.path, &owner.workspace_root)?;
+    let clone_manager = CloneManager::new(&owner.workspace_root)?;
     if workspace.kind == "proposal" {
         ledger.update_task_workspace_state(
             task_id,
@@ -2472,8 +2659,59 @@ fn decrement_active(active: &mut HashMap<String, usize>, repository: &str) {
 mod tests {
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
+    #[cfg(unix)]
+    use std::sync::Mutex;
+
+    #[cfg(unix)]
+    use async_trait::async_trait;
 
     use super::*;
+
+    #[cfg(unix)]
+    struct RecordingRuntime {
+        directories: Mutex<Vec<PathBuf>>,
+    }
+
+    #[cfg(unix)]
+    #[async_trait]
+    impl AgentRuntime for RecordingRuntime {
+        async fn health_check_with_cancellation(
+            &self,
+            _cancellation: CancellationToken,
+        ) -> Result<crate::runtime::RuntimeHealth> {
+            Ok(crate::runtime::RuntimeHealth {
+                version: "test".into(),
+                authentication: "test".into(),
+            })
+        }
+
+        async fn run(
+            &self,
+            _prompt: &str,
+            working_directory: &Path,
+            _run_timeout: Duration,
+            _cancellation: CancellationToken,
+            _resume_session: Option<&str>,
+            _observations: tokio::sync::watch::Sender<RuntimeObservation>,
+            _before_spawn: Option<crate::runtime::BeforeSpawn<'_>>,
+        ) -> Result<ExecutionResult> {
+            self.directories
+                .lock()
+                .unwrap()
+                .push(working_directory.to_owned());
+            Ok(ExecutionResult {
+                status: std::process::ExitStatus::from_raw(0),
+                termination: Termination::Exited,
+                final_response: "done".into(),
+                final_response_truncated: false,
+                thread_id: Some("test-thread".into()),
+                duration: Duration::ZERO,
+                activity_lines: 0,
+                activity_error: None,
+                stderr_tail: String::new(),
+            })
+        }
+    }
 
     #[test]
     fn latest_worker_progress_returns_only_the_last_safe_progress_line() {
@@ -2603,10 +2841,109 @@ mod tests {
             })
             .unwrap();
 
-        validate_workspace_backends(&ledger, true).unwrap();
-        let error = validate_workspace_backends(&ledger, false).unwrap_err();
+        let owner = RepositoryOwner {
+            identity: "example/repo".into(),
+            path: temp.path().join("repository"),
+            workspace_root: temp.path().join("workspaces"),
+        };
+        validate_workspace_backends(&ledger, &owner, true).unwrap();
+        let error = validate_workspace_backends(&ledger, &owner, false).unwrap_err();
         assert!(error.to_string().contains("task 1 (clone)"));
         assert!(error.to_string().contains("before changing execution_mode"));
+    }
+
+    #[test]
+    fn pinned_runtime_rejects_a_swapped_repository_ledger_without_mutation() {
+        let temp = tempfile::tempdir().unwrap();
+        let second_repository = temp.path().join("second");
+        let first_data = temp.path().join("first-state");
+        let second_data = temp.path().join("second-state");
+        let first_ledger = first_data.join(crate::storage::DATABASE_NAME);
+        std::fs::create_dir(&first_data).unwrap();
+        std::fs::write(&first_ledger, b"first-ledger-sentinel").unwrap();
+        let config = Config {
+            repositories: vec![second_repository.clone()],
+            poll_every: Duration::from_secs(60),
+            default_runtime: "codex".into(),
+            default_timeout: Duration::from_secs(60),
+            maximum_timeout: Duration::from_secs(3600),
+            max_concurrent_runs: 1,
+            max_concurrent_runs_per_repository: 1,
+            workspace_root: temp.path().join("second-workspaces"),
+            data_directory: second_data,
+            execution_mode: crate::config::ExecutionMode::Worktree,
+            worker: None,
+            triggers: Vec::new(),
+            source: None,
+        };
+
+        let error = FactoryDaemon::new_pinned_for_repository(
+            "acme/second".into(),
+            second_repository,
+            config,
+            WorkflowCatalog {
+                entries: Vec::new(),
+            },
+            &first_ledger,
+        )
+        .err()
+        .unwrap();
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not match repository-owned ledger")
+        );
+        assert_eq!(
+            std::fs::read(&first_ledger).unwrap(),
+            b"first-ledger-sentinel"
+        );
+    }
+
+    #[test]
+    fn backend_validation_retains_unresolvable_workspace_before_mode_checks() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+        let task = ledger
+            .enqueue(&TaskIdentity::ticket("acme/unknown", "triage", "42", "revision").unwrap())
+            .unwrap()
+            .task;
+        ledger
+            .reserve_task_workspace(&TaskWorkspace {
+                task_id: task.id,
+                kind: "proposal".into(),
+                backend: "clone".into(),
+                repository: "acme/unknown".into(),
+                base_branch: "main".into(),
+                base_sha: "0123456789012345678901234567890123456789".into(),
+                factory_branch: None,
+                path: temp.path().join("unknown-clone"),
+                state: "preparing".into(),
+                status_summary: None,
+                created_at: 0,
+                updated_at: 0,
+                cleaned_at: None,
+            })
+            .unwrap();
+        let owner = RepositoryOwner {
+            identity: "acme/expected".into(),
+            path: temp.path().join("not-a-checkout"),
+            workspace_root: temp.path().join("not-a-workspace-root"),
+        };
+
+        retain_unresolvable_workspaces(&ledger, &owner).unwrap();
+        validate_workspace_backends(&ledger, &owner, false).unwrap();
+
+        let workspace = ledger.task_workspace(task.id).unwrap().unwrap();
+        assert_eq!(workspace.state, "retained");
+        assert!(
+            workspace
+                .status_summary
+                .as_deref()
+                .unwrap()
+                .contains("owner could not be resolved")
+        );
+        assert!(!owner.path.exists());
     }
 
     fn scheduled_targets(
@@ -3011,8 +3348,11 @@ mod tests {
             .unwrap();
         finalize_task_workspace(
             ledger.path(),
-            &repository,
-            &workspace_root,
+            &RepositoryOwner {
+                identity: "example/repo".into(),
+                path: repository.clone(),
+                workspace_root: workspace_root.clone(),
+            },
             triage.id,
             triage_run.id,
             None,
@@ -3152,7 +3492,12 @@ mod tests {
             .unwrap();
         std::fs::write(prepared.path.join("late-change.txt"), "keep me\n").unwrap();
 
-        reconcile_pending_cleanup(&ledger, &repository, &workspace_root, None).unwrap();
+        let owner = RepositoryOwner {
+            identity: "example/repo".into(),
+            path: repository.clone(),
+            workspace_root: workspace_root.clone(),
+        };
+        reconcile_pending_cleanup(&ledger, &owner, None).unwrap();
 
         assert!(prepared.path.join("late-change.txt").exists());
         assert_eq!(
@@ -3160,8 +3505,7 @@ mod tests {
             "retained"
         );
         std::fs::rename(&remote, temp.path().join("origin-unavailable.git")).unwrap();
-        reconcile_terminal_workspaces(&ledger, ledger.path(), &repository, &workspace_root, None)
-            .unwrap();
+        reconcile_terminal_workspaces(&ledger, ledger.path(), &owner, None).unwrap();
         assert_eq!(
             ledger.task_workspace(task.id).unwrap().unwrap().state,
             "retained"
@@ -3218,8 +3562,7 @@ mod tests {
             )
             .unwrap();
 
-        reconcile_terminal_workspaces(&ledger, ledger.path(), &repository, &workspace_root, None)
-            .unwrap();
+        reconcile_terminal_workspaces(&ledger, ledger.path(), &owner, None).unwrap();
 
         assert!(!proposal.path.exists());
         assert_eq!(
@@ -3275,8 +3618,7 @@ mod tests {
             )
             .unwrap();
 
-        reconcile_terminal_workspaces(&ledger, ledger.path(), &repository, &workspace_root, None)
-            .unwrap();
+        reconcile_terminal_workspaces(&ledger, ledger.path(), &owner, None).unwrap();
 
         assert!(!absent_path.exists());
         assert_eq!(
@@ -3286,6 +3628,564 @@ mod tests {
                 .unwrap()
                 .state,
             "cleaned"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn overlapping_task_and_run_ids_execute_only_in_their_own_repositories() {
+        fn git(directory: &Path, arguments: &[&str]) {
+            let output = std::process::Command::new("git")
+                .args(arguments)
+                .current_dir(directory)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {} failed: {}",
+                arguments.join(" "),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        fn repository(root: &Path, name: &str) -> (PathBuf, PathBuf) {
+            let repository = root.join(name);
+            let workspace_root = root.join(format!("{name}-worktrees"));
+            let remote = root.join(format!("{name}-origin.git"));
+            std::fs::create_dir(&repository).unwrap();
+            std::fs::create_dir(&workspace_root).unwrap();
+            git(&repository, &["init", "-b", "main"]);
+            git(
+                &repository,
+                &["config", "user.email", "factory@example.test"],
+            );
+            git(&repository, &["config", "user.name", "Factory Test"]);
+            std::fs::write(repository.join("README.md"), format!("{name}\n")).unwrap();
+            git(&repository, &["add", "README.md"]);
+            git(&repository, &["commit", "-m", "fixture"]);
+            git(
+                root,
+                &[
+                    "clone",
+                    "--bare",
+                    repository.to_str().unwrap(),
+                    remote.to_str().unwrap(),
+                ],
+            );
+            git(
+                &repository,
+                &["remote", "add", "origin", remote.to_str().unwrap()],
+            );
+            (
+                repository.canonicalize().unwrap(),
+                workspace_root.canonicalize().unwrap(),
+            )
+        }
+
+        async fn execute(
+            root: &Path,
+            identity: &str,
+            repository: PathBuf,
+            workspace_root: PathBuf,
+            github: &GitHubClient,
+            runtime: &Arc<dyn AgentRuntime>,
+        ) -> (i64, i64, PathBuf) {
+            let ledger_path = root.join(format!("{}.db", identity.replace('/', "-")));
+            let mut ledger = Ledger::open(&ledger_path).unwrap();
+            let task = ledger
+                .enqueue(
+                    &TaskIdentity::scheduled(identity, "review", "2026-07-27T12:00:00Z").unwrap(),
+                )
+                .unwrap()
+                .task;
+            ledger.claim_next().unwrap().unwrap();
+            let run = ledger.start_run(task.id, "codex").unwrap();
+            let workflow = WorkflowTarget {
+                prompt: "Review the repository.".into(),
+                runtime: "codex".into(),
+                timeout: Duration::from_secs(30),
+                trigger: Trigger::Schedule {
+                    expression: "0 * * * *".into(),
+                    timezone: chrono_tz::UTC,
+                },
+            };
+            let target = RepositoryTarget {
+                path: repository.clone(),
+                workflows: HashMap::from([("review".into(), workflow.clone())]),
+            };
+            let execution_target = prepare_task_workspace(
+                &mut ledger,
+                github,
+                &target,
+                identity,
+                &workspace_root,
+                &task,
+                run.id,
+                false,
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            let execution_path = execution_target.path.clone();
+            execute_task(
+                Ledger::open(&ledger_path).unwrap(),
+                &execution_target,
+                &workflow,
+                runtime,
+                run.id,
+                "validated prompt".into(),
+                CancellationToken::new(),
+                None,
+            )
+            .await
+            .unwrap();
+            finalize_task_workspace(
+                &ledger_path,
+                &RepositoryOwner {
+                    identity: identity.into(),
+                    path: repository,
+                    workspace_root,
+                },
+                task.id,
+                run.id,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                Ledger::open(&ledger_path)
+                    .unwrap()
+                    .task(task.id)
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                TaskState::Succeeded
+            );
+            (task.id, run.id, execution_path)
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let (first_repository, first_workspaces) = repository(temp.path(), "first");
+        let (second_repository, second_workspaces) = repository(temp.path(), "second");
+        let gh = temp.path().join("gh");
+        std::fs::write(
+            &gh,
+            "#!/bin/sh\nif [ \"$1\" = \"repo\" ] && [ \"$2\" = \"view\" ]; then echo main; exit 0; fi\nexit 64\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&gh).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&gh, permissions).unwrap();
+        let github = GitHubClient::new(gh);
+        let recording = Arc::new(RecordingRuntime {
+            directories: Mutex::new(Vec::new()),
+        });
+        let runtime: Arc<dyn AgentRuntime> = recording.clone();
+
+        let first = execute(
+            temp.path(),
+            "acme/first",
+            first_repository,
+            first_workspaces.clone(),
+            &github,
+            &runtime,
+        )
+        .await;
+        let second = execute(
+            temp.path(),
+            "acme/second",
+            second_repository,
+            second_workspaces.clone(),
+            &github,
+            &runtime,
+        )
+        .await;
+
+        assert_eq!((first.0, first.1), (second.0, second.1));
+        assert!(first.2.starts_with(&first_workspaces));
+        assert!(second.2.starts_with(&second_workspaces));
+        assert_ne!(first.2, second.2);
+        assert_eq!(
+            *recording.directories.lock().unwrap(),
+            vec![first.2, second.2]
+        );
+    }
+
+    #[test]
+    fn disabled_repository_recovery_is_non_destructive_and_repository_scoped() {
+        fn active_task_with_workspace(
+            ledger: &mut Ledger,
+            repository: &str,
+            workspace_repository: &str,
+            path: PathBuf,
+        ) -> (Task, Run) {
+            let task = ledger
+                .enqueue(&TaskIdentity::ticket(repository, "implement", "42", "revision").unwrap())
+                .unwrap()
+                .task;
+            ledger.claim_next().unwrap().unwrap();
+            let run = ledger.start_run(task.id, "codex").unwrap();
+            ledger
+                .reserve_task_workspace(&TaskWorkspace {
+                    task_id: task.id,
+                    kind: "delivery".into(),
+                    backend: "worktree".into(),
+                    repository: workspace_repository.into(),
+                    base_branch: "main".into(),
+                    base_sha: "0123456789012345678901234567890123456789".into(),
+                    factory_branch: Some(format!("factory/{}", task.id)),
+                    path,
+                    state: "preparing".into(),
+                    status_summary: None,
+                    created_at: 0,
+                    updated_at: 0,
+                    cleaned_at: None,
+                })
+                .unwrap();
+            ledger
+                .update_task_workspace_state(task.id, "ready", None)
+                .unwrap();
+            (task, run)
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut first = Ledger::open(&temp.path().join("first.db")).unwrap();
+        let mut second = Ledger::open(&temp.path().join("second.db")).unwrap();
+        let (first_task, first_run) = active_task_with_workspace(
+            &mut first,
+            "acme/first",
+            "acme/first",
+            temp.path().join("first-workspace"),
+        );
+        let (second_task, second_run) = active_task_with_workspace(
+            &mut second,
+            "acme/second",
+            "acme/second",
+            temp.path().join("second-workspace"),
+        );
+        let (unresolved_task, unresolved_run) = active_task_with_workspace(
+            &mut second,
+            "acme/unknown",
+            "acme/unknown",
+            temp.path().join("unknown-workspace"),
+        );
+        assert_eq!(first_task.id, second_task.id);
+        assert_eq!(first_run.id, second_run.id);
+
+        let owner = RepositoryOwner {
+            identity: "acme/second".into(),
+            path: temp.path().join("not-a-git-checkout"),
+            workspace_root: temp.path().join("missing-workspace-root"),
+        };
+        let second_path = second.path().to_owned();
+        reconcile_recovery_state(&mut second, &second_path, &owner, None, false).unwrap();
+
+        assert_eq!(
+            first.task(first_task.id).unwrap().unwrap().state,
+            TaskState::Running
+        );
+        assert_eq!(first.run(first_run.id).unwrap().unwrap().outcome, "running");
+        assert_eq!(
+            first.task_workspace(first_task.id).unwrap().unwrap().state,
+            "ready"
+        );
+        assert_eq!(
+            second.task(second_task.id).unwrap().unwrap().state,
+            TaskState::Queued
+        );
+        assert_eq!(
+            second
+                .task_workspace(second_task.id)
+                .unwrap()
+                .unwrap()
+                .state,
+            "ready"
+        );
+        assert_eq!(
+            second.task(unresolved_task.id).unwrap().unwrap().state,
+            TaskState::Running
+        );
+        assert_eq!(
+            second.run(unresolved_run.id).unwrap().unwrap().outcome,
+            "running"
+        );
+        let unresolved_workspace = second.task_workspace(unresolved_task.id).unwrap().unwrap();
+        assert_eq!(unresolved_workspace.state, "retained");
+        assert!(
+            unresolved_workspace
+                .status_summary
+                .as_deref()
+                .unwrap()
+                .contains("owner could not be resolved")
+        );
+        assert!(!owner.path.exists());
+        assert!(!owner.workspace_root.exists());
+    }
+
+    #[test]
+    fn two_repository_cleanup_and_terminal_reconciliation_never_cross_mutate() {
+        fn git(directory: &Path, arguments: &[&str]) -> String {
+            let output = std::process::Command::new("git")
+                .args(arguments)
+                .current_dir(directory)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {} failed: {}",
+                arguments.join(" "),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        }
+
+        fn repository(root: &Path, name: &str) -> (PathBuf, PathBuf) {
+            let repository = root.join(name);
+            let workspace_root = root.join(format!("{name}-worktrees"));
+            std::fs::create_dir(&repository).unwrap();
+            std::fs::create_dir(&workspace_root).unwrap();
+            git(&repository, &["init", "-b", "main"]);
+            git(
+                &repository,
+                &["config", "user.email", "factory@example.test"],
+            );
+            git(&repository, &["config", "user.name", "Factory Test"]);
+            std::fs::write(repository.join("README.md"), format!("{name}\n")).unwrap();
+            git(&repository, &["add", "README.md"]);
+            git(&repository, &["commit", "-m", "fixture"]);
+            (
+                repository.canonicalize().unwrap(),
+                workspace_root.canonicalize().unwrap(),
+            )
+        }
+
+        fn reconciliation_ledger(
+            path: &Path,
+            identity: &str,
+            canonical_repository: &Path,
+            workspace_root: &Path,
+        ) -> (Ledger, Vec<i64>) {
+            let mut ledger = Ledger::open(path).unwrap();
+            let manager = WorkspaceManager::new(canonical_repository, workspace_root).unwrap();
+            let base_sha = git(canonical_repository, &["rev-parse", "HEAD"]);
+            let cleanup = ledger
+                .enqueue(
+                    &TaskIdentity::scheduled(identity, "cleanup", "2026-07-27T10:00:00Z").unwrap(),
+                )
+                .unwrap()
+                .task;
+            let cleanup_workspace = manager
+                .prepare_proposal(cleanup.id, "main", &base_sha, DeliveryReuse::Reject)
+                .unwrap();
+            ledger
+                .reserve_task_workspace(&TaskWorkspace {
+                    task_id: cleanup.id,
+                    kind: "proposal".into(),
+                    backend: "worktree".into(),
+                    repository: identity.into(),
+                    base_branch: cleanup_workspace.base_branch,
+                    base_sha: cleanup_workspace.base_sha,
+                    factory_branch: cleanup_workspace.branch,
+                    path: cleanup_workspace.path,
+                    state: "preparing".into(),
+                    status_summary: None,
+                    created_at: 0,
+                    updated_at: 0,
+                    cleaned_at: None,
+                })
+                .unwrap();
+            ledger.claim_next().unwrap().unwrap();
+            let cleanup_run = ledger.start_run(cleanup.id, "codex").unwrap();
+            ledger
+                .finish_run_and_task_terminal(
+                    cleanup_run.id,
+                    RunOutcome::Failed,
+                    None,
+                    Some("interrupted cleanup"),
+                    None,
+                )
+                .unwrap();
+            ledger
+                .update_task_workspace_state(
+                    cleanup.id,
+                    "cleanup_pending",
+                    Some("terminal proposal"),
+                )
+                .unwrap();
+
+            let proposal = ledger
+                .enqueue(
+                    &TaskIdentity::scheduled(identity, "proposal", "2026-07-27T11:00:00Z").unwrap(),
+                )
+                .unwrap()
+                .task;
+            ledger.claim_next().unwrap().unwrap();
+            let proposal_run = ledger.start_run(proposal.id, "codex").unwrap();
+            let proposal_workspace = manager
+                .prepare_proposal(proposal.id, "main", &base_sha, DeliveryReuse::Reject)
+                .unwrap();
+            ledger
+                .reserve_task_workspace(&TaskWorkspace {
+                    task_id: proposal.id,
+                    kind: "proposal".into(),
+                    backend: "worktree".into(),
+                    repository: identity.into(),
+                    base_branch: proposal_workspace.base_branch,
+                    base_sha: proposal_workspace.base_sha,
+                    factory_branch: proposal_workspace.branch,
+                    path: proposal_workspace.path,
+                    state: "preparing".into(),
+                    status_summary: None,
+                    created_at: 0,
+                    updated_at: 0,
+                    cleaned_at: None,
+                })
+                .unwrap();
+            ledger
+                .finish_run_and_task_terminal(
+                    proposal_run.id,
+                    RunOutcome::Failed,
+                    None,
+                    Some("interrupted"),
+                    None,
+                )
+                .unwrap();
+
+            let delivery = ledger
+                .enqueue(&TaskIdentity::ticket(identity, "delivery", "43", "revision").unwrap())
+                .unwrap()
+                .task;
+            ledger.claim_next().unwrap().unwrap();
+            let delivery_run = ledger.start_run(delivery.id, "codex").unwrap();
+            let delivery_workspace = manager
+                .prepare_delivery(
+                    43,
+                    "Retain dirty delivery",
+                    "main",
+                    &base_sha,
+                    DeliveryReuse::Reject,
+                )
+                .unwrap();
+            std::fs::write(
+                delivery_workspace.path.join("dirty-sentinel"),
+                format!("{identity}\n"),
+            )
+            .unwrap();
+            ledger
+                .reserve_task_workspace(&TaskWorkspace {
+                    task_id: delivery.id,
+                    kind: "delivery".into(),
+                    backend: "worktree".into(),
+                    repository: identity.into(),
+                    base_branch: delivery_workspace.base_branch,
+                    base_sha: delivery_workspace.base_sha,
+                    factory_branch: delivery_workspace.branch,
+                    path: delivery_workspace.path,
+                    state: "preparing".into(),
+                    status_summary: None,
+                    created_at: 0,
+                    updated_at: 0,
+                    cleaned_at: None,
+                })
+                .unwrap();
+            ledger
+                .finish_run_and_task_terminal(
+                    delivery_run.id,
+                    RunOutcome::Failed,
+                    None,
+                    Some("interrupted"),
+                    None,
+                )
+                .unwrap();
+            (ledger, vec![cleanup.id, proposal.id, delivery.id])
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let (first_repository, first_workspaces) = repository(temp.path(), "first");
+        let (second_repository, second_workspaces) = repository(temp.path(), "second");
+        let (mut first, first_tasks) = reconciliation_ledger(
+            &temp.path().join("first.db"),
+            "acme/first",
+            &first_repository,
+            &first_workspaces,
+        );
+        let (mut second, second_tasks) = reconciliation_ledger(
+            &temp.path().join("second.db"),
+            "acme/second",
+            &second_repository,
+            &second_workspaces,
+        );
+        assert_eq!(first_tasks, second_tasks);
+        let first_head = git(&first_repository, &["rev-parse", "HEAD"]);
+        let first_worktree_state = git(&first_repository, &["worktree", "list", "--porcelain"]);
+
+        let second_owner = RepositoryOwner {
+            identity: "acme/second".into(),
+            path: second_repository,
+            workspace_root: second_workspaces,
+        };
+        let second_path = second.path().to_owned();
+        reconcile_recovery_state(&mut second, &second_path, &second_owner, None, true).unwrap();
+
+        for task_id in &first_tasks {
+            assert_ne!(
+                first.task_workspace(*task_id).unwrap().unwrap().state,
+                "cleaned"
+            );
+        }
+        assert_eq!(
+            second
+                .task_workspace(second_tasks[0])
+                .unwrap()
+                .unwrap()
+                .state,
+            "cleaned"
+        );
+        assert_eq!(
+            second
+                .task_workspace(second_tasks[1])
+                .unwrap()
+                .unwrap()
+                .state,
+            "cleaned"
+        );
+        let retained_second = second.task_workspace(second_tasks[2]).unwrap().unwrap();
+        assert_eq!(retained_second.state, "retained");
+        assert!(retained_second.path.join("dirty-sentinel").exists());
+        assert_eq!(git(&first_repository, &["rev-parse", "HEAD"]), first_head);
+        assert_eq!(
+            git(&first_repository, &["worktree", "list", "--porcelain"]),
+            first_worktree_state
+        );
+        assert!(
+            first
+                .task_workspace(first_tasks[2])
+                .unwrap()
+                .unwrap()
+                .path
+                .join("dirty-sentinel")
+                .exists()
+        );
+
+        let first_owner = RepositoryOwner {
+            identity: "acme/first".into(),
+            path: first_repository,
+            workspace_root: first_workspaces,
+        };
+        let first_path = first.path().to_owned();
+        reconcile_recovery_state(&mut first, &first_path, &first_owner, None, true).unwrap();
+        assert_eq!(
+            first.task_workspace(first_tasks[0]).unwrap().unwrap().state,
+            "cleaned"
+        );
+        assert_eq!(
+            first.task_workspace(first_tasks[1]).unwrap().unwrap().state,
+            "cleaned"
+        );
+        assert_eq!(
+            first.task_workspace(first_tasks[2]).unwrap().unwrap().state,
+            "retained"
         );
     }
 }

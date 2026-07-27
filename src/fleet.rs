@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::config::{
     Config, canonical_directory_or_missing, ensure_primary_checkout, expand_path,
-    repository_config_path, repository_remote_identity,
+    repository_config_path, repository_data_directory_for_identity, repository_remote_identity,
 };
 use crate::storage::DATABASE_NAME;
 use crate::workflow::{Trigger, WorkflowCatalog};
@@ -36,6 +36,7 @@ pub struct FleetRepository {
 pub struct RepositoryRuntime {
     pub identity: String,
     pub path: PathBuf,
+    pub enabled: bool,
     pub config: Config,
     pub catalog: WorkflowCatalog,
     pub ledger_path: PathBuf,
@@ -151,29 +152,40 @@ fn resolve_repository_path(path: &Path, base: &Path) -> Result<PathBuf> {
 }
 
 impl FleetRepository {
+    pub fn pinned_ledger_path(&self) -> Result<PathBuf> {
+        Ok(repository_data_directory_for_identity(&self.path, &self.identity)?.join(DATABASE_NAME))
+    }
+
     pub fn load_runtime(&self) -> Result<RepositoryRuntime> {
         validate_checkout(&self.path, &self.identity)?;
-        let mut config = Config::load(&repository_config_path(&self.path))?;
-        if config.poll_every.as_secs() < MIN_POLL_SECONDS {
-            bail!("poll_every must be at least {MIN_POLL_SECONDS}s in fleet mode");
-        }
+        let config_path = repository_config_path(&self.path);
+        let mut config = if self.enabled {
+            Config::load(&config_path)?
+        } else {
+            Config::load_for_inspection(&config_path)?
+        };
         let catalog = WorkflowCatalog::load(&config)?;
-        catalog.validate_ticket_workflows()?;
-        let source_workflows = catalog
-            .entries
-            .iter()
-            .filter(|entry| {
-                entry.errors.is_empty()
-                    && matches!(
-                        entry.trigger,
-                        Some(Trigger::Source { .. } | Trigger::Status(_) | Trigger::Label(_))
-                    )
-            })
-            .count();
-        if source_workflows > MAX_SOURCE_WORKFLOWS_PER_REPOSITORY {
-            bail!(
-                "fleet supports at most {MAX_SOURCE_WORKFLOWS_PER_REPOSITORY} source-triggered workflows per repository; got {source_workflows}"
-            );
+        if self.enabled {
+            if config.poll_every.as_secs() < MIN_POLL_SECONDS {
+                bail!("poll_every must be at least {MIN_POLL_SECONDS}s in fleet mode");
+            }
+            catalog.validate_ticket_workflows()?;
+            let source_workflows = catalog
+                .entries
+                .iter()
+                .filter(|entry| {
+                    entry.errors.is_empty()
+                        && matches!(
+                            entry.trigger,
+                            Some(Trigger::Source { .. } | Trigger::Status(_) | Trigger::Label(_))
+                        )
+                })
+                .count();
+            if source_workflows > MAX_SOURCE_WORKFLOWS_PER_REPOSITORY {
+                bail!(
+                    "fleet supports at most {MAX_SOURCE_WORKFLOWS_PER_REPOSITORY} source-triggered workflows per repository; got {source_workflows}"
+                );
+            }
         }
         if let Some(limit) = self.max_concurrent {
             let effective = config.max_concurrent_runs_per_repository.min(limit);
@@ -185,11 +197,16 @@ impl FleetRepository {
         Ok(RepositoryRuntime {
             identity: self.identity.clone(),
             path: self.path.clone(),
+            enabled: self.enabled,
             config,
             catalog,
             ledger_path,
             workspace_root,
-            health: RepositoryHealth::Healthy,
+            health: if self.enabled {
+                RepositoryHealth::Healthy
+            } else {
+                RepositoryHealth::Disabled
+            },
         })
     }
 }

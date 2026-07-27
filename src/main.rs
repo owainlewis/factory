@@ -809,6 +809,32 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
     let mut healthy = 0usize;
     for repository in &fleet.repositories {
         if !repository.enabled {
+            match repository.pinned_ledger_path() {
+                Ok(ledger_path) if ledger_path.exists() => {
+                    if let Err(error) = FactoryDaemon::reconcile_disabled_ledger(
+                        &repository.identity,
+                        &ledger_path,
+                    ) {
+                        write_stderr_best_effort(
+                            format!(
+                                "Factory disabled repository reconciliation failed for {}: {}\n",
+                                repository.identity,
+                                single_line_error(&error)
+                            )
+                            .as_bytes(),
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => write_stderr_best_effort(
+                    format!(
+                        "Factory could not locate disabled repository {} for non-destructive reconciliation: {}\n",
+                        repository.identity,
+                        single_line_error(&error)
+                    )
+                    .as_bytes(),
+                ),
+            }
             write_stdout_best_effort(
                 format!("repository={} status=disabled\n", repository.identity).as_bytes(),
             );
@@ -844,12 +870,13 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
                 continue;
             }
         };
-        let daemon = FactoryDaemon::new_pinned(
+        let daemon = FactoryDaemon::new_pinned_for_repository(
             runtime.identity,
+            runtime.path,
             runtime.config,
             runtime.catalog,
             ledger.path(),
-        );
+        )?;
         match daemon
             .evaluate_once_after_global_validation(cancellation.clone())
             .await

@@ -779,6 +779,28 @@ fn repository_data_directory_with_base(
         .with_context(|| format!("failed to resolve repository {}", repository.display()))?;
     ensure_primary_checkout(&repository)?;
     let identity = repository_remote_identity(&repository)?;
+    repository_data_directory_for_resolved_identity(&repository, &identity, configured_base)
+}
+
+pub(crate) fn repository_data_directory_for_identity(
+    repository: &Path,
+    identity: &str,
+) -> Result<PathBuf> {
+    if identity.trim().is_empty() {
+        bail!("repository identity must not be empty");
+    }
+    repository_data_directory_for_resolved_identity(
+        repository,
+        identity,
+        env::var_os("FACTORY_DATA_HOME").map(PathBuf::from),
+    )
+}
+
+fn repository_data_directory_for_resolved_identity(
+    repository: &Path,
+    identity: &str,
+    configured_base: Option<PathBuf>,
+) -> Result<PathBuf> {
     let mut hasher = Sha256::new();
     hasher.update(identity.as_bytes());
     hasher.update(b"\0");

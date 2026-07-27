@@ -625,6 +625,12 @@ pub struct RecoveryReport {
     pub exhausted_run_ids: Vec<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryRecoveryReport {
+    pub recovery: RecoveryReport,
+    pub unresolved_run_ids: Vec<i64>,
+}
+
 pub struct Ledger {
     connection: Connection,
     path: PathBuf,
@@ -2513,6 +2519,23 @@ impl Ledger {
     }
 
     pub fn recover_orphaned_runs(&mut self) -> Result<RecoveryReport> {
+        Ok(self.recover_orphaned_runs_matching(None)?.recovery)
+    }
+
+    pub fn recover_orphaned_runs_for_repository(
+        &mut self,
+        repository: &str,
+    ) -> Result<RepositoryRecoveryReport> {
+        if repository.trim().is_empty() {
+            bail!("recovery repository must not be empty");
+        }
+        self.recover_orphaned_runs_matching(Some(repository))
+    }
+
+    fn recover_orphaned_runs_matching(
+        &mut self,
+        repository: Option<&str>,
+    ) -> Result<RepositoryRecoveryReport> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -2529,6 +2552,7 @@ impl Ledger {
         };
         let mut recovered_run_ids = Vec::new();
         let mut exhausted_run_ids = Vec::new();
+        let mut unresolved_run_ids = Vec::new();
         let lease_cutoff = now_millis()?.saturating_sub(DAEMON_OWNER_LEASE_MILLIS);
         for run in active {
             let owner_is_live = match (&run.owner_id, run.owner_pid) {
@@ -2547,6 +2571,31 @@ impl Ledger {
             };
             if owner_is_live {
                 continue;
+            }
+            if let Some(repository) = repository {
+                let task_repository = transaction
+                    .query_row(
+                        "SELECT repository FROM tasks WHERE id = ?1",
+                        [run.task_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .context("failed to resolve orphaned run task repository")?;
+                if run.repository != repository || task_repository.as_deref() != Some(repository) {
+                    let detail = format!(
+                        "Factory could not resolve interrupted run {} to owning repository {}; run repository is {:?} and task repository is {:?}",
+                        run.id, repository, run.repository, task_repository
+                    );
+                    transaction
+                        .execute(
+                            "UPDATE runs SET error = ?1, activity = ?1, last_activity_at = ?2
+                             WHERE id = ?3 AND outcome = 'running'",
+                            params![detail, now_millis()?, run.id],
+                        )
+                        .context("failed to record unresolved orphan recovery")?;
+                    unresolved_run_ids.push(run.id);
+                    continue;
+                }
             }
             if let (Some(process_id), Some(recorded_identity)) =
                 (run.process_id, run.process_identity.as_deref())
@@ -2608,9 +2657,12 @@ impl Ledger {
         transaction
             .commit()
             .context("failed to commit orphan recovery")?;
-        Ok(RecoveryReport {
-            recovered_run_ids,
-            exhausted_run_ids,
+        Ok(RepositoryRecoveryReport {
+            recovery: RecoveryReport {
+                recovered_run_ids,
+                exhausted_run_ids,
+            },
+            unresolved_run_ids,
         })
     }
 
