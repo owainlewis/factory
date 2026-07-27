@@ -877,7 +877,7 @@ fn canonical_github_identity(origin: &str) -> Result<String> {
     ))
 }
 
-fn ensure_primary_checkout(repository: &Path) -> Result<()> {
+pub(crate) fn ensure_primary_checkout(repository: &Path) -> Result<()> {
     let git_dir = git_output(
         repository,
         &["rev-parse", "--path-format=absolute", "--git-dir"],
@@ -935,7 +935,11 @@ fn canonical_directory(name: &str, path: &Path, base: &Path) -> Result<PathBuf> 
     Ok(canonical)
 }
 
-fn canonical_directory_or_missing(name: &str, path: &Path, base: &Path) -> Result<PathBuf> {
+pub(crate) fn canonical_directory_or_missing(
+    name: &str,
+    path: &Path,
+    base: &Path,
+) -> Result<PathBuf> {
     let expanded = expand_path(path, base)?;
     let mut ancestor = expanded.as_path();
     let mut missing = Vec::new();
@@ -987,7 +991,7 @@ fn canonical_directory_or_missing(name: &str, path: &Path, base: &Path) -> Resul
     }
 }
 
-fn expand_path(path: &Path, base: &Path) -> Result<PathBuf> {
+pub(crate) fn expand_path(path: &Path, base: &Path) -> Result<PathBuf> {
     let text = path
         .to_str()
         .with_context(|| format!("path is not valid UTF-8: {}", path.display()))?;

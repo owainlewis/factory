@@ -11,6 +11,7 @@ use factory::clone::CloneManager;
 use factory::config::{Config, ExecutionMode, repository_config_path};
 use factory::daemon::FactoryDaemon;
 use factory::execution::ResolvedWorkflow;
+use factory::fleet::FleetConfig;
 use factory::github::GitHubClient;
 use factory::init::{InitOptions, initialize};
 use factory::inspection::{
@@ -58,10 +59,17 @@ enum Command {
         #[arg(long, conflicts_with = "workflow_id")]
         once: bool,
         /// Path to the Factory configuration file.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "fleet")]
         config: Option<PathBuf>,
+        /// Path to a fleet configuration file. Supported with --once.
+        #[arg(
+            long,
+            requires = "once",
+            conflicts_with_all = ["config", "data_directory", "workflow_id"]
+        )]
+        fleet: Option<PathBuf>,
         /// Directory containing the durable Factory database.
-        #[arg(long, conflicts_with = "workflow_id")]
+        #[arg(long, conflicts_with_all = ["workflow_id", "fleet"])]
         data_directory: Option<PathBuf>,
     },
     /// Validate configuration, workflows, and configured GitHub Project IDs.
@@ -222,11 +230,15 @@ async fn run_cli() -> Result<u8> {
             workflow_id,
             once,
             config,
+            fleet,
             data_directory,
         } => {
             if let Some(workflow_id) = workflow_id {
                 return run_workflow(&workflow_id, None, config, WorkflowRunMode::ScheduledOnly)
                     .await;
+            }
+            if let Some(fleet) = fleet {
+                return run_fleet_once(&fleet).await;
             }
             return run_poller(config, data_directory, once).await;
         }
@@ -776,6 +788,115 @@ async fn run_poller(
     signal_task.abort();
     write_stderr_best_effort(b"Factory stopped.\n");
     Ok(0)
+}
+
+async fn run_fleet_once(path: &Path) -> Result<u8> {
+    write_stderr_best_effort(
+        format!(
+            "Factory starting: mode=fleet-once config={}\n",
+            path.display()
+        )
+        .as_bytes(),
+    );
+    let fleet = FleetConfig::load(path)?;
+    ensure_no_unscoped_ledger_overlap()?;
+    let cancellation = CancellationToken::new();
+    GitHubClient::default()
+        .validate_global(&cancellation)
+        .await?;
+
+    let mut failures = 0usize;
+    let mut healthy = 0usize;
+    for repository in &fleet.repositories {
+        if !repository.enabled {
+            write_stdout_best_effort(
+                format!("repository={} status=disabled\n", repository.identity).as_bytes(),
+            );
+            continue;
+        }
+        let runtime = match repository.load_runtime() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                failures += 1;
+                write_stdout_best_effort(
+                    format!(
+                        "repository={} status=invalid_config error={}\n",
+                        repository.identity,
+                        single_line_error(&error)
+                    )
+                    .as_bytes(),
+                );
+                continue;
+            }
+        };
+        let ledger = match Ledger::open(&runtime.ledger_path) {
+            Ok(ledger) => ledger,
+            Err(error) => {
+                failures += 1;
+                write_stdout_best_effort(
+                    format!(
+                        "repository={} status=unavailable error={}\n",
+                        repository.identity,
+                        single_line_error(&error)
+                    )
+                    .as_bytes(),
+                );
+                continue;
+            }
+        };
+        let daemon = FactoryDaemon::new_pinned(
+            runtime.identity,
+            runtime.config,
+            runtime.catalog,
+            ledger.path(),
+        );
+        match daemon
+            .evaluate_once_after_global_validation(cancellation.clone())
+            .await
+        {
+            Ok(report) => {
+                let source_failures = report.source.failures();
+                if source_failures == 0 {
+                    healthy += 1;
+                } else {
+                    failures += 1;
+                }
+                write_stdout_best_effort(
+                    format!(
+                        "repository={} status={} scheduled_tasks_created={} source_tasks_created={} source_failures={}\n",
+                        repository.identity,
+                        if source_failures == 0 { "ok" } else { "failed" },
+                        report.scheduled_tasks_created,
+                        report.source.tasks_created(),
+                        source_failures
+                    )
+                    .as_bytes(),
+                );
+            }
+            Err(error) => {
+                failures += 1;
+                write_stdout_best_effort(
+                    format!(
+                        "repository={} status=unavailable error={}\n",
+                        repository.identity,
+                        single_line_error(&error)
+                    )
+                    .as_bytes(),
+                );
+            }
+        }
+    }
+    if healthy == 0 {
+        failures += 1;
+    }
+    Ok(u8::from(failures > 0))
+}
+
+fn single_line_error(error: &anyhow::Error) -> String {
+    format!("{error:#}")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn ensure_no_unscoped_ledger_overlap() -> Result<()> {

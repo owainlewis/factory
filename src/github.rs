@@ -995,6 +995,53 @@ impl GitHubClient {
         cancellation: CancellationToken,
     ) -> Result<PollReport> {
         self.validate_global(&cancellation).await?;
+        self.poll_once_after_global_validation(config, catalog, ledger, cancellation)
+            .await
+    }
+
+    pub async fn poll_once_after_global_validation(
+        &self,
+        config: &Config,
+        catalog: &WorkflowCatalog,
+        ledger: &mut Ledger,
+        cancellation: CancellationToken,
+    ) -> Result<PollReport> {
+        self.poll_once_after_global_validation_with_identity(
+            config,
+            catalog,
+            ledger,
+            cancellation,
+            None,
+        )
+        .await
+    }
+
+    pub async fn poll_once_after_global_validation_for_identity(
+        &self,
+        config: &Config,
+        catalog: &WorkflowCatalog,
+        ledger: &mut Ledger,
+        cancellation: CancellationToken,
+        identity: &str,
+    ) -> Result<PollReport> {
+        self.poll_once_after_global_validation_with_identity(
+            config,
+            catalog,
+            ledger,
+            cancellation,
+            Some(identity),
+        )
+        .await
+    }
+
+    async fn poll_once_after_global_validation_with_identity(
+        &self,
+        config: &Config,
+        catalog: &WorkflowCatalog,
+        ledger: &mut Ledger,
+        cancellation: CancellationToken,
+        pinned_identity: Option<&str>,
+    ) -> Result<PollReport> {
         let label_workflows = label_workflows(catalog);
         let status_workflows = status_workflows(catalog);
         let mut repositories = Vec::with_capacity(config.repositories.len());
@@ -1019,6 +1066,7 @@ impl GitHubClient {
                             source,
                             ledger,
                             &cancellation,
+                            pinned_identity,
                         )
                         .await?;
                     report.name_with_owner = status.name_with_owner;
@@ -1033,6 +1081,7 @@ impl GitHubClient {
                             source,
                             ledger,
                             &cancellation,
+                            pinned_identity,
                         )
                         .await?;
                     report.name_with_owner = labels.name_with_owner;
@@ -1040,8 +1089,14 @@ impl GitHubClient {
                     report.tasks_created += labels.tasks_created;
                 }
                 if report.name_with_owner.is_none() {
-                    report.name_with_owner =
-                        Some(self.validate_repository(repository, &cancellation).await?);
+                    report.name_with_owner = Some(
+                        self.validated_repository_identity(
+                            repository,
+                            pinned_identity,
+                            &cancellation,
+                        )
+                        .await?,
+                    );
                 }
                 Ok(report)
             }
@@ -1067,8 +1122,11 @@ impl GitHubClient {
         source: &SourceConfig,
         ledger: &mut Ledger,
         cancellation: &CancellationToken,
+        pinned_identity: Option<&str>,
     ) -> Result<RepositoryPoll> {
-        let name = self.validate_repository(repository, cancellation).await?;
+        let name = self
+            .validated_repository_identity(repository, pinned_identity, cancellation)
+            .await?;
         let resolved = self
             .resolve_project_source(repository, source, cancellation)
             .await?;
@@ -1086,9 +1144,9 @@ impl GitHubClient {
         let issues_seen = items
             .iter()
             .filter(|item| {
-                item.content
-                    .as_ref()
-                    .is_some_and(|issue| issue.repository.name_with_owner == name)
+                item.content.as_ref().is_some_and(|issue| {
+                    issue.repository.name_with_owner.eq_ignore_ascii_case(&name)
+                })
             })
             .count();
         let mut tasks_created = 0;
@@ -1107,7 +1165,9 @@ impl GitHubClient {
                 let Some(issue) = &item.content else {
                     continue;
                 };
-                if issue.repository.name_with_owner != name || issue.state != "OPEN" {
+                if !issue.repository.name_with_owner.eq_ignore_ascii_case(&name)
+                    || issue.state != "OPEN"
+                {
                     continue;
                 }
                 let Some(author) = &issue.author else {
@@ -1199,8 +1259,11 @@ impl GitHubClient {
         source: &SourceConfig,
         ledger: &mut Ledger,
         cancellation: &CancellationToken,
+        pinned_identity: Option<&str>,
     ) -> Result<RepositoryPoll> {
-        let name = self.validate_repository(repository, cancellation).await?;
+        let name = self
+            .validated_repository_identity(repository, pinned_identity, cancellation)
+            .await?;
         let issues: Vec<ApiIssue> = self
             .api_pages(
                 repository,
@@ -1276,6 +1339,22 @@ impl GitHubClient {
             tasks_created,
             error: None,
         })
+    }
+
+    async fn validated_repository_identity(
+        &self,
+        repository: &Path,
+        pinned_identity: Option<&str>,
+        cancellation: &CancellationToken,
+    ) -> Result<String> {
+        let discovered = self.validate_repository(repository, cancellation).await?;
+        match pinned_identity {
+            Some(identity) if discovered.eq_ignore_ascii_case(identity) => Ok(identity.to_owned()),
+            Some(identity) => bail!(
+                "GitHub repository identity {discovered} does not match pinned repository identity {identity}"
+            ),
+            None => Ok(discovered),
+        }
     }
 
     async fn trusted_approver_ids(

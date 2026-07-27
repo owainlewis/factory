@@ -6,6 +6,7 @@ pub mod clone;
 pub mod config;
 pub mod daemon;
 pub mod execution;
+pub mod fleet;
 pub mod github;
 mod hash;
 pub mod init;

@@ -1,0 +1,420 @@
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use anyhow::{Context, Result, bail};
+use serde::Deserialize;
+
+use crate::config::{
+    Config, canonical_directory_or_missing, ensure_primary_checkout, expand_path,
+    repository_config_path, repository_remote_identity,
+};
+use crate::storage::DATABASE_NAME;
+use crate::workflow::{Trigger, WorkflowCatalog};
+
+pub const MAX_ENABLED_REPOSITORIES: usize = 20;
+pub const MAX_SOURCE_WORKFLOWS_PER_REPOSITORY: usize = 3;
+pub const MIN_POLL_SECONDS: u64 = 60;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetConfig {
+    pub max_concurrent: usize,
+    pub repositories: Vec<FleetRepository>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetRepository {
+    pub identity: String,
+    pub display_name: String,
+    pub path: PathBuf,
+    pub enabled: bool,
+    pub max_concurrent: Option<usize>,
+}
+
+#[derive(Debug)]
+pub struct RepositoryRuntime {
+    pub identity: String,
+    pub path: PathBuf,
+    pub config: Config,
+    pub catalog: WorkflowCatalog,
+    pub ledger_path: PathBuf,
+    pub workspace_root: PathBuf,
+    pub health: RepositoryHealth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepositoryHealth {
+    Loading,
+    Healthy,
+    InvalidConfig,
+    Unavailable,
+    Disabled,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFleetConfig {
+    max_concurrent: usize,
+    #[serde(rename = "repository")]
+    repositories: Vec<RawFleetRepository>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFleetRepository {
+    name: String,
+    path: PathBuf,
+    #[serde(default = "enabled_by_default")]
+    enabled: bool,
+    max_concurrent: Option<usize>,
+}
+
+fn enabled_by_default() -> bool {
+    true
+}
+
+impl FleetConfig {
+    pub fn load(path: &Path) -> Result<Self> {
+        let current_dir = std::env::current_dir().context("failed to resolve current directory")?;
+        let path = expand_path(path, &current_dir)?;
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read fleet config {}", path.display()))?;
+        let raw: RawFleetConfig = toml::from_str(&contents)
+            .with_context(|| format!("failed to parse fleet config {}", path.display()))?;
+        if raw.max_concurrent == 0 {
+            bail!("max_concurrent must be greater than zero");
+        }
+        if raw.repositories.is_empty() {
+            bail!("repository must contain at least one entry");
+        }
+        let enabled_count = raw
+            .repositories
+            .iter()
+            .filter(|repository| repository.enabled)
+            .count();
+        if enabled_count == 0 {
+            bail!("fleet must contain at least one enabled repository");
+        }
+        if enabled_count > MAX_ENABLED_REPOSITORIES {
+            bail!(
+                "fleet supports at most {MAX_ENABLED_REPOSITORIES} enabled repositories; got {enabled_count}"
+            );
+        }
+        let base = path
+            .parent()
+            .context("fleet configuration path has no parent directory")?;
+        let mut identities = HashSet::new();
+        let mut paths = HashSet::new();
+        let repositories = raw
+            .repositories
+            .into_iter()
+            .enumerate()
+            .map(|(index, repository)| {
+                let display_name = validate_identity(index, &repository.name)?;
+                let identity = display_name.to_ascii_lowercase();
+                if !identities.insert(identity.clone()) {
+                    bail!("duplicate repository identity {identity}");
+                }
+                if repository.max_concurrent == Some(0) {
+                    bail!("repository {display_name} max_concurrent must be greater than zero");
+                }
+                let path = resolve_repository_path(&repository.path, base)?;
+                if !paths.insert(path.clone()) {
+                    bail!("duplicate canonical repository path {}", path.display());
+                }
+                Ok(FleetRepository {
+                    identity,
+                    display_name,
+                    path,
+                    enabled: repository.enabled,
+                    max_concurrent: repository.max_concurrent,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            max_concurrent: raw.max_concurrent,
+            repositories,
+        })
+    }
+}
+
+fn resolve_repository_path(path: &Path, base: &Path) -> Result<PathBuf> {
+    let expanded = expand_path(path, base)?;
+    match expanded.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            canonical_directory_or_missing("repository", &expanded, base).or(Ok(expanded))
+        }
+        Err(_) => Ok(expanded),
+    }
+}
+
+impl FleetRepository {
+    pub fn load_runtime(&self) -> Result<RepositoryRuntime> {
+        validate_checkout(&self.path, &self.identity)?;
+        let mut config = Config::load(&repository_config_path(&self.path))?;
+        if config.poll_every.as_secs() < MIN_POLL_SECONDS {
+            bail!("poll_every must be at least {MIN_POLL_SECONDS}s in fleet mode");
+        }
+        let catalog = WorkflowCatalog::load(&config)?;
+        catalog.validate_ticket_workflows()?;
+        let source_workflows = catalog
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.errors.is_empty()
+                    && matches!(
+                        entry.trigger,
+                        Some(Trigger::Source { .. } | Trigger::Status(_) | Trigger::Label(_))
+                    )
+            })
+            .count();
+        if source_workflows > MAX_SOURCE_WORKFLOWS_PER_REPOSITORY {
+            bail!(
+                "fleet supports at most {MAX_SOURCE_WORKFLOWS_PER_REPOSITORY} source-triggered workflows per repository; got {source_workflows}"
+            );
+        }
+        if let Some(limit) = self.max_concurrent {
+            let effective = config.max_concurrent_runs_per_repository.min(limit);
+            config.max_concurrent_runs = effective;
+            config.max_concurrent_runs_per_repository = effective;
+        }
+        let ledger_path = config.data_directory.join(DATABASE_NAME);
+        let workspace_root = config.workspace_root.clone();
+        Ok(RepositoryRuntime {
+            identity: self.identity.clone(),
+            path: self.path.clone(),
+            config,
+            catalog,
+            ledger_path,
+            workspace_root,
+            health: RepositoryHealth::Healthy,
+        })
+    }
+}
+
+fn validate_identity(index: usize, value: &str) -> Result<String> {
+    let value = value.trim();
+    let mut parts = value.split('/');
+    let owner = parts.next().unwrap_or_default();
+    let repository = parts.next().unwrap_or_default();
+    if parts.next().is_some()
+        || !valid_identity_segment(owner)
+        || !valid_identity_segment(repository)
+    {
+        bail!(
+            "repository entry {} name must have the GitHub owner/name shape",
+            index + 1
+        );
+    }
+    Ok(value.to_owned())
+}
+
+fn valid_identity_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 100
+        && !value.starts_with('.')
+        && !value.ends_with('.')
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+}
+
+fn validate_checkout(path: &Path, expected_identity: &str) -> Result<()> {
+    let bare = git_output(path, &["rev-parse", "--is-bare-repository"])
+        .context("repository path is not a Git checkout")?;
+    if bare.trim() != "false" {
+        bail!("repository path is a bare Git repository");
+    }
+    let root = git_output(path, &["rev-parse", "--show-toplevel"])
+        .context("repository path is not a Git checkout")?;
+    let root = PathBuf::from(root.trim())
+        .canonicalize()
+        .context("failed to resolve Git checkout root")?;
+    if root != path {
+        bail!(
+            "repository path must be the canonical Git checkout root; got {}",
+            path.display()
+        );
+    }
+    ensure_primary_checkout(path)?;
+    let actual = repository_remote_identity(path)?;
+    if actual != expected_identity {
+        bail!(
+            "origin identity {actual} does not match pinned repository identity {expected_identity}"
+        );
+    }
+    Ok(())
+}
+
+fn git_output(repository: &Path, arguments: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(arguments)
+        .output()
+        .context("failed to start git")?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            arguments.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    String::from_utf8(output.stdout).context("git output was not valid UTF-8")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repository(root: &Path, name: &str, origin: &str) -> PathBuf {
+        let path = root.join(name);
+        fs::create_dir(&path).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["remote", "add", "origin", origin])
+                .current_dir(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        path.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn loads_defaults_relative_paths_and_normalized_identities() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = repository(temp.path(), "first", "git@github.com:Acme/First.git");
+        let second = repository(temp.path(), "second", "https://github.com/acme/second");
+        let fleet = temp.path().join("fleet.toml");
+        fs::write(
+            &fleet,
+            "max_concurrent = 4\n[[repository]]\nname = \"Acme/First\"\npath = \"first\"\n[[repository]]\nname = \"acme/second\"\npath = \"second\"\nenabled = false\nmax_concurrent = 1\n",
+        )
+        .unwrap();
+        let loaded = FleetConfig::load(&fleet).unwrap();
+        assert_eq!(loaded.max_concurrent, 4);
+        assert_eq!(loaded.repositories[0].identity, "acme/first");
+        assert_eq!(loaded.repositories[0].path, first);
+        assert!(loaded.repositories[0].enabled);
+        assert_eq!(loaded.repositories[1].path, second);
+        assert!(!loaded.repositories[1].enabled);
+        assert_eq!(loaded.repositories[1].max_concurrent, Some(1));
+    }
+
+    #[test]
+    fn rejects_unknown_fields_zero_limits_and_empty_enabled_set() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = repository(temp.path(), "repo", "git@github.com:acme/repo.git");
+        for contents in [
+            format!(
+                "version = 1\nmax_concurrent = 1\n[[repository]]\nname = \"acme/repo\"\npath = {:?}\n",
+                path
+            ),
+            format!(
+                "max_concurrent = 0\n[[repository]]\nname = \"acme/repo\"\npath = {:?}\n",
+                path
+            ),
+            format!(
+                "max_concurrent = 1\n[[repository]]\nname = \"acme/repo\"\npath = {:?}\nenabled = false\n",
+                path
+            ),
+            format!(
+                "max_concurrent = 1\n[[repository]]\nname = \"acme/repo\"\npath = {:?}\nmax_concurrent = 0\n",
+                path
+            ),
+        ] {
+            let fleet = temp.path().join("fleet.toml");
+            fs::write(&fleet, contents).unwrap();
+            assert!(FleetConfig::load(&fleet).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_normalized_identity_and_canonical_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = repository(temp.path(), "first", "git@github.com:acme/first.git");
+        let second = repository(temp.path(), "second", "git@github.com:acme/second.git");
+        let fleet = temp.path().join("fleet.toml");
+        fs::write(
+            &fleet,
+            format!(
+                "max_concurrent = 1\n[[repository]]\nname = \"Acme/First\"\npath = {:?}\n[[repository]]\nname = \"acme/first\"\npath = {:?}\n",
+                first, second
+            ),
+        )
+        .unwrap();
+        assert!(
+            FleetConfig::load(&fleet)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate repository identity")
+        );
+        fs::write(
+            &fleet,
+            format!(
+                "max_concurrent = 1\n[[repository]]\nname = \"acme/first\"\npath = {:?}\n[[repository]]\nname = \"acme/second\"\npath = {:?}\n",
+                first, first
+            ),
+        )
+        .unwrap();
+        assert!(
+            FleetConfig::load(&fleet)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate canonical repository path")
+        );
+
+        let real = temp.path().join("real");
+        fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, temp.path().join("link")).unwrap();
+        fs::write(
+            &fleet,
+            "max_concurrent = 1\n[[repository]]\nname = \"acme/first\"\npath = \"real/missing\"\n[[repository]]\nname = \"acme/second\"\npath = \"link/missing\"\n",
+        )
+        .unwrap();
+        assert!(
+            FleetConfig::load(&fleet)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate canonical repository path")
+        );
+    }
+
+    #[test]
+    fn checkout_identity_is_pinned() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = repository(
+            temp.path(),
+            "repo",
+            "ssh://git@ssh.github.com/acme/repo.git",
+        );
+        validate_checkout(&path, "acme/repo").unwrap();
+        let error = validate_checkout(&path, "acme/changed").unwrap_err();
+        assert!(error.to_string().contains("does not match pinned"));
+    }
+
+    #[test]
+    fn rejects_more_than_the_supported_enabled_repository_envelope() {
+        let temp = tempfile::tempdir().unwrap();
+        let entries = (0..=MAX_ENABLED_REPOSITORIES)
+            .map(|index| {
+                format!("[[repository]]\nname = \"acme/repo-{index}\"\npath = \"repo-{index}\"\n")
+            })
+            .collect::<String>();
+        let fleet = temp.path().join("fleet.toml");
+        fs::write(&fleet, format!("max_concurrent = 1\n{entries}")).unwrap();
+        let error = FleetConfig::load(&fleet).unwrap_err();
+        assert!(error.to_string().contains("supports at most 20"));
+    }
+}

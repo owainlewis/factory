@@ -83,6 +83,7 @@ pub struct FactoryDaemon {
     config: Config,
     catalog: WorkflowCatalog,
     ledger_path: PathBuf,
+    pinned_identity: Option<String>,
     github: GitHubClient,
     source: SourceClient,
     runtime: Arc<dyn AgentRuntime>,
@@ -107,6 +108,17 @@ impl FactoryDaemon {
         )
     }
 
+    pub fn new_pinned(
+        identity: String,
+        config: Config,
+        catalog: WorkflowCatalog,
+        ledger_path: impl Into<PathBuf>,
+    ) -> Self {
+        let mut daemon = Self::new(config, catalog, ledger_path);
+        daemon.pinned_identity = Some(identity);
+        daemon
+    }
+
     pub fn with_clients(
         config: Config,
         catalog: WorkflowCatalog,
@@ -122,6 +134,7 @@ impl FactoryDaemon {
             config,
             catalog,
             ledger_path: ledger_path.into(),
+            pinned_identity: None,
             github,
             source: SourceClient,
             runtime,
@@ -346,6 +359,15 @@ impl FactoryDaemon {
     }
 
     pub async fn evaluate_once(&self, cancellation: CancellationToken) -> Result<OneShotReport> {
+        self.github.validate_global(&cancellation).await?;
+        self.evaluate_once_after_global_validation(cancellation)
+            .await
+    }
+
+    pub async fn evaluate_once_after_global_validation(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<OneShotReport> {
         for entry in self.catalog.invalid_scheduled_entries() {
             eprintln!(
                 "Factory skipped invalid scheduled workflow {}: {}",
@@ -354,7 +376,6 @@ impl FactoryDaemon {
             );
         }
         self.catalog.validate_ticket_workflows()?;
-        self.github.validate_global(&cancellation).await?;
         let targets = self.resolve_targets(&cancellation).await?;
         let mut ledger = Ledger::open(&self.ledger_path)?;
         let scheduled_before = ledger
@@ -389,14 +410,29 @@ impl FactoryDaemon {
                 )
                 .await?
         } else {
-            self.github
-                .poll_once_with_cancellation(
-                    &self.config,
-                    &self.catalog,
-                    &mut ledger,
-                    cancellation.clone(),
-                )
-                .await?
+            match self.pinned_identity.as_deref() {
+                Some(identity) => {
+                    self.github
+                        .poll_once_after_global_validation_for_identity(
+                            &self.config,
+                            &self.catalog,
+                            &mut ledger,
+                            cancellation.clone(),
+                            identity,
+                        )
+                        .await?
+                }
+                None => {
+                    self.github
+                        .poll_once_after_global_validation(
+                            &self.config,
+                            &self.catalog,
+                            &mut ledger,
+                            cancellation.clone(),
+                        )
+                        .await?
+                }
+            }
         };
         Ok(OneShotReport {
             source,
@@ -442,10 +478,21 @@ impl FactoryDaemon {
     ) -> Result<HashMap<String, RepositoryTarget>> {
         let mut targets = HashMap::new();
         for repository in &self.config.repositories {
-            let name = self
+            let discovered_name = self
                 .github
                 .validate_repository(repository, cancellation)
                 .await?;
+            let name = match self.pinned_identity.as_deref() {
+                Some(identity) if discovered_name.eq_ignore_ascii_case(identity) => {
+                    identity.to_owned()
+                }
+                Some(identity) => bail!(
+                    "GitHub repository identity {} does not match pinned repository identity {}",
+                    discovered_name,
+                    identity
+                ),
+                None => discovered_name,
+            };
             if let Some(source) = &self.config.source {
                 if source.command.is_empty() {
                     let statuses = self
