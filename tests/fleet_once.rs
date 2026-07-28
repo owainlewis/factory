@@ -7,7 +7,7 @@ use std::process::Command as ProcessCommand;
 
 use assert_cmd::Command;
 use factory::config::Config;
-use factory::storage::{Ledger, TaskIdentity, TaskState, TaskWorkspace};
+use factory::storage::{CancellationRequest, Ledger, TaskIdentity, TaskState, TaskWorkspace};
 use predicates::prelude::*;
 
 fn make_repository(root: &Path, data_home: &Path, name: &str, origin: &str) -> PathBuf {
@@ -157,6 +157,71 @@ fn evaluates_two_repositories_once_with_isolated_durable_tasks_and_no_workers() 
         assert_eq!(tasks[0].source_item.as_deref(), Some("#42"));
         assert!(ledger.runs(None).unwrap().is_empty());
     }
+}
+
+#[test]
+fn snapshot_persistence_failure_does_not_skip_later_repositories() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_home = temp.path().join("data");
+    let first = make_repository(
+        temp.path(),
+        &data_home,
+        "first",
+        "git@github.com:acme/first.git",
+    );
+    let second = make_repository(
+        temp.path(),
+        &data_home,
+        "second",
+        "git@github.com:acme/second.git",
+    );
+    let first_config =
+        Config::load_with_data_home(&first.join(".factory/config.toml"), &data_home).unwrap();
+    let first_ledger = Ledger::open_in(&first_config.data_directory).unwrap();
+    rusqlite::Connection::open(first_ledger.path())
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER reject_poll_snapshot
+             BEFORE INSERT ON poll_status
+             BEGIN
+               SELECT RAISE(FAIL, 'simulated poll snapshot failure');
+             END;",
+        )
+        .unwrap();
+    drop(first_ledger);
+    let fleet = temp.path().join("fleet.toml");
+    fs::write(
+        &fleet,
+        format!(
+            "max_concurrent = 2\n[[repository]]\nname = \"acme/first\"\npath = {:?}\n[[repository]]\nname = \"acme/second\"\npath = {:?}\n",
+            first, second
+        ),
+    )
+    .unwrap();
+    let bin = fake_github(temp.path());
+
+    fleet_command(&bin, &data_home)
+        .args(["run", "--fleet"])
+        .arg(&fleet)
+        .arg("--once")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("repository=acme/first status=ok"))
+        .stdout(predicate::str::contains("repository=acme/second status=ok"))
+        .stderr(predicate::str::contains(
+            "repository=acme/first snapshot=poll",
+        ));
+
+    let second_config =
+        Config::load_with_data_home(&second.join(".factory/config.toml"), &data_home).unwrap();
+    assert_eq!(
+        Ledger::open_in(&second_config.data_directory)
+            .unwrap()
+            .tasks()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -351,6 +416,37 @@ fn disabled_repository_records_orphan_recovery_without_launch_or_cleanup() {
     disabled_ledger
         .update_task_workspace_state(task.id, "ready", None)
         .unwrap();
+    let owner = "disabled-shutdown-owner";
+    disabled_ledger
+        .register_daemon_owner(owner, std::process::id())
+        .unwrap();
+    let draining_task = disabled_ledger
+        .enqueue(
+            &TaskIdentity::scheduled("acme/disabled", "implement", "2026-07-28T12:00:00Z").unwrap(),
+        )
+        .unwrap()
+        .task;
+    assert_eq!(
+        disabled_ledger.claim_next().unwrap().unwrap().id,
+        draining_task.id
+    );
+    let draining_run = disabled_ledger
+        .start_run(draining_task.id, "codex")
+        .unwrap();
+    rusqlite::Connection::open(disabled_ledger.path())
+        .unwrap()
+        .execute(
+            "UPDATE runs SET owner_id = ?1, owner_pid = ?2 WHERE id = ?3",
+            rusqlite::params![owner, std::process::id(), draining_run.id],
+        )
+        .unwrap();
+    assert!(matches!(
+        disabled_ledger
+            .request_run_cancellation(draining_run.id)
+            .unwrap(),
+        CancellationRequest::Requested(_)
+    ));
+    disabled_ledger.remove_daemon_owner(owner).unwrap();
     drop(disabled_ledger);
 
     let launch_marker = disabled.join("disabled-source-ran");
@@ -406,6 +502,22 @@ fn disabled_repository_records_orphan_recovery_without_launch_or_cleanup() {
     assert_eq!(
         disabled_ledger.run(run.id).unwrap().unwrap().outcome,
         "failed"
+    );
+    assert_eq!(
+        disabled_ledger
+            .task(draining_task.id)
+            .unwrap()
+            .unwrap()
+            .state,
+        TaskState::Cancelled
+    );
+    assert_eq!(
+        disabled_ledger
+            .run(draining_run.id)
+            .unwrap()
+            .unwrap()
+            .outcome,
+        "cancelled"
     );
     assert_eq!(
         disabled_ledger

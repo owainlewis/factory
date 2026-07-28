@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use regex::Regex;
 use serde::Serialize;
 
-use crate::storage::{Run, RunContainer, RunSandbox, Task, TaskState};
+use crate::storage::{PollStatus, Run, RunContainer, RunSandbox, Task, TaskState, TaskWorkspace};
 use crate::table;
 
 const MAX_SUMMARY_BYTES: usize = 240;
@@ -151,6 +151,81 @@ pub struct SandboxView {
     pub state: String,
     pub exit_code: Option<i32>,
     pub removed_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FleetStatusView {
+    pub repository: String,
+    pub path: String,
+    pub state: String,
+    pub validation_error: Option<String>,
+    pub consecutive_failures: u32,
+    pub next_retry_at: Option<String>,
+    pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PollStatusView {
+    pub repository: String,
+    pub workflow: String,
+    pub outcome: String,
+    pub issues_seen: usize,
+    pub tasks_created: usize,
+    pub error: Option<String>,
+    pub polled_at: i64,
+}
+
+impl From<&PollStatus> for PollStatusView {
+    fn from(status: &PollStatus) -> Self {
+        Self {
+            repository: status.repository.clone(),
+            workflow: status.workflow.clone(),
+            outcome: status.outcome.clone(),
+            issues_seen: status.issues_seen,
+            tasks_created: status.tasks_created,
+            error: status.error.clone(),
+            polled_at: status.polled_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct WorkspaceView {
+    pub repository: String,
+    pub task_id: i64,
+    pub kind: String,
+    pub backend: String,
+    pub state: String,
+    pub path: String,
+    pub branch: Option<String>,
+    pub summary: Option<String>,
+    pub updated_at: i64,
+}
+
+impl From<&TaskWorkspace> for WorkspaceView {
+    fn from(workspace: &TaskWorkspace) -> Self {
+        Self {
+            repository: workspace.repository.clone(),
+            task_id: workspace.task_id,
+            kind: workspace.kind.clone(),
+            backend: workspace.backend.clone(),
+            state: workspace.state.clone(),
+            path: workspace.path.display().to_string(),
+            branch: workspace.factory_branch.clone(),
+            summary: workspace.status_summary.clone(),
+            updated_at: workspace.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecoveryView {
+    pub repository: String,
+    pub task_id: i64,
+    pub run_id: Option<i64>,
+    pub recovery_of: i64,
+    pub recovery_attempt: u32,
+    pub outcome: String,
 }
 
 impl RunInspection {
@@ -348,6 +423,138 @@ pub fn print_inspection(inspection: &RunInspection) {
     print_detail("Result", inspection.result.as_ref());
     print_detail("Error", inspection.error.as_ref());
     print_detail("Activity", inspection.activity.as_ref());
+}
+
+pub fn print_fleet_status(statuses: &[FleetStatusView]) {
+    let rows = statuses
+        .iter()
+        .map(|status| {
+            [
+                safe_column(&status.repository, 48),
+                safe_column(&status.state, 20),
+                status.consecutive_failures.to_string(),
+                safe_column(status.next_retry_at.as_deref().unwrap_or("-"), 32),
+                safe_column(status.validation_error.as_deref().unwrap_or("-"), 80),
+                safe_column(&status.path, 80),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print!(
+        "{}",
+        table::render(
+            [
+                "REPOSITORY",
+                "HEALTH",
+                "FAILURES",
+                "NEXT_RETRY",
+                "ERROR",
+                "PATH",
+            ],
+            &rows,
+            &[2],
+        )
+    );
+}
+
+pub fn print_poll_statuses(statuses: &[PollStatus]) {
+    let rows = statuses
+        .iter()
+        .map(|status| {
+            [
+                safe_column(&status.repository, 48),
+                safe_column(&status.workflow, 36),
+                safe_column(&status.outcome, 16),
+                status.issues_seen.to_string(),
+                status.tasks_created.to_string(),
+                status.polled_at.to_string(),
+                safe_column(status.error.as_deref().unwrap_or("-"), 80),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print!(
+        "{}",
+        table::render(
+            [
+                "REPOSITORY",
+                "WORKFLOW",
+                "OUTCOME",
+                "ISSUES",
+                "TASKS",
+                "POLLED_AT",
+                "ERROR",
+            ],
+            &rows,
+            &[3, 4, 5],
+        )
+    );
+}
+
+pub fn print_workspaces(workspaces: &[TaskWorkspace]) {
+    let rows = workspaces
+        .iter()
+        .map(|workspace| {
+            [
+                safe_column(&workspace.repository, 48),
+                workspace.task_id.to_string(),
+                safe_column(&workspace.kind, 16),
+                safe_column(&workspace.backend, 16),
+                safe_column(&workspace.state, 20),
+                safe_column(
+                    workspace.factory_branch.as_deref().unwrap_or("detached"),
+                    48,
+                ),
+                safe_column(&workspace.path.display().to_string(), 80),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print!(
+        "{}",
+        table::render(
+            [
+                "REPOSITORY",
+                "TASK",
+                "KIND",
+                "BACKEND",
+                "STATE",
+                "BRANCH",
+                "PATH",
+            ],
+            &rows,
+            &[1],
+        )
+    );
+}
+
+pub fn print_recovery(recovery: &[RecoveryView]) {
+    let rows = recovery
+        .iter()
+        .map(|item| {
+            [
+                safe_column(&item.repository, 48),
+                item.task_id.to_string(),
+                item.run_id
+                    .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+                item.recovery_of.to_string(),
+                item.recovery_attempt.to_string(),
+                safe_column(&item.outcome, 16),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print!(
+        "{}",
+        table::render(
+            [
+                "REPOSITORY",
+                "TASK",
+                "RUN",
+                "RECOVERY_OF",
+                "ATTEMPT",
+                "OUTCOME",
+            ],
+            &rows,
+            &[1, 2, 3, 4],
+        )
+    );
 }
 
 fn print_detail(label: &str, detail: Option<&BoundedText>) {

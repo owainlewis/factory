@@ -168,7 +168,7 @@ fn concurrent_first_open_converges_on_one_complete_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
     let schedule_tables: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_schema
@@ -1197,7 +1197,7 @@ fn migrates_a_version_one_ledger_without_losing_tasks() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
 }
 
 #[test]
@@ -1209,10 +1209,13 @@ fn opens_an_existing_version_eight_ledger() {
     let connection = Connection::open(&path).unwrap();
     connection
         .execute_batch(
-            "DROP TABLE run_sandboxes;
+            "DROP TABLE poll_status;
+             DROP TABLE repository_health;
+             DROP TABLE run_sandboxes;
              DROP TABLE run_containers;
              ALTER TABLE task_workspaces DROP COLUMN backend;
              DROP TABLE project_claims;
+             DELETE FROM schema_migrations WHERE version = 12;
              DELETE FROM schema_migrations WHERE version = 11;
              DELETE FROM schema_migrations WHERE version = 10;
              DELETE FROM schema_migrations WHERE version = 9;
@@ -1230,7 +1233,69 @@ fn opens_an_existing_version_eight_ledger() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
+}
+
+#[test]
+fn repository_health_and_poll_status_keep_the_latest_operator_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+
+    ledger
+        .record_repository_health(
+            "acme/repository",
+            "backing_off",
+            Some("temporary failure"),
+            2,
+            Some(1_800_000_000_000),
+        )
+        .unwrap();
+    ledger
+        .record_poll_status(
+            "acme/repository",
+            "implement",
+            "failed",
+            3,
+            0,
+            Some("temporary failure"),
+        )
+        .unwrap();
+    ledger
+        .record_poll_status(
+            "acme/repository",
+            "all",
+            "failed",
+            4,
+            0,
+            Some("aggregate failure"),
+        )
+        .unwrap();
+    let aggregate = ledger.poll_statuses().unwrap();
+    assert_eq!(aggregate.len(), 1);
+    assert_eq!(aggregate[0].workflow, "all");
+    ledger
+        .record_repository_health("acme/repository", "healthy", None, 0, None)
+        .unwrap();
+    ledger
+        .record_poll_status("acme/repository", "implement", "succeeded", 4, 1, None)
+        .unwrap();
+
+    let health = ledger
+        .repository_health("acme/repository")
+        .unwrap()
+        .unwrap();
+    assert_eq!(health.state, "healthy");
+    assert_eq!(health.validation_error, None);
+    assert_eq!(health.consecutive_failures, 0);
+    assert_eq!(health.next_retry_at, None);
+    let polls = ledger.poll_statuses().unwrap();
+    assert_eq!(polls.len(), 1);
+    assert_eq!(polls[0].repository, "acme/repository");
+    assert_eq!(polls[0].workflow, "implement");
+    assert_eq!(polls[0].outcome, "succeeded");
+    assert_eq!(polls[0].issues_seen, 4);
+    assert_eq!(polls[0].tasks_created, 1);
+    assert_eq!(polls[0].error, None);
 }
 
 #[test]

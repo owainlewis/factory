@@ -11,11 +11,16 @@ use factory::clone::CloneManager;
 use factory::config::{Config, ExecutionMode, repository_config_path};
 use factory::daemon::{FactoryDaemon, FleetSupervisor};
 use factory::execution::ResolvedWorkflow;
-use factory::fleet::FleetConfig;
+use factory::fleet::{
+    FleetConfig, FleetRepository, RepositoryOperationSnapshot, activate_fleet,
+    active_repository_operation,
+};
 use factory::github::GitHubClient;
 use factory::init::{InitOptions, initialize};
 use factory::inspection::{
-    RunInspection, RunView, TaskView, print_inspection, print_runs, print_tasks,
+    FleetStatusView, PollStatusView, RecoveryView, RunInspection, RunView, TaskView, WorkspaceView,
+    print_fleet_status, print_inspection, print_poll_statuses, print_recovery, print_runs,
+    print_tasks, print_workspaces,
 };
 use factory::runtime::{
     RuntimeCancelled, Termination, build_runtime, observation_channel, write_stderr_best_effort,
@@ -24,8 +29,9 @@ use factory::runtime::{
 use factory::sandbox::SandboxWorker;
 use factory::source::{PollReport, SourceClient};
 use factory::storage::{
-    CancellationRequest, DATABASE_NAME, Ledger, OPERATOR_CONFIRMED_CLEANUP, TaskState,
-    acquire_state_reset_lock, inspect_reset_state, validate_data_directory,
+    CancellationRequest, DATABASE_NAME, Ledger, OPERATOR_CONFIRMED_CLEANUP, PollStatus, Run, Task,
+    TaskState, TaskWorkspace, acquire_state_reset_lock, inspect_reset_state,
+    validate_data_directory,
 };
 use factory::workflow::{Trigger, WorkflowCatalog};
 use factory::workspace::WorkspaceManager;
@@ -99,6 +105,12 @@ enum Command {
         /// Directory containing the durable Factory database.
         #[arg(long)]
         data_directory: Option<PathBuf>,
+        /// Fleet configuration to inspect across repositories.
+        #[arg(long, conflicts_with_all = ["config", "data_directory"])]
+        fleet: Option<PathBuf>,
+        /// Pinned owner/name identity to filter in fleet mode.
+        #[arg(long, requires = "fleet")]
+        repository: Option<String>,
     },
     /// List run attempts, optionally filtered by workflow.
     Runs {
@@ -113,6 +125,12 @@ enum Command {
         /// Directory containing the durable Factory database.
         #[arg(long)]
         data_directory: Option<PathBuf>,
+        /// Fleet configuration to inspect across repositories.
+        #[arg(long, conflicts_with_all = ["config", "data_directory"])]
+        fleet: Option<PathBuf>,
+        /// Pinned owner/name identity to filter in fleet mode.
+        #[arg(long, requires = "fleet")]
+        repository: Option<String>,
     },
     /// Inspect one run and its resolved task context.
     Inspect {
@@ -126,6 +144,12 @@ enum Command {
         /// Directory containing the durable Factory database.
         #[arg(long)]
         data_directory: Option<PathBuf>,
+        /// Fleet configuration to inspect.
+        #[arg(long, conflicts_with_all = ["config", "data_directory"])]
+        fleet: Option<PathBuf>,
+        /// Pinned owner/name identity. Required when an ID overlaps.
+        #[arg(long, requires = "fleet")]
+        repository: Option<String>,
     },
     /// Request cancellation of an active local run.
     Cancel {
@@ -139,6 +163,12 @@ enum Command {
         /// Directory containing the durable Factory database.
         #[arg(long)]
         data_directory: Option<PathBuf>,
+        /// Fleet configuration containing the target repository.
+        #[arg(long, conflicts_with_all = ["config", "data_directory"])]
+        fleet: Option<PathBuf>,
+        /// Pinned owner/name identity. Required for fleet mutation.
+        #[arg(long, requires = "fleet")]
+        repository: Option<String>,
     },
     /// Preview or confirm removal of one retained Factory worktree.
     Cleanup {
@@ -152,6 +182,63 @@ enum Command {
         /// Directory containing the durable Factory database.
         #[arg(long)]
         data_directory: Option<PathBuf>,
+        /// Fleet configuration containing the target repository.
+        #[arg(long, conflicts_with_all = ["config", "data_directory"])]
+        fleet: Option<PathBuf>,
+        /// Pinned owner/name identity. Required for fleet mutation.
+        #[arg(long, requires = "fleet")]
+        repository: Option<String>,
+    },
+    /// Report configured fleet health and retry state.
+    Status {
+        /// Path to a fleet configuration file.
+        #[arg(long)]
+        fleet: PathBuf,
+        /// Pinned owner/name identity to filter.
+        #[arg(long)]
+        repository: Option<String>,
+        /// Print stable machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the latest durable fleet poll results.
+    Polls {
+        /// Path to a fleet configuration file.
+        #[arg(long)]
+        fleet: PathBuf,
+        /// Pinned owner/name identity to filter.
+        #[arg(long)]
+        repository: Option<String>,
+        /// Print stable machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List retained and recoverable fleet workspaces.
+    Workspaces {
+        /// Path to a fleet configuration file.
+        #[arg(long)]
+        fleet: PathBuf,
+        /// Pinned owner/name identity to filter.
+        #[arg(long)]
+        repository: Option<String>,
+        /// Include cleaned workspace records.
+        #[arg(long)]
+        all: bool,
+        /// Print stable machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List pending and attempted fleet recovery runs.
+    Recovery {
+        /// Path to a fleet configuration file.
+        #[arg(long)]
+        fleet: PathBuf,
+        /// Pinned owner/name identity to filter.
+        #[arg(long)]
+        repository: Option<String>,
+        /// Print stable machine-readable JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Preview or confirm removal of durable state for the current repository.
     Reset {
@@ -184,6 +271,8 @@ enum WorkflowCommand {
 
 #[derive(Serialize)]
 struct CancellationResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repository: Option<String>,
     run_id: i64,
     status: &'static str,
     owner_kind: &'static str,
@@ -343,9 +432,17 @@ async fn run_cli() -> Result<u8> {
             json,
             config,
             data_directory,
+            fleet,
+            repository,
         } => {
-            let ledger = open_data_ledger(config, data_directory)?;
-            let tasks = ledger.tasks()?;
+            let mut tasks = if let Some(fleet) = fleet {
+                collect_fleet_tasks(&fleet, repository.as_deref())?
+            } else {
+                open_data_ledger(config, data_directory)?.tasks()?
+            };
+            tasks.sort_by(|left, right| {
+                (&left.repository, left.id).cmp(&(&right.repository, right.id))
+            });
             if json {
                 let views = tasks.iter().map(TaskView::from).collect::<Vec<_>>();
                 print_json(&views)?;
@@ -358,9 +455,17 @@ async fn run_cli() -> Result<u8> {
             json,
             config,
             data_directory,
+            fleet,
+            repository,
         } => {
-            let ledger = open_data_ledger(config, data_directory)?;
-            let runs = ledger.runs(workflow.as_deref())?;
+            let mut runs = if let Some(fleet) = fleet {
+                collect_fleet_runs(&fleet, repository.as_deref(), workflow.as_deref())?
+            } else {
+                open_data_ledger(config, data_directory)?.runs(workflow.as_deref())?
+            };
+            runs.sort_by(|left, right| {
+                (&left.repository, left.id).cmp(&(&right.repository, right.id))
+            });
             if json {
                 let views = runs.iter().map(RunView::from).collect::<Vec<_>>();
                 print_json(&views)?;
@@ -373,14 +478,21 @@ async fn run_cli() -> Result<u8> {
             json,
             config,
             data_directory,
+            fleet,
+            repository,
         } => {
-            let ledger = open_data_ledger(config, data_directory)?;
-            let run = ledger
-                .run(run_id)?
-                .with_context(|| format!("run {run_id} does not exist"))?;
-            let task = ledger
-                .task(run.task_id)?
-                .with_context(|| format!("task {} for run {run_id} does not exist", run.task_id))?;
+            let (ledger, run, task) = if let Some(fleet) = fleet {
+                fleet_run_context(&fleet, repository.as_deref(), run_id)?
+            } else {
+                let ledger = open_data_ledger(config, data_directory)?;
+                let run = ledger
+                    .run(run_id)?
+                    .with_context(|| format!("run {run_id} does not exist"))?;
+                let task = ledger.task(run.task_id)?.with_context(|| {
+                    format!("task {} for run {run_id} does not exist", run.task_id)
+                })?;
+                (ledger, run, task)
+            };
             let container = ledger.run_container(run_id)?;
             let sandbox = ledger.run_sandbox(run_id)?;
             let inspection = RunInspection::new(&run, &task, container.as_ref(), sandbox.as_ref());
@@ -395,46 +507,28 @@ async fn run_cli() -> Result<u8> {
             json,
             config,
             data_directory,
+            fleet,
+            repository,
         } => {
-            let mut ledger = open_data_ledger(config, data_directory)?;
-            let response = match ledger.request_run_cancellation(run_id)? {
-                CancellationRequest::Requested(run) => CancellationResponse {
-                    run_id: run.id,
-                    status: "requested",
-                    owner_kind: "factory-daemon",
-                    owner_pid: run.owner_pid,
-                    outcome: run.outcome,
-                    message: "cancellation requested; the owning Factory daemon will stop the active process tree",
-                },
-                CancellationRequest::AlreadyRequested(run) => CancellationResponse {
-                    run_id: run.id,
-                    status: "already_requested",
-                    owner_kind: "factory-daemon",
-                    owner_pid: run.owner_pid,
-                    outcome: run.outcome,
-                    message: "cancellation was already requested from the owning Factory daemon",
-                },
-                CancellationRequest::Terminal(run) => CancellationResponse {
-                    run_id: run.id,
-                    status: "already_terminal",
-                    owner_kind: "none",
-                    owner_pid: None,
-                    outcome: run.outcome,
-                    message: "run is already terminal",
-                },
-                CancellationRequest::OwnedElsewhere(run) => CancellationResponse {
-                    run_id: run.id,
-                    status: "owned_elsewhere",
-                    owner_kind: "stale-or-foreign",
-                    owner_pid: run.owner_pid,
-                    outcome: run.outcome,
-                    message: "run has no live local Factory daemon owner; inspect or recover it before retrying cancellation",
-                },
-                CancellationRequest::NotFound => bail!("run {run_id} does not exist"),
+            let (mut ledger, selected_repository) = if let Some(fleet) = fleet {
+                let repository = repository
+                    .as_deref()
+                    .context("--repository owner/name is required for fleet cancellation")?;
+                (
+                    fleet_mutation_ledger(&fleet, repository, run_id)?,
+                    Some(repository.trim().to_ascii_lowercase()),
+                )
+            } else {
+                (open_data_ledger(config, data_directory)?, None)
             };
+            let response =
+                cancellation_response(&mut ledger, run_id, selected_repository.as_deref())?;
             if json {
                 print_json(&response)?;
             } else {
+                if let Some(repository) = &response.repository {
+                    println!("Repository: {repository}");
+                }
                 println!(
                     "Run {}: {} ({})",
                     response.run_id, response.message, response.status
@@ -446,102 +540,138 @@ async fn run_cli() -> Result<u8> {
             confirm,
             config,
             data_directory,
+            fleet,
+            repository,
         } => {
-            let path = resolve_config_path(config)?;
-            let config = Config::load(&path)?;
-            let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
-            let ledger = Ledger::open_in(&data_directory)?;
-            let run = ledger
-                .run(run_id)?
-                .with_context(|| format!("run {run_id} does not exist"))?;
-            let task = ledger
-                .task(run.task_id)?
-                .with_context(|| format!("task {} for run {run_id} does not exist", run.task_id))?;
-            let workspace = ledger
-                .task_workspace(task.id)?
-                .with_context(|| format!("run {run_id} has no Factory-owned workspace"))?;
-            if workspace.state == "cleaned" {
-                println!("run: {run_id}");
-                println!("workspace: {}", workspace.path.display());
-                println!("branch preserved: true");
-                println!("action: workspace reservation is already cleaned; no changes made");
-                return Ok(0);
-            }
-            let manager = WorkspaceManager::new(&config.repositories[0], &config.workspace_root)?;
-            let clone_manager = CloneManager::new(&config.workspace_root)?;
-            if !workspace.path.exists() {
-                println!("run: {run_id}");
-                println!("workspace: {}", workspace.path.display());
-                println!(
-                    "branch: {}",
-                    workspace.factory_branch.as_deref().unwrap_or("detached")
-                );
-                println!("workspace exists: false");
-                println!("branch preserved: true");
-                if !confirm {
-                    println!(
-                        "action: preview only; rerun with --confirm to release the workspace reservation"
+            if let Some(fleet) = fleet {
+                let repository = repository
+                    .as_deref()
+                    .context("--repository owner/name is required for fleet cleanup")?;
+                let fleet_config = FleetConfig::load_for_operation(&fleet)?;
+                let repository = required_fleet_repository(&fleet_config, repository)?.clone();
+                if confirm && !repository.enabled {
+                    bail!(
+                        "repository {} is disabled; re-enable it and restart Factory before destructive cleanup",
+                        repository.identity
                     );
-                } else {
-                    if matches!(task.state, TaskState::Queued | TaskState::Running) {
+                }
+                let active = active_repository_operation(&fleet, &repository.identity)?;
+                let (repository_path, ledger_path, workspace_root) = if let Some(snapshot) = active
+                {
+                    if let Some(error) = snapshot.validation_error {
                         bail!(
-                            "refusing to release workspace for {:?} task {}; cancel or finish it first",
-                            task.state,
-                            task.id
+                            "failed to load repository {} from the supervisor startup snapshot: {}",
+                            repository.identity,
+                            error
                         );
                     }
-                    ledger.update_task_workspace_state(
-                        task.id,
-                        "cleaned",
-                        Some("operator confirmed absent workspace; local branch preserved"),
-                    )?;
-                    println!("action: released workspace reservation; local branch preserved");
+                    (
+                        snapshot.repository_path,
+                        snapshot.ledger_path.with_context(|| {
+                            format!(
+                                "repository {} startup snapshot has no ledger path",
+                                repository.identity
+                            )
+                        })?,
+                        snapshot.workspace_root.with_context(|| {
+                            format!(
+                                "repository {} startup snapshot has no workspace root",
+                                repository.identity
+                            )
+                        })?,
+                    )
+                } else {
+                    let runtime = repository.load_runtime().with_context(|| {
+                        format!(
+                            "failed to load repository {} for cleanup",
+                            repository.identity
+                        )
+                    })?;
+                    (runtime.path, runtime.ledger_path, runtime.workspace_root)
+                };
+                if !ledger_path.exists() {
+                    bail!("repository {} has no durable state", repository.identity);
                 }
-                return Ok(0);
+                let ledger = Ledger::open(&ledger_path)?;
+                cleanup_run(
+                    &repository_path,
+                    &workspace_root,
+                    &ledger,
+                    run_id,
+                    confirm,
+                    Some(&repository.identity),
+                )?;
+            } else {
+                let path = resolve_config_path(config)?;
+                let config = Config::load(&path)?;
+                let data_directory =
+                    data_directory.unwrap_or_else(|| config.data_directory.clone());
+                let ledger = Ledger::open_in(&data_directory)?;
+                cleanup_run(
+                    &config.repositories[0],
+                    &config.workspace_root,
+                    &ledger,
+                    run_id,
+                    confirm,
+                    None,
+                )?;
             }
-            let preview = if workspace.backend == "clone" {
-                clone_manager.preview_cleanup(&workspace.path)?
+        }
+        Command::Status {
+            fleet,
+            repository,
+            json,
+        } => {
+            let statuses = fleet_statuses(&fleet, repository.as_deref())?;
+            if json {
+                print_json(&statuses)?;
             } else {
-                manager.cleanup(&workspace.path, false)?.1
-            };
-            println!("run: {run_id}");
-            println!("workspace: {}", preview.path.display());
-            println!(
-                "branch: {}",
-                preview.branch.as_deref().unwrap_or("detached")
-            );
-            println!("dirty: {}", preview.dirty);
-            println!("branch preserved: true");
-            if !confirm {
-                println!("action: preview only; rerun with --confirm to remove the workspace");
+                print_fleet_status(&statuses);
+            }
+        }
+        Command::Polls {
+            fleet,
+            repository,
+            json,
+        } => {
+            let statuses = collect_fleet_poll_statuses(&fleet, repository.as_deref())?;
+            if json {
+                let views = statuses
+                    .iter()
+                    .map(PollStatusView::from)
+                    .collect::<Vec<_>>();
+                print_json(&views)?;
             } else {
-                if matches!(task.state, TaskState::Queued | TaskState::Running) {
-                    bail!(
-                        "refusing to clean workspace for {:?} task {}; cancel or finish it first",
-                        task.state,
-                        task.id
-                    );
-                }
-                ledger.update_task_workspace_state(
-                    task.id,
-                    "cleanup_pending",
-                    Some(OPERATOR_CONFIRMED_CLEANUP),
-                )?;
-                if workspace.backend == "clone" {
-                    clone_manager.remove(&workspace.path)?;
-                } else {
-                    manager.cleanup(&workspace.path, true)?;
-                }
-                ledger.update_task_workspace_state(
-                    task.id,
-                    "cleaned",
-                    Some("operator-confirmed cleanup completed"),
-                )?;
-                if workspace.backend == "clone" {
-                    println!("action: removed clone; remote branch preserved");
-                } else {
-                    println!("action: removed worktree; local branch preserved");
-                }
+                print_poll_statuses(&statuses);
+            }
+        }
+        Command::Workspaces {
+            fleet,
+            repository,
+            all,
+            json,
+        } => {
+            let workspaces = collect_fleet_workspaces(&fleet, repository.as_deref(), all)?;
+            if json {
+                let views = workspaces
+                    .iter()
+                    .map(WorkspaceView::from)
+                    .collect::<Vec<_>>();
+                print_json(&views)?;
+            } else {
+                print_workspaces(&workspaces);
+            }
+        }
+        Command::Recovery {
+            fleet,
+            repository,
+            json,
+        } => {
+            let recovery = collect_fleet_recovery(&fleet, repository.as_deref())?;
+            if json {
+                print_json(&recovery)?;
+            } else {
+                print_recovery(&recovery);
             }
         }
         Command::Reset {
@@ -631,6 +761,488 @@ async fn run_cli() -> Result<u8> {
     }
 
     Ok(0)
+}
+
+fn selected_fleet_repositories<'a>(
+    fleet: &'a FleetConfig,
+    selector: Option<&str>,
+) -> Result<Vec<&'a FleetRepository>> {
+    let Some(selector) = selector else {
+        return Ok(fleet.repositories.iter().collect());
+    };
+    let selector = selector.trim().to_ascii_lowercase();
+    if selector.is_empty() {
+        bail!("repository selector must not be empty");
+    }
+    let repository = fleet
+        .repositories
+        .iter()
+        .find(|repository| repository.identity == selector)
+        .with_context(|| format!("repository {selector} is not configured in this fleet"))?;
+    Ok(vec![repository])
+}
+
+fn required_fleet_repository<'a>(
+    fleet: &'a FleetConfig,
+    selector: &str,
+) -> Result<&'a FleetRepository> {
+    selected_fleet_repositories(fleet, Some(selector))?
+        .into_iter()
+        .next()
+        .context("repository selector did not resolve")
+}
+
+fn existing_fleet_ledger(repository: &FleetRepository) -> Result<Option<Ledger>> {
+    let ledger_path = repository.pinned_ledger_path()?;
+    if !ledger_path.exists() {
+        return Ok(None);
+    }
+    Ledger::open(&ledger_path).map(Some)
+}
+
+fn collect_fleet_tasks(path: &Path, selector: Option<&str>) -> Result<Vec<Task>> {
+    let fleet = FleetConfig::load_for_operation(path)?;
+    let mut tasks = Vec::new();
+    for repository in selected_fleet_repositories(&fleet, selector)? {
+        if let Some(ledger) = existing_fleet_ledger(repository)? {
+            tasks.extend(ledger.tasks()?);
+        }
+    }
+    Ok(tasks)
+}
+
+fn collect_fleet_runs(
+    path: &Path,
+    selector: Option<&str>,
+    workflow: Option<&str>,
+) -> Result<Vec<Run>> {
+    let fleet = FleetConfig::load_for_operation(path)?;
+    let mut runs = Vec::new();
+    for repository in selected_fleet_repositories(&fleet, selector)? {
+        if let Some(ledger) = existing_fleet_ledger(repository)? {
+            runs.extend(ledger.runs(workflow)?);
+        }
+    }
+    Ok(runs)
+}
+
+fn fleet_run_context(
+    path: &Path,
+    selector: Option<&str>,
+    run_id: i64,
+) -> Result<(Ledger, Run, Task)> {
+    let fleet = FleetConfig::load_for_operation(path)?;
+    let mut matches = Vec::new();
+    for repository in selected_fleet_repositories(&fleet, selector)? {
+        let Some(ledger) = existing_fleet_ledger(repository)? else {
+            continue;
+        };
+        let Some(run) = ledger.run(run_id)? else {
+            continue;
+        };
+        let task = ledger
+            .task(run.task_id)?
+            .with_context(|| format!("task {} for run {run_id} does not exist", run.task_id))?;
+        if run.repository != repository.identity || task.repository != repository.identity {
+            bail!(
+                "run {run_id} in repository {} has inconsistent durable repository ownership; no fallback repository was used",
+                repository.identity
+            );
+        }
+        matches.push((repository.identity.clone(), ledger, run, task));
+    }
+    match matches.len() {
+        0 => bail!("run {run_id} does not exist in the selected fleet repositories"),
+        1 => {
+            let (_, ledger, run, task) = matches.pop().expect("one fleet run match exists");
+            Ok((ledger, run, task))
+        }
+        _ => {
+            let identities = matches
+                .iter()
+                .map(|(identity, _, _, _)| identity.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "run {run_id} exists in multiple repositories ({identities}); use --repository owner/name"
+            )
+        }
+    }
+}
+
+fn fleet_mutation_ledger(path: &Path, selector: &str, run_id: i64) -> Result<Ledger> {
+    let fleet = FleetConfig::load_for_operation(path)?;
+    let repository = required_fleet_repository(&fleet, selector)?;
+    let ledger = existing_fleet_ledger(repository)?
+        .with_context(|| format!("repository {} has no durable state", repository.identity))?;
+    let run = ledger.run(run_id)?.with_context(|| {
+        format!(
+            "run {run_id} does not exist in repository {}",
+            repository.identity
+        )
+    })?;
+    let task = ledger
+        .task(run.task_id)?
+        .with_context(|| format!("task {} for run {run_id} does not exist", run.task_id))?;
+    if run.repository != repository.identity || task.repository != repository.identity {
+        bail!(
+            "run {run_id} does not belong to repository {}; no mutation was made",
+            repository.identity
+        );
+    }
+    Ok(ledger)
+}
+
+fn cancellation_response(
+    ledger: &mut Ledger,
+    run_id: i64,
+    repository: Option<&str>,
+) -> Result<CancellationResponse> {
+    let response = match ledger.request_run_cancellation(run_id)? {
+        CancellationRequest::Requested(run) => CancellationResponse {
+            repository: repository.map(str::to_owned),
+            run_id: run.id,
+            status: "requested",
+            owner_kind: "factory-daemon",
+            owner_pid: run.owner_pid,
+            outcome: run.outcome,
+            message: "cancellation requested; the owning Factory daemon will stop the active process tree",
+        },
+        CancellationRequest::AlreadyRequested(run) => CancellationResponse {
+            repository: repository.map(str::to_owned),
+            run_id: run.id,
+            status: "already_requested",
+            owner_kind: "factory-daemon",
+            owner_pid: run.owner_pid,
+            outcome: run.outcome,
+            message: "cancellation was already requested from the owning Factory daemon",
+        },
+        CancellationRequest::Terminal(run) => CancellationResponse {
+            repository: repository.map(str::to_owned),
+            run_id: run.id,
+            status: "already_terminal",
+            owner_kind: "none",
+            owner_pid: None,
+            outcome: run.outcome,
+            message: "run is already terminal",
+        },
+        CancellationRequest::OwnedElsewhere(run) => CancellationResponse {
+            repository: repository.map(str::to_owned),
+            run_id: run.id,
+            status: "owned_elsewhere",
+            owner_kind: "stale-or-foreign",
+            owner_pid: run.owner_pid,
+            outcome: run.outcome,
+            message: "run has no live local Factory daemon owner; inspect or recover it before retrying cancellation",
+        },
+        CancellationRequest::NotFound => bail!("run {run_id} does not exist"),
+    };
+    Ok(response)
+}
+
+fn cleanup_run(
+    repository_path: &Path,
+    workspace_root: &Path,
+    ledger: &Ledger,
+    run_id: i64,
+    confirm: bool,
+    expected_repository: Option<&str>,
+) -> Result<()> {
+    let run = ledger
+        .run(run_id)?
+        .with_context(|| format!("run {run_id} does not exist"))?;
+    let task = ledger
+        .task(run.task_id)?
+        .with_context(|| format!("task {} for run {run_id} does not exist", run.task_id))?;
+    let workspace = ledger
+        .task_workspace(task.id)?
+        .with_context(|| format!("run {run_id} has no Factory-owned workspace"))?;
+    if let Some(repository) = expected_repository {
+        if run.repository != repository
+            || task.repository != repository
+            || workspace.repository != repository
+        {
+            bail!(
+                "run {run_id} does not have consistent ownership by repository {repository}; no cleanup was performed"
+            );
+        }
+        println!("repository: {repository}");
+    }
+    if workspace.state == "cleaned" {
+        println!("run: {run_id}");
+        println!("workspace: {}", workspace.path.display());
+        println!("branch preserved: true");
+        println!("action: workspace reservation is already cleaned; no changes made");
+        return Ok(());
+    }
+    let manager = WorkspaceManager::new(repository_path, workspace_root)?;
+    let clone_manager = CloneManager::new(workspace_root)?;
+    if !workspace.path.exists() {
+        println!("run: {run_id}");
+        println!("workspace: {}", workspace.path.display());
+        println!(
+            "branch: {}",
+            workspace.factory_branch.as_deref().unwrap_or("detached")
+        );
+        println!("workspace exists: false");
+        println!("branch preserved: true");
+        if !confirm {
+            println!(
+                "action: preview only; rerun with --confirm to release the workspace reservation"
+            );
+        } else {
+            if matches!(task.state, TaskState::Queued | TaskState::Running) {
+                bail!(
+                    "refusing to release workspace for {:?} task {}; cancel or finish it first",
+                    task.state,
+                    task.id
+                );
+            }
+            ledger.update_task_workspace_state(
+                task.id,
+                "cleaned",
+                Some("operator confirmed absent workspace; local branch preserved"),
+            )?;
+            println!("action: released workspace reservation; local branch preserved");
+        }
+        return Ok(());
+    }
+    let preview = if workspace.backend == "clone" {
+        clone_manager.preview_cleanup(&workspace.path)?
+    } else {
+        manager.cleanup(&workspace.path, false)?.1
+    };
+    println!("run: {run_id}");
+    println!("workspace: {}", preview.path.display());
+    println!(
+        "branch: {}",
+        preview.branch.as_deref().unwrap_or("detached")
+    );
+    println!("dirty: {}", preview.dirty);
+    println!("branch preserved: true");
+    if !confirm {
+        println!("action: preview only; rerun with --confirm to remove the workspace");
+        return Ok(());
+    }
+    if matches!(task.state, TaskState::Queued | TaskState::Running) {
+        bail!(
+            "refusing to clean workspace for {:?} task {}; cancel or finish it first",
+            task.state,
+            task.id
+        );
+    }
+    ledger.update_task_workspace_state(
+        task.id,
+        "cleanup_pending",
+        Some(OPERATOR_CONFIRMED_CLEANUP),
+    )?;
+    if workspace.backend == "clone" {
+        clone_manager.remove(&workspace.path)?;
+    } else {
+        manager.cleanup(&workspace.path, true)?;
+    }
+    ledger.update_task_workspace_state(
+        task.id,
+        "cleaned",
+        Some("operator-confirmed cleanup completed"),
+    )?;
+    if workspace.backend == "clone" {
+        println!("action: removed clone; remote branch preserved");
+    } else {
+        println!("action: removed worktree; local branch preserved");
+    }
+    Ok(())
+}
+
+fn fleet_statuses(path: &Path, selector: Option<&str>) -> Result<Vec<FleetStatusView>> {
+    let fleet = FleetConfig::load_for_operation(path)?;
+    let mut statuses = Vec::new();
+    for repository in selected_fleet_repositories(&fleet, selector)? {
+        let mut status = FleetStatusView {
+            repository: repository.identity.clone(),
+            path: repository.path.display().to_string(),
+            state: if repository.enabled {
+                "loading".to_owned()
+            } else {
+                "disabled".to_owned()
+            },
+            validation_error: None,
+            consecutive_failures: 0,
+            next_retry_at: None,
+            updated_at: None,
+        };
+        if !repository.enabled {
+            statuses.push(status);
+            continue;
+        }
+        let ledger_path =
+            if let Some(snapshot) = active_repository_operation(path, &repository.identity)? {
+                status.path = snapshot.repository_path.display().to_string();
+                if let Some(error) = snapshot.validation_error {
+                    status.state = "invalid_config".to_owned();
+                    status.validation_error = Some(error);
+                    statuses.push(status);
+                    continue;
+                }
+                snapshot.ledger_path.with_context(|| {
+                    format!(
+                        "repository {} startup snapshot has no ledger path",
+                        repository.identity
+                    )
+                })?
+            } else {
+                let runtime = match repository.load_runtime() {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        status.state = "invalid_config".to_owned();
+                        status.validation_error = Some(single_line_error(&error));
+                        statuses.push(status);
+                        continue;
+                    }
+                };
+                runtime.ledger_path
+            };
+        if !ledger_path.exists() {
+            statuses.push(status);
+            continue;
+        }
+        match Ledger::open(&ledger_path) {
+            Ok(ledger) => {
+                if let Some(snapshot) = ledger.repository_health(&repository.identity)? {
+                    status.state = snapshot.state;
+                    status.validation_error = snapshot.validation_error;
+                    status.consecutive_failures = snapshot.consecutive_failures;
+                    status.next_retry_at = snapshot.next_retry_at.and_then(format_retry_at);
+                    status.updated_at = Some(snapshot.updated_at);
+                }
+            }
+            Err(error) => {
+                status.state = "unavailable".to_owned();
+                status.validation_error = Some(single_line_error(&error));
+            }
+        }
+        statuses.push(status);
+    }
+    Ok(statuses)
+}
+
+fn format_retry_at(timestamp_millis: i64) -> Option<String> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp_millis)
+        .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+}
+
+fn collect_fleet_poll_statuses(path: &Path, selector: Option<&str>) -> Result<Vec<PollStatus>> {
+    let fleet = FleetConfig::load_for_operation(path)?;
+    let mut statuses = Vec::new();
+    for repository in selected_fleet_repositories(&fleet, selector)? {
+        if let Some(ledger) = existing_fleet_ledger(repository)? {
+            statuses.extend(ledger.poll_statuses()?);
+        }
+    }
+    statuses.sort_by(|left, right| {
+        (&left.repository, &left.workflow).cmp(&(&right.repository, &right.workflow))
+    });
+    Ok(statuses)
+}
+
+fn collect_fleet_workspaces(
+    path: &Path,
+    selector: Option<&str>,
+    all: bool,
+) -> Result<Vec<TaskWorkspace>> {
+    let fleet = FleetConfig::load_for_operation(path)?;
+    let mut workspaces = Vec::new();
+    for repository in selected_fleet_repositories(&fleet, selector)? {
+        let Some(ledger) = existing_fleet_ledger(repository)? else {
+            continue;
+        };
+        if all {
+            for state in [
+                "preparing",
+                "ready",
+                "retained",
+                "cleanup_pending",
+                "cleaned",
+            ] {
+                workspaces.extend(ledger.task_workspaces_in_state(state)?);
+            }
+        } else {
+            workspaces.extend(ledger.active_task_workspaces()?);
+        }
+    }
+    workspaces.sort_by(|left, right| {
+        (&left.repository, left.task_id).cmp(&(&right.repository, right.task_id))
+    });
+    Ok(workspaces)
+}
+
+fn collect_fleet_recovery(path: &Path, selector: Option<&str>) -> Result<Vec<RecoveryView>> {
+    let fleet = FleetConfig::load_for_operation(path)?;
+    let mut recovery = Vec::new();
+    for repository in selected_fleet_repositories(&fleet, selector)? {
+        let Some(ledger) = existing_fleet_ledger(repository)? else {
+            continue;
+        };
+        let tasks = ledger.tasks()?;
+        for task in tasks.iter().filter(|task| {
+            task.recovery_source_run_id.is_some()
+                && matches!(task.state, TaskState::Queued | TaskState::Running)
+        }) {
+            let recovery_of = task
+                .recovery_source_run_id
+                .expect("filtered recovery task has a source run");
+            let source = ledger.run(recovery_of)?.with_context(|| {
+                format!(
+                    "recovery source run {recovery_of} for task {} does not exist",
+                    task.id
+                )
+            })?;
+            recovery.push(RecoveryView {
+                repository: task.repository.clone(),
+                task_id: task.id,
+                run_id: None,
+                recovery_of,
+                recovery_attempt: source.recovery_attempt.saturating_add(1),
+                outcome: match task.state {
+                    TaskState::Queued => "queued",
+                    TaskState::Running => "running",
+                    TaskState::Succeeded => "succeeded",
+                    TaskState::Failed => "failed",
+                    TaskState::Cancelled => "cancelled",
+                }
+                .to_owned(),
+            });
+        }
+        for run in ledger
+            .runs(None)?
+            .into_iter()
+            .filter(|run| run.recovery_of.is_some())
+        {
+            recovery.push(RecoveryView {
+                repository: run.repository,
+                task_id: run.task_id,
+                run_id: Some(run.id),
+                recovery_of: run
+                    .recovery_of
+                    .expect("filtered recovery run has a source run"),
+                recovery_attempt: run.recovery_attempt,
+                outcome: run.outcome,
+            });
+        }
+    }
+    recovery.sort_by(|left, right| {
+        (
+            &left.repository,
+            left.task_id,
+            left.run_id.unwrap_or(i64::MAX),
+        )
+            .cmp(&(
+                &right.repository,
+                right.task_id,
+                right.run_id.unwrap_or(i64::MAX),
+            ))
+    });
+    Ok(recovery)
 }
 
 fn remove_database_files(database: &Path) -> Result<()> {
@@ -827,6 +1439,15 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
                             .as_bytes(),
                         );
                     }
+                    if let Ok(ledger) = Ledger::open(&ledger_path) {
+                        let _ = ledger.record_repository_health(
+                            &repository.identity,
+                            "disabled",
+                            None,
+                            0,
+                            None,
+                        );
+                    }
                 }
                 Ok(_) => {}
                 Err(error) => write_stderr_best_effort(
@@ -886,6 +1507,63 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
         {
             Ok(report) => {
                 let source_failures = report.source.failures();
+                let issues_seen = report
+                    .source
+                    .repositories
+                    .iter()
+                    .map(|poll| poll.issues_seen)
+                    .sum();
+                let poll_error = report
+                    .source
+                    .repositories
+                    .iter()
+                    .filter_map(|poll| poll.error.as_deref())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                for (snapshot, result) in [
+                    (
+                        "poll",
+                        ledger.record_poll_status(
+                            &repository.identity,
+                            "all",
+                            if source_failures == 0 {
+                                "succeeded"
+                            } else {
+                                "failed"
+                            },
+                            issues_seen,
+                            report.source.tasks_created(),
+                            (source_failures > 0).then_some(poll_error.as_str()),
+                        ),
+                    ),
+                    (
+                        "health",
+                        ledger.record_repository_health(
+                            &repository.identity,
+                            if source_failures == 0 {
+                                "healthy"
+                            } else {
+                                "backing_off"
+                            },
+                            (source_failures > 0).then_some(poll_error.as_str()),
+                            u32::from(source_failures > 0),
+                            None,
+                        ),
+                    ),
+                ] {
+                    if let Err(error) = result {
+                        failures += 1;
+                        write_stderr_best_effort(
+                            format!(
+                                "Factory could not persist operator snapshot: repository={} snapshot={} error={}\n",
+                                repository.identity,
+                                snapshot,
+                                single_line_error(&error)
+                            )
+                            .as_bytes(),
+                        );
+                    }
+                }
                 if source_failures == 0 {
                     healthy += 1;
                 } else {
@@ -905,11 +1583,47 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
             }
             Err(error) => {
                 failures += 1;
+                let message = single_line_error(&error);
+                for (snapshot, result) in [
+                    (
+                        "poll",
+                        ledger.record_poll_status(
+                            &repository.identity,
+                            "all",
+                            "failed",
+                            0,
+                            0,
+                            Some(&message),
+                        ),
+                    ),
+                    (
+                        "health",
+                        ledger.record_repository_health(
+                            &repository.identity,
+                            "unavailable",
+                            Some(&message),
+                            1,
+                            None,
+                        ),
+                    ),
+                ] {
+                    if let Err(snapshot_error) = result {
+                        failures += 1;
+                        write_stderr_best_effort(
+                            format!(
+                                "Factory could not persist operator snapshot: repository={} snapshot={} error={}\n",
+                                repository.identity,
+                                snapshot,
+                                single_line_error(&snapshot_error)
+                            )
+                            .as_bytes(),
+                        );
+                    }
+                }
                 write_stdout_best_effort(
                     format!(
                         "repository={} status=unavailable error={}\n",
-                        repository.identity,
-                        single_line_error(&error)
+                        repository.identity, message
                     )
                     .as_bytes(),
                 );
@@ -933,9 +1647,17 @@ async fn run_fleet(path: &Path) -> Result<u8> {
     let fleet = FleetConfig::load(path)?;
     ensure_no_unscoped_ledger_overlap()?;
     let mut runtimes = Vec::new();
+    let mut operation_snapshots = Vec::new();
     let mut invalid = 0usize;
     for repository in &fleet.repositories {
         if !repository.enabled {
+            match repository.load_runtime() {
+                Ok(runtime) => {
+                    operation_snapshots.push(RepositoryOperationSnapshot::from_runtime(&runtime))
+                }
+                Err(error) => operation_snapshots
+                    .push(RepositoryOperationSnapshot::from_error(repository, &error)),
+            }
             match repository.pinned_ledger_path() {
                 Ok(ledger_path) if ledger_path.exists() => {
                     if let Err(error) = FactoryDaemon::reconcile_disabled_ledger(
@@ -949,6 +1671,15 @@ async fn run_fleet(path: &Path) -> Result<u8> {
                                 single_line_error(&error)
                             )
                             .as_bytes(),
+                        );
+                    }
+                    if let Ok(ledger) = Ledger::open(&ledger_path) {
+                        let _ = ledger.record_repository_health(
+                            &repository.identity,
+                            "disabled",
+                            None,
+                            0,
+                            None,
                         );
                     }
                 }
@@ -968,8 +1699,13 @@ async fn run_fleet(path: &Path) -> Result<u8> {
             continue;
         }
         match repository.load_runtime() {
-            Ok(runtime) => runtimes.push(runtime),
+            Ok(runtime) => {
+                operation_snapshots.push(RepositoryOperationSnapshot::from_runtime(&runtime));
+                runtimes.push(runtime);
+            }
             Err(error) => {
+                operation_snapshots
+                    .push(RepositoryOperationSnapshot::from_error(repository, &error));
                 invalid += 1;
                 write_stdout_best_effort(
                     format!(
@@ -991,6 +1727,7 @@ async fn run_fleet(path: &Path) -> Result<u8> {
                 .as_bytes(),
         );
     }
+    let _active_fleet = activate_fleet(path, &fleet, &operation_snapshots)?;
 
     let cancellation = CancellationToken::new();
     let signal_token = cancellation.clone();

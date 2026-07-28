@@ -63,6 +63,8 @@ mod fleet_supervisor_state_tests {
                 consecutive_failures: 0,
                 retry_at: None,
                 pre_rate_limit: None,
+                validation_error: None,
+                ledger_path: None,
             },
         )])))
     }
@@ -542,6 +544,8 @@ struct RepositoryHealthRecord {
     consecutive_failures: u32,
     retry_at: Option<Instant>,
     pre_rate_limit: Option<(RepositoryHealth, Option<Instant>)>,
+    validation_error: Option<String>,
+    ledger_path: Option<PathBuf>,
 }
 
 type FleetHealth = Arc<Mutex<HashMap<String, RepositoryHealthRecord>>>;
@@ -581,11 +585,18 @@ impl FleetSupervisor {
                             consecutive_failures: 0,
                             retry_at: None,
                             pre_rate_limit: None,
+                            validation_error: None,
+                            ledger_path: self
+                                .repositories
+                                .iter()
+                                .find(|runtime| runtime.identity == *identity)
+                                .map(|runtime| runtime.ledger_path.clone()),
                         },
                     )
                 })
                 .collect(),
         ));
+        persist_fleet_health(&health);
         let host = FleetHostCoordinator::new(Arc::clone(&health));
 
         let mut members = JoinSet::<(String, Result<()>)>::new();
@@ -934,8 +945,8 @@ async fn poll_fleet_target(
         .source
         .as_ref()
         .context("source-triggered workflow has no configured source")?;
-    if !source.command.is_empty() {
-        return SourceClient
+    let result = if !source.command.is_empty() {
+        SourceClient
             .poll_workflow(
                 &target.runtime.path,
                 &target.runtime.identity,
@@ -944,29 +955,67 @@ async fn poll_fleet_target(
                 &mut ledger,
                 cancellation,
             )
-            .await;
-    }
-    let catalog = WorkflowCatalog {
-        entries: vec![target.workflow.clone()],
+            .await
+    } else {
+        async {
+            let catalog = WorkflowCatalog {
+                entries: vec![target.workflow.clone()],
+            };
+            let report = GitHubClient::default()
+                .poll_once_after_global_validation_for_identity(
+                    &target.runtime.config,
+                    &catalog,
+                    &mut ledger,
+                    cancellation.clone(),
+                    &target.runtime.identity,
+                )
+                .await?;
+            let poll = report
+                .repositories
+                .into_iter()
+                .next()
+                .context("GitHub polling returned no repository result")?;
+            if let Some(error) = &poll.error {
+                Err(anyhow::anyhow!("{error}"))
+            } else {
+                Ok(poll)
+            }
+        }
+        .await
     };
-    let report = GitHubClient::default()
-        .poll_once_after_global_validation_for_identity(
-            &target.runtime.config,
-            &catalog,
-            &mut ledger,
-            cancellation.clone(),
+    let snapshot_result = match &result {
+        Ok(poll) => ledger.record_poll_status(
             &target.runtime.identity,
-        )
-        .await?;
-    let poll = report
-        .repositories
-        .into_iter()
-        .next()
-        .context("GitHub polling returned no repository result")?;
-    if let Some(error) = &poll.error {
-        bail!("{error}");
+            &target.workflow.id,
+            "succeeded",
+            poll.issues_seen,
+            poll.tasks_created,
+            None,
+        ),
+        Err(error) => ledger.record_poll_status(
+            &target.runtime.identity,
+            &target.workflow.id,
+            "failed",
+            0,
+            0,
+            Some(&format!("{error:#}")),
+        ),
+    };
+    if let Err(snapshot_error) = snapshot_result {
+        eprintln!(
+            "Factory could not persist poll status: repository={} workflow={} error={}",
+            target.runtime.identity,
+            target.workflow.id,
+            format!("{snapshot_error:#}")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        if result.is_ok() {
+            return Err(snapshot_error).context("failed to persist successful fleet poll status");
+        }
     }
-    Ok(poll)
+    result
 }
 
 fn advance_poll_due(target: &mut FleetPollTarget, now: Instant) {
@@ -1026,7 +1075,10 @@ fn set_repository_healthy(health: &FleetHealth, identity: &str) {
     record.consecutive_failures = 0;
     record.retry_at = None;
     record.pre_rate_limit = None;
+    record.validation_error = None;
+    let snapshot = health_snapshot(identity, record);
     drop(health);
+    persist_health_snapshot(snapshot);
     if changed {
         eprintln!("Factory repository health: repository={identity} status=healthy");
     }
@@ -1050,8 +1102,16 @@ fn set_repository_failure(
     record.pre_rate_limit = None;
     let retry_at = Instant::now() + delay;
     record.retry_at = Some(retry_at);
+    record.validation_error = Some(
+        format!("{error:#}")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
     let failures = record.consecutive_failures;
+    let snapshot = health_snapshot(identity, record);
     drop(health);
+    persist_health_snapshot(snapshot);
     eprintln!(
         "Factory repository health: repository={identity} status={} consecutive_failures={failures} retry_in={} error={}",
         health_name(state),
@@ -1074,6 +1134,7 @@ fn set_fleet_rate_limited(health: &FleetHealth, retry_at: Instant, message: &str
     let mut health = health
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut snapshots = Vec::new();
     for (identity, record) in health.iter_mut() {
         if matches!(
             record.state,
@@ -1089,12 +1150,82 @@ fn set_fleet_rate_limited(health: &FleetHealth, retry_at: Instant, message: &str
             .retry_at
             .map_or(retry_at, |current| current.max(retry_at));
         record.retry_at = Some(effective_retry_at);
+        record.validation_error = Some(message.split_whitespace().collect::<Vec<_>>().join(" "));
+        snapshots.push(health_snapshot(identity, record));
         eprintln!(
             "Factory repository health: repository={identity} status=rate_limited retry_in={} error={}",
             humantime::format_duration(
                 effective_retry_at.saturating_duration_since(Instant::now())
             ),
             message.split_whitespace().collect::<Vec<_>>().join(" ")
+        );
+    }
+    drop(health);
+    for snapshot in snapshots {
+        persist_health_snapshot(snapshot);
+    }
+}
+
+type HealthSnapshot = (
+    String,
+    RepositoryHealth,
+    Option<String>,
+    u32,
+    Option<Instant>,
+    Option<PathBuf>,
+);
+
+fn health_snapshot(identity: &str, record: &RepositoryHealthRecord) -> HealthSnapshot {
+    (
+        identity.to_owned(),
+        record.state,
+        record.validation_error.clone(),
+        record.consecutive_failures,
+        record.retry_at,
+        record.ledger_path.clone(),
+    )
+}
+
+fn persist_fleet_health(health: &FleetHealth) {
+    let snapshots = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .map(|(identity, record)| health_snapshot(identity, record))
+        .collect::<Vec<_>>();
+    for snapshot in snapshots {
+        persist_health_snapshot(snapshot);
+    }
+}
+
+fn persist_health_snapshot(
+    (identity, state, validation_error, consecutive_failures, retry_at, ledger_path): HealthSnapshot,
+) {
+    let Some(ledger_path) = ledger_path else {
+        return;
+    };
+    let next_retry_at = retry_at.map(|retry_at| {
+        let delay = retry_at.saturating_duration_since(Instant::now());
+        Utc::now()
+            .timestamp_millis()
+            .saturating_add(i64::try_from(delay.as_millis()).unwrap_or(i64::MAX))
+    });
+    let result = Ledger::open(&ledger_path).and_then(|ledger| {
+        ledger.record_repository_health(
+            &identity,
+            health_name(state),
+            validation_error.as_deref(),
+            consecutive_failures,
+            next_retry_at,
+        )
+    });
+    if let Err(error) = result {
+        eprintln!(
+            "Factory could not persist repository health: repository={identity} error={}",
+            format!("{error:#}")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
         );
     }
 }

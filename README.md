@@ -117,7 +117,7 @@ factory run
 ```
 
 The [runnable guide](docs/local-v1.md) covers the complete configuration, source
-contract, first demonstration, and sandbox setup. The
+contract, first demonstration, two-repository fleet setup, and sandbox setup. The
 [operations guide](docs/operations.md) covers inspection, cancellation,
 recovery, and cleanup.
 
@@ -125,17 +125,17 @@ recovery, and cleanup.
 
 V1 intentionally supports:
 
-- one repository and one GitHub source;
+- one repository or an explicit fleet of repository-owned configurations;
 - status, label, and schedule triggers;
 - Codex workers in managed worktrees or Docker clones;
 - explicit Markdown workflows;
 - durable queueing, supervision, history, cancellation, and recovery.
 
-Jira, Linear, multiple repositories, other agent runtimes, hosted workers, and
-webhook wake-ups can fit behind the same source, trigger, workflow, and worker
-boundaries later. This repository includes a [Jira source adapter](docs/jira.md)
-as an example of that extension point, but Jira is not part of the supported V1
-scope.
+Jira, Linear, cross-repository workflows, other agent runtimes, hosted workers,
+and webhook wake-ups can fit behind the same source, trigger, workflow, and
+worker boundaries later. This repository includes a
+[Jira source adapter](docs/jira.md) as an example of that extension point, but
+Jira is not part of the supported V1 scope.
 
 ## Learn more
 

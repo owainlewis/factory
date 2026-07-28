@@ -163,6 +163,50 @@ task. Moving the issue out of the condition rearms it, so moving it back later
 can create a continuation task. Scheduled jobs create one task per due instant.
 Durable task keys and atomic claims prevent duplicate workers after restarts.
 
+## Run two repositories as a fleet
+
+Keep each repository's existing `.factory/config.toml`, workflows, source, data
+directory, and workspaces. Create a separate fleet file, for example
+`~/.config/factory/fleet.toml`:
+
+```toml
+max_concurrent = 4
+
+[[repository]]
+name = "acme/payments"
+path = "/code/payments"
+enabled = true
+max_concurrent = 1
+
+[[repository]]
+name = "acme/web"
+path = "../checkouts/web"
+enabled = true
+max_concurrent = 2
+```
+
+The fleet file has no `version` field. Relative paths such as
+`../checkouts/web` resolve from the fleet file's directory, not the shell's
+working directory. A leading `~` and `$NAME` environment variables are
+expanded; unset variables fail validation.
+
+Both paths must be canonical roots of primary, non-bare Git checkouts, not
+linked worktrees. Each checkout's `origin` must resolve to its pinned
+`repository.name`. Start with a no-worker evaluation, inspect the result, then
+start continuous supervision:
+
+```sh
+factory run --fleet ~/.config/factory/fleet.toml --once
+factory status --fleet ~/.config/factory/fleet.toml
+factory tasks --fleet ~/.config/factory/fleet.toml
+factory run --fleet ~/.config/factory/fleet.toml
+```
+
+Fleet configuration changes are restart-only. See the
+[operations guide](operations.md#fleet-operation) for health, retry and rate
+limits, filtering, scoped cancellation and cleanup, graceful shutdown,
+disable/re-enable behavior, and recovery.
+
 Run a schedule-triggered workflow immediately with `factory run ID`. This form
 rejects source-triggered workflows because the loop is what binds the issue
 identity and live source state to the task. It also rejects Docker Sandbox

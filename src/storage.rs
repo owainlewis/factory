@@ -9,7 +9,7 @@ use fs2::FileExt;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 pub const DATABASE_NAME: &str = "factory.sqlite3";
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION_ID_BYTES: usize = 1024;
@@ -629,6 +629,27 @@ pub struct RecoveryReport {
 pub struct RepositoryRecoveryReport {
     pub recovery: RecoveryReport,
     pub unresolved_run_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryHealthSnapshot {
+    pub repository: String,
+    pub state: String,
+    pub validation_error: Option<String>,
+    pub consecutive_failures: u32,
+    pub next_retry_at: Option<i64>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PollStatus {
+    pub repository: String,
+    pub workflow: String,
+    pub outcome: String,
+    pub issues_seen: usize,
+    pub tasks_created: usize,
+    pub error: Option<String>,
+    pub polled_at: i64,
 }
 
 pub struct Ledger {
@@ -2377,6 +2398,158 @@ impl Ledger {
             .context("failed to read runs")
     }
 
+    pub fn record_repository_health(
+        &self,
+        repository: &str,
+        state: &str,
+        validation_error: Option<&str>,
+        consecutive_failures: u32,
+        next_retry_at: Option<i64>,
+    ) -> Result<()> {
+        if repository.trim().is_empty() {
+            bail!("repository health identity must not be empty");
+        }
+        let validation_error = validation_error.map(|value| {
+            truncate_utf8(
+                &crate::inspection::sanitize_for_storage(value),
+                MAX_ERROR_BYTES,
+            )
+        });
+        self.connection
+            .execute(
+                "INSERT INTO repository_health
+                 (repository, state, validation_error, consecutive_failures, next_retry_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(repository) DO UPDATE SET
+                   state = excluded.state,
+                   validation_error = excluded.validation_error,
+                   consecutive_failures = excluded.consecutive_failures,
+                   next_retry_at = excluded.next_retry_at,
+                   updated_at = excluded.updated_at",
+                params![
+                    repository,
+                    state,
+                    validation_error,
+                    consecutive_failures,
+                    next_retry_at,
+                    now_millis()?
+                ],
+            )
+            .context("failed to persist repository health")?;
+        Ok(())
+    }
+
+    pub fn repository_health(&self, repository: &str) -> Result<Option<RepositoryHealthSnapshot>> {
+        self.connection
+            .query_row(
+                "SELECT repository, state, validation_error, consecutive_failures,
+                        next_retry_at, updated_at
+                 FROM repository_health WHERE repository = ?1",
+                [repository],
+                |row| {
+                    Ok(RepositoryHealthSnapshot {
+                        repository: row.get(0)?,
+                        state: row.get(1)?,
+                        validation_error: row.get(2)?,
+                        consecutive_failures: row.get(3)?,
+                        next_retry_at: row.get(4)?,
+                        updated_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .context("failed to read repository health")
+    }
+
+    pub fn record_poll_status(
+        &self,
+        repository: &str,
+        workflow: &str,
+        outcome: &str,
+        issues_seen: usize,
+        tasks_created: usize,
+        error: Option<&str>,
+    ) -> Result<()> {
+        if repository.trim().is_empty() || workflow.trim().is_empty() {
+            bail!("poll status repository and workflow must not be empty");
+        }
+        if !matches!(outcome, "succeeded" | "failed") {
+            bail!("poll status outcome must be succeeded or failed");
+        }
+        let error = error.map(|value| {
+            truncate_utf8(
+                &crate::inspection::sanitize_for_storage(value),
+                MAX_ERROR_BYTES,
+            )
+        });
+        let transaction = self
+            .connection
+            .unchecked_transaction()
+            .context("failed to begin poll status transaction")?;
+        if workflow == "all" {
+            transaction
+                .execute(
+                    "DELETE FROM poll_status WHERE repository = ?1",
+                    [repository],
+                )
+                .context("failed to replace repository poll status")?;
+        } else {
+            transaction
+                .execute(
+                    "DELETE FROM poll_status WHERE repository = ?1 AND workflow = 'all'",
+                    [repository],
+                )
+                .context("failed to replace aggregate poll status")?;
+        }
+        transaction
+            .execute(
+                "INSERT INTO poll_status
+                 (repository, workflow, outcome, issues_seen, tasks_created, error, polled_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(repository, workflow) DO UPDATE SET
+                   outcome = excluded.outcome,
+                   issues_seen = excluded.issues_seen,
+                   tasks_created = excluded.tasks_created,
+                   error = excluded.error,
+                   polled_at = excluded.polled_at",
+                params![
+                    repository,
+                    workflow,
+                    outcome,
+                    issues_seen,
+                    tasks_created,
+                    error,
+                    now_millis()?
+                ],
+            )
+            .context("failed to persist poll status")?;
+        transaction
+            .commit()
+            .context("failed to commit poll status")?;
+        Ok(())
+    }
+
+    pub fn poll_statuses(&self) -> Result<Vec<PollStatus>> {
+        let mut statement = self.connection.prepare(
+            "SELECT repository, workflow, outcome, issues_seen, tasks_created, error, polled_at
+             FROM poll_status ORDER BY repository, workflow",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok(PollStatus {
+                    repository: row.get(0)?,
+                    workflow: row.get(1)?,
+                    outcome: row.get(2)?,
+                    issues_seen: row.get(3)?,
+                    tasks_created: row.get(4)?,
+                    error: row.get(5)?,
+                    polled_at: row.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read poll status")
+    }
+
     pub fn run(&self, id: i64) -> Result<Option<Run>> {
         query_run(&self.connection, id)
     }
@@ -2788,6 +2961,9 @@ fn migrate(connection: &Connection) -> Result<()> {
         if version < 11 {
             migrate_v11(connection)?;
         }
+        if version < 12 {
+            migrate_v12(connection)?;
+        }
         Ok(())
     })();
     match result {
@@ -3107,6 +3283,37 @@ fn migrate_v11(connection: &Connection) -> Result<()> {
              PRAGMA user_version = 11;",
         )
         .context("failed to migrate SQLite ledger to version 11")?;
+    Ok(())
+}
+
+fn migrate_v12(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "CREATE TABLE repository_health (
+                 repository TEXT PRIMARY KEY,
+                 state TEXT NOT NULL CHECK (state IN
+                   ('loading', 'healthy', 'backing_off', 'rate_limited',
+                    'invalid_config', 'unavailable', 'disabled')),
+                 validation_error TEXT,
+                 consecutive_failures INTEGER NOT NULL,
+                 next_retry_at INTEGER,
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE poll_status (
+                 repository TEXT NOT NULL,
+                 workflow TEXT NOT NULL,
+                 outcome TEXT NOT NULL CHECK (outcome IN ('succeeded', 'failed')),
+                 issues_seen INTEGER NOT NULL,
+                 tasks_created INTEGER NOT NULL,
+                 error TEXT,
+                 polled_at INTEGER NOT NULL,
+                 PRIMARY KEY(repository, workflow)
+             );
+             INSERT INTO schema_migrations(version, applied_at)
+                 VALUES (12, unixepoch('subsec') * 1000);
+             PRAGMA user_version = 12;",
+        )
+        .context("failed to migrate SQLite ledger to version 12")?;
     Ok(())
 }
 

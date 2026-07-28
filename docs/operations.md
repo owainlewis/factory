@@ -42,6 +42,104 @@ by an old Factory process regardless of the `FACTORY_DATA_HOME` setting. These
 overlap guards run when `factory run` starts; inspection and cleanup commands
 remain available.
 
+## Fleet operation
+
+Run more than one trusted primary checkout from an explicit fleet file:
+
+```sh
+factory run --fleet ~/.config/factory/fleet.toml --once
+factory run --fleet ~/.config/factory/fleet.toml
+```
+
+Fleet configuration is read once at startup. Adding, removing, editing,
+enabling, or disabling a repository has no effect on the running process.
+Restart Factory to apply the changed file. There is no hot reload and no fleet
+`version` field. While that supervisor process is live, fleet inspection and
+mutation commands use its durable fleet and repository configuration startup
+snapshot, even if either file has since been edited. After the process stops,
+commands load the current files.
+
+Each `repository.name` is a pinned GitHub `owner/name` identity. Factory
+lowercases it for durable identity, verifies the canonical primary checkout and
+its `origin`, and never substitutes another remote or checkout for existing
+state. Relative repository paths resolve from the fleet file's parent
+directory. A leading `~` and `$NAME` environment variables use the same
+expansion rules as repository configuration. An unset variable is an error.
+
+The initial supported envelope is 20 enabled repositories, three
+source-triggered workflows per repository, and polling intervals of at least
+60 seconds. `max_concurrent` limits the fleet. An optional repository
+`max_concurrent` combines with its repository worker limit by taking the lower
+value. Factory admits eligible repositories round-robin, runs at most two host
+source queries concurrently, deterministically staggers polls, and shares a
+GitHub rate-limit pause across repositories using the same credential.
+
+Inspect a running or stopped fleet with:
+
+```sh
+factory status --fleet ~/.config/factory/fleet.toml
+factory tasks --fleet ~/.config/factory/fleet.toml
+factory tasks --fleet ~/.config/factory/fleet.toml --repository acme/payments
+factory runs --fleet ~/.config/factory/fleet.toml --repository acme/payments
+factory polls --fleet ~/.config/factory/fleet.toml
+factory workspaces --fleet ~/.config/factory/fleet.toml
+factory recovery --fleet ~/.config/factory/fleet.toml
+```
+
+All fleet rows and JSON objects include pinned repository identity. `status`
+reports `loading`, `healthy`, `invalid_config`, `unavailable`, `backing_off`,
+`rate_limited`, or `disabled`, plus the latest validation or runtime error,
+consecutive failure count, and next retry time when one exists. Ordinary
+transient failures retry after 5 seconds and double to a 15-minute cap.
+Rate-limit responses use the server retry time, or 60 seconds when no usable
+time is available. A locally valid repository remains `loading` until a
+supervisor durably records successful runtime validation; inspection never
+invents a healthy state for an unstarted fleet. `polls` reports the latest
+durable results. Continuous
+supervision records each staggered workflow query. A one-shot evaluation
+replaces those rows with one repository aggregate named `all`; later continuous
+workflow results replace that aggregate without mixing stale rows.
+`workspaces` reports active retained, recovery, and cleanup-pending ownership;
+add `--all` to include cleaned records.
+
+Read-only task and run lists aggregate every configured repository unless
+`--repository owner/name` filters them. A single `inspect RUN_ID` may omit the
+selector only when that numeric ID exists in one configured repository. If the
+same ID exists in more than one ledger, Factory rejects the request and names
+the required selector.
+
+Cancellation and cleanup are mutations, so fleet mode always requires the
+pinned repository:
+
+```sh
+factory cancel --fleet ~/.config/factory/fleet.toml \
+  --repository acme/payments RUN_ID
+factory cleanup --fleet ~/.config/factory/fleet.toml \
+  --repository acme/payments RUN_ID
+factory cleanup --fleet ~/.config/factory/fleet.toml \
+  --repository acme/payments RUN_ID --confirm
+```
+
+Factory resolves the selector before opening a ledger, verifies the run, task,
+and workspace ownership, and refuses unknown or inconsistent ownership without
+mutation. This is required because repository ledgers can both contain run
+`42`.
+
+Disabling a repository takes effect after restart. Ctrl-C and process shutdown
+first stop new polling and claims, cancel active workers, wait for them to
+finish durable finalization, and leave queued work durable. On the next startup
+a disabled repository is opened only for non-destructive reconciliation:
+interrupted work becomes bounded recoverable or queued work but stays dormant.
+Disabled repositories do not poll, create schedules, claim tasks, launch normal
+or recovery workers, or perform destructive cleanup. Their ledgers, history,
+branches, and owned workspaces remain. Re-enable the entry and restart to resume
+normal recovery, reconciliation, polling, and dispatch.
+
+Removing an entry from the fleet file does not open, move, reset, clean, or
+delete its data directory or workspaces. Restore the same pinned identity and
+canonical checkout path to operate that state again. Automatic cloning,
+checkout relocation, and state migration are not supported.
+
 ## Worker boundary
 
 Worktree mode runs the host Codex CLI in a Factory-owned Git worktree. It is
@@ -141,5 +239,11 @@ and worktree directories are preserved.
 - `factory run --once` proves polling without launching a model or worker.
 - `factory inspect RUN_ID` shows bounded task, workspace, optional sandbox,
   branch, pull-request, and error evidence.
+- `factory status --fleet FLEET` reports each configured repository even when a
+  peer is invalid or unavailable. Use its error, failure count, and retry time
+  before changing configuration.
+- An `invalid_config` repository is not retried until restart. `unavailable`,
+  `backing_off`, and `rate_limited` repositories remain retryable and never
+  become permanently disabled because of repeated transient failures.
 
 Scheduled workflows use the same configured worker as ticket workflows.

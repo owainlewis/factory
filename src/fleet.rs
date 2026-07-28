@@ -1,12 +1,14 @@
 use std::collections::HashSet;
-use std::fs;
+use std::env;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use fs2::FileExt;
+use serde::{Deserialize, Serialize};
 
 use crate::config::{
     Config, canonical_directory_or_missing, ensure_primary_checkout, expand_path,
@@ -19,19 +21,70 @@ pub const MAX_ENABLED_REPOSITORIES: usize = 20;
 pub const MAX_SOURCE_WORKFLOWS_PER_REPOSITORY: usize = 3;
 pub const MIN_POLL_SECONDS: u64 = 60;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FleetConfig {
     pub max_concurrent: usize,
     pub repositories: Vec<FleetRepository>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FleetRepository {
     pub identity: String,
     pub display_name: String,
     pub path: PathBuf,
     pub enabled: bool,
     pub max_concurrent: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ActiveFleetManifest {
+    process_id: u32,
+    process_identity: String,
+    fleet: FleetConfig,
+    repositories: Vec<RepositoryOperationSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepositoryOperationSnapshot {
+    pub identity: String,
+    pub repository_path: PathBuf,
+    pub ledger_path: Option<PathBuf>,
+    pub workspace_root: Option<PathBuf>,
+    pub validation_error: Option<String>,
+}
+
+impl RepositoryOperationSnapshot {
+    pub fn from_runtime(runtime: &RepositoryRuntime) -> Self {
+        Self {
+            identity: runtime.identity.clone(),
+            repository_path: runtime.path.clone(),
+            ledger_path: Some(runtime.ledger_path.clone()),
+            workspace_root: Some(runtime.workspace_root.clone()),
+            validation_error: None,
+        }
+    }
+
+    pub fn from_error(repository: &FleetRepository, error: &anyhow::Error) -> Self {
+        Self {
+            identity: repository.identity.clone(),
+            repository_path: repository.path.clone(),
+            ledger_path: repository.pinned_ledger_path().ok(),
+            workspace_root: None,
+            validation_error: Some(
+                format!("{error:#}")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+        }
+    }
+}
+
+pub struct ActiveFleetGuard {
+    state_path: PathBuf,
+    process_id: u32,
+    process_identity: String,
+    _lock: File,
 }
 
 #[derive(Debug, Clone)]
@@ -197,6 +250,168 @@ impl FleetConfig {
             repositories,
         })
     }
+
+    pub fn load_for_operation(path: &Path) -> Result<Self> {
+        if let Some(manifest) = active_fleet_manifest(path)? {
+            return Ok(manifest.fleet);
+        }
+        Self::load(path)
+    }
+}
+
+pub fn activate_fleet(
+    path: &Path,
+    fleet: &FleetConfig,
+    repositories: &[RepositoryOperationSnapshot],
+) -> Result<ActiveFleetGuard> {
+    let snapshot_identities = repositories
+        .iter()
+        .map(|repository| repository.identity.as_str())
+        .collect::<HashSet<_>>();
+    if snapshot_identities.len() != repositories.len()
+        || repositories.len() != fleet.repositories.len()
+        || fleet
+            .repositories
+            .iter()
+            .any(|repository| !snapshot_identities.contains(repository.identity.as_str()))
+    {
+        bail!("active fleet startup snapshot does not match the fleet repositories");
+    }
+    let state_path = active_fleet_state_path(path)?;
+    let parent = state_path
+        .parent()
+        .context("active fleet state path has no parent directory")?;
+    fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "failed to create fleet state directory {}",
+            parent.display()
+        )
+    })?;
+    let lock_path = state_path.with_extension("lock");
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| {
+            format!(
+                "failed to open fleet supervisor lock {}",
+                lock_path.display()
+            )
+        })?;
+    lock.try_lock_exclusive().with_context(|| {
+        format!(
+            "fleet configuration is already supervised; lock {} is held",
+            lock_path.display()
+        )
+    })?;
+    let _ = fs::remove_file(&state_path);
+    let process_id = std::process::id();
+    let process_identity = crate::runtime::process_identity(process_id)
+        .context("failed to resolve Factory supervisor process identity")?;
+    let manifest = ActiveFleetManifest {
+        process_id,
+        process_identity: process_identity.clone(),
+        fleet: fleet.clone(),
+        repositories: repositories.to_vec(),
+    };
+    let bytes =
+        serde_json::to_vec(&manifest).context("failed to encode active fleet startup snapshot")?;
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        state_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("fleet"),
+        process_id
+    ));
+    fs::write(&temporary, bytes).with_context(|| {
+        format!(
+            "failed to write active fleet startup snapshot {}",
+            temporary.display()
+        )
+    })?;
+    fs::rename(&temporary, &state_path).with_context(|| {
+        format!(
+            "failed to publish active fleet startup snapshot {}",
+            state_path.display()
+        )
+    })?;
+    Ok(ActiveFleetGuard {
+        state_path,
+        process_id,
+        process_identity,
+        _lock: lock,
+    })
+}
+
+pub fn active_repository_operation(
+    path: &Path,
+    identity: &str,
+) -> Result<Option<RepositoryOperationSnapshot>> {
+    Ok(active_fleet_manifest(path)?.and_then(|manifest| {
+        manifest
+            .repositories
+            .into_iter()
+            .find(|repository| repository.identity == identity)
+    }))
+}
+
+impl Drop for ActiveFleetGuard {
+    fn drop(&mut self) {
+        let Ok(contents) = fs::read(&self.state_path) else {
+            return;
+        };
+        let Ok(manifest) = serde_json::from_slice::<ActiveFleetManifest>(&contents) else {
+            return;
+        };
+        if manifest.process_id == self.process_id
+            && manifest.process_identity == self.process_identity
+        {
+            let _ = fs::remove_file(&self.state_path);
+        }
+    }
+}
+
+fn active_fleet_manifest(path: &Path) -> Result<Option<ActiveFleetManifest>> {
+    let state_path = active_fleet_state_path(path)?;
+    let contents = match fs::read(&state_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read active fleet state {}", state_path.display())
+            });
+        }
+    };
+    let manifest: ActiveFleetManifest = serde_json::from_slice(&contents).with_context(|| {
+        format!(
+            "failed to parse active fleet state {}",
+            state_path.display()
+        )
+    })?;
+    let active = crate::runtime::process_identity(manifest.process_id)
+        .is_some_and(|identity| identity == manifest.process_identity);
+    if active {
+        return Ok(Some(manifest));
+    }
+    Ok(None)
+}
+
+fn active_fleet_state_path(path: &Path) -> Result<PathBuf> {
+    let current_dir = env::current_dir().context("failed to resolve current directory")?;
+    let resolved = expand_path(path, &current_dir)?;
+    let resolved = resolved.canonicalize().unwrap_or(resolved);
+    let digest = crate::hash::sha256_hex(resolved.as_os_str().as_encoded_bytes());
+    let base = match env::var_os("FACTORY_DATA_HOME").map(PathBuf::from) {
+        Some(base) if base.is_absolute() => base,
+        Some(base) => current_dir.join(base),
+        None => dirs::home_dir()
+            .map(|home| home.join(".factory"))
+            .context("could not determine Factory data directory")?,
+    };
+    Ok(base.join("fleets").join(format!("{}.json", &digest[..20])))
 }
 
 fn resolve_repository_path(path: &Path, base: &Path) -> Result<PathBuf> {
