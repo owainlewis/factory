@@ -233,3 +233,83 @@ fn github_adapter_accepts_exactly_the_maximum_result_count() {
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["issues"].as_array().unwrap().len(), 1000);
 }
+
+#[test]
+fn github_adapter_emits_structured_errors_for_403_and_429_rate_limits() {
+    for status in [403, 429] {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let executable = bin.join("gh");
+        fs::write(
+            &executable,
+            format!(
+                r#"#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "rate_limit" ]; then
+  printf '%s\n' '4102444800'
+  exit 0
+fi
+printf '%s\n' 'HTTP {status}: API rate limit exhausted' >&2
+exit 1
+"#
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(executable, permissions).unwrap();
+        let date = bin.join("date");
+        fs::write(
+            &date,
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "date (GNU coreutils)"
+  exit 0
+fi
+if [ "$1" = "-u" ] && [ "$2" = "-d" ] && [ "$3" = "@4102444800" ]; then
+  echo "2100-01-01T00:00:00Z"
+  exit 0
+fi
+exit 64
+"#,
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&date).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(date, permissions).unwrap();
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let adapter =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".factory/sources/github");
+        let output = Command::new(adapter)
+            .args(["--state", "open"])
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "status={}; stdout={}; stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "{error}; stdout={}; stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        assert_eq!(value["error"]["kind"], "rate_limited");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(&status.to_string())
+        );
+        assert_eq!(value["error"]["retry_at"], "2100-01-01T00:00:00Z");
+    }
+}

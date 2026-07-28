@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,12 +11,17 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, SecondsFormat, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
+use tokio::sync::{Notify, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
 use crate::clone::CloneManager;
 use crate::config::{Config, SourceConfig};
+use crate::fleet::{
+    RepositoryHealth, RepositoryRuntime, delay_to_next_poll, repository_backoff,
+    resolve_rate_limit_delay,
+};
 use crate::github::{GitHubClient, LabelTicketContext, ProjectTicketContext, TicketContext};
 use crate::hash::sha256_hex_prefix;
 use crate::runtime::{
@@ -23,7 +29,9 @@ use crate::runtime::{
     build_runtime, observation_channel,
 };
 use crate::sandbox::{SandboxRunFailure, SandboxWorker};
-use crate::source::{PollReport, SourceClient, SourceTicketContext};
+use crate::source::{
+    PollReport, RepositoryPoll, SourceClient, SourceTicketContext, source_rate_limit,
+};
 use crate::storage::{
     AUTOMATIC_DELIVERY_CLEANUP, Ledger, OPERATOR_CONFIRMED_CLEANUP, Run, RunOutcome, RunSandbox,
     Task, TaskIdentity, TaskState, TaskWorkspace,
@@ -39,6 +47,215 @@ static OWNER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 struct DaemonOwner {
     id: String,
     pid: u32,
+}
+
+#[cfg(test)]
+mod fleet_supervisor_state_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    fn health_fixture(identity: &str) -> FleetHealth {
+        Arc::new(Mutex::new(HashMap::from([(
+            identity.to_owned(),
+            RepositoryHealthRecord {
+                state: RepositoryHealth::Healthy,
+                consecutive_failures: 0,
+                retry_at: None,
+                pre_rate_limit: None,
+            },
+        )])))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn health_transitions_back_off_reset_and_rate_limit_without_disabling() {
+        let health = health_fixture("acme/repository");
+        let error = anyhow::anyhow!("transient");
+        set_repository_failure(
+            &health,
+            "acme/repository",
+            RepositoryHealth::BackingOff,
+            &error,
+        );
+        {
+            let records = health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let record = &records["acme/repository"];
+            assert_eq!(record.state, RepositoryHealth::BackingOff);
+            assert_eq!(record.consecutive_failures, 1);
+            assert_eq!(
+                record.retry_at.unwrap().duration_since(Instant::now()),
+                Duration::from_secs(5)
+            );
+        }
+        tokio::time::advance(Duration::from_secs(5)).await;
+        set_repository_failure(
+            &health,
+            "acme/repository",
+            RepositoryHealth::Unavailable,
+            &error,
+        );
+        {
+            let records = health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let record = &records["acme/repository"];
+            assert_eq!(record.state, RepositoryHealth::Unavailable);
+            assert_eq!(record.consecutive_failures, 2);
+            assert_eq!(
+                record.retry_at.unwrap().duration_since(Instant::now()),
+                Duration::from_secs(10)
+            );
+        }
+        set_repository_healthy(&health, "acme/repository");
+        assert_eq!(
+            health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())["acme/repository"]
+                .state,
+            RepositoryHealth::Unavailable
+        );
+        tokio::time::advance(Duration::from_secs(10)).await;
+        set_repository_healthy(&health, "acme/repository");
+        {
+            let records = health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let record = &records["acme/repository"];
+            assert_eq!(record.state, RepositoryHealth::Healthy);
+            assert_eq!(record.consecutive_failures, 0);
+            assert_eq!(record.retry_at, None);
+        }
+        let retry_at = Instant::now() + Duration::from_secs(60);
+        set_fleet_rate_limited(&health, retry_at, "rate limited");
+        let records = health
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let record = &records["acme/repository"];
+        assert_eq!(record.state, RepositoryHealth::RateLimited);
+        assert_eq!(record.retry_at, Some(retry_at));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn poll_failure_replaces_the_normal_interval_with_exact_backoff_deadline() {
+        let health = health_fixture("acme/repository");
+        let mut next_due = Instant::now() + Duration::from_secs(60);
+        apply_poll_failure(
+            &mut next_due,
+            &health,
+            "acme/repository",
+            &anyhow::anyhow!("transient"),
+        );
+        assert_eq!(
+            next_due.duration_since(Instant::now()),
+            Duration::from_secs(5)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_rate_pause_never_shortens_repository_backoff() {
+        let health = health_fixture("acme/repository");
+        let backoff = set_repository_failure(
+            &health,
+            "acme/repository",
+            RepositoryHealth::BackingOff,
+            &anyhow::anyhow!("transient"),
+        );
+        let shorter_shared_pause = Instant::now() + Duration::from_secs(2);
+        set_fleet_rate_limited(&health, shorter_shared_pause, "rate limited");
+        let records = health
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let record = &records["acme/repository"];
+        assert_eq!(record.state, RepositoryHealth::RateLimited);
+        assert_eq!(record.retry_at, Some(backoff));
+        assert_eq!(
+            record.pre_rate_limit,
+            Some((RepositoryHealth::BackingOff, Some(backoff)))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn validation_and_polling_share_the_two_query_host_bound() {
+        let health = health_fixture("acme/repository");
+        let host = FleetHostCoordinator::new(health);
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let cancellation = CancellationToken::new();
+        let mut tasks = Vec::new();
+        for _ in 0..3 {
+            let host = host.clone();
+            let active = Arc::clone(&active);
+            let maximum = Arc::clone(&maximum);
+            let cancellation = cancellation.clone();
+            tasks.push(tokio::spawn(async move {
+                host.run(&cancellation, || async {
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    maximum.fetch_max(current, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+            }));
+        }
+        tokio::task::yield_now().await;
+        assert_eq!(active.load(Ordering::SeqCst), 2);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        for task in tasks {
+            task.await.unwrap().unwrap();
+        }
+        assert_eq!(maximum.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn validation_rate_limit_pauses_later_host_queries_for_sixty_second_fallback() {
+        let health = health_fixture("acme/repository");
+        let host = FleetHostCoordinator::new(Arc::clone(&health));
+        let cancellation = CancellationToken::new();
+        let error = host
+            .run(&cancellation, || async {
+                Err::<(), _>(crate::source::test_source_rate_limit_error(
+                    "slow down",
+                    None,
+                ))
+            })
+            .await
+            .unwrap_err();
+        assert!(source_rate_limit(&error).is_some());
+        assert_eq!(
+            host.pause_until().unwrap().duration_since(Instant::now()),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())["acme/repository"]
+                .state,
+            RepositoryHealth::RateLimited
+        );
+
+        let started = Arc::new(AtomicUsize::new(0));
+        let query_started = Arc::clone(&started);
+        let query_host = host.clone();
+        let query_cancellation = cancellation.clone();
+        let query = tokio::spawn(async move {
+            query_host
+                .run(&query_cancellation, || async move {
+                    query_started.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(started.load(Ordering::SeqCst), 0);
+        tokio::time::advance(Duration::from_secs(60)).await;
+        query.await.unwrap().unwrap();
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+    }
 }
 
 impl DaemonOwner {
@@ -101,6 +318,797 @@ pub struct FactoryDaemon {
 pub struct OneShotReport {
     pub source: PollReport,
     pub scheduled_tasks_created: usize,
+}
+
+#[derive(Clone)]
+pub struct FleetAdmission {
+    inner: Arc<FleetAdmissionInner>,
+}
+
+struct FleetAdmissionInner {
+    repositories: Vec<String>,
+    state: Mutex<FleetAdmissionState>,
+    changed: Notify,
+}
+
+struct FleetAdmissionState {
+    available: usize,
+    cursor: usize,
+    waiting: Vec<bool>,
+}
+
+pub struct FleetAdmissionPermit {
+    inner: Arc<FleetAdmissionInner>,
+}
+
+#[derive(Clone)]
+struct FleetHostCoordinator {
+    slots: Arc<Semaphore>,
+    pause_until: Arc<Mutex<Option<Instant>>>,
+    health: FleetHealth,
+}
+
+impl FleetHostCoordinator {
+    fn new(health: FleetHealth) -> Self {
+        Self {
+            slots: Arc::new(Semaphore::new(2)),
+            pause_until: Arc::new(Mutex::new(None)),
+            health,
+        }
+    }
+
+    async fn run<T, F, Fut>(&self, cancellation: &CancellationToken, operation: F) -> Result<T>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        let mut operation = Some(operation);
+        loop {
+            if let Some(pause_until) = self.pause_until() {
+                tokio::select! {
+                    _ = cancellation.cancelled() => bail!("host query cancelled"),
+                    _ = tokio::time::sleep_until(pause_until) => {}
+                }
+            }
+            let permit = tokio::select! {
+                _ = cancellation.cancelled() => bail!("host query cancelled"),
+                permit = Arc::clone(&self.slots).acquire_owned() => {
+                    permit.context("host query coordinator closed")?
+                }
+            };
+            if self
+                .pause_until()
+                .is_some_and(|pause_until| pause_until > Instant::now())
+            {
+                drop(permit);
+                continue;
+            }
+            let result = operation.take().expect("host operation runs at most once")().await;
+            drop(permit);
+            if let Err(error) = &result
+                && let Some(rate_limit) = source_rate_limit(error)
+            {
+                let delay = resolve_rate_limit_delay(rate_limit.retry_at, Utc::now());
+                let retry_at = Instant::now() + delay;
+                let shared_retry_at = {
+                    let mut pause = self
+                        .pause_until
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    *pause = Some(pause.map_or(retry_at, |current| current.max(retry_at)));
+                    pause.expect("shared host pause was just set")
+                };
+                set_fleet_rate_limited(&self.health, shared_retry_at, &rate_limit.message);
+            }
+            return result;
+        }
+    }
+
+    fn pause_until(&self) -> Option<Instant> {
+        *self
+            .pause_until
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl Drop for FleetAdmissionPermit {
+    fn drop(&mut self) {
+        let mut state = lock_admission(&self.inner);
+        state.available += 1;
+        drop(state);
+        self.inner.changed.notify_waiters();
+    }
+}
+
+impl FleetAdmission {
+    pub fn new(repositories: Vec<String>, limit: usize) -> Result<Self> {
+        if repositories.is_empty() {
+            bail!("fleet admission requires at least one repository");
+        }
+        if limit == 0 {
+            bail!("fleet admission limit must be greater than zero");
+        }
+        let mut unique = HashSet::new();
+        if repositories
+            .iter()
+            .any(|repository| !unique.insert(repository.clone()))
+        {
+            bail!("fleet admission repository identities must be unique");
+        }
+        let waiting = vec![false; repositories.len()];
+        Ok(Self {
+            inner: Arc::new(FleetAdmissionInner {
+                repositories,
+                state: Mutex::new(FleetAdmissionState {
+                    available: limit,
+                    cursor: 0,
+                    waiting,
+                }),
+                changed: Notify::new(),
+            }),
+        })
+    }
+
+    pub async fn acquire(
+        &self,
+        repository: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<FleetAdmissionPermit> {
+        loop {
+            if let Some(permit) = self.try_acquire(repository)? {
+                return Ok(permit);
+            }
+            tokio::select! {
+                _ = cancellation.cancelled() => {
+                    self.cancel_wait(repository);
+                    bail!("fleet admission cancelled");
+                }
+                _ = self.inner.changed.notified() => {}
+            }
+        }
+    }
+
+    pub fn try_acquire(&self, repository: &str) -> Result<Option<FleetAdmissionPermit>> {
+        let index = self
+            .inner
+            .repositories
+            .iter()
+            .position(|candidate| candidate == repository)
+            .with_context(|| format!("repository {repository} is not registered for admission"))?;
+        let mut state = lock_admission(&self.inner);
+        if !state.waiting[index] {
+            state.waiting[index] = true;
+        }
+        if state.available > 0 && next_waiting_repository(&state).is_some_and(|next| next == index)
+        {
+            state.waiting[index] = false;
+            state.available -= 1;
+            state.cursor = (index + 1) % state.waiting.len();
+            return Ok(Some(FleetAdmissionPermit {
+                inner: Arc::clone(&self.inner),
+            }));
+        }
+        Ok(None)
+    }
+
+    fn cancel_wait(&self, repository: &str) {
+        let Some(index) = self
+            .inner
+            .repositories
+            .iter()
+            .position(|candidate| candidate == repository)
+        else {
+            return;
+        };
+        let mut state = lock_admission(&self.inner);
+        state.waiting[index] = false;
+        drop(state);
+        self.inner.changed.notify_waiters();
+    }
+
+    async fn changed(&self) {
+        self.inner.changed.notified().await;
+    }
+}
+
+fn lock_admission(inner: &FleetAdmissionInner) -> MutexGuard<'_, FleetAdmissionState> {
+    inner
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn next_waiting_repository(state: &FleetAdmissionState) -> Option<usize> {
+    (0..state.waiting.len())
+        .map(|offset| (state.cursor + offset) % state.waiting.len())
+        .find(|index| state.waiting[*index])
+}
+
+pub struct FleetSupervisor {
+    max_concurrent: usize,
+    repositories: Vec<RepositoryRuntime>,
+}
+
+#[derive(Clone)]
+struct FleetPollTarget {
+    runtime: RepositoryRuntime,
+    workflow: WorkflowEntry,
+    next_due: Instant,
+}
+
+struct RepositoryHealthRecord {
+    state: RepositoryHealth,
+    consecutive_failures: u32,
+    retry_at: Option<Instant>,
+    pre_rate_limit: Option<(RepositoryHealth, Option<Instant>)>,
+}
+
+type FleetHealth = Arc<Mutex<HashMap<String, RepositoryHealthRecord>>>;
+
+impl FleetSupervisor {
+    pub fn new(max_concurrent: usize, repositories: Vec<RepositoryRuntime>) -> Result<Self> {
+        if max_concurrent == 0 {
+            bail!("fleet max_concurrent must be greater than zero");
+        }
+        if repositories.is_empty() {
+            bail!("fleet supervisor requires at least one enabled repository");
+        }
+        Ok(Self {
+            max_concurrent,
+            repositories,
+        })
+    }
+
+    pub async fn run(&self, cancellation: CancellationToken) -> Result<()> {
+        GitHubClient::default()
+            .validate_global(&cancellation)
+            .await?;
+        let identities = self
+            .repositories
+            .iter()
+            .map(|runtime| runtime.identity.clone())
+            .collect::<Vec<_>>();
+        let admission = FleetAdmission::new(identities.clone(), self.max_concurrent)?;
+        let health = Arc::new(Mutex::new(
+            identities
+                .iter()
+                .map(|identity| {
+                    (
+                        identity.clone(),
+                        RepositoryHealthRecord {
+                            state: RepositoryHealth::Loading,
+                            consecutive_failures: 0,
+                            retry_at: None,
+                            pre_rate_limit: None,
+                        },
+                    )
+                })
+                .collect(),
+        ));
+        let host = FleetHostCoordinator::new(Arc::clone(&health));
+
+        let mut members = JoinSet::<(String, Result<()>)>::new();
+        let mut healthy = 0usize;
+        for runtime in &self.repositories {
+            if host
+                .pause_until()
+                .is_some_and(|pause_until| pause_until > Instant::now())
+            {
+                spawn_fleet_retry(
+                    &mut members,
+                    runtime.clone(),
+                    admission.clone(),
+                    host.clone(),
+                    Arc::clone(&health),
+                    cancellation.clone(),
+                );
+                continue;
+            }
+            let daemon = daemon_for_runtime(runtime)?;
+            match host
+                .run(&cancellation, || daemon.prepare_fleet(&cancellation))
+                .await
+            {
+                Ok(targets) => {
+                    healthy += 1;
+                    set_repository_healthy(&health, &runtime.identity);
+                    spawn_fleet_member(
+                        &mut members,
+                        runtime.clone(),
+                        daemon,
+                        targets,
+                        admission.clone(),
+                        host.clone(),
+                        Arc::clone(&health),
+                        cancellation.clone(),
+                    );
+                }
+                Err(_error) if cancellation.is_cancelled() => return Ok(()),
+                Err(error) => {
+                    set_repository_host_failure(&health, &runtime.identity, &error);
+                    spawn_fleet_retry(
+                        &mut members,
+                        runtime.clone(),
+                        admission.clone(),
+                        host.clone(),
+                        Arc::clone(&health),
+                        cancellation.clone(),
+                    );
+                }
+            }
+        }
+        if healthy == 0 {
+            cancellation.cancel();
+            while members.join_next().await.is_some() {}
+            bail!("fleet has no healthy enabled repository at startup");
+        }
+
+        let poll_targets = build_poll_targets(&self.repositories)?;
+        let poll_cancellation = cancellation.clone();
+        let poll_health = Arc::clone(&health);
+        let poll_host = host.clone();
+        let poller = tokio::spawn(async move {
+            run_fleet_poller(poll_targets, poll_health, poll_host, poll_cancellation).await
+        });
+        eprintln!(
+            "Factory fleet ready: repositories={} healthy={} max_concurrent={}; press Ctrl-C to stop.",
+            self.repositories.len(),
+            healthy,
+            self.max_concurrent
+        );
+
+        loop {
+            tokio::select! {
+                _ = cancellation.cancelled() => break,
+                completed = members.join_next(), if !members.is_empty() => {
+                    match completed {
+                        Some(Ok((identity, Ok(())))) if cancellation.is_cancelled() => {
+                            eprintln!("Factory repository stopped: repository={identity}");
+                        }
+                        Some(Ok((identity, Ok(())))) => {
+                            eprintln!("Factory repository loop stopped unexpectedly: repository={identity}");
+                        }
+                        Some(Ok((identity, Err(error)))) => {
+                            eprintln!("Factory repository loop failed: repository={identity} error={error:#}");
+                        }
+                        Some(Err(error)) => {
+                            eprintln!("Factory repository supervisor task panicked: {error}");
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+        cancellation.cancel();
+        while let Some(completed) = members.join_next().await {
+            if let Err(error) = completed {
+                eprintln!("Factory repository task panicked during shutdown: {error}");
+            }
+        }
+        poller
+            .await
+            .context("fleet polling task panicked")?
+            .context("fleet polling failed")?;
+        Ok(())
+    }
+}
+
+fn daemon_for_runtime(runtime: &RepositoryRuntime) -> Result<Arc<FactoryDaemon>> {
+    Ok(Arc::new(FactoryDaemon::new_pinned_for_repository(
+        runtime.identity.clone(),
+        runtime.path.clone(),
+        runtime.config.clone(),
+        runtime.catalog.clone(),
+        runtime.ledger_path.clone(),
+    )?))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_fleet_member(
+    members: &mut JoinSet<(String, Result<()>)>,
+    runtime: RepositoryRuntime,
+    daemon: Arc<FactoryDaemon>,
+    targets: HashMap<String, RepositoryTarget>,
+    admission: FleetAdmission,
+    host: FleetHostCoordinator,
+    health: FleetHealth,
+    cancellation: CancellationToken,
+) {
+    members.spawn(async move {
+        let identity = runtime.identity.clone();
+        let mut result = daemon
+            .run_fleet_member(cancellation.clone(), targets, admission.clone())
+            .await;
+        loop {
+            if cancellation.is_cancelled() {
+                return (identity, result);
+            }
+            if let Err(error) = &result {
+                set_repository_host_failure(&health, &identity, error);
+            } else {
+                let error = anyhow::anyhow!("repository loop stopped unexpectedly");
+                set_repository_failure(&health, &identity, RepositoryHealth::Unavailable, &error);
+            }
+            let retry_at = repository_retry_at(&health, &identity).unwrap_or_else(Instant::now);
+            tokio::select! {
+                _ = cancellation.cancelled() => return (identity, Ok(())),
+                _ = tokio::time::sleep_until(retry_at) => {}
+            }
+            let daemon = match daemon_for_runtime(&runtime) {
+                Ok(daemon) => daemon,
+                Err(error) => return (identity, Err(error)),
+            };
+            match host
+                .run(&cancellation, || daemon.prepare_fleet(&cancellation))
+                .await
+            {
+                Ok(targets) => {
+                    set_repository_healthy(&health, &identity);
+                    result = daemon
+                        .run_fleet_member(cancellation.clone(), targets, admission.clone())
+                        .await;
+                }
+                Err(_error) if cancellation.is_cancelled() => return (identity, Ok(())),
+                Err(error) => result = Err(error),
+            }
+        }
+    });
+}
+
+fn spawn_fleet_retry(
+    members: &mut JoinSet<(String, Result<()>)>,
+    runtime: RepositoryRuntime,
+    admission: FleetAdmission,
+    host: FleetHostCoordinator,
+    health: FleetHealth,
+    cancellation: CancellationToken,
+) {
+    members.spawn(async move {
+        let identity = runtime.identity.clone();
+        loop {
+            let retry_at = repository_retry_at(&health, &identity).unwrap_or_else(Instant::now);
+            tokio::select! {
+                _ = cancellation.cancelled() => return (identity, Ok(())),
+                _ = tokio::time::sleep_until(retry_at) => {}
+            }
+            let daemon = match daemon_for_runtime(&runtime) {
+                Ok(daemon) => daemon,
+                Err(error) => return (identity, Err(error)),
+            };
+            match host
+                .run(&cancellation, || daemon.prepare_fleet(&cancellation))
+                .await
+            {
+                Ok(targets) => {
+                    set_repository_healthy(&health, &identity);
+                    let result = daemon
+                        .run_fleet_member(cancellation.clone(), targets, admission.clone())
+                        .await;
+                    if cancellation.is_cancelled() {
+                        return (identity, result);
+                    }
+                    if let Err(error) = &result {
+                        set_repository_failure(
+                            &health,
+                            &identity,
+                            RepositoryHealth::Unavailable,
+                            error,
+                        );
+                    }
+                }
+                Err(_error) if cancellation.is_cancelled() => return (identity, Ok(())),
+                Err(error) => set_repository_host_failure(&health, &identity, &error),
+            }
+        }
+    });
+}
+
+fn build_poll_targets(repositories: &[RepositoryRuntime]) -> Result<Vec<FleetPollTarget>> {
+    let now = SystemTime::now();
+    let instant = Instant::now();
+    repositories
+        .iter()
+        .flat_map(|runtime| {
+            runtime
+                .catalog
+                .entries
+                .iter()
+                .filter(|entry| {
+                    entry.errors.is_empty()
+                        && matches!(
+                            entry.trigger,
+                            Some(Trigger::Source { .. } | Trigger::Status(_) | Trigger::Label(_))
+                        )
+                })
+                .map(move |workflow| (runtime, workflow))
+        })
+        .map(|(runtime, workflow)| {
+            Ok(FleetPollTarget {
+                runtime: runtime.clone(),
+                workflow: workflow.clone(),
+                next_due: instant
+                    + delay_to_next_poll(
+                        &runtime.identity,
+                        &workflow.id,
+                        runtime.config.poll_every,
+                        now,
+                    )?,
+            })
+        })
+        .collect()
+}
+
+async fn run_fleet_poller(
+    mut targets: Vec<FleetPollTarget>,
+    health: FleetHealth,
+    host: FleetHostCoordinator,
+    cancellation: CancellationToken,
+) -> Result<()> {
+    let mut active = JoinSet::<(usize, Result<RepositoryPoll>)>::new();
+    loop {
+        let now = Instant::now();
+        while active.len() < 2 {
+            let next = targets
+                .iter()
+                .enumerate()
+                .filter(|(_, target)| effective_poll_due(target, &health, &host) <= now)
+                .min_by_key(|(_, target)| effective_poll_due(target, &health, &host))
+                .map(|(index, _)| index);
+            let Some(index) = next else {
+                break;
+            };
+            let target = targets[index].clone();
+            advance_poll_due(&mut targets[index], now);
+            let poll_cancellation = cancellation.clone();
+            let poll_host = host.clone();
+            active.spawn(async move {
+                let result = poll_host
+                    .run(&poll_cancellation, || {
+                        poll_fleet_target(&target, &poll_cancellation)
+                    })
+                    .await;
+                (index, result)
+            });
+        }
+
+        let next_due = targets
+            .iter()
+            .map(|target| effective_poll_due(target, &health, &host))
+            .min()
+            .unwrap_or_else(|| Instant::now() + Duration::from_secs(60));
+        tokio::select! {
+            _ = cancellation.cancelled() => break,
+            completed = active.join_next(), if !active.is_empty() => {
+                let (_index, result) = completed
+                    .context("fleet source query task disappeared")?
+                    .context("fleet source query task panicked")?;
+                match result {
+                    Ok(report) => {
+                        let identity = report.name_with_owner.as_deref().unwrap_or("-");
+                        set_repository_healthy(&health, identity);
+                        if report.tasks_created > 0 {
+                            eprintln!(
+                                "Factory fleet poll: repository={} issues_seen={} tasks_queued={}",
+                                identity, report.issues_seen, report.tasks_created
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let identity = targets[_index].runtime.identity.clone();
+                        apply_poll_failure(
+                            &mut targets[_index].next_due,
+                            &health,
+                            &identity,
+                            &error,
+                        );
+                    }
+                }
+            }
+            _ = tokio::time::sleep_until(next_due), if active.len() < 2 => {}
+        }
+    }
+    while active.join_next().await.is_some() {}
+    Ok(())
+}
+
+fn apply_poll_failure(
+    next_due: &mut Instant,
+    health: &FleetHealth,
+    identity: &str,
+    error: &anyhow::Error,
+) {
+    if source_rate_limit(error).is_none() {
+        *next_due = set_repository_failure(health, identity, RepositoryHealth::BackingOff, error);
+    }
+}
+
+async fn poll_fleet_target(
+    target: &FleetPollTarget,
+    cancellation: &CancellationToken,
+) -> Result<RepositoryPoll> {
+    let mut ledger = Ledger::open(&target.runtime.ledger_path)?;
+    let source = target
+        .runtime
+        .config
+        .source
+        .as_ref()
+        .context("source-triggered workflow has no configured source")?;
+    if !source.command.is_empty() {
+        return SourceClient
+            .poll_workflow(
+                &target.runtime.path,
+                &target.runtime.identity,
+                source,
+                &target.workflow,
+                &mut ledger,
+                cancellation,
+            )
+            .await;
+    }
+    let catalog = WorkflowCatalog {
+        entries: vec![target.workflow.clone()],
+    };
+    let report = GitHubClient::default()
+        .poll_once_after_global_validation_for_identity(
+            &target.runtime.config,
+            &catalog,
+            &mut ledger,
+            cancellation.clone(),
+            &target.runtime.identity,
+        )
+        .await?;
+    let poll = report
+        .repositories
+        .into_iter()
+        .next()
+        .context("GitHub polling returned no repository result")?;
+    if let Some(error) = &poll.error {
+        bail!("{error}");
+    }
+    Ok(poll)
+}
+
+fn advance_poll_due(target: &mut FleetPollTarget, now: Instant) {
+    loop {
+        target.next_due += target.runtime.config.poll_every;
+        if target.next_due > now {
+            break;
+        }
+    }
+}
+
+fn effective_poll_due(
+    target: &FleetPollTarget,
+    health: &FleetHealth,
+    host: &FleetHostCoordinator,
+) -> Instant {
+    let repository_retry = repository_retry_at(health, &target.runtime.identity);
+    let shared_retry = host.pause_until();
+    [Some(target.next_due), repository_retry, shared_retry]
+        .into_iter()
+        .flatten()
+        .max()
+        .expect("target due time is always present")
+}
+
+fn repository_retry_at(health: &FleetHealth, identity: &str) -> Option<Instant> {
+    health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(identity)
+        .and_then(|record| record.retry_at)
+}
+
+fn set_repository_healthy(health: &FleetHealth, identity: &str) {
+    let mut health = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(record) = health.get_mut(identity) else {
+        return;
+    };
+    if record
+        .retry_at
+        .is_some_and(|retry_at| retry_at > Instant::now())
+        && matches!(
+            record.state,
+            RepositoryHealth::BackingOff
+                | RepositoryHealth::RateLimited
+                | RepositoryHealth::Unavailable
+        )
+    {
+        return;
+    }
+    let changed = record.state != RepositoryHealth::Healthy
+        || record.consecutive_failures > 0
+        || record.pre_rate_limit.is_some();
+    record.state = RepositoryHealth::Healthy;
+    record.consecutive_failures = 0;
+    record.retry_at = None;
+    record.pre_rate_limit = None;
+    drop(health);
+    if changed {
+        eprintln!("Factory repository health: repository={identity} status=healthy");
+    }
+}
+
+fn set_repository_failure(
+    health: &FleetHealth,
+    identity: &str,
+    state: RepositoryHealth,
+    error: &anyhow::Error,
+) -> Instant {
+    let mut health = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let record = health
+        .get_mut(identity)
+        .expect("fleet health contains every configured repository");
+    record.consecutive_failures = record.consecutive_failures.saturating_add(1);
+    let delay = repository_backoff(record.consecutive_failures);
+    record.state = state;
+    record.pre_rate_limit = None;
+    let retry_at = Instant::now() + delay;
+    record.retry_at = Some(retry_at);
+    let failures = record.consecutive_failures;
+    drop(health);
+    eprintln!(
+        "Factory repository health: repository={identity} status={} consecutive_failures={failures} retry_in={} error={}",
+        health_name(state),
+        humantime::format_duration(delay),
+        format!("{error:#}")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    retry_at
+}
+
+fn set_repository_host_failure(health: &FleetHealth, identity: &str, error: &anyhow::Error) {
+    if source_rate_limit(error).is_none() {
+        set_repository_failure(health, identity, RepositoryHealth::Unavailable, error);
+    }
+}
+
+fn set_fleet_rate_limited(health: &FleetHealth, retry_at: Instant, message: &str) {
+    let mut health = health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for (identity, record) in health.iter_mut() {
+        if matches!(
+            record.state,
+            RepositoryHealth::InvalidConfig | RepositoryHealth::Disabled
+        ) {
+            continue;
+        }
+        if record.state != RepositoryHealth::RateLimited {
+            record.pre_rate_limit = Some((record.state, record.retry_at));
+        }
+        record.state = RepositoryHealth::RateLimited;
+        let effective_retry_at = record
+            .retry_at
+            .map_or(retry_at, |current| current.max(retry_at));
+        record.retry_at = Some(effective_retry_at);
+        eprintln!(
+            "Factory repository health: repository={identity} status=rate_limited retry_in={} error={}",
+            humantime::format_duration(
+                effective_retry_at.saturating_duration_since(Instant::now())
+            ),
+            message.split_whitespace().collect::<Vec<_>>().join(" ")
+        );
+    }
+}
+
+fn health_name(health: RepositoryHealth) -> &'static str {
+    match health {
+        RepositoryHealth::Loading => "loading",
+        RepositoryHealth::Healthy => "healthy",
+        RepositoryHealth::BackingOff => "backing_off",
+        RepositoryHealth::RateLimited => "rate_limited",
+        RepositoryHealth::InvalidConfig => "invalid_config",
+        RepositoryHealth::Unavailable => "unavailable",
+        RepositoryHealth::Disabled => "disabled",
+    }
 }
 
 impl FactoryDaemon {
@@ -215,6 +1223,34 @@ impl FactoryDaemon {
             Err(_) if cancellation.is_cancelled() => return Ok(()),
             Err(error) => return Err(error),
         };
+        self.run_loop(cancellation, targets, true, None).await
+    }
+
+    async fn prepare_fleet(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<HashMap<String, RepositoryTarget>> {
+        self.validate_without_github_global(cancellation).await?;
+        self.resolve_targets(cancellation).await
+    }
+
+    async fn run_fleet_member(
+        &self,
+        cancellation: CancellationToken,
+        targets: HashMap<String, RepositoryTarget>,
+        admission: FleetAdmission,
+    ) -> Result<()> {
+        self.run_loop(cancellation, targets, false, Some(admission))
+            .await
+    }
+
+    async fn run_loop(
+        &self,
+        cancellation: CancellationToken,
+        targets: HashMap<String, RepositoryTarget>,
+        poll_sources: bool,
+        admission: Option<FleetAdmission>,
+    ) -> Result<()> {
         let repository_owner = self.repository_owner(&targets)?;
         let mut ledger = Ledger::open(&self.ledger_path)?;
         retain_unresolvable_workspaces(&ledger, &repository_owner)?;
@@ -265,7 +1301,7 @@ impl FactoryDaemon {
             workflow_count,
             humantime::format_duration(self.config.poll_every)
         );
-        {
+        if poll_sources {
             let config = self.config.clone();
             let catalog = self.catalog.clone();
             let ledger_path = self.ledger_path.clone();
@@ -332,7 +1368,9 @@ impl FactoryDaemon {
                     &mut retention_warning_shown,
                     &cancellation,
                     &owner,
-                )?;
+                    admission.as_ref(),
+                )
+                .await?;
 
                 tokio::select! {
                     _ = cancellation.cancelled() => return Ok(()),
@@ -369,6 +1407,7 @@ impl FactoryDaemon {
                             eprintln!("Factory worker failed for {repository}: {error:#}");
                         }
                     }
+                    _ = wait_for_admission_change(admission.as_ref()), if admission.is_some() => {}
                 }
             }
         }
@@ -504,6 +1543,11 @@ impl FactoryDaemon {
     }
 
     async fn validate(&self, cancellation: &CancellationToken) -> Result<()> {
+        self.github.validate_global(cancellation).await?;
+        self.validate_without_github_global(cancellation).await
+    }
+
+    async fn validate_without_github_global(&self, cancellation: &CancellationToken) -> Result<()> {
         for entry in self.catalog.invalid_scheduled_entries() {
             eprintln!(
                 "Factory skipped invalid scheduled workflow {}: {}",
@@ -512,7 +1556,6 @@ impl FactoryDaemon {
             );
         }
         self.catalog.validate_ticket_workflows()?;
-        self.github.validate_global(cancellation).await?;
         if let Some(sandbox) = &self.sandbox {
             self.github
                 .validate_token_env(sandbox.github_token_env(), cancellation)
@@ -641,6 +1684,12 @@ impl FactoryDaemon {
             path: self.repository.clone(),
             workspace_root: self.config.workspace_root.clone(),
         })
+    }
+}
+
+async fn wait_for_admission_change(admission: Option<&FleetAdmission>) {
+    if let Some(admission) = admission {
+        admission.changed().await;
     }
 }
 
@@ -1036,7 +2085,7 @@ fn resolve_workflow_target(entry: &WorkflowEntry) -> Option<(String, WorkflowTar
 }
 
 #[allow(clippy::too_many_arguments)]
-fn dispatch_available(
+async fn dispatch_available(
     ledger: &mut Ledger,
     targets: &HashMap<String, RepositoryTarget>,
     active: &mut HashMap<String, usize>,
@@ -1053,6 +2102,7 @@ fn dispatch_available(
     retention_warning_shown: &mut bool,
     cancellation: &CancellationToken,
     owner: &DaemonOwner,
+    admission: Option<&FleetAdmission>,
 ) -> Result<()> {
     while runs.len() < global_limit && !cancellation.is_cancelled() {
         let available = targets
@@ -1060,6 +2110,9 @@ fn dispatch_available(
             .filter(|repository| active.get(*repository).copied().unwrap_or(0) < repository_limit)
             .cloned()
             .collect::<Vec<_>>();
+        if available.is_empty() {
+            break;
+        }
         let workflow_runtimes = targets
             .iter()
             .flat_map(|(repository, target)| {
@@ -1094,6 +2147,13 @@ fn dispatch_available(
         } else if delivery_slots_available {
             *retention_warning_shown = false;
         }
+        let admission_permit = match admission {
+            Some(admission) => match admission.try_acquire(&available[0])? {
+                Some(permit) => Some(permit),
+                None => break,
+            },
+            None => None,
+        };
         let mut worker_ledger = Ledger::open(ledger_path)?;
         let Some(claimed) = ledger.claim_and_start_run_with_workdirs_filtered(
             &available,
@@ -1159,6 +2219,7 @@ fn dispatch_available(
         let finalization_ledger_path = ledger_path.to_owned();
         let cancellation = cancellation.clone();
         runs.spawn(async move {
+            let _admission_permit = admission_permit;
             let authorization = match &workflow.trigger {
                 Trigger::Source { .. } => match source_config.as_ref() {
                     Some(source) => {

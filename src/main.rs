@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use factory::clone::CloneManager;
 use factory::config::{Config, ExecutionMode, repository_config_path};
-use factory::daemon::FactoryDaemon;
+use factory::daemon::{FactoryDaemon, FleetSupervisor};
 use factory::execution::ResolvedWorkflow;
 use factory::fleet::FleetConfig;
 use factory::github::GitHubClient;
@@ -61,10 +61,9 @@ enum Command {
         /// Path to the Factory configuration file.
         #[arg(long, conflicts_with = "fleet")]
         config: Option<PathBuf>,
-        /// Path to a fleet configuration file. Supported with --once.
+        /// Path to a fleet configuration file.
         #[arg(
             long,
-            requires = "once",
             conflicts_with_all = ["config", "data_directory", "workflow_id"]
         )]
         fleet: Option<PathBuf>,
@@ -238,7 +237,11 @@ async fn run_cli() -> Result<u8> {
                     .await;
             }
             if let Some(fleet) = fleet {
-                return run_fleet_once(&fleet).await;
+                return if once {
+                    run_fleet_once(&fleet).await
+                } else {
+                    run_fleet(&fleet).await
+                };
             }
             return run_poller(config, data_directory, once).await;
         }
@@ -917,6 +920,91 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
         failures += 1;
     }
     Ok(u8::from(failures > 0))
+}
+
+async fn run_fleet(path: &Path) -> Result<u8> {
+    write_stderr_best_effort(
+        format!(
+            "Factory starting: mode=fleet-continuous config={}\n",
+            path.display()
+        )
+        .as_bytes(),
+    );
+    let fleet = FleetConfig::load(path)?;
+    ensure_no_unscoped_ledger_overlap()?;
+    let mut runtimes = Vec::new();
+    let mut invalid = 0usize;
+    for repository in &fleet.repositories {
+        if !repository.enabled {
+            match repository.pinned_ledger_path() {
+                Ok(ledger_path) if ledger_path.exists() => {
+                    if let Err(error) = FactoryDaemon::reconcile_disabled_ledger(
+                        &repository.identity,
+                        &ledger_path,
+                    ) {
+                        write_stderr_best_effort(
+                            format!(
+                                "Factory disabled repository reconciliation failed for {}: {}\n",
+                                repository.identity,
+                                single_line_error(&error)
+                            )
+                            .as_bytes(),
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => write_stderr_best_effort(
+                    format!(
+                        "Factory could not locate disabled repository {} for non-destructive reconciliation: {}\n",
+                        repository.identity,
+                        single_line_error(&error)
+                    )
+                    .as_bytes(),
+                ),
+            }
+            write_stdout_best_effort(
+                format!("repository={} status=disabled\n", repository.identity).as_bytes(),
+            );
+            continue;
+        }
+        match repository.load_runtime() {
+            Ok(runtime) => runtimes.push(runtime),
+            Err(error) => {
+                invalid += 1;
+                write_stdout_best_effort(
+                    format!(
+                        "repository={} status=invalid_config error={}\n",
+                        repository.identity,
+                        single_line_error(&error)
+                    )
+                    .as_bytes(),
+                );
+            }
+        }
+    }
+    if runtimes.is_empty() {
+        bail!("fleet has no locally valid enabled repository");
+    }
+    if invalid > 0 {
+        write_stderr_best_effort(
+            format!("Factory fleet continuing with {invalid} invalid repository entries.\n")
+                .as_bytes(),
+        );
+    }
+
+    let cancellation = CancellationToken::new();
+    let signal_token = cancellation.clone();
+    let signal_task = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            signal_token.cancel();
+        }
+    });
+    FleetSupervisor::new(fleet.max_concurrent, runtimes)?
+        .run(cancellation)
+        .await?;
+    signal_task.abort();
+    write_stderr_best_effort(b"Factory fleet stopped.\n");
+    Ok(0)
 }
 
 fn single_line_error(error: &anyhow::Error) -> String {

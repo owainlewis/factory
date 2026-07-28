@@ -2,8 +2,10 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::config::{
@@ -32,7 +34,7 @@ pub struct FleetRepository {
     pub max_concurrent: Option<usize>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RepositoryRuntime {
     pub identity: String,
     pub path: PathBuf,
@@ -48,9 +50,66 @@ pub struct RepositoryRuntime {
 pub enum RepositoryHealth {
     Loading,
     Healthy,
+    BackingOff,
+    RateLimited,
     InvalidConfig,
     Unavailable,
     Disabled,
+}
+
+pub const INITIAL_BACKOFF: Duration = Duration::from_secs(5);
+pub const MAX_BACKOFF: Duration = Duration::from_secs(15 * 60);
+pub const RATE_LIMIT_FALLBACK: Duration = Duration::from_secs(60);
+
+pub fn repository_backoff(consecutive_failures: u32) -> Duration {
+    let exponent = consecutive_failures.saturating_sub(1).min(31);
+    INITIAL_BACKOFF
+        .saturating_mul(1_u32 << exponent)
+        .min(MAX_BACKOFF)
+}
+
+pub fn polling_stagger(repository: &str, workflow: &str, interval: Duration) -> Duration {
+    let interval_millis = interval.as_millis();
+    if interval_millis == 0 {
+        return Duration::ZERO;
+    }
+    let digest = crate::hash::sha256_hex(format!("{repository}\0{workflow}"));
+    let hash = u64::from_str_radix(&digest[..16], 16)
+        .expect("a SHA-256 hexadecimal prefix is always a valid u64");
+    Duration::from_millis((u128::from(hash) % interval_millis) as u64)
+}
+
+pub fn delay_to_next_poll(
+    repository: &str,
+    workflow: &str,
+    interval: Duration,
+    now: SystemTime,
+) -> Result<Duration> {
+    let interval_millis = interval.as_millis();
+    if interval_millis == 0 {
+        bail!("polling interval must be greater than zero");
+    }
+    let now_millis = now
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before the Unix epoch")?
+        .as_millis();
+    let offset = polling_stagger(repository, workflow, interval).as_millis();
+    let period_start = now_millis - (now_millis % interval_millis);
+    let mut due = period_start + offset;
+    if due <= now_millis {
+        due += interval_millis;
+    }
+    Ok(Duration::from_millis((due - now_millis) as u64))
+}
+
+pub fn resolve_rate_limit_delay(
+    retry_at: Option<DateTime<Utc>>,
+    observed_at: DateTime<Utc>,
+) -> Duration {
+    retry_at
+        .filter(|retry_at| *retry_at > observed_at)
+        .and_then(|retry_at| (retry_at - observed_at).to_std().ok())
+        .unwrap_or(RATE_LIMIT_FALLBACK)
 }
 
 #[derive(Debug, Deserialize)]
@@ -433,5 +492,53 @@ mod tests {
         fs::write(&fleet, format!("max_concurrent = 1\n{entries}")).unwrap();
         let error = FleetConfig::load(&fleet).unwrap_err();
         assert!(error.to_string().contains("supports at most 20"));
+    }
+
+    #[test]
+    fn repository_backoff_doubles_from_five_seconds_and_caps_at_fifteen_minutes() {
+        assert_eq!(repository_backoff(1), Duration::from_secs(5));
+        assert_eq!(repository_backoff(2), Duration::from_secs(10));
+        assert_eq!(repository_backoff(8), Duration::from_secs(640));
+        assert_eq!(repository_backoff(9), Duration::from_secs(900));
+        assert_eq!(repository_backoff(100), Duration::from_secs(900));
+    }
+
+    #[test]
+    fn polling_stagger_is_stable_and_aligned_across_restart() {
+        let interval = Duration::from_secs(60);
+        let first = polling_stagger("acme/first", "implement", interval);
+        assert_eq!(first, polling_stagger("acme/first", "implement", interval));
+        assert!(first < interval);
+        assert_ne!(first, polling_stagger("acme/second", "implement", interval));
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_013);
+        let delay = delay_to_next_poll("acme/first", "implement", interval, now).unwrap();
+        let restarted = delay_to_next_poll("acme/first", "implement", interval, now).unwrap();
+        assert_eq!(delay, restarted);
+        assert!(delay <= interval);
+    }
+
+    #[test]
+    fn rate_limit_retry_uses_future_timestamp_or_sixty_second_fallback() {
+        let observed = DateTime::parse_from_rfc3339("2026-07-27T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let future = DateTime::parse_from_rfc3339("2026-07-27T12:02:30+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let past = DateTime::parse_from_rfc3339("2026-07-27T11:59:59Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            resolve_rate_limit_delay(Some(future), observed),
+            Duration::from_secs(150)
+        );
+        assert_eq!(
+            resolve_rate_limit_delay(None, observed),
+            RATE_LIMIT_FALLBACK
+        );
+        assert_eq!(
+            resolve_rate_limit_delay(Some(past), observed),
+            RATE_LIMIT_FALLBACK
+        );
     }
 }

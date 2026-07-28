@@ -237,7 +237,7 @@ fn missing_repository_is_reported_without_hiding_later_results() {
 }
 
 #[test]
-fn fleet_requires_once_and_rejects_unset_path_variables() {
+fn fleet_continuous_and_once_reject_unset_path_variables() {
     let temp = tempfile::tempdir().unwrap();
     let fleet = temp.path().join("fleet.toml");
     fs::write(
@@ -248,10 +248,13 @@ fn fleet_requires_once_and_rejects_unset_path_variables() {
 
     Command::cargo_bin("factory")
         .unwrap()
+        .env_remove("FACTORY_TEST_UNSET")
         .args(["run", "--fleet", fleet.to_str().unwrap()])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("--once"));
+        .stderr(predicate::str::contains(
+            "unset environment variable $FACTORY_TEST_UNSET",
+        ));
     Command::cargo_bin("factory")
         .unwrap()
         .env_remove("FACTORY_TEST_UNSET")
