@@ -409,15 +409,35 @@ func parseControlCommand(command string) (string, time.Duration, error) {
 
 func streamSupervisorOutput(reader io.Reader, stream string, writer *synchronizedEncoder, tail *tailBuffer) {
 	buffered := bufio.NewReaderSize(reader, 32<<10)
+	line := make([]byte, 0, 32<<10)
+	hadData := false
+	truncated := false
 	for {
-		line, prefix, err := buffered.ReadLine()
-		if len(line) > 0 {
+		fragment, prefix, err := buffered.ReadLine()
+		if len(fragment) > 0 {
+			hadData = true
 			if tail != nil {
-				_, _ = tail.Write(line)
-				_, _ = tail.Write([]byte{'\n'})
+				_, _ = tail.Write(fragment)
 			}
-			text := boundedText(string(line), maxSupervisorLineBytes)
-			_ = writer.send(supervisorMessage{Type: "output", Stream: stream, Text: text, Truncated: prefix})
+			remaining := maxSupervisorLineBytes - len(line)
+			if len(fragment) > remaining {
+				fragment = fragment[:remaining]
+				truncated = true
+			}
+			line = append(line, fragment...)
+		}
+		if !prefix || err != nil {
+			if hadData {
+				if tail != nil {
+					_, _ = tail.Write([]byte{'\n'})
+				}
+				_ = writer.send(supervisorMessage{
+					Type: "output", Stream: stream, Text: string(line), Truncated: truncated,
+				})
+			}
+			line = line[:0]
+			hadData = false
+			truncated = false
 		}
 		if err != nil {
 			return
@@ -516,6 +536,7 @@ func startSupervisor(commandLine []string, init supervisorInit, errorOutput io.W
 		return nil, fmt.Errorf("create supervisor control pipe: %w", err)
 	}
 	command := exec.Command(commandLine[0], commandLine[1:]...)
+	configureNewProcessGroup(command)
 	command.ExtraFiles = []*os.File{controlRead}
 	stdin, err := command.StdinPipe()
 	if err != nil {

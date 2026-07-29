@@ -65,6 +65,12 @@ case "$prompt" in
     echo
     head -c 300000 /dev/zero | tr '\000' r > "$result"
     ;;
+  *FAKE_MODE=large-json*)
+    printf 'large JSON completed' > "$result"
+    printf '{"type":"item.completed","text":"'
+    head -c 40000 /dev/zero | tr '\000' x
+    printf '"}\n'
+    ;;
   *FAKE_MODE=fail*)
     echo "deterministic failure" >&2
     exit 17
@@ -378,6 +384,36 @@ func TestConfigurationStableIdentityLockAndHealthRecovery(t *testing.T) {
 	}
 }
 
+func TestRepositoryRejectedByGitCannotUseConfigFallback(t *testing.T) {
+	path := t.TempDir()
+	if err := os.Mkdir(filepath.Join(path, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := "[remote \"origin\"]\n\turl = https://github.com/example/not-a-repository.git\n"
+	if err := os.WriteFile(filepath.Join(path, ".git", "config"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveRepository("invalid", path, "git"); err == nil ||
+		!strings.Contains(err.Error(), "verify Git repository") {
+		t.Fatalf("invalid repository error = %v", err)
+	}
+}
+
+func TestUnavailableGitExecutableUsesConfigFallback(t *testing.T) {
+	fixture := createRepository(t, "missing-git")
+	repository, err := resolveRepository("missing-git", fixture.path, filepath.Join(t.TempDir(), "git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := normalizeRemoteIdentity(fixture.origin, fixture.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository.RemoteIdentity != expected {
+		t.Fatalf("remote identity = %q; want %q", repository.RemoteIdentity, expected)
+	}
+}
+
 func TestMultiRepositorySuccessAndBoundedOutput(t *testing.T) {
 	first := createRepository(t, "first")
 	second := createRepository(t, "second")
@@ -444,6 +480,41 @@ func TestMultiRepositorySuccessAndBoundedOutput(t *testing.T) {
 			t.Fatalf("Codex prompt does not contain %q:\n%s", expected, prompt)
 		}
 	}
+}
+
+func TestLargeCodexJSONLineIsPreserved(t *testing.T) {
+	repository := createRepository(t, "large-json")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"large-json": repository}, 1)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy"
+	})
+	task := createTask(t, fixture.store, worker, "large-json", "large-json", 60)
+	task = waitForTaskState(t, fixture.store, task.Task.ID, "succeeded")
+	events, err := fixture.store.Events(context.Background(), task.Attempts[0].ID, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		var payload struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Type == "item.completed" {
+			if payload.Text != strings.Repeat("x", 40000) {
+				t.Fatalf("large JSON text length = %d", len(payload.Text))
+			}
+			return
+		}
+	}
+	t.Fatal("large JSON event was not stored")
 }
 
 func TestRepositoryKeyRemapStopsStableWorkerFromClaiming(t *testing.T) {
@@ -887,6 +958,14 @@ func TestSupervisorCrashStopsRecordedProcessGroup(t *testing.T) {
 	if identity != attempt.ProcessIdentity {
 		t.Fatalf("stored supervisor identity does not match PID %d", *attempt.SupervisorPID)
 	}
+	group, err := processGroupID(int(*attempt.SupervisorPID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if group != int(*attempt.SupervisorPID) || group == unix.Getpgrp() {
+		t.Fatalf("supervisor process group = %d; supervisor PID = %d; worker group = %d",
+			group, *attempt.SupervisorPID, unix.Getpgrp())
+	}
 	childPath := filepath.Join(os.Getenv("FACTORY_TEST_CODEX_LOG"), attempt.ID+".child")
 	waitFor(t, 5*time.Second, func() bool {
 		_, err := os.Stat(childPath)
@@ -1172,6 +1251,38 @@ func TestEventPayloadIsAlwaysBoundedJSON(t *testing.T) {
 				t.Fatalf("payload length=%d valid=%v", len(payload), jsonValid(payload))
 			}
 		})
+	}
+}
+
+func TestSupervisorOutputBoundsOneLogicalLineAndPreservesNextLine(t *testing.T) {
+	first := strings.Repeat("x", maxSupervisorLineBytes+100)
+	second := `{"type":"item.completed","text":"next"}`
+	var output bytes.Buffer
+	writer := &synchronizedEncoder{encoder: json.NewEncoder(&output)}
+	streamSupervisorOutput(strings.NewReader(first+"\n"+second+"\n"), "stdout", writer, nil)
+
+	decoder := json.NewDecoder(&output)
+	var messages []supervisorMessage
+	for {
+		var message supervisorMessage
+		err := decoder.Decode(&message)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		messages = append(messages, message)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("supervisor output message count = %d", len(messages))
+	}
+	if len(messages[0].Text) != maxSupervisorLineBytes || !messages[0].Truncated {
+		t.Fatalf("oversized message length = %d; truncated = %v",
+			len(messages[0].Text), messages[0].Truncated)
+	}
+	if messages[1].Text != second || messages[1].Truncated {
+		t.Fatalf("following message = %#v", messages[1])
 	}
 }
 

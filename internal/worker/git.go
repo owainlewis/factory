@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -84,6 +85,9 @@ func resolveRepository(key, path, gitExecutable string) (Repository, error) {
 		}
 	}
 	if commandErr != nil {
+		if !executableUnavailable(commandErr) {
+			return Repository{}, commandFailure("verify Git repository", stdout, stderr, commandErr)
+		}
 		remote, err = readOriginRemote(canonical)
 		if err != nil {
 			return Repository{}, commandFailure("verify Git repository", stdout, stderr, commandErr)
@@ -94,6 +98,14 @@ func resolveRepository(key, path, gitExecutable string) (Repository, error) {
 		return Repository{}, err
 	}
 	return Repository{Key: key, Path: canonical, RemoteIdentity: identity}, nil
+}
+
+func executableUnavailable(err error) bool {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, exec.ErrNotFound) {
+		return true
+	}
+	var executableError *exec.Error
+	return errors.As(err, &executableError) && errors.Is(executableError.Err, exec.ErrNotFound)
 }
 
 func readOriginRemote(repository string) (string, error) {
