@@ -509,6 +509,99 @@ func TestTerminalAttemptReservesRetainedHeadroomUntilRegistration(t *testing.T) 
 	)
 }
 
+func TestRegistrationAcknowledgesSameMillisecondTerminalHandoff(t *testing.T) {
+	store := newTestStore(t)
+	fixed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return fixed }
+	worker := registerTestWorker(t, store, workerA, 2, protocol.RepositoryRegistration{
+		Key: "nearly-full", RemoteIdentity: "github.com/example/same-millisecond",
+		RetainedCount: protocol.MaxRetainedPerRepo - 1,
+	})
+	first := createTestTask(t, store, "same-millisecond-first", workerA, worker.Repositories[0].ID)
+	fixed = fixed.Add(time.Millisecond)
+	second := createTestTask(t, store, "same-millisecond-second", workerA, worker.Repositories[0].ID)
+	fixed = fixed.Add(time.Millisecond)
+	claim := claimTestTask(t, store, workerA, "same-millisecond-first", tokenA)
+	if claim.Task.ID != first.Task.ID {
+		t.Fatalf("first claim = %s; want %s", claim.Task.ID, first.Task.ID)
+	}
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Error: "no worktree was created",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := store.Claim(context.Background(), workerA, protocol.ClaimRequest{
+		RequestID: "same-millisecond-blocked", LeaseToken: tokenB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked != nil {
+		t.Fatalf("terminal attempt was not reserved before registration: %#v", blocked)
+	}
+
+	registerTestWorker(t, store, workerA, 2, protocol.RepositoryRegistration{
+		Key: "nearly-full", RemoteIdentity: "github.com/example/same-millisecond",
+		RetainedCount: protocol.MaxRetainedPerRepo - 1,
+	})
+	next := claimTestTask(t, store, workerA, "same-millisecond-after-registration", tokenB)
+	if next.Task.ID != second.Task.ID {
+		t.Fatalf("same-millisecond registration left %s blocked; claimed %s", second.Task.ID, next.Task.ID)
+	}
+}
+
+func TestActiveRegistrationDoesNotAcknowledgeSweptAttempt(t *testing.T) {
+	store := newTestStore(t)
+	fixed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return fixed }
+	repository := protocol.RepositoryRegistration{
+		Key: "nearly-full", RemoteIdentity: "github.com/example/swept-handoff",
+		RetainedCount: protocol.MaxRetainedPerRepo - 1,
+	}
+	worker := registerTestWorker(t, store, workerA, 2, repository)
+	first := createTestTask(t, store, "swept-handoff-first", workerA, worker.Repositories[0].ID)
+	fixed = fixed.Add(time.Millisecond)
+	second := createTestTask(t, store, "swept-handoff-second", workerA, worker.Repositories[0].ID)
+	claim := claimTestTask(t, store, workerA, "swept-handoff-first", tokenA)
+	if claim.Task.ID != first.Task.ID {
+		t.Fatalf("first claim = %s; want %s", claim.Task.ID, first.Task.ID)
+	}
+	fixed = fixed.Add(protocol.LeaseDuration + time.Millisecond)
+	expired, err := store.SweepExpired(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expired) != 1 || expired[0].AttemptID != claim.Attempt.ID {
+		t.Fatalf("swept attempts = %#v", expired)
+	}
+	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: "worker-a", WorkerVersion: "test", CodexVersion: "test",
+		Capacity: 2, ActiveCount: 1, Health: "healthy", Repositories: []protocol.RepositoryRegistration{repository},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := store.Claim(context.Background(), workerA, protocol.ClaimRequest{
+		RequestID: "swept-handoff-blocked", LeaseToken: tokenB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked != nil {
+		t.Fatalf("active registration acknowledged an unclassified swept attempt: %#v", blocked)
+	}
+
+	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: "worker-a", WorkerVersion: "test", CodexVersion: "test",
+		Capacity: 2, ActiveCount: 0, Health: "healthy", Repositories: []protocol.RepositoryRegistration{repository},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	next := claimTestTask(t, store, workerA, "swept-handoff-after-idle", tokenB)
+	if next.Task.ID != second.Task.ID {
+		t.Fatalf("idle registration left swept handoff blocked; claimed %s, want %s", next.Task.ID, second.Task.ID)
+	}
+}
+
 func TestConcurrentSQLiteClaimsCreateOneOwner(t *testing.T) {
 	store := newTestStore(t)
 	worker := registerTestWorker(t, store, workerA, 2, protocol.RepositoryRegistration{

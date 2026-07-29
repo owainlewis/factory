@@ -127,7 +127,7 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		      WHERE terminal_attempt.worker_id = e.assigned_worker_id
 		        AND terminal_task.repository_id = t.repository_id
 		        AND terminal_attempt.state IN ('succeeded', 'failed', 'cancelled', 'lost')
-		        AND terminal_attempt.completed_at >= wr.updated_at
+		        AND terminal_attempt.capacity_acknowledged = 0
 		  ) < ?
 		ORDER BY e.created_at, e.id
 		LIMIT 1

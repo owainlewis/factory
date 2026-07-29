@@ -149,6 +149,9 @@ filesystem, and `git worktree list` and records one of these outcomes:
 An inconsistent or unproven identity makes the worker unhealthy and prevents
 claims. A missing or never-created worktree does not consume retained capacity.
 Only verified retained worktrees count toward the limit of ten per repository.
+A claimed attempt reserves one possible retained slot. After completion, the
+control plane keeps that reservation until a worker registration atomically
+publishes the repository's retained count and acknowledges the handoff.
 A full repository remains queued while the worker continues heartbeats and may
 claim work for another repository. Transient control-plane or Git failures
 during reconciliation are retried before the worker first registers; they are

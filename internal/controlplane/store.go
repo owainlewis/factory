@@ -409,6 +409,22 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 		if err != nil {
 			return protocol.Worker{}, unavailable(err)
 		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE attempts
+			SET capacity_acknowledged = 1
+			WHERE worker_id = ?
+			  AND capacity_acknowledged = 0
+			  AND state IN ('succeeded', 'failed', 'cancelled', 'lost')
+			  AND (state != 'lost' OR ? = 0)
+			  AND execution_id IN (
+			      SELECT e.id
+			      FROM executions e
+			      JOIN tasks t ON t.id = e.task_id
+			      WHERE t.repository_id = ?
+			  )
+		`, workerID, input.ActiveCount, repositoryID); err != nil {
+			return protocol.Worker{}, unavailable(err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return protocol.Worker{}, unavailable(err)
