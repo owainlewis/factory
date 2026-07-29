@@ -19,14 +19,19 @@ Security vulnerabilities should be reported privately as described in
 ## Development setup
 
 Factory V1 requires a current stable Rust toolchain. Factory V2 requires Go
-1.24 or newer. Some integration tests also exercise local `git` and GitHub CLI
-behavior.
+1.24 or newer. The V2 web UI requires Node.js 22 for development and is
+compiled into `factory-server` for production. Some integration tests also
+exercise local `git` and GitHub CLI behavior.
 
 ```sh
 git clone https://github.com/owainlewis/factory.git
 cd factory
 cargo build --locked
 go build ./...
+cd web
+npm ci
+npm run build
+cd ..
 ```
 
 To exercise Factory against GitHub, install and authenticate the GitHub CLI.
@@ -41,13 +46,25 @@ Most unit and integration tests do not require live GitHub access.
 4. Run the project checks:
 
 ```sh
-test -z "$(gofmt -l cmd internal migrations)"
+test -z "$(gofmt -l cmd internal migrations web/*.go)"
 go vet ./...
 go test ./...
+cd web
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npm run test:browser
+cd ..
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked --all-targets
 ```
+
+The browser suite builds and starts a real `factory-server`, creates its
+workers and tasks through the HTTP API, and saves desktop and narrow screenshots
+under `web/test-results/screenshots/`. Install its Chromium runtime once with
+`cd web && npx playwright install chromium`.
 
 ## Pull requests
 

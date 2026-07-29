@@ -394,9 +394,16 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 
 func (s *Store) Workers(ctx context.Context) ([]protocol.Worker, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, worker_version, codex_version, capacity, active_count, health,
-		       retained_worktrees_json, registered_at, last_heartbeat
-		FROM workers ORDER BY registered_at, id
+		SELECT w.id, w.name, w.worker_version, w.codex_version, w.capacity, w.active_count, w.health,
+		       w.retained_worktrees_json, w.registered_at, w.last_heartbeat,
+		       COALESCE((
+		           SELECT t.title
+		           FROM executions e JOIN tasks t ON t.id = e.task_id
+		           WHERE e.assigned_worker_id = w.id AND e.state IN ('preparing', 'running')
+		           ORDER BY e.updated_at DESC, e.id DESC
+		           LIMIT 1
+		       ), '')
+		FROM workers w ORDER BY w.registered_at, w.id
 	`)
 	if err != nil {
 		return nil, unavailable(err)
@@ -428,9 +435,16 @@ func (s *Store) Workers(ctx context.Context) ([]protocol.Worker, error) {
 
 func (s *Store) Worker(ctx context.Context, id string) (protocol.Worker, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, worker_version, codex_version, capacity, active_count, health,
-		       retained_worktrees_json, registered_at, last_heartbeat
-		FROM workers WHERE id = ?
+		SELECT w.id, w.name, w.worker_version, w.codex_version, w.capacity, w.active_count, w.health,
+		       w.retained_worktrees_json, w.registered_at, w.last_heartbeat,
+		       COALESCE((
+		           SELECT t.title
+		           FROM executions e JOIN tasks t ON t.id = e.task_id
+		           WHERE e.assigned_worker_id = w.id AND e.state IN ('preparing', 'running')
+		           ORDER BY e.updated_at DESC, e.id DESC
+		           LIMIT 1
+		       ), '')
+		FROM workers w WHERE w.id = ?
 	`, id)
 	worker, err := scanWorker(row, s.now())
 	if errors.Is(err, sql.ErrNoRows) {
@@ -452,7 +466,8 @@ func scanWorker(row scanner, now time.Time) (protocol.Worker, error) {
 	var retained []byte
 	var registered, heartbeat int64
 	if err := row.Scan(&worker.ID, &worker.Name, &worker.WorkerVersion, &worker.CodexVersion,
-		&worker.Capacity, &worker.ActiveCount, &worker.Health, &retained, &registered, &heartbeat); err != nil {
+		&worker.Capacity, &worker.ActiveCount, &worker.Health, &retained, &registered, &heartbeat,
+		&worker.CurrentTaskTitle); err != nil {
 		return worker, err
 	}
 	if err := json.Unmarshal(retained, &worker.RetainedWorktrees); err != nil {

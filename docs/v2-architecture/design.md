@@ -259,7 +259,10 @@ reliability kernel and prevents overlapping agents.
 
 The UI is a TypeScript React application built with Vite and TanStack Query.
 The Go binary embeds and serves the production assets. There is no Node process
-in production and no cross-origin API configuration.
+in production and no cross-origin API configuration. Client-side task and
+worker detail routes fall back to the embedded application shell. Hashed assets
+are cached immutably, the shell is not cached, and the server applies a
+same-origin content security policy to the UI.
 
 ## 5. Invariants and requirements
 
@@ -428,6 +431,11 @@ polls add 20 percent jitter. Transport failures back off from one second to
 thirty seconds. The UI polls the task list every five seconds, active task
 detail every two seconds, and worker health every ten seconds. A hidden browser
 tab pauses polling and refreshes when visible.
+
+Worker list and detail responses include the title of the most recently updated
+active execution, when one exists. This keeps the control plane authoritative
+for the Workers surface instead of asking the browser to join task state into a
+second local model.
 
 ### Data
 

@@ -19,14 +19,54 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
       - name: Install Rust components
         run: rustup component add rustfmt clippy
+      - name: Install UI dependencies
+        working-directory: web
+        run: npm ci
+      - name: Check UI lint
+        working-directory: web
+        run: npm run lint
+      - name: Check UI types
+        working-directory: web
+        run: npm run typecheck
+      - name: Run UI component tests
+        working-directory: web
+        run: npm test
+      - name: Build embedded UI
+        working-directory: web
+        run: npm run build
+      - name: Check embedded UI is current
+        run: |
+          git diff --exit-code -- web/dist
+          test -z "$(git status --porcelain --untracked-files=all -- web/dist)"
       - name: Check Go formatting
-        run: test -z "$(gofmt -l cmd internal migrations)"
+        run: test -z "$(gofmt -l cmd internal migrations web/*.go)"
       - name: Run Go vet
         run: go vet ./...
       - name: Run Go tests
         run: go test ./...
+      - name: Install Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Run real-server browser tests
+        working-directory: web
+        run: npm run test:browser
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: control-plane-browser-evidence
+          path: |
+            web/test-results/
+            web/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Check Rust formatting
         run: cargo fmt --all --check
       - name: Run Rust Clippy

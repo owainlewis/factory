@@ -1,0 +1,97 @@
+export type TaskState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+export interface Repository {
+  id: string;
+  key: string;
+  remote_identity: string;
+  retained_count: number;
+}
+
+export interface RetainedWorktree {
+  attempt_id: string;
+  repository_id: string;
+  path: string;
+  reason: string;
+  cleanup_command: string;
+}
+
+export interface Worker {
+  id: string;
+  name: string;
+  worker_version: string;
+  codex_version: string;
+  capacity: number;
+  active_count: number;
+  health: "healthy" | "unhealthy";
+  online: boolean;
+  repositories: Repository[];
+  retained_worktrees: RetainedWorktree[];
+  registered_at: string;
+  last_heartbeat: string;
+  current_task_title?: string;
+}
+
+export interface Task {
+  id: string;
+  request_key: string;
+  title: string;
+  description?: string;
+  worker_id: string;
+  repository_id: string;
+  timeout_seconds: number;
+  state: TaskState;
+  created_at: string;
+}
+
+export interface Execution {
+  id: string;
+  task_id: string;
+  assigned_worker_id: string;
+  required_runtime: "codex";
+  state: "queued" | "preparing" | "running" | "succeeded" | "failed" | "cancelled";
+  cancellation_requested: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Attempt {
+  id: string;
+  execution_id: string;
+  worker_id: string;
+  attempt_number: number;
+  state: "preparing" | "running" | "succeeded" | "failed" | "cancelled" | "lost";
+  lease_expires_at: string;
+  result?: string;
+  error?: string;
+  started_at?: string;
+  completed_at?: string;
+  created_at: string;
+}
+
+export interface TaskDetail {
+  task: Task & { description: string };
+  execution: Execution;
+  repository: Repository;
+  repository_available: boolean;
+  attempts: Attempt[] | null;
+}
+
+export interface AttemptEvent {
+  sequence: number;
+  kind: string;
+  payload: unknown;
+  server_time: string;
+}
+
+export interface APIErrorBody {
+  error: { code: string; message: string };
+}
+
+export interface CreateTaskInput {
+  request_key: string;
+  title: string;
+  description: string;
+  worker_id: string;
+  repository_id: string;
+  timeout_seconds: number;
+}

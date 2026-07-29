@@ -149,6 +149,12 @@ func TestHTTPContractLifecycleAndIdempotency(t *testing.T) {
 	})
 	requireStatus(t, response, http.StatusOK)
 	decodeResponse[protocol.Attempt](t, response)
+	response = fixture.request(http.MethodGet, "/api/v1/workers/"+workerA, "", "", nil)
+	requireStatus(t, response, http.StatusOK)
+	activeWorker := decodeResponse[protocol.Worker](t, response)
+	if activeWorker.CurrentTaskTitle != task.Task.Title {
+		t.Fatalf("current task title = %q, want %q", activeWorker.CurrentTaskTitle, task.Task.Title)
+	}
 	response = fixture.request(http.MethodPut, "/api/v1/attempts/"+claim.Attempt.ID+"/heartbeat", "application/json", "", protocol.LeaseRequest{LeaseToken: tokenA})
 	requireStatus(t, response, http.StatusOK)
 	heartbeat := decodeResponse[protocol.HeartbeatResponse](t, response)
@@ -191,6 +197,12 @@ func TestHTTPContractLifecycleAndIdempotency(t *testing.T) {
 	})
 	requireStatus(t, response, http.StatusOK)
 	decodeResponse[protocol.Attempt](t, response)
+	response = fixture.request(http.MethodGet, "/api/v1/workers/"+workerA, "", "", nil)
+	requireStatus(t, response, http.StatusOK)
+	idleWorker := decodeResponse[protocol.Worker](t, response)
+	if idleWorker.CurrentTaskTitle != "" {
+		t.Fatalf("terminal task remained current: %q", idleWorker.CurrentTaskTitle)
+	}
 	response = fixture.request(http.MethodPost, "/api/v1/executions/"+task.Execution.ID+"/retry", "application/json", "", map[string]any{})
 	requireStatus(t, response, http.StatusOK)
 	retried := decodeResponse[protocol.TaskDetail](t, response)

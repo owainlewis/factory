@@ -65,6 +65,7 @@ type Worker struct {
 	Online            bool               `json:"online"`
 	Repositories      []Repository       `json:"repositories"`
 	RetainedWorktrees []RetainedWorktree `json:"retained_worktrees"`
+	CurrentTaskTitle  string             `json:"current_task_title,omitempty"`
 	RegisteredAt      time.Time          `json:"registered_at"`
 	LastHeartbeat     time.Time          `json:"last_heartbeat"`
 }

@@ -121,6 +121,25 @@ contract, first demonstration, two-repository fleet setup, and sandbox setup. Th
 [operations guide](docs/operations.md) covers inspection, cancellation,
 recovery, and cleanup.
 
+## V2 control plane
+
+The local V2 server includes its web interface in the Go binary. Production
+does not need Node.js or cross-origin configuration:
+
+```sh
+cd web
+npm ci
+npm run build
+cd ..
+go build -o factory-server ./cmd/factory-server
+./factory-server
+```
+
+Open `http://127.0.0.1:7337/` to inspect registered workers, delegate work, and
+follow durable task state. The server remains loopback-only and stores V2 state
+separately from V1. See the [V2 MVP architecture](docs/v2-architecture/design.md)
+for the API, trust boundary, and current scope.
+
 ## V1 scope
 
 V1 intentionally supports:

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/factory/internal/controlplane"
+	factoryweb "github.com/owainlewis/factory/web"
 )
 
 func main() {
@@ -88,7 +89,8 @@ func run() (returnErr error) {
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	server := controlplane.NewHTTPServer(*listen, controlplane.NewHandler(store, logger))
+	handler := factoryweb.NewHandler(controlplane.NewHandler(store, logger))
+	server := controlplane.NewHTTPServer(*listen, handler)
 	serverErrors := make(chan error, 1)
 	go func() {
 		logger.Info("server_started", "address", listener.Addr().String())
