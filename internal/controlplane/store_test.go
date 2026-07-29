@@ -877,4 +877,32 @@ func TestWorkerCanRenameAKeyForTheSameRepository(t *testing.T) {
 	}
 }
 
+type testSQLiteError int
+
+func (err testSQLiteError) Error() string { return fmt.Sprintf("sqlite code %d", err) }
+func (err testSQLiteError) Code() int     { return int(err) }
+
+func TestRetrySQLiteContention(t *testing.T) {
+	calls := 0
+	err := retrySQLiteContention(func() error {
+		calls++
+		if calls < 3 {
+			return testSQLiteError(6)
+		}
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Fatalf("locked retry: calls=%d err=%v", calls, err)
+	}
+
+	calls = 0
+	err = retrySQLiteContention(func() error {
+		calls++
+		return testSQLiteError(1)
+	})
+	if err == nil || calls != 1 {
+		t.Fatalf("non-contention retry: calls=%d err=%v", calls, err)
+	}
+}
+
 func pointer[T any](value T) *T { return &value }

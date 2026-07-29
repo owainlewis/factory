@@ -231,12 +231,36 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 func (s *Store) Close() error {
-	_, checkpointErr := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	checkpointErr := retrySQLiteContention(func() error {
+		_, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+		return err
+	})
 	closeErr := s.db.Close()
 	if checkpointErr != nil {
 		return checkpointErr
 	}
 	return closeErr
+}
+
+func retrySQLiteContention(operation func() error) error {
+	deadline := time.Now().Add(time.Second)
+	for {
+		err := operation()
+		if err == nil || !isSQLiteContention(err) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func isSQLiteContention(err error) bool {
+	var coded interface{ Code() int }
+	if !errors.As(err, &coded) {
+		return false
+	}
+	// SQLite extended result codes retain the primary code in the low byte.
+	code := coded.Code() & 0xff
+	return code == 5 || code == 6 // SQLITE_BUSY or SQLITE_LOCKED
 }
 
 func newID() (string, error) {
