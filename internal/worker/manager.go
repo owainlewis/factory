@@ -675,17 +675,6 @@ func (manager *Manager) waitForSupervisorMessage(process *supervisorProcess) sup
 			manager.emergencyStop(process, err)
 			return supervisorMessage{Type: "exit", Reason: "supervisor_error", ExitCode: -1,
 				Error: "attempt supervisor output ended unexpectedly"}
-		case err := <-process.wait:
-			select {
-			case message := <-process.messages:
-				if message.Type == "exit" || message.Type == "output" {
-					return message
-				}
-			case <-time.After(250 * time.Millisecond):
-			}
-			manager.emergencyStop(process, err)
-			return supervisorMessage{Type: "exit", Reason: "supervisor_error", ExitCode: -1,
-				Error: "attempt supervisor exited unexpectedly"}
 		}
 	}
 }

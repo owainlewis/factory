@@ -89,6 +89,12 @@ case "$prompt" in
     trap '' TERM
     wait
     ;;
+  *FAKE_MODE=descendant*)
+    child="$FACTORY_TEST_CODEX_LOG/$attempt.child"
+    sh -c 'trap "" TERM; while :; do sleep 1; done' &
+    echo "$!" > "$child"
+    printf 'leader completed' > "$result"
+    ;;
   *)
     echo "missing fake mode" >&2
     exit 91
@@ -780,6 +786,27 @@ func TestCancellationStopsCompleteProcessGroup(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(manager.dataDirectory, "worktrees", detail.Attempts[0].ID)); err != nil {
 		t.Fatalf("cancelled worktree was not retained: %v", err)
 	}
+}
+
+func TestSuccessfulLeaderExitStopsDescendantHoldingOutputPipes(t *testing.T) {
+	repository := createRepository(t, "leader-exit")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"leader-exit": repository}, 1)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy"
+	})
+	task := createTask(t, fixture.store, worker, "leader-exit", "descendant", 60)
+	detail := waitForTaskState(t, fixture.store, task.Task.ID, "succeeded")
+	if len(detail.Attempts) != 1 || detail.Attempts[0].Result != "leader completed" {
+		t.Fatalf("leader-exit attempt = %#v", detail.Attempts)
+	}
+	childPath := filepath.Join(os.Getenv("FACTORY_TEST_CODEX_LOG"), detail.Attempts[0].ID+".child")
+	childPID := readPID(t, childPath)
+	waitForProcessGone(t, childPID, 3*time.Second)
 }
 
 func TestTimeoutStopsIgnoringProcessGroup(t *testing.T) {

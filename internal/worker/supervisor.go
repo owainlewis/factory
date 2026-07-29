@@ -203,17 +203,29 @@ func superviseCodex(
 	if err != nil {
 		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, fmt.Errorf("open Codex stdin: %w", err))
 	}
-	stdout, err := command.StdoutPipe()
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
-		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, fmt.Errorf("open Codex stdout: %w", err))
+		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, fmt.Errorf("create Codex stdout pipe: %w", err))
 	}
-	stderr, err := command.StderrPipe()
+	stderr, stderrWriter, err := os.Pipe()
 	if err != nil {
-		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, fmt.Errorf("open Codex stderr: %w", err))
+		stdout.Close()
+		stdoutWriter.Close()
+		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, fmt.Errorf("create Codex stderr pipe: %w", err))
 	}
+	command.Stdout = stdoutWriter
+	command.Stderr = stderrWriter
 	if err := command.Start(); err != nil {
+		stdout.Close()
+		stdoutWriter.Close()
+		stderr.Close()
+		stderrWriter.Close()
 		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, fmt.Errorf("start Codex: %w", err))
 	}
+	stdoutWriter.Close()
+	stderrWriter.Close()
+	defer stdout.Close()
+	defer stderr.Close()
 	promptErrors := make(chan error, 1)
 	go func() {
 		_, writeErr := io.WriteString(stdin, init.Prompt)
@@ -511,20 +523,24 @@ func startSupervisor(commandLine []string, init supervisorInit, errorOutput io.W
 		controlWrite.Close()
 		return nil, fmt.Errorf("open supervisor input: %w", err)
 	}
-	stdout, err := command.StdoutPipe()
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		controlRead.Close()
 		controlWrite.Close()
-		return nil, fmt.Errorf("open supervisor output: %w", err)
+		return nil, fmt.Errorf("create supervisor output pipe: %w", err)
 	}
+	command.Stdout = stdoutWriter
 	stderr := newLimitBuffer(maxSupervisorErrorBytes)
 	command.Stderr = io.MultiWriter(errorOutput, stderr)
 	if err := command.Start(); err != nil {
 		controlRead.Close()
 		controlWrite.Close()
+		stdout.Close()
+		stdoutWriter.Close()
 		return nil, fmt.Errorf("start attempt supervisor: %w", err)
 	}
 	controlRead.Close()
+	stdoutWriter.Close()
 	process := &supervisorProcess{
 		command:      command,
 		control:      controlWrite,
@@ -542,6 +558,7 @@ func startSupervisor(commandLine []string, init supervisorInit, errorOutput io.W
 		}
 	}()
 	go func() {
+		defer stdout.Close()
 		// Keep draining the supervisor protocol for the complete attempt. Progress
 		// is bounded downstream, while stopping reads here could block the
 		// supervisor before it reports or reaps a terminal process.
