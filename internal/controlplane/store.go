@@ -109,25 +109,63 @@ func prepareDatabasePath(path string) error {
 	if exists {
 		return validateDatabaseMarker(marker)
 	}
-	file, err := os.OpenFile(marker, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	err = createDatabaseMarker(marker)
 	if errors.Is(err, os.ErrExist) {
 		return validateDatabaseMarker(marker)
 	}
+	return err
+}
+
+type databaseMarkerFile interface {
+	WriteString(string) (int, error)
+	Sync() error
+	Close() error
+}
+
+func createDatabaseMarker(marker string) error {
+	return createDatabaseMarkerWith(marker, func(path string) (databaseMarkerFile, error) {
+		return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	})
+}
+
+func createDatabaseMarkerWith(marker string, open func(string) (databaseMarkerFile, error)) error {
+	file, err := open(marker)
 	if err != nil {
 		return fmt.Errorf("create Factory V2 database marker: %w", err)
 	}
 	if _, err := file.WriteString("factory-v2-control-plane\n"); err != nil {
-		file.Close()
-		return fmt.Errorf("write Factory V2 database marker: %w", err)
+		return cleanFailedDatabaseMarker(
+			file,
+			marker,
+			fmt.Errorf("write Factory V2 database marker: %w", err),
+		)
 	}
 	if err := file.Sync(); err != nil {
-		file.Close()
-		return fmt.Errorf("sync Factory V2 database marker: %w", err)
+		return cleanFailedDatabaseMarker(
+			file,
+			marker,
+			fmt.Errorf("sync Factory V2 database marker: %w", err),
+		)
 	}
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("close Factory V2 database marker: %w", err)
+		closeErr := fmt.Errorf("close Factory V2 database marker: %w", err)
+		if removeErr := os.Remove(marker); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return errors.Join(closeErr, fmt.Errorf("remove failed Factory V2 database marker: %w", removeErr))
+		}
+		return closeErr
 	}
 	return nil
+}
+
+func cleanFailedDatabaseMarker(file databaseMarkerFile, marker string, cause error) error {
+	errs := []error{cause}
+	if err := file.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("close failed Factory V2 database marker: %w", err))
+	}
+	if err := os.Remove(marker); err != nil && !errors.Is(err, os.ErrNotExist) {
+		errs = append(errs, fmt.Errorf("remove failed Factory V2 database marker: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 func validateDatabaseMarker(marker string) error {

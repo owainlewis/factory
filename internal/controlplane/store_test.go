@@ -176,6 +176,81 @@ func TestDatabaseUsesWALAndRefusesAnUnmarkedExistingDatabase(t *testing.T) {
 	}
 }
 
+type failingDatabaseMarkerFile struct {
+	*os.File
+	failure    string
+	err        error
+	closeCalls int
+}
+
+func (f *failingDatabaseMarkerFile) WriteString(value string) (int, error) {
+	if f.failure == "write" {
+		const partial = "factory-v2"
+		n, writeErr := f.File.WriteString(partial)
+		if writeErr != nil {
+			return n, writeErr
+		}
+		return n, f.err
+	}
+	return f.File.WriteString(value)
+}
+
+func (f *failingDatabaseMarkerFile) Sync() error {
+	if f.failure == "sync" {
+		return f.err
+	}
+	return f.File.Sync()
+}
+
+func (f *failingDatabaseMarkerFile) Close() error {
+	f.closeCalls++
+	closeErr := f.File.Close()
+	if f.failure == "close" {
+		return errors.Join(closeErr, f.err)
+	}
+	return closeErr
+}
+
+func TestDatabaseMarkerInitializationFailuresAreRecoverable(t *testing.T) {
+	for _, failure := range []string{"write", "sync", "close"} {
+		t.Run(failure, func(t *testing.T) {
+			path := t.TempDir() + "/controlplane.sqlite3"
+			marker := path + ".v2-control-plane"
+			injectedErr := fmt.Errorf("injected %s failure", failure)
+			var failedFile *failingDatabaseMarkerFile
+
+			err := createDatabaseMarkerWith(marker, func(path string) (databaseMarkerFile, error) {
+				file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+				if err != nil {
+					return nil, err
+				}
+				failedFile = &failingDatabaseMarkerFile{File: file, failure: failure, err: injectedErr}
+				return failedFile, nil
+			})
+			if !errors.Is(err, injectedErr) {
+				t.Fatalf("create marker error = %v, want injected failure", err)
+			}
+			if failedFile.closeCalls != 1 {
+				t.Fatalf("close calls = %d, want 1", failedFile.closeCalls)
+			}
+			if _, err := os.Lstat(marker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed marker still exists: %v", err)
+			}
+
+			if err := prepareDatabasePath(path); err != nil {
+				t.Fatalf("retry marker initialization: %v", err)
+			}
+			body, err := os.ReadFile(marker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(body) != "factory-v2-control-plane\n" {
+				t.Fatalf("retry marker contents = %q", body)
+			}
+		})
+	}
+}
+
 func TestRepositoryAssignmentAndWorkerCapacityAreEnforced(t *testing.T) {
 	store := newTestStore(t)
 	a := registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{
