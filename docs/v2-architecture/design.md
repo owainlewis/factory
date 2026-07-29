@@ -315,7 +315,9 @@ in production and no cross-origin API configuration.
 - The server must reject duplicate request keys without creating duplicate
   tasks.
 - The server must return the original result when a claim request is repeated.
-- The worker must claim the oldest queued execution assigned to its worker ID.
+- The worker must claim the oldest eligible queued execution assigned to its
+  worker ID after filtering for repositories it currently advertises and for
+  repositories below their retained-worktree limit.
 - The worker must renew an active lease every ten seconds.
 - Cancellation must immediately terminate queued work and reach connected
   active work within ten seconds.
@@ -525,9 +527,11 @@ manifest, or any identity mismatch stops cleanup. V2 never removes a V1
 worktree or branch.
 
 `factory-worker cleanup ATTEMPT_ID` prints the manifest, Git status, branch, and
-retention reason without changing anything. Adding `--confirm` removes only the
-verified worktree and marks the manifest cleaned. It does not delete a pushed
-branch or pull request.
+retention reason without changing anything. Adding `--confirm` first durably
+marks the verified manifest `cleanup_started`, then removes only that worktree,
+then durably marks the manifest cleaned. If the worker crashes after recording
+`cleanup_started`, startup may finish the recorded cleanup. It does not delete
+a pushed branch or pull request.
 
 ### Naming and identity
 
@@ -597,9 +601,19 @@ when the main worker is hung or stopped.
 
 After a complete restart, the worker reads every local attempt manifest before
 registering. It verifies recorded process identity, terminates any remaining
-owned process group, asks the server for the attempt state, and marks the
-workspace retained. It never resumes Codex automatically and does not claim new
-work until reconciliation finishes.
+owned process group, asks the server for the attempt state, and compares the
+manifest path with both the filesystem and `git worktree list`. A correctly
+registered worktree whose durable state is `cleanup_started` is revalidated,
+removed, and durably marked cleaned before other classification. An absent
+worktree in `cleanup_started` is durably marked cleaned. A correctly registered
+worktree in any other non-terminal state is marked retained. A manifest written
+before worktree creation whose path is absent from both sources is marked
+`not_created` and does not consume retained capacity. A path present in only
+one source, or with an identity mismatch, is marked inconsistent and makes the
+worker unhealthy until the operator resolves it. Any other unexpectedly absent
+previously created worktree is marked missing, reported in worker detail, and
+does not consume retained capacity. The worker never resumes Codex
+automatically and does not claim new work until reconciliation finishes.
 
 If the terminal request is lost, the worker retries it with the same lease
 token. The server returns the stored terminal result when it already accepted
@@ -618,10 +632,12 @@ flushes SQLite, and exits. The worker then reaches its lease deadline and stops
 Codex if the server does not return.
 
 Successful clean worktrees are removed after completion. Failed, cancelled,
-dirty, or unpublished worktrees are retained. The worker retains at most ten.
-At the limit it continues heartbeats but claims no new work. The Workers page
-lists retained attempt IDs and their cleanup commands. The operator previews
-and confirms cleanup through `factory-worker cleanup`.
+dirty, or unpublished worktrees are retained. The worker retains at most ten
+per repository. At a repository's limit it continues heartbeats and may claim
+work for other advertised repositories, but it does not claim more work for
+that repository. The Workers page groups retained attempt IDs and their cleanup
+commands by repository. The operator previews and confirms cleanup through
+`factory-worker cleanup`.
 
 ## 8. Security, privacy, and operations
 
@@ -702,9 +718,19 @@ and model output.
 - The UI works through HTTP polling with no WebSocket or server-sent event
   connection.
 - A failed task can be retried only through an explicit operator action.
-- Ten retained worktrees stop new claims without stopping heartbeats or task
-  inspection. Preview and confirmed cleanup of one manifest-owned worktree
-  restores capacity without deleting its branch or any V1 path.
+- Ten retained worktrees for one repository stop new claims for that repository
+  without stopping heartbeats, task inspection, or claims for another
+  repository. Preview and confirmed cleanup of one manifest-owned worktree
+  restores that repository's capacity without deleting its branch or any V1
+  path.
+- Startup reconciliation distinguishes a worktree that was never created, a
+  partially created or inconsistent worktree, a removed worktree, a missing
+  worktree, and a genuinely retained worktree. Only genuinely retained
+  worktrees consume retained capacity. A crash after the durable
+  `cleanup_started` update is recovered by finishing removal when the verified
+  worktree remains, or by recording cleaned when it is already absent, before
+  the durable cleaned update. An absent created worktree without
+  `cleanup_started` is reported missing.
 - Before every worktree is created, its initial manifest is durably written
   through a same-directory temporary file, file `fsync`, rename, and
   parent-directory `fsync`. Every later manifest update is durable, and process
