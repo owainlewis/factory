@@ -128,7 +128,42 @@ func (manager *Manager) reconcileManifest(ctx context.Context, manifest attemptM
 		})
 		return retryReconciliation(err)
 	case manifest.Lifecycle == manifestCleanupStarted && inspection.PathExists && inspection.Registered:
-		if err := removeInspectedWorktree(ctx, manager.options.GitExecutable, inspection, true); err != nil {
+		force := false
+		switch manifest.CleanupIntent {
+		case cleanupIntentAutomatic:
+			if eligibilityErr := automaticCleanupEligible(
+				ctx, manager.options.GitExecutable, manifest, inspection,
+			); eligibilityErr != nil {
+				reason := "interrupted automatic cleanup retained after revalidation: " + eligibilityErr.Error()
+				updated, updateErr := manager.manifests.update(manifest.AttemptID, func(value *attemptManifest) error {
+					value.Lifecycle = manifestRetained
+					value.RetentionReason = boundedText(reason, 1000)
+					value.CleanupResult = "automatic cleanup stopped without removing the worktree"
+					return nil
+				})
+				if updateErr != nil {
+					return retryReconciliation(updateErr)
+				}
+				manager.recordRetained(updated)
+				return nil
+			}
+		case cleanupIntentOperator:
+			force = true
+		default:
+			reason := "cleanup intent was not durable; worktree retained for operator inspection"
+			updated, updateErr := manager.manifests.update(manifest.AttemptID, func(value *attemptManifest) error {
+				value.Lifecycle = manifestRetained
+				value.RetentionReason = reason
+				value.CleanupResult = "startup refused ambiguous interrupted cleanup"
+				return nil
+			})
+			if updateErr != nil {
+				return retryReconciliation(updateErr)
+			}
+			manager.recordRetained(updated)
+			return nil
+		}
+		if err := removeInspectedWorktree(ctx, manager.options.GitExecutable, inspection, force); err != nil {
 			return retryReconciliation(err)
 		}
 		_, err = manager.manifests.update(manifest.AttemptID, func(value *attemptManifest) error {
@@ -371,6 +406,7 @@ func (manager *Manager) cleanCompletedWorktree(attemptID string) error {
 		return err
 	}
 	if err := manager.persistLifecycle(attemptID, manifestCleanupStarted, func(value *attemptManifest) {
+		value.CleanupIntent = cleanupIntentAutomatic
 		value.CleanupResult = "automatic cleanup started after successful completion"
 	}); err != nil {
 		return err

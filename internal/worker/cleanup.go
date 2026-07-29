@@ -109,14 +109,13 @@ func Cleanup(config Config, options CleanupOptions, output io.Writer) error {
 	if !inspection.PathExists {
 		return errors.New("refuse cleanup because the retained worktree is absent")
 	}
-	if manifest.Lifecycle != manifestCleanupStarted {
-		if _, err := store.update(manifest.AttemptID, func(value *attemptManifest) error {
-			value.Lifecycle = manifestCleanupStarted
-			value.CleanupResult = "operator confirmed cleanup"
-			return nil
-		}); err != nil {
-			return err
-		}
+	if _, err := store.update(manifest.AttemptID, func(value *attemptManifest) error {
+		value.Lifecycle = manifestCleanupStarted
+		value.CleanupIntent = cleanupIntentOperator
+		value.CleanupResult = "operator confirmed cleanup"
+		return nil
+	}); err != nil {
+		return err
 	}
 	manifest, err = store.load(options.AttemptID)
 	if err != nil {

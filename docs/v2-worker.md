@@ -179,6 +179,11 @@ durably records `cleaned`. It never deletes the branch. Because confirmation
 can remove a dirty retained worktree, copy or commit any uncommitted work you
 want to keep before using `--confirm`.
 
+The manifest distinguishes operator-confirmed cleanup from automatic cleanup.
+After an interruption, startup may force-remove only an operator-confirmed
+worktree. It revalidates an interrupted automatic cleanup and retains the
+worktree if it became dirty or gained unpublished commits.
+
 Cleanup fails closed for a missing manifest, a path outside the worker's V2
 worktree directory, a repository or branch identity mismatch, a partial
 worktree, or an unverified process identity. It never scans or removes Factory

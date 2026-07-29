@@ -30,6 +30,11 @@ const (
 	manifestCleaned         = "cleaned"
 )
 
+const (
+	cleanupIntentAutomatic = "automatic"
+	cleanupIntentOperator  = "operator_confirmed"
+)
+
 type attemptManifest struct {
 	SchemaVersion int `json:"schema_version"`
 
@@ -56,6 +61,7 @@ type attemptManifest struct {
 	Lifecycle       string    `json:"lifecycle"`
 	TerminalState   string    `json:"terminal_state,omitempty"`
 	RetentionReason string    `json:"retention_reason,omitempty"`
+	CleanupIntent   string    `json:"cleanup_intent,omitempty"`
 	CleanupResult   string    `json:"cleanup_result,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
@@ -370,6 +376,11 @@ func (store *manifestStore) validate(manifest attemptManifest) error {
 	}
 	if !allowedLifecycle[manifest.Lifecycle] {
 		return fmt.Errorf("attempt manifest lifecycle %q is invalid", manifest.Lifecycle)
+	}
+	if manifest.CleanupIntent != "" &&
+		manifest.CleanupIntent != cleanupIntentAutomatic &&
+		manifest.CleanupIntent != cleanupIntentOperator {
+		return fmt.Errorf("attempt manifest cleanup intent %q is invalid", manifest.CleanupIntent)
 	}
 	processEmpty := manifest.SupervisorPID == 0 && manifest.SupervisorIdentity == "" &&
 		manifest.ProcessGroupID == 0 && manifest.ProcessGroupIdentity == ""

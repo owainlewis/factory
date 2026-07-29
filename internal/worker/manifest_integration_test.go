@@ -179,7 +179,9 @@ func TestStartupReconciliationClassifiesManifestAndFilesystemState(t *testing.T)
 	cases := []struct {
 		name          string
 		initial       string
+		cleanupIntent string
 		createGit     bool
+		makeDirty     bool
 		createPartial bool
 		want          string
 		wantError     bool
@@ -189,7 +191,22 @@ func TestStartupReconciliationClassifiesManifestAndFilesystemState(t *testing.T)
 		{name: "cleaned", initial: manifestCleaned, want: manifestCleaned},
 		{name: "retained", initial: manifestWorktreeCreated, createGit: true, want: manifestRetained},
 		{name: "cleanup already absent", initial: manifestCleanupStarted, want: manifestCleaned},
-		{name: "cleanup still present", initial: manifestCleanupStarted, createGit: true, want: manifestCleaned},
+		{
+			name: "operator cleanup still present", initial: manifestCleanupStarted,
+			cleanupIntent: cleanupIntentOperator, createGit: true, want: manifestCleaned,
+		},
+		{
+			name: "automatic cleanup still eligible", initial: manifestCleanupStarted,
+			cleanupIntent: cleanupIntentAutomatic, createGit: true, want: manifestCleaned,
+		},
+		{
+			name: "automatic cleanup became dirty", initial: manifestCleanupStarted,
+			cleanupIntent: cleanupIntentAutomatic, createGit: true, makeDirty: true, want: manifestRetained,
+		},
+		{
+			name: "ambiguous cleanup remains safe", initial: manifestCleanupStarted,
+			createGit: true, want: manifestRetained,
+		},
 		{name: "partial", initial: manifestWorktreeCreated, createPartial: true, want: manifestInconsistent, wantError: true},
 	}
 	for index, test := range cases {
@@ -234,12 +251,18 @@ func TestStartupReconciliationClassifiesManifestAndFilesystemState(t *testing.T)
 				RepositoryPath: manager.repositories[0].Path, RemoteIdentity: manager.repositories[0].RemoteIdentity,
 				BaseCommit: value.BaseCommit, WorktreePath: value.Path, Branch: value.Branch,
 				LeaseDeadline: claim.Attempt.LeaseExpiresAt, Lifecycle: test.initial,
+				CleanupIntent: test.cleanupIntent,
 			}
 			if err := manager.manifests.create(manifest); err != nil {
 				t.Fatal(err)
 			}
 			if test.createGit {
 				if err := addPreparedWorktree(context.Background(), "git", manager.repositories[0], value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.makeDirty {
+				if err := os.WriteFile(filepath.Join(value.Path, "dirty.txt"), []byte("retain me\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -265,8 +288,12 @@ func TestStartupReconciliationClassifiesManifestAndFilesystemState(t *testing.T)
 				t.Fatalf("retained=%v for lifecycle %s", retained, persisted.Lifecycle)
 			}
 			if test.initial == manifestCleanupStarted && test.createGit {
-				if _, err := os.Stat(value.Path); !errors.Is(err, os.ErrNotExist) {
-					t.Fatalf("startup cleanup left worktree: %v", err)
+				_, statErr := os.Stat(value.Path)
+				if test.want == manifestCleaned && !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("startup cleanup left worktree: %v", statErr)
+				}
+				if test.want == manifestRetained && statErr != nil {
+					t.Fatalf("startup cleanup removed retained worktree: %v", statErr)
 				}
 				runGitTest(t, repository.path, "show-ref", "--verify", "refs/heads/"+value.Branch)
 			}
@@ -471,7 +498,8 @@ func TestCleanupPreviewAndConfirmationAreSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cleaned.Lifecycle != manifestCleaned || !strings.Contains(cleaned.CleanupResult, "completed") {
+	if cleaned.Lifecycle != manifestCleaned || cleaned.CleanupIntent != cleanupIntentOperator ||
+		!strings.Contains(cleaned.CleanupResult, "completed") {
 		t.Fatalf("cleaned manifest = %#v", cleaned)
 	}
 }
