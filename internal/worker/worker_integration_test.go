@@ -1088,6 +1088,29 @@ func TestWorkerRefusesV1DataRoot(t *testing.T) {
 		!strings.Contains(err.Error(), "V1 state") {
 		t.Fatalf("V1 data-root error = %v", err)
 	}
+
+	linkRoot := t.TempDir()
+	link := filepath.Join(linkRoot, "v1-link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveDataDirectory(filepath.Join(link, "workers", "linked")); err == nil ||
+		!strings.Contains(err.Error(), "V1 state") {
+		t.Fatalf("symlinked V1 data-root error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "workers")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("V1 directory was mutated before refusal: %v", err)
+	}
+
+	cleanTarget := t.TempDir()
+	terminalLink := filepath.Join(t.TempDir(), "worker-link")
+	if err := os.Symlink(cleanTarget, terminalLink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveDataDirectory(terminalLink); err == nil ||
+		!strings.Contains(err.Error(), "not a symlink") {
+		t.Fatalf("terminal symlink error = %v", err)
+	}
 }
 
 func TestProcessIdentityRefusesWrongOwner(t *testing.T) {

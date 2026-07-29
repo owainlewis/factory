@@ -148,17 +148,33 @@ func resolveDataDirectory(path string) (string, error) {
 	} else if found {
 		return "", fmt.Errorf("refusing a worker data directory below V1 state at %s", marker)
 	}
-	if err := os.MkdirAll(absolute, 0o700); err != nil {
+	if info, err := os.Lstat(absolute); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return "", errors.New("data_directory must be a real directory, not a symlink")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect data directory: %w", err)
+	}
+	canonical, err := canonicalProspectivePath(absolute)
+	if err != nil {
+		return "", err
+	}
+	if marker, found, err := findV1DatabaseMarker(canonical); err != nil {
+		return "", err
+	} else if found {
+		return "", fmt.Errorf("refusing a worker data directory below V1 state at %s", marker)
+	}
+	if err := os.MkdirAll(canonical, 0o700); err != nil {
 		return "", fmt.Errorf("create data directory: %w", err)
 	}
-	info, err := os.Lstat(absolute)
+	info, err := os.Lstat(canonical)
 	if err != nil {
 		return "", fmt.Errorf("inspect data directory: %w", err)
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return "", errors.New("data_directory must be a real directory, not a symlink")
 	}
-	canonical, err := filepath.EvalSymlinks(absolute)
+	canonical, err = filepath.EvalSymlinks(canonical)
 	if err != nil {
 		return "", fmt.Errorf("canonicalize data directory: %w", err)
 	}
@@ -166,6 +182,29 @@ func resolveDataDirectory(path string) (string, error) {
 		return "", fmt.Errorf("protect data directory: %w", err)
 	}
 	return canonical, nil
+}
+
+func canonicalProspectivePath(path string) (string, error) {
+	var missing []string
+	current := path
+	for {
+		canonical, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for index := len(missing) - 1; index >= 0; index-- {
+				canonical = filepath.Join(canonical, missing[index])
+			}
+			return canonical, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("canonicalize data directory: %w", err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("canonicalize data directory: no existing ancestor for %s", path)
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
 }
 
 func findV1DatabaseMarker(path string) (string, bool, error) {
