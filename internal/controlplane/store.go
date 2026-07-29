@@ -318,12 +318,32 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 		if err != nil {
 			return protocol.Worker{}, unavailable(err)
 		}
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO worker_repositories(worker_id, display_key, repository_id, retained_count, advertised, updated_at)
-			VALUES (?, ?, ?, ?, 1, ?)
-			ON CONFLICT(worker_id, display_key) DO UPDATE SET
-				retained_count=excluded.retained_count, advertised=1, updated_at=excluded.updated_at
-		`, workerID, repo.Key, repositoryID, repo.RetainedCount, now)
+		var existingKey string
+		mappingErr := tx.QueryRowContext(ctx, `
+			SELECT display_key FROM worker_repositories
+			WHERE worker_id = ? AND repository_id = ?
+		`, workerID, repositoryID).Scan(&existingKey)
+		switch {
+		case mappingErr == nil && existingKey != repo.Key:
+			_, err = tx.ExecContext(ctx, `
+				UPDATE worker_repositories
+				SET display_key = ?, retained_count = ?, advertised = 1, updated_at = ?
+				WHERE worker_id = ? AND repository_id = ?
+			`, repo.Key, repo.RetainedCount, now, workerID, repositoryID)
+		case mappingErr == nil:
+			_, err = tx.ExecContext(ctx, `
+				UPDATE worker_repositories
+				SET retained_count = ?, advertised = 1, updated_at = ?
+				WHERE worker_id = ? AND repository_id = ?
+			`, repo.RetainedCount, now, workerID, repositoryID)
+		case errors.Is(mappingErr, sql.ErrNoRows):
+			_, err = tx.ExecContext(ctx, `
+				INSERT INTO worker_repositories(worker_id, display_key, repository_id, retained_count, advertised, updated_at)
+				VALUES (?, ?, ?, ?, 1, ?)
+			`, workerID, repo.Key, repositoryID, repo.RetainedCount, now)
+		default:
+			err = mappingErr
+		}
 		if err != nil {
 			return protocol.Worker{}, unavailable(err)
 		}
@@ -350,14 +370,22 @@ func (s *Store) Workers(ctx context.Context) ([]protocol.Worker, error) {
 		if err != nil {
 			return nil, unavailable(err)
 		}
-		repos, err := s.workerRepositories(ctx, worker.ID)
+		workers = append(workers, worker)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, unavailable(err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, unavailable(err)
+	}
+	for index := range workers {
+		repos, err := s.workerRepositories(ctx, workers[index].ID)
 		if err != nil {
 			return nil, err
 		}
-		worker.Repositories = repos
-		workers = append(workers, worker)
+		workers[index].Repositories = repos
 	}
-	return workers, rows.Err()
+	return workers, nil
 }
 
 func (s *Store) Worker(ctx context.Context, id string) (protocol.Worker, error) {

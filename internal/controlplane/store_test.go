@@ -216,6 +216,39 @@ func TestRepositoryAssignmentAndWorkerCapacityAreEnforced(t *testing.T) {
 	}
 }
 
+func TestConcurrentWorkerListsDoNotExhaustTheConnectionPool(t *testing.T) {
+	store := newTestStore(t)
+	store.db.SetMaxOpenConns(1)
+	registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	start := make(chan struct{})
+	errs := make(chan error, 4)
+	var wait sync.WaitGroup
+	for range 4 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			workers, err := store.Workers(ctx)
+			if err == nil && (len(workers) != 1 || len(workers[0].Repositories) != 1) {
+				err = fmt.Errorf("incomplete worker list: %#v", workers)
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestUnhealthyAndOfflineWorkersDoNotClaim(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -744,6 +777,29 @@ func TestWorkerRepositoryIdentityCannotChangeForAKey(t *testing.T) {
 		t.Fatal("repository key was reassigned")
 	}
 	assertErrorCode(t, err, "repository_key_changed")
+}
+
+func TestWorkerCanRenameAKeyForTheSameRepository(t *testing.T) {
+	store := newTestStore(t)
+	original := registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	renamed := registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{
+		Key: "factory-renamed", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	if len(renamed.Repositories) != 1 || renamed.Repositories[0].Key != "factory-renamed" {
+		t.Fatalf("renamed repository: %#v", renamed.Repositories)
+	}
+	if renamed.Repositories[0].ID != original.Repositories[0].ID {
+		t.Fatalf("repository identity changed from %s to %s", original.Repositories[0].ID, renamed.Repositories[0].ID)
+	}
+	var mappings int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM worker_repositories WHERE worker_id = ?`, workerA).Scan(&mappings); err != nil {
+		t.Fatal(err)
+	}
+	if mappings != 1 {
+		t.Fatalf("repository rename left %d mappings", mappings)
+	}
 }
 
 func pointer[T any](value T) *T { return &value }
