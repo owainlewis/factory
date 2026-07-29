@@ -602,6 +602,149 @@ func TestActiveRegistrationDoesNotAcknowledgeSweptAttempt(t *testing.T) {
 	}
 }
 
+func TestLegacyRegistrationDerivesRetainedCountBeforeAcknowledgingHandoff(t *testing.T) {
+	store := newTestStore(t)
+	fixed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return fixed }
+	worker := registerTestWorker(t, store, workerA, 2, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/example/legacy-worker",
+	})
+	first := createTestTask(t, store, "legacy-worker-first", workerA, worker.Repositories[0].ID)
+	fixed = fixed.Add(time.Millisecond)
+	second := createTestTask(t, store, "legacy-worker-second", workerA, worker.Repositories[0].ID)
+	claim := claimTestTask(t, store, workerA, "legacy-worker-first", tokenA)
+	if claim.Task.ID != first.Task.ID {
+		t.Fatalf("first claim = %s; want %s", claim.Task.ID, first.Task.ID)
+	}
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Error: "legacy retained worktree",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	retained := make([]protocol.RetainedWorktree, protocol.MaxRetainedPerRepo)
+	for index := range retained {
+		retained[index] = protocol.RetainedWorktree{
+			AttemptID:    fmt.Sprintf("legacy-attempt-%d", index),
+			RepositoryID: worker.Repositories[0].ID,
+			Path:         fmt.Sprintf("/tmp/legacy-%d", index),
+			Reason:       "legacy retained worktree",
+		}
+	}
+	registered, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: "legacy-worker", WorkerVersion: "legacy", CodexVersion: "test",
+		Capacity: 2, ActiveCount: 0, Health: "healthy",
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "factory", RemoteIdentity: "github.com/example/legacy-worker",
+			RetainedCount: 0,
+		}},
+		RetainedWorktrees: retained,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registered.Repositories[0].RetainedCount != protocol.MaxRetainedPerRepo {
+		t.Fatalf("derived retained count = %d", registered.Repositories[0].RetainedCount)
+	}
+	blocked, err := store.Claim(context.Background(), workerA, protocol.ClaimRequest{
+		RequestID: "legacy-worker-blocked", LeaseToken: tokenB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked != nil {
+		t.Fatalf("legacy registration bypassed retained capacity: %#v", blocked)
+	}
+	detail, err := store.Task(context.Background(), second.Task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Execution.State != "queued" || len(detail.Attempts) != 0 {
+		t.Fatalf("legacy retained capacity did not keep task queued: %#v", detail)
+	}
+}
+
+func TestActiveLegacyRegistrationCannotAcknowledgeUnlistedHandoff(t *testing.T) {
+	store := newTestStore(t)
+	fixed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return fixed }
+	worker := registerTestWorker(t, store, workerA, 2, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/example/legacy-overlap",
+	})
+	retained := make([]protocol.RetainedWorktree, protocol.MaxRetainedPerRepo-1)
+	for index := range retained {
+		retained[index] = protocol.RetainedWorktree{
+			AttemptID:    fmt.Sprintf("legacy-existing-%d", index),
+			RepositoryID: worker.Repositories[0].ID,
+			Path:         fmt.Sprintf("/tmp/legacy-existing-%d", index),
+			Reason:       "legacy retained worktree",
+		}
+	}
+	legacyRegistration := protocol.WorkerRegistration{
+		Name: "legacy-worker", WorkerVersion: "legacy", CodexVersion: "test",
+		Capacity: 2, ActiveCount: 0, Health: "healthy",
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "factory", RemoteIdentity: "github.com/example/legacy-overlap",
+		}},
+		RetainedWorktrees: retained,
+	}
+	if _, err := store.RegisterWorker(context.Background(), workerA, legacyRegistration); err != nil {
+		t.Fatal(err)
+	}
+	first := createTestTask(t, store, "legacy-overlap-first", workerA, worker.Repositories[0].ID)
+	fixed = fixed.Add(time.Millisecond)
+	second := createTestTask(t, store, "legacy-overlap-second", workerA, worker.Repositories[0].ID)
+	claim := claimTestTask(t, store, workerA, "legacy-overlap-first", tokenA)
+	if claim.Task.ID != first.Task.ID {
+		t.Fatalf("first claim = %s; want %s", claim.Task.ID, first.Task.ID)
+	}
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Error: "legacy worktree not yet summarized",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	legacyRegistration.ActiveCount = 1
+	if _, err := store.RegisterWorker(context.Background(), workerA, legacyRegistration); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := store.Claim(context.Background(), workerA, protocol.ClaimRequest{
+		RequestID: "legacy-overlap-blocked", LeaseToken: tokenB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked != nil {
+		t.Fatalf("active legacy snapshot acknowledged an unlisted handoff: %#v", blocked)
+	}
+
+	legacyRegistration.RetainedWorktrees = append(legacyRegistration.RetainedWorktrees, protocol.RetainedWorktree{
+		AttemptID: claim.Attempt.ID, RepositoryID: worker.Repositories[0].ID,
+		Path: "/tmp/legacy-new", Reason: "legacy retained worktree",
+	})
+	registered, err := store.RegisterWorker(context.Background(), workerA, legacyRegistration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registered.Repositories[0].RetainedCount != protocol.MaxRetainedPerRepo {
+		t.Fatalf("legacy retained count after handoff = %d", registered.Repositories[0].RetainedCount)
+	}
+	blocked, err = store.Claim(context.Background(), workerA, protocol.ClaimRequest{
+		RequestID: "legacy-overlap-still-full", LeaseToken: tokenB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked != nil {
+		t.Fatalf("legacy retained repository exceeded capacity: %#v", blocked)
+	}
+	detail, err := store.Task(context.Background(), second.Task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Execution.State != "queued" || len(detail.Attempts) != 0 {
+		t.Fatalf("legacy overlap task did not remain queued: %#v", detail)
+	}
+}
+
 func TestConcurrentSQLiteClaimsCreateOneOwner(t *testing.T) {
 	store := newTestStore(t)
 	worker := registerTestWorker(t, store, workerA, 2, protocol.RepositoryRegistration{

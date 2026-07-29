@@ -152,6 +152,10 @@ Only verified retained worktrees count toward the limit of ten per repository.
 A claimed attempt reserves one possible retained slot. After completion, the
 control plane keeps that reservation until a worker registration atomically
 publishes the repository's retained count and acknowledges the handoff.
+For upgrade compatibility, the control plane never trusts a reported count
+below the retained-worktree summaries in the same registration. An active
+legacy registration can acknowledge only terminal attempts named by those
+summaries; unlisted attempts remain reserved until an idle registration.
 A full repository remains queued while the worker continues heartbeats and may
 claim work for another repository. Transient control-plane or Git failures
 during reconciliation are retried before the worker first registers; they are
