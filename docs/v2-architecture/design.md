@@ -2,6 +2,10 @@
 
 > **Status:** Proposed for review
 
+> **Implementation:** The control plane, UI, and local Unix worker execution
+> core are implemented. Durable worker manifests, restart reconciliation,
+> retained-worktree limits, and the cleanup CLI remain in issue #132.
+
 ## 1. Executive summary
 
 Factory V1 is a local Rust supervisor that can watch one repository or an

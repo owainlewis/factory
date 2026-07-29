@@ -49,8 +49,12 @@ jobs:
         run: test -z "$(gofmt -l cmd internal migrations web/*.go)"
       - name: Run Go vet
         run: go vet ./...
-      - name: Run Go tests
-        run: go test ./...
+      - name: Check worker-control-plane boundary
+        run: |
+          ! go list -deps ./internal/worker |
+            grep -qx 'github.com/owainlewis/factory/internal/controlplane'
+      - name: Run Go server and worker tests
+        run: go test -timeout 5m ./...
       - name: Install Chromium
         working-directory: web
         run: npx playwright install --with-deps chromium

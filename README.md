@@ -121,9 +121,10 @@ contract, first demonstration, two-repository fleet setup, and sandbox setup. Th
 [operations guide](docs/operations.md) covers inspection, cancellation,
 recovery, and cleanup.
 
-## V2 control plane
+## V2 control plane and local worker
 
-The local V2 server includes its web interface in the Go binary. Production
+The local V2 server includes its web interface in the Go binary, and the Unix
+worker runs assigned Codex tasks in separate managed Git worktrees. Production
 does not need Node.js or cross-origin configuration:
 
 ```sh
@@ -132,13 +133,32 @@ npm ci
 npm run build
 cd ..
 go build -o factory-server ./cmd/factory-server
+go build -o factory-worker ./cmd/factory-worker
 ./factory-server
 ```
 
-Open `http://127.0.0.1:7337/` to inspect registered workers, delegate work, and
-follow durable task state. The server remains loopback-only and stores V2 state
-separately from V1. See the [V2 MVP architecture](docs/v2-architecture/design.md)
-for the API, trust boundary, and current scope.
+In another terminal, create a worker configuration and start the worker:
+
+```toml
+server = "http://127.0.0.1:7337"
+name = "local"
+max_concurrent = 1
+data_directory = "/Users/me/.factory-v2/workers/local"
+
+[repositories.factory]
+path = "/Users/me/Code/factory"
+```
+
+```sh
+./factory-worker --config /path/to/worker.toml
+```
+
+Open `http://127.0.0.1:7337/` to inspect the registered worker, delegate work,
+and follow durable task state. The server remains loopback-only and V2 state and
+worktrees remain separate from V1. The [V2 worker guide](docs/v2-worker.md)
+covers configuration, health, execution, and retained worktrees. See the
+[V2 MVP architecture](docs/v2-architecture/design.md) for the API and trust
+boundary.
 
 ## V1 scope
 
@@ -162,6 +182,7 @@ Jira is not part of the supported V1 scope.
 - [Labels and ticket status](docs/labels.md)
 - [Setup, configuration, and first run](docs/local-v1.md)
 - [Operations and recovery](docs/operations.md)
+- [V2 local worker](docs/v2-worker.md)
 - [Jira source adapter](docs/jira.md)
 - [Docker Sandbox development environment](docs/docker-sandbox-template.md)
 - [Contributing](CONTRIBUTING.md)

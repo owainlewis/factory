@@ -1,0 +1,1207 @@
+package worker
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/owainlewis/factory/internal/controlplane"
+	"github.com/owainlewis/factory/internal/protocol"
+	"golang.org/x/sys/unix"
+)
+
+const fakeCodexScript = `#!/bin/sh
+set -eu
+if [ "${1:-}" = "--version" ]; then
+  echo "codex-cli test-1.0"
+  exit 0
+fi
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then
+  echo "Logged in using test credentials"
+  exit 0
+fi
+if [ "${1:-}" != "exec" ]; then
+  echo "unexpected fake Codex arguments" >&2
+  exit 90
+fi
+result=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then
+    result="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+prompt="$(cat)"
+attempt="$(basename "$PWD")"
+mkdir -p "$FACTORY_TEST_CODEX_LOG"
+printf '%s' "$prompt" > "$FACTORY_TEST_CODEX_LOG/$attempt.prompt"
+echo "$$" > "$FACTORY_TEST_CODEX_LOG/$attempt.pid"
+echo '{"type":"thread.started","thread_id":"test-thread"}'
+case "$prompt" in
+  *FAKE_MODE=success*)
+    printf 'completed by fake Codex' > "$result"
+    echo '{"type":"item.completed","item":{"type":"agent_message","text":"completed"}}'
+    ;;
+  *FAKE_MODE=long*)
+    head -c 68157440 /dev/zero | tr '\000' x
+    echo
+    head -c 300000 /dev/zero | tr '\000' r > "$result"
+    ;;
+  *FAKE_MODE=fail*)
+    echo "deterministic failure" >&2
+    exit 17
+    ;;
+  *FAKE_MODE=dirty*)
+    echo "dirty" > worker-output.txt
+    printf 'dirty success' > "$result"
+    ;;
+  *FAKE_MODE=unpublished*)
+    echo "unpublished" > worker-output.txt
+    git add worker-output.txt
+    git commit -m "fake unpublished result" >/dev/null
+    printf 'unpublished success' > "$result"
+    ;;
+  *FAKE_MODE=hang*)
+    trap '' TERM
+    while :; do sleep 1; done
+    ;;
+  *FAKE_MODE=fork*)
+    child="$FACTORY_TEST_CODEX_LOG/$attempt.child"
+    sh -c 'trap "" TERM; echo $$ > "$1"; while :; do sleep 1; done' sh "$child" &
+    trap '' TERM
+    wait
+    ;;
+  *)
+    echo "missing fake mode" >&2
+    exit 91
+    ;;
+esac
+`
+
+func TestWorkerSupervisorHelperProcess(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_SUPERVISOR") != "1" {
+		return
+	}
+	control := os.NewFile(3, "factory-test-control")
+	err := RunSupervisor(control, os.Stdin, os.Stdout, os.Stderr)
+	runtime.KeepAlive(control)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	os.Exit(0)
+}
+
+type serverFixture struct {
+	store  *controlplane.Store
+	server *httptest.Server
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
+func newServerFixture(t *testing.T, wrap func(http.Handler) http.Handler) *serverFixture {
+	t.Helper()
+	store, err := controlplane.Open(context.Background(), filepath.Join(t.TempDir(), "factory.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := controlplane.NewHandler(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if wrap != nil {
+		handler = wrap(handler)
+	}
+	server := httptest.NewServer(handler)
+	fixture := &serverFixture{store: store, server: server}
+	t.Cleanup(func() {
+		server.Close()
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return fixture
+}
+
+type repositoryFixture struct {
+	path   string
+	origin string
+}
+
+func createRepository(t *testing.T, name string) repositoryFixture {
+	t.Helper()
+	root := t.TempDir()
+	origin := filepath.Join(root, name+"-origin.git")
+	path := filepath.Join(root, name)
+	runGitTest(t, "", "init", "--bare", "--initial-branch=main", origin)
+	runGitTest(t, "", "init", "--initial-branch=main", path)
+	runGitTest(t, path, "config", "user.name", "Factory Test")
+	runGitTest(t, path, "config", "user.email", "factory@example.invalid")
+	if err := os.WriteFile(filepath.Join(path, "README.md"), []byte(name+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, path, "add", "README.md")
+	runGitTest(t, path, "commit", "-m", "initial")
+	runGitTest(t, path, "remote", "add", "origin", origin)
+	runGitTest(t, path, "push", "-u", "origin", "main")
+	return repositoryFixture{path: path, origin: origin}
+}
+
+func runGitTest(t *testing.T, directory string, arguments ...string) string {
+	t.Helper()
+	command := exec.Command("git", arguments...)
+	command.Dir = directory
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", arguments, err, output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func writeFakeCodex(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(fakeCodexScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testOptions(codexPath string) Options {
+	return Options{
+		GitExecutable:        "git",
+		CodexExecutable:      codexPath,
+		SupervisorCommand:    []string{os.Args[0], "-test.run=TestWorkerSupervisorHelperProcess", "--"},
+		WorkerVersion:        "test",
+		PollInterval:         20 * time.Millisecond,
+		HealthInterval:       50 * time.Millisecond,
+		RegistrationInterval: 25 * time.Millisecond,
+		LeaseRenewInterval:   100 * time.Millisecond,
+		LeaseRetryInterval:   50 * time.Millisecond,
+		TransportBackoffMin:  20 * time.Millisecond,
+		TransportBackoffMax:  100 * time.Millisecond,
+		ShutdownTimeout:      15 * time.Second,
+	}
+}
+
+func newTestManager(
+	t *testing.T,
+	fixture *serverFixture,
+	codexPath string,
+	dataDirectory string,
+	repositories map[string]repositoryFixture,
+	maxConcurrent int,
+) *Manager {
+	t.Helper()
+	t.Setenv("FACTORY_TEST_SUPERVISOR", "1")
+	logDirectory := filepath.Join(t.TempDir(), "codex-log")
+	t.Setenv("FACTORY_TEST_CODEX_LOG", logDirectory)
+	configured := make(map[string]RepositoryConfig, len(repositories))
+	for key, repository := range repositories {
+		configured[key] = RepositoryConfig{Path: repository.path}
+	}
+	manager, err := New(Config{
+		Server: fixture.server.URL, Name: "test-worker", MaxConcurrent: maxConcurrent,
+		DataDirectory: dataDirectory, Repositories: configured,
+	}, testOptions(codexPath), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager
+}
+
+func startManager(t *testing.T, manager *Manager) (context.CancelFunc, <-chan error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.Run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err, ok := <-done:
+			if ok && err != nil {
+				t.Errorf("worker stopped with error: %v", err)
+			}
+		case <-time.After(20 * time.Second):
+			t.Error("worker did not stop")
+		}
+	})
+	return cancel, done
+}
+
+func waitForWorker(t *testing.T, store *controlplane.Store, workerID string, predicate func(protocol.Worker) bool) protocol.Worker {
+	t.Helper()
+	var found protocol.Worker
+	waitFor(t, 15*time.Second, func() bool {
+		workers, err := store.Workers(context.Background())
+		if err != nil {
+			return false
+		}
+		for _, worker := range workers {
+			if worker.ID == workerID {
+				found = worker
+				return predicate(worker)
+			}
+		}
+		return false
+	})
+	return found
+}
+
+func createTask(t *testing.T, store *controlplane.Store, worker protocol.Worker, repositoryKey, mode string, timeout int) protocol.TaskDetail {
+	t.Helper()
+	var repositoryID string
+	for _, repository := range worker.Repositories {
+		if repository.Key == repositoryKey {
+			repositoryID = repository.ID
+		}
+	}
+	if repositoryID == "" {
+		t.Fatalf("worker did not advertise repository %q", repositoryKey)
+	}
+	task, _, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+		RequestKey:  "request-" + repositoryKey + "-" + mode + "-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Title:       "Task " + mode,
+		Description: "Exercise worker behavior.\nFAKE_MODE=" + mode,
+		WorkerID:    worker.ID, RepositoryID: repositoryID, TimeoutSeconds: timeout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task
+}
+
+func waitForTaskState(t *testing.T, store *controlplane.Store, taskID string, states ...string) protocol.TaskDetail {
+	t.Helper()
+	expected := make(map[string]bool)
+	for _, state := range states {
+		expected[state] = true
+	}
+	var detail protocol.TaskDetail
+	waitFor(t, 75*time.Second, func() bool {
+		value, err := store.Task(context.Background(), taskID)
+		if err != nil {
+			return false
+		}
+		detail = value
+		if isTerminalState(value.Execution.State) && !expected[value.Execution.State] {
+			t.Fatalf("task reached unexpected terminal state %q: %#v", value.Execution.State, value.Attempts)
+		}
+		return expected[value.Execution.State]
+	})
+	return detail
+}
+
+func isTerminalState(state string) bool {
+	return state == "succeeded" || state == "failed" || state == "cancelled"
+}
+
+func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("condition did not become true before timeout")
+}
+
+func TestConfigurationStableIdentityLockAndHealthRecovery(t *testing.T) {
+	repository := createRepository(t, "health")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	gitPath := filepath.Join(t.TempDir(), "git")
+	dataDirectory := filepath.Join(t.TempDir(), "worker")
+	manager := newTestManager(t, fixture, codexPath, dataDirectory, map[string]repositoryFixture{"health": repository}, 1)
+	manager.options.GitExecutable = gitPath
+	firstID := manager.ID()
+	lockedOptions := testOptions(codexPath)
+	lockedOptions.GitExecutable = gitPath
+	_, err := New(manager.config, lockedOptions, nil)
+	if err == nil || !strings.Contains(err.Error(), "already owns") {
+		t.Fatalf("second manager lock error = %v", err)
+	}
+	cancel, done := startManager(t, manager)
+	waitForWorker(t, fixture.store, firstID, func(worker protocol.Worker) bool {
+		return worker.Health == "unhealthy"
+	})
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitShim := "#!/bin/sh\nexec " + strconv.Quote(realGit) + " \"$@\"\n"
+	if err := os.WriteFile(gitPath, []byte(gitShim), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFakeCodex(t, codexPath)
+	waitForWorker(t, fixture.store, firstID, func(worker protocol.Worker) bool {
+		return worker.Health == "healthy" && worker.CodexVersion == "codex-cli test-1.0"
+	})
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	manager2 := newTestManager(t, fixture, codexPath, dataDirectory, map[string]repositoryFixture{"health": repository}, 1)
+	if manager2.ID() != firstID {
+		t.Fatalf("worker ID changed across restart: %s != %s", manager2.ID(), firstID)
+	}
+	if err := manager2.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMultiRepositorySuccessAndBoundedOutput(t *testing.T) {
+	first := createRepository(t, "first")
+	second := createRepository(t, "second")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"first": first, "second": second}, 2)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy" && len(worker.Repositories) == 2
+	})
+	success := createTask(t, fixture.store, worker, "first", "success", 60)
+	long := createTask(t, fixture.store, worker, "second", "long", 60)
+	success = waitForTaskState(t, fixture.store, success.Task.ID, "succeeded")
+	long = waitForTaskState(t, fixture.store, long.Task.ID, "succeeded")
+	if len(success.Attempts) != 1 || len(long.Attempts) != 1 {
+		t.Fatalf("attempt counts = %d, %d", len(success.Attempts), len(long.Attempts))
+	}
+	if success.Attempts[0].Result != "completed by fake Codex" {
+		t.Fatalf("success result = %q", success.Attempts[0].Result)
+	}
+	if len(long.Attempts[0].Result) != protocol.MaxResultBytes {
+		t.Fatalf("bounded result length = %d", len(long.Attempts[0].Result))
+	}
+	events, err := fixture.store.Events(context.Background(), long.Attempts[0].ID, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 {
+		t.Fatal("long Codex output produced no stored events")
+	}
+	for _, event := range events {
+		if len(event.Payload) > protocol.MaxEventBytes {
+			t.Fatalf("event payload exceeded limit: %d", len(event.Payload))
+		}
+	}
+	for _, attempt := range []protocol.Attempt{success.Attempts[0], long.Attempts[0]} {
+		path := filepath.Join(manager.dataDirectory, "worktrees", attempt.ID)
+		waitFor(t, 5*time.Second, func() bool {
+			_, err := os.Stat(path)
+			return errors.Is(err, os.ErrNotExist)
+		})
+		branch := "factory-v2/" + map[string]string{
+			success.Attempts[0].ID: success.Task.ID,
+			long.Attempts[0].ID:    long.Task.ID,
+		}[attempt.ID][:12] + "-" + attempt.ID[:12]
+		runGitTest(t, map[string]string{
+			success.Attempts[0].ID: first.path,
+			long.Attempts[0].ID:    second.path,
+		}[attempt.ID], "show-ref", "--verify", "refs/heads/"+branch)
+	}
+	prompt, err := os.ReadFile(filepath.Join(os.Getenv("FACTORY_TEST_CODEX_LOG"), success.Attempts[0].ID+".prompt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"Factory V2 managed Git worktree",
+		"Task title: Task success",
+		"Repository: " + repositoryIdentity(t, first.path),
+		"FAKE_MODE=success",
+	} {
+		if !strings.Contains(string(prompt), expected) {
+			t.Fatalf("Codex prompt does not contain %q:\n%s", expected, prompt)
+		}
+	}
+}
+
+func TestRepositoryKeyRemapStopsStableWorkerFromClaiming(t *testing.T) {
+	first := createRepository(t, "first")
+	second := createRepository(t, "second")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	dataDirectory := filepath.Join(t.TempDir(), "worker")
+
+	firstManager := newTestManager(t, fixture, codexPath, dataDirectory,
+		map[string]repositoryFixture{"stable": first}, 1)
+	cancelFirst, firstDone := startManager(t, firstManager)
+	worker := waitForWorker(t, fixture.store, firstManager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy" && len(worker.Repositories) == 1
+	})
+	cancelFirst()
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+
+	secondManager := newTestManager(t, fixture, codexPath, dataDirectory,
+		map[string]repositoryFixture{"stable": second}, 1)
+	startManager(t, secondManager)
+	waitFor(t, 5*time.Second, func() bool {
+		secondManager.stateMutex.Lock()
+		defer secondManager.stateMutex.Unlock()
+		return secondManager.fatalHealth != nil && !secondManager.registered
+	})
+
+	task := createTask(t, fixture.store, worker, "stable", "success", 60)
+	time.Sleep(250 * time.Millisecond)
+	detail, err := fixture.store.Task(context.Background(), task.Task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Execution.State != "queued" || len(detail.Attempts) != 0 {
+		t.Fatalf("worker claimed after rejected repository remap: state=%s attempts=%d",
+			detail.Execution.State, len(detail.Attempts))
+	}
+}
+
+func TestHealthFailureCancelsRetryingClaimBeforeServerRecovery(t *testing.T) {
+	claimStarted := make(chan struct{})
+	releaseClaim := make(chan struct{})
+	var blocked atomic.Bool
+	fixture := newServerFixture(t, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			if strings.HasSuffix(request.URL.Path, "/claims") && blocked.CompareAndSwap(false, true) {
+				close(claimStarted)
+				<-releaseClaim
+			}
+			next.ServeHTTP(w, request)
+		})
+	})
+	repository := createRepository(t, "health-claim")
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"health": repository}, 1)
+	manager.options.HealthInterval = 20 * time.Millisecond
+	manager.options.RegistrationInterval = 5 * time.Second
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy"
+	})
+	select {
+	case <-claimStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("claim did not start")
+	}
+	task := createTask(t, fixture.store, worker, "health", "success", 60)
+	if err := os.Remove(codexPath); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		manager.stateMutex.Lock()
+		defer manager.stateMutex.Unlock()
+		return manager.health.State == "unhealthy"
+	})
+	close(releaseClaim)
+
+	time.Sleep(300 * time.Millisecond)
+	detail, err := fixture.store.Task(context.Background(), task.Task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Execution.State != "queued" || len(detail.Attempts) != 0 {
+		t.Fatalf("unhealthy worker completed a pending claim: state=%s attempts=%d",
+			detail.Execution.State, len(detail.Attempts))
+	}
+}
+
+func TestCommittedClaimBecomesFailedWhenHealthChangesBeforeResponse(t *testing.T) {
+	fixture := newServerFixture(t, nil)
+	repository := createRepository(t, "committed-claim")
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"health": repository}, 1)
+	manager.options.HealthInterval = 20 * time.Millisecond
+	manager.options.RegistrationInterval = 5 * time.Second
+
+	claimCommitted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	var blocked atomic.Bool
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	t.Cleanup(transport.CloseIdleConnections)
+	manager.client.http = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		response, err := transport.RoundTrip(request)
+		if err != nil || !strings.HasSuffix(request.URL.Path, "/claims") ||
+			response.StatusCode != http.StatusOK || !blocked.CompareAndSwap(false, true) {
+			return response, err
+		}
+		body, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		response.Body = io.NopCloser(bytes.NewReader(body))
+		response.ContentLength = int64(len(body))
+		close(claimCommitted)
+		<-releaseResponse
+		return response, nil
+	})}
+
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy"
+	})
+	task := createTask(t, fixture.store, worker, "health", "success", 60)
+	select {
+	case <-claimCommitted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not commit a claim")
+	}
+	if err := os.Remove(codexPath); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		manager.stateMutex.Lock()
+		defer manager.stateMutex.Unlock()
+		return manager.health.State == "unhealthy"
+	})
+	close(releaseResponse)
+
+	detail := waitForTaskState(t, fixture.store, task.Task.ID, "failed")
+	if len(detail.Attempts) != 1 || detail.Attempts[0].State != "failed" ||
+		!strings.Contains(detail.Attempts[0].Error, "ineligible") {
+		t.Fatalf("committed ineligible claim was not failed precisely: %#v", detail.Attempts)
+	}
+	if _, err := os.Stat(filepath.Join(manager.dataDirectory, "worktrees", detail.Attempts[0].ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ineligible claim created a worktree: %v", err)
+	}
+}
+
+func repositoryIdentity(t *testing.T, path string) string {
+	t.Helper()
+	repository, err := resolveRepository("test", path, "git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return repository.RemoteIdentity
+}
+
+func TestLostClaimAndCompletionResponsesAreIdempotent(t *testing.T) {
+	var droppedClaim atomic.Bool
+	var droppedCompletion atomic.Bool
+	fixture := newServerFixture(t, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			isClaim := strings.HasSuffix(request.URL.Path, "/claims") && !droppedClaim.Load()
+			isCompletion := strings.HasSuffix(request.URL.Path, "/complete") && !droppedCompletion.Load()
+			if isClaim || isCompletion {
+				recorder := httptest.NewRecorder()
+				next.ServeHTTP(recorder, request)
+				shouldDrop := recorder.Code == http.StatusOK &&
+					((isClaim && droppedClaim.CompareAndSwap(false, true)) ||
+						(isCompletion && droppedCompletion.CompareAndSwap(false, true)))
+				if shouldDrop {
+					hijacker, ok := writer.(http.Hijacker)
+					if !ok {
+						t.Error("test server cannot hijack connections")
+						return
+					}
+					connection, _, err := hijacker.Hijack()
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					_ = connection.Close()
+					return
+				}
+				copyResponse(writer, recorder)
+				return
+			}
+			next.ServeHTTP(writer, request)
+		})
+	})
+	repository := createRepository(t, "replay")
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"replay": repository}, 1)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool { return worker.Health == "healthy" })
+	task := createTask(t, fixture.store, worker, "replay", "success", 60)
+	detail := waitForTaskState(t, fixture.store, task.Task.ID, "succeeded")
+	if !droppedClaim.Load() || !droppedCompletion.Load() || len(detail.Attempts) != 1 {
+		t.Fatalf("dropped claim=%v completion=%v attempts=%d",
+			droppedClaim.Load(), droppedCompletion.Load(), len(detail.Attempts))
+	}
+}
+
+func TestCodexStartsOnlyAfterAttemptStartIsAccepted(t *testing.T) {
+	startReached := make(chan struct{}, 1)
+	releaseStart := make(chan struct{})
+	fixture := newServerFixture(t, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			if strings.HasSuffix(request.URL.Path, "/start") {
+				select {
+				case startReached <- struct{}{}:
+				default:
+				}
+				select {
+				case <-releaseStart:
+				case <-request.Context().Done():
+					return
+				}
+			}
+			next.ServeHTTP(writer, request)
+		})
+	})
+	repository := createRepository(t, "start-order")
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"start-order": repository}, 1)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool { return worker.Health == "healthy" })
+	task := createTask(t, fixture.store, worker, "start-order", "success", 60)
+	select {
+	case <-startReached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("worker never requested attempt start")
+	}
+	if entries, err := os.ReadDir(os.Getenv("FACTORY_TEST_CODEX_LOG")); err == nil && len(entries) != 0 {
+		t.Fatalf("Codex started before the start request was accepted: %v", entries)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	close(releaseStart)
+	waitForTaskState(t, fixture.store, task.Task.ID, "succeeded")
+}
+
+func copyResponse(writer http.ResponseWriter, recorder *httptest.ResponseRecorder) {
+	for key, values := range recorder.Header() {
+		for _, value := range values {
+			writer.Header().Add(key, value)
+		}
+	}
+	writer.WriteHeader(recorder.Code)
+	_, _ = writer.Write(recorder.Body.Bytes())
+}
+
+func TestFailureRetainsWorktree(t *testing.T) {
+	repository := createRepository(t, "failure")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"failure": repository}, 1)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool { return worker.Health == "healthy" })
+	task := createTask(t, fixture.store, worker, "failure", "fail", 60)
+	detail := waitForTaskState(t, fixture.store, task.Task.ID, "failed")
+	if len(detail.Attempts) != 1 ||
+		!strings.Contains(detail.Attempts[0].Error, "exit status 17") ||
+		!strings.Contains(detail.Attempts[0].Error, "deterministic failure") {
+		t.Fatalf("failed attempt = %#v", detail.Attempts)
+	}
+	if _, err := os.Stat(filepath.Join(manager.dataDirectory, "worktrees", detail.Attempts[0].ID)); err != nil {
+		t.Fatalf("failed worktree was not retained: %v", err)
+	}
+}
+
+func TestDirtyAndUnpublishedSuccessesAreRetained(t *testing.T) {
+	repository := createRepository(t, "unsafe-success")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"unsafe-success": repository}, 2)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool { return worker.Health == "healthy" })
+	dirty := createTask(t, fixture.store, worker, "unsafe-success", "dirty", 60)
+	unpublished := createTask(t, fixture.store, worker, "unsafe-success", "unpublished", 60)
+	dirty = waitForTaskState(t, fixture.store, dirty.Task.ID, "succeeded")
+	unpublished = waitForTaskState(t, fixture.store, unpublished.Task.ID, "succeeded")
+	for _, attempt := range []protocol.Attempt{dirty.Attempts[0], unpublished.Attempts[0]} {
+		path := filepath.Join(manager.dataDirectory, "worktrees", attempt.ID)
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("unsafe successful worktree was removed: %v", err)
+		}
+		waitFor(t, 5*time.Second, func() bool {
+			manager.stateMutex.Lock()
+			defer manager.stateMutex.Unlock()
+			_, retained := manager.retained[attempt.ID]
+			return retained
+		})
+	}
+}
+
+func TestCancellationStopsCompleteProcessGroup(t *testing.T) {
+	repository := createRepository(t, "cancel")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"cancel": repository}, 1)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool { return worker.Health == "healthy" })
+	task := createTask(t, fixture.store, worker, "cancel", "fork", 60)
+	running := waitForTaskState(t, fixture.store, task.Task.ID, "running")
+	attemptID := running.Attempts[0].ID
+	childPath := filepath.Join(os.Getenv("FACTORY_TEST_CODEX_LOG"), attemptID+".child")
+	waitFor(t, 5*time.Second, func() bool {
+		_, err := os.Stat(childPath)
+		return err == nil
+	})
+	childPID := readPID(t, childPath)
+	started := time.Now()
+	if _, err := fixture.store.CancelTask(context.Background(), task.Task.ID); err != nil {
+		t.Fatal(err)
+	}
+	detail := waitForTaskState(t, fixture.store, task.Task.ID, "cancelled")
+	if elapsed := time.Since(started); elapsed > 15*time.Second {
+		t.Fatalf("cancellation took %s", elapsed)
+	}
+	waitForProcessGone(t, childPID, 3*time.Second)
+	if _, err := os.Stat(filepath.Join(manager.dataDirectory, "worktrees", detail.Attempts[0].ID)); err != nil {
+		t.Fatalf("cancelled worktree was not retained: %v", err)
+	}
+}
+
+func TestTimeoutStopsIgnoringProcessGroup(t *testing.T) {
+	repository := createRepository(t, "timeout")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"timeout": repository}, 1)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool { return worker.Health == "healthy" })
+	task := createTask(t, fixture.store, worker, "timeout", "fork", 1)
+	running := waitForTaskState(t, fixture.store, task.Task.ID, "running")
+	childPath := filepath.Join(os.Getenv("FACTORY_TEST_CODEX_LOG"), running.Attempts[0].ID+".child")
+	waitFor(t, 5*time.Second, func() bool {
+		_, err := os.Stat(childPath)
+		return err == nil
+	})
+	childPID := readPID(t, childPath)
+	detail := waitForTaskState(t, fixture.store, task.Task.ID, "failed")
+	if !strings.Contains(detail.Attempts[0].Error, "timeout") {
+		t.Fatalf("timeout error = %q", detail.Attempts[0].Error)
+	}
+	waitForProcessGone(t, childPID, 3*time.Second)
+}
+
+func TestTimeoutIncludesWorktreePreparation(t *testing.T) {
+	repository := createRepository(t, "preparation-timeout")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitWrapper := filepath.Join(t.TempDir(), "git")
+	script := "#!/bin/sh\ncase \"$*\" in *\"worktree add\"*) sleep 3;; esac\nexec " +
+		strconv.Quote(realGit) + " \"$@\"\n"
+	if err := os.WriteFile(gitWrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"preparation-timeout": repository}, 1)
+	manager.options.GitExecutable = gitWrapper
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool { return worker.Health == "healthy" })
+	task := createTask(t, fixture.store, worker, "preparation-timeout", "success", 1)
+	detail := waitForTaskState(t, fixture.store, task.Task.ID, "failed")
+	if len(detail.Attempts) != 1 || !strings.Contains(detail.Attempts[0].Error, "task timeout") {
+		t.Fatalf("preparation timeout attempt = %#v", detail.Attempts)
+	}
+	if entries, err := os.ReadDir(os.Getenv("FACTORY_TEST_CODEX_LOG")); err == nil && len(entries) != 0 {
+		t.Fatalf("Codex started after the task timed out during preparation: %v", entries)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+}
+
+func TestSupervisorCrashStopsRecordedProcessGroup(t *testing.T) {
+	repository := createRepository(t, "supervisor-crash")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"supervisor-crash": repository}, 1)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool { return worker.Health == "healthy" })
+	task := createTask(t, fixture.store, worker, "supervisor-crash", "fork", 60)
+	running := waitForTaskState(t, fixture.store, task.Task.ID, "running")
+	attempt := running.Attempts[0]
+	if attempt.SupervisorPID == nil {
+		t.Fatal("control plane did not record the supervisor PID")
+	}
+	identity, err := processIdentity(int(*attempt.SupervisorPID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity != attempt.ProcessIdentity {
+		t.Fatalf("stored supervisor identity does not match PID %d", *attempt.SupervisorPID)
+	}
+	childPath := filepath.Join(os.Getenv("FACTORY_TEST_CODEX_LOG"), attempt.ID+".child")
+	waitFor(t, 5*time.Second, func() bool {
+		_, err := os.Stat(childPath)
+		return err == nil
+	})
+	childPID := readPID(t, childPath)
+	if err := unix.Kill(int(*attempt.SupervisorPID), unix.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskState(t, fixture.store, task.Task.ID, "failed")
+	waitForProcessGone(t, childPID, 8*time.Second)
+}
+
+func TestServerLossStopsCodexBeforeLeaseExpiry(t *testing.T) {
+	repository := createRepository(t, "server-loss")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"server-loss": repository}, 1)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool { return worker.Health == "healthy" })
+	task := createTask(t, fixture.store, worker, "server-loss", "fork", 60)
+	running := waitForTaskState(t, fixture.store, task.Task.ID, "running")
+	childPath := filepath.Join(os.Getenv("FACTORY_TEST_CODEX_LOG"), running.Attempts[0].ID+".child")
+	waitFor(t, 5*time.Second, func() bool {
+		_, err := os.Stat(childPath)
+		return err == nil
+	})
+	childPID := readPID(t, childPath)
+	started := time.Now()
+	fixture.server.Close()
+	waitForProcessGone(t, childPID, 32*time.Second)
+	if elapsed := time.Since(started); elapsed > protocol.LeaseDuration+2*time.Second {
+		t.Fatalf("server-loss stop took %s", elapsed)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if _, err := fixture.store.SweepExpired(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	detail := waitForTaskState(t, fixture.store, task.Task.ID, "failed")
+	if detail.Attempts[0].State != "lost" {
+		t.Fatalf("server-loss attempt state = %s", detail.Attempts[0].State)
+	}
+}
+
+func TestGracefulShutdownStopsActiveGroup(t *testing.T) {
+	repository := createRepository(t, "shutdown")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"shutdown": repository}, 1)
+	cancel, done := startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool { return worker.Health == "healthy" })
+	task := createTask(t, fixture.store, worker, "shutdown", "fork", 60)
+	running := waitForTaskState(t, fixture.store, task.Task.ID, "running")
+	queued := createTask(t, fixture.store, worker, "shutdown", "success", 60)
+	childPath := filepath.Join(os.Getenv("FACTORY_TEST_CODEX_LOG"), running.Attempts[0].ID+".child")
+	waitFor(t, 5*time.Second, func() bool {
+		_, err := os.Stat(childPath)
+		return err == nil
+	})
+	childPID := readPID(t, childPath)
+	started := time.Now()
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 15*time.Second {
+		t.Fatalf("graceful shutdown took %s", elapsed)
+	}
+	waitForProcessGone(t, childPID, 3*time.Second)
+	detail := waitForTaskState(t, fixture.store, task.Task.ID, "cancelled")
+	if detail.Attempts[0].State != "cancelled" {
+		t.Fatalf("shutdown attempt state = %s", detail.Attempts[0].State)
+	}
+	queuedDetail, err := fixture.store.Task(context.Background(), queued.Task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queuedDetail.Execution.State != "queued" || len(queuedDetail.Attempts) != 0 {
+		t.Fatalf("worker claimed new work during shutdown: %#v", queuedDetail)
+	}
+}
+
+func TestParentPipeLossStopsCodexGroup(t *testing.T) {
+	t.Setenv("FACTORY_TEST_SUPERVISOR", "1")
+	logDirectory := t.TempDir()
+	t.Setenv("FACTORY_TEST_CODEX_LOG", logDirectory)
+	repository := createRepository(t, "parent-loss")
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	result := filepath.Join(t.TempDir(), "result")
+	process, err := startSupervisor(
+		[]string{os.Args[0], "-test.run=TestWorkerSupervisorHelperProcess", "--"},
+		supervisorInit{
+			CodexExecutable: codexPath, Worktree: repository.path, ResultPath: result,
+			Prompt: "FAKE_MODE=fork", TimeoutSeconds: 60,
+		}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.awaitReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.send("start"); err != nil {
+		t.Fatal(err)
+	}
+	attempt := filepath.Base(repository.path)
+	childPath := filepath.Join(logDirectory, attempt+".child")
+	waitFor(t, 5*time.Second, func() bool {
+		_, err := os.Stat(childPath)
+		return err == nil
+	})
+	childPID := readPID(t, childPath)
+	started := time.Now()
+	if err := process.closeControl(); err != nil {
+		t.Fatal(err)
+	}
+	waitForProcessGone(t, childPID, 8*time.Second)
+	if elapsed := time.Since(started); elapsed > 7*time.Second {
+		t.Fatalf("parent pipe loss took %s", elapsed)
+	}
+}
+
+func TestV1WorktreeAndStateIsolation(t *testing.T) {
+	repository := createRepository(t, "isolation")
+	v1Root := filepath.Join(t.TempDir(), ".factory", "v1-owned")
+	runGitTest(t, repository.path, "worktree", "add", "-b", "codex/v1-owned", v1Root, "HEAD")
+	marker := filepath.Join(v1Root, "v1-state.sqlite3")
+	if err := os.WriteFile(marker, []byte("v1-state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), ".factory-v2", "worker"),
+		map[string]repositoryFixture{"isolation": repository}, 1)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool { return worker.Health == "healthy" })
+	task := createTask(t, fixture.store, worker, "isolation", "success", 60)
+	waitForTaskState(t, fixture.store, task.Task.ID, "succeeded")
+	body, err := os.ReadFile(marker)
+	if err != nil || string(body) != "v1-state" {
+		t.Fatalf("V1 state changed: %q, %v", body, err)
+	}
+	entries := runGitTest(t, repository.path, "worktree", "list", "--porcelain")
+	if !strings.Contains(entries, v1Root) || !strings.Contains(entries, "refs/heads/codex/v1-owned") {
+		t.Fatalf("V1 worktree registration changed:\n%s", entries)
+	}
+}
+
+func readPID(t *testing.T, path string) int {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pid
+}
+
+func waitForProcessGone(t *testing.T, pid int, timeout time.Duration) {
+	t.Helper()
+	waitFor(t, timeout, func() bool {
+		err := unix.Kill(pid, 0)
+		return errors.Is(err, unix.ESRCH)
+	})
+}
+
+func TestLoadConfigRejectsUnknownAndResolvesRelativePaths(t *testing.T) {
+	root := t.TempDir()
+	repository := createRepository(t, "config")
+	configPath := filepath.Join(root, "worker.toml")
+	body := fmt.Sprintf(`server = "http://127.0.0.1:7337"
+name = "local"
+max_concurrent = 1
+data_directory = "data"
+
+[repositories.factory]
+path = %q
+`, repository.path)
+	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.DataDirectory != filepath.Join(root, "data") {
+		t.Fatalf("resolved data directory = %s", config.DataDirectory)
+	}
+	if err := os.WriteFile(configPath, []byte(body+"unsafe_shortcut = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(configPath); err == nil || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("unknown field error = %v", err)
+	}
+}
+
+func TestServerURLRejectsNonLoopback(t *testing.T) {
+	for _, value := range []string{
+		"http://0.0.0.0:7337",
+		"http://example.com:7337",
+		"https://127.0.0.1:7337",
+		"http://127.0.0.1:7337/path",
+	} {
+		t.Run(value, func(t *testing.T) {
+			if err := validateServerURL(value); err == nil {
+				t.Fatalf("accepted %s", value)
+			}
+		})
+	}
+}
+
+func TestWorkerRefusesV1DataRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "factory.sqlite3"), []byte("v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveDataDirectory(filepath.Join(root, "workers", "local")); err == nil ||
+		!strings.Contains(err.Error(), "V1 state") {
+		t.Fatalf("V1 data-root error = %v", err)
+	}
+}
+
+func TestProcessIdentityRefusesWrongOwner(t *testing.T) {
+	command := exec.Command("/bin/sh", "-c", "trap '' TERM; while :; do sleep 1; done")
+	configureNewProcessGroup(command)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	}()
+	if err := stopOwnedProcessGroup(command.Process.Pid, "wrong identity", 0); err == nil {
+		t.Fatal("signalled a process group with the wrong identity")
+	}
+	if err := unix.Kill(command.Process.Pid, 0); err != nil {
+		t.Fatalf("wrong-identity check stopped process: %v", err)
+	}
+}
+
+func TestEventPayloadIsAlwaysBoundedJSON(t *testing.T) {
+	cases := map[string]string{
+		"unicode":       strings.Repeat("é", protocol.MaxEventBytes),
+		"escaped":       strings.Repeat("\"\\\n\t", protocol.MaxEventBytes),
+		"control bytes": strings.Repeat("\x00\x01\x02", protocol.MaxEventBytes),
+		"invalid UTF-8": string(bytes.Repeat([]byte{0xff, 0xfe}, protocol.MaxEventBytes)),
+	}
+	for name, text := range cases {
+		t.Run(name, func(t *testing.T) {
+			payload := eventPayload("stderr", text, false)
+			if len(payload) > protocol.MaxEventBytes || !jsonValid(payload) {
+				t.Fatalf("payload length=%d valid=%v", len(payload), jsonValid(payload))
+			}
+		})
+	}
+}
+
+func TestEventSenderRetriesTransientFailureWithSameSequence(t *testing.T) {
+	requests := make(chan protocol.EventBatchRequest, 2)
+	var count atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var input protocol.EventBatchRequest
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+			t.Errorf("decode event request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		requests <- input
+		if count.Add(1) == 1 {
+			http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sender := newEventSender(ctx, newClient(server.URL, nil), "attempt", "lease")
+	sender.enqueue("stderr", "retry me", false)
+	sender.closeAndWait(5 * time.Second)
+	if count.Load() != 2 {
+		t.Fatalf("event request count = %d", count.Load())
+	}
+	first := <-requests
+	second := <-requests
+	if len(first.Events) != 1 || len(second.Events) != 1 ||
+		first.Events[0].Sequence != 0 || second.Events[0].Sequence != 0 ||
+		!bytes.Equal(first.Events[0].Payload, second.Events[0].Payload) {
+		t.Fatalf("event retry changed content: first=%#v second=%#v", first.Events, second.Events)
+	}
+}
+
+func TestBoundedCompletionRequestFitsAfterJSONEscaping(t *testing.T) {
+	cases := map[string]protocol.CompleteAttemptRequest{
+		"control result": {
+			LeaseToken: strings.Repeat("l", 43),
+			State:      "succeeded",
+			Result:     strings.Repeat("\x00", protocol.MaxResultBytes),
+		},
+		"invalid UTF-8 result": {
+			LeaseToken: strings.Repeat("l", 43),
+			State:      "succeeded",
+			Result:     string(bytes.Repeat([]byte{0xff, 0xfe}, protocol.MaxResultBytes)),
+		},
+		"escaped result and invalid error": {
+			LeaseToken: strings.Repeat("l", 43),
+			State:      "failed",
+			Result:     strings.Repeat("\"\\\n", protocol.MaxResultBytes),
+			Error:      string(bytes.Repeat([]byte{0xff}, protocol.MaxErrorBytes)),
+		},
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			bounded := boundedCompletionRequest(input)
+			body, err := json.Marshal(bounded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(body) > protocol.MaxBodyBytes {
+				t.Fatalf("encoded completion length = %d", len(body))
+			}
+			if len(bounded.Result) > protocol.MaxResultBytes || len(bounded.Error) > protocol.MaxErrorBytes {
+				t.Fatalf("raw bounds exceeded: result=%d error=%d", len(bounded.Result), len(bounded.Error))
+			}
+			if !utf8.ValidString(bounded.Result) || !utf8.ValidString(bounded.Error) {
+				t.Fatal("bounded completion retained invalid UTF-8")
+			}
+		})
+	}
+}
+
+func jsonValid(value []byte) bool {
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	var decoded any
+	return decoder.Decode(&decoded) == nil
+}
