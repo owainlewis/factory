@@ -58,6 +58,12 @@ worker lifetime. The first start writes an owner-only `worker-id`; later starts
 reuse it. A second process cannot use the same data directory. The worker also
 refuses a data directory below a Factory V1 `factory.sqlite3` state root.
 
+Each claimed attempt has an owner-only manifest at
+`<data_directory>/attempts/<attempt-id>.json`. The worker writes the initial
+manifest before it creates the worktree. It atomically replaces the manifest
+and synchronizes both the file and parent directory for worktree, process,
+lease, completion, retention, and cleanup transitions.
+
 ## Run
 
 Start the server first, then:
@@ -123,11 +129,57 @@ worktree only when all live-attempt checks pass:
 - the worktree is clean;
 - its current commit is the original base or is reachable from a remote ref.
 
-Cleanup uses `git worktree remove` without force and never deletes the branch.
-Any mismatch or cleanup error retains the worktree. Failed, cancelled, dirty,
-and unpublished worktrees are also retained for inspection.
+Automatic successful cleanup uses `git worktree remove` without force and
+never deletes the branch. Any mismatch or cleanup error retains the worktree.
+Failed, cancelled, dirty, and unpublished worktrees are also retained for
+inspection.
 
-Durable attempt manifests, restart reconciliation, retained-worktree capacity,
-and preview or confirmed cleanup commands are intentionally delivered by issue
-#132. Until then, the worker does not scan, repair, or delete worktrees left by
-an earlier worker process.
+At startup, before registration or claims, the worker reads every attempt
+manifest. It stops any still-live process group only when the recorded process
+identity still matches. It never resumes Codex. It then compares the manifest,
+filesystem, and `git worktree list` and records one of these outcomes:
+
+- never created;
+- retained;
+- missing;
+- inconsistent;
+- cleanup in progress;
+- cleaned.
+
+An inconsistent or unproven identity makes the worker unhealthy and prevents
+claims. A missing or never-created worktree does not consume retained capacity.
+Only verified retained worktrees count toward the limit of ten per repository.
+A full repository remains queued while the worker continues heartbeats and may
+claim work for another repository. Transient control-plane or Git failures
+during reconciliation are retried before the worker first registers; they are
+not recorded as identity inconsistencies.
+
+## Inspect and clean retained worktrees
+
+Stop the worker before cleanup because the command takes the same exclusive
+data-directory lock. Preview is the default:
+
+```sh
+factory-worker cleanup ATTEMPT_ID --config /path/to/worker.toml
+```
+
+The preview prints the complete manifest, repository identity, worktree path,
+branch, commit, Git status, and retention reason. It does not change the
+manifest, worktree, or branch.
+
+After reviewing the preview, confirm cleanup explicitly:
+
+```sh
+factory-worker cleanup ATTEMPT_ID --confirm --config /path/to/worker.toml
+```
+
+Confirmed cleanup durably records `cleanup_started`, revalidates the
+manifest-owned V2 path and Git registration, removes that worktree, and then
+durably records `cleaned`. It never deletes the branch. Because confirmation
+can remove a dirty retained worktree, copy or commit any uncommitted work you
+want to keep before using `--confirm`.
+
+Cleanup fails closed for a missing manifest, a path outside the worker's V2
+worktree directory, a repository or branch identity mismatch, a partial
+worktree, or an unverified process identity. It never scans or removes Factory
+V1 paths, branches, or state.

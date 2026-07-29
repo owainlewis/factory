@@ -977,6 +977,11 @@ func TestSupervisorCrashStopsRecordedProcessGroup(t *testing.T) {
 	}
 	waitForTaskState(t, fixture.store, task.Task.ID, "failed")
 	waitForProcessGone(t, childPID, 8*time.Second)
+	waitFor(t, 5*time.Second, func() bool {
+		manager.stateMutex.Lock()
+		defer manager.stateMutex.Unlock()
+		return manager.fatalHealth != nil && manager.health.State == "unhealthy"
+	})
 }
 
 func TestServerLossStopsCodexBeforeLeaseExpiry(t *testing.T) {

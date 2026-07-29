@@ -217,6 +217,17 @@ func normalizeHostPath(host, path string) string {
 }
 
 func createWorktree(ctx context.Context, gitExecutable, root string, repository Repository, taskID, attemptID string) (worktree, error) {
+	value, err := prepareWorktree(ctx, gitExecutable, root, repository, taskID, attemptID)
+	if err != nil {
+		return value, err
+	}
+	if err := addPreparedWorktree(ctx, gitExecutable, repository, value); err != nil {
+		return value, err
+	}
+	return value, nil
+}
+
+func prepareWorktree(ctx context.Context, gitExecutable, root string, repository Repository, taskID, attemptID string) (worktree, error) {
 	if !uuidPattern.MatchString(taskID) || !uuidPattern.MatchString(attemptID) {
 		return worktree{}, errors.New("server returned an invalid task or attempt ID")
 	}
@@ -248,12 +259,16 @@ func createWorktree(ctx context.Context, gitExecutable, root string, repository 
 	}
 	branch := "factory-v2/" + taskID[:12] + "-" + attemptID[:12]
 	value := worktree{Path: path, Branch: branch, BaseCommit: base, HeadCommit: base}
-	stdout, stderr, err = runGitCommand(ctx, gitExecutable, repository.Path, 256<<10,
-		"worktree", "add", "-b", branch, path, base)
-	if err != nil {
-		return value, commandFailure("create managed worktree", stdout, stderr, err)
-	}
 	return value, nil
+}
+
+func addPreparedWorktree(ctx context.Context, gitExecutable string, repository Repository, value worktree) error {
+	stdout, stderr, err := runGitCommand(ctx, gitExecutable, repository.Path, 256<<10,
+		"worktree", "add", "-b", value.Branch, value.Path, value.BaseCommit)
+	if err != nil {
+		return commandFailure("create managed worktree", stdout, stderr, err)
+	}
+	return nil
 }
 
 type gitWorktreeEntry struct {

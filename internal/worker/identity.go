@@ -51,21 +51,7 @@ func (lock *dataLock) Close() error {
 func loadOrCreateWorkerID(directory string, random io.Reader) (string, error) {
 	path := filepath.Join(directory, "worker-id")
 	if info, err := os.Lstat(path); err == nil {
-		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-			return "", errors.New("worker-id must be a regular non-symlink file")
-		}
-		if info.Mode().Perm()&0o077 != 0 {
-			return "", errors.New("worker-id permissions must not allow group or other access")
-		}
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("read worker ID: %w", err)
-		}
-		id := strings.TrimSpace(string(body))
-		if !uuidPattern.MatchString(id) {
-			return "", errors.New("worker-id does not contain a valid UUID")
-		}
-		return id, nil
+		return readWorkerID(path, info)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("inspect worker ID: %w", err)
 	}
@@ -93,6 +79,36 @@ func loadOrCreateWorkerID(directory string, random io.Reader) (string, error) {
 	}
 	if err := syncDirectory(directory); err != nil {
 		return "", fmt.Errorf("sync worker ID directory: %w", err)
+	}
+	return id, nil
+}
+
+func loadWorkerID(directory string) (string, error) {
+	path := filepath.Join(directory, "worker-id")
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", errors.New("worker-id does not exist")
+		}
+		return "", fmt.Errorf("inspect worker ID: %w", err)
+	}
+	return readWorkerID(path, info)
+}
+
+func readWorkerID(path string, info os.FileInfo) (string, error) {
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("worker-id must be a regular non-symlink file")
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return "", errors.New("worker-id permissions must not allow group or other access")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read worker ID: %w", err)
+	}
+	id := strings.TrimSpace(string(body))
+	if !uuidPattern.MatchString(id) {
+		return "", errors.New("worker-id does not contain a valid UUID")
 	}
 	return id, nil
 }

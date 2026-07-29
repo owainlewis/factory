@@ -72,6 +72,12 @@ func (client *client) heartbeat(ctx context.Context, attemptID, token string) (p
 	return heartbeat, err
 }
 
+func (client *client) attempt(ctx context.Context, attemptID string) (protocol.Attempt, error) {
+	var attempt protocol.Attempt
+	_, err := client.request(ctx, http.MethodGet, "/api/v1/attempts/"+url.PathEscape(attemptID), nil, &attempt)
+	return attempt, err
+}
+
 func (client *client) events(ctx context.Context, attemptID string, input protocol.EventBatchRequest) error {
 	_, err := client.request(ctx, http.MethodPost, "/api/v1/attempts/"+url.PathEscape(attemptID)+"/events", input, nil)
 	return err

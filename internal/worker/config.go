@@ -29,6 +29,7 @@ type Config struct {
 	MaxConcurrent int                         `toml:"max_concurrent"`
 	DataDirectory string                      `toml:"data_directory"`
 	Repositories  map[string]RepositoryConfig `toml:"repositories"`
+	path          string
 }
 
 type Repository struct {
@@ -68,6 +69,10 @@ func LoadConfig(path string) (Config, error) {
 			repository.Path = filepath.Join(filepath.Dir(path), repository.Path)
 			config.Repositories[key] = repository
 		}
+	}
+	config.path, err = filepath.Abs(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve worker configuration path: %w", err)
 	}
 	return config, validateConfig(config)
 }

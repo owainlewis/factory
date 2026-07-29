@@ -58,6 +58,8 @@ type supervisorProcess struct {
 	wait               chan error
 	stderr             *limitBuffer
 	controlMutex       sync.Mutex
+	stateMutex         sync.Mutex
+	stoppedVerified    bool
 	supervisorPID      int64
 	supervisorIdentity string
 	processGroupID     int64
@@ -658,6 +660,18 @@ func (process *supervisorProcess) closeControl() error {
 	err := process.control.Close()
 	process.control = nil
 	return err
+}
+
+func (process *supervisorProcess) markStopped() {
+	process.stateMutex.Lock()
+	process.stoppedVerified = true
+	process.stateMutex.Unlock()
+}
+
+func (process *supervisorProcess) isStopped() bool {
+	process.stateMutex.Lock()
+	defer process.stateMutex.Unlock()
+	return process.stoppedVerified
 }
 
 func supervisorCommandLine(executable string) []string {

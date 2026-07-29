@@ -426,6 +426,89 @@ func TestClaimOrderingRepositoryFilteringAndReplay(t *testing.T) {
 	}
 }
 
+func TestClaimReservesRepositoryRetainedHeadroom(t *testing.T) {
+	store := newTestStore(t)
+	fixed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return fixed }
+	worker := registerTestWorker(t, store, workerA, 2,
+		protocol.RepositoryRegistration{
+			Key: "nearly-full", RemoteIdentity: "github.com/example/nearly-full",
+			RetainedCount: protocol.MaxRetainedPerRepo - 1,
+		},
+		protocol.RepositoryRegistration{Key: "open", RemoteIdentity: "github.com/example/open"},
+	)
+	repositories := map[string]string{}
+	for _, repository := range worker.Repositories {
+		repositories[repository.Key] = repository.ID
+	}
+	first := createTestTask(t, store, "nearly-full-first", workerA, repositories["nearly-full"])
+	fixed = fixed.Add(time.Millisecond)
+	createTestTask(t, store, "nearly-full-second", workerA, repositories["nearly-full"])
+	fixed = fixed.Add(time.Millisecond)
+	other := createTestTask(t, store, "open-while-reserved", workerA, repositories["open"])
+
+	claimedFirst := claimTestTask(t, store, workerA, "reserve-first", tokenA)
+	if claimedFirst.Task.ID != first.Task.ID {
+		t.Fatalf("first claim = %s; want %s", claimedFirst.Task.ID, first.Task.ID)
+	}
+	claimedOther := claimTestTask(t, store, workerA, "reserve-other", tokenB)
+	if claimedOther.Task.ID != other.Task.ID {
+		t.Fatalf("second claim = %s; want open repository task %s", claimedOther.Task.ID, other.Task.ID)
+	}
+}
+
+func TestTerminalAttemptReservesRetainedHeadroomUntilRegistration(t *testing.T) {
+	store := newTestStore(t)
+	fixed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return fixed }
+	worker := registerTestWorker(t, store, workerA, 2,
+		protocol.RepositoryRegistration{
+			Key: "nearly-full", RemoteIdentity: "github.com/example/nearly-full",
+			RetainedCount: protocol.MaxRetainedPerRepo - 1,
+		},
+		protocol.RepositoryRegistration{Key: "open", RemoteIdentity: "github.com/example/open"},
+	)
+	repositories := map[string]string{}
+	for _, repository := range worker.Repositories {
+		repositories[repository.Key] = repository.ID
+	}
+	first := createTestTask(t, store, "terminal-reservation", workerA, repositories["nearly-full"])
+	fixed = fixed.Add(time.Millisecond)
+	blocked := createTestTask(t, store, "blocked-during-handoff", workerA, repositories["nearly-full"])
+	fixed = fixed.Add(time.Millisecond)
+	other := createTestTask(t, store, "other-during-handoff", workerA, repositories["open"])
+
+	claim := claimTestTask(t, store, workerA, "terminal-reservation", tokenA)
+	if claim.Task.ID != first.Task.ID {
+		t.Fatalf("first claim = %s; want %s", claim.Task.ID, first.Task.ID)
+	}
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Error: "retained",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	next := claimTestTask(t, store, workerA, "other-repository", tokenB)
+	if next.Task.ID != other.Task.ID {
+		t.Fatalf("terminal handoff admitted %s; want other repository %s", next.Task.ID, other.Task.ID)
+	}
+	blockedDetail, err := store.Task(context.Background(), blocked.Task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blockedDetail.Execution.State != "queued" || len(blockedDetail.Attempts) != 0 {
+		t.Fatalf("terminal handoff failed to reserve capacity: %#v", blockedDetail)
+	}
+
+	fixed = fixed.Add(time.Millisecond)
+	registerTestWorker(t, store, workerA, 2,
+		protocol.RepositoryRegistration{
+			Key: "nearly-full", RemoteIdentity: "github.com/example/nearly-full",
+			RetainedCount: protocol.MaxRetainedPerRepo,
+		},
+		protocol.RepositoryRegistration{Key: "open", RemoteIdentity: "github.com/example/open"},
+	)
+}
+
 func TestConcurrentSQLiteClaimsCreateOneOwner(t *testing.T) {
 	store := newTestStore(t)
 	worker := registerTestWorker(t, store, workerA, 2, protocol.RepositoryRegistration{

@@ -1,10 +1,11 @@
 # Factory V2 MVP
 
-> **Status:** Proposed for review
+> **Status:** Implemented
 
-> **Implementation:** The control plane, UI, and local Unix worker execution
-> core are implemented. Durable worker manifests, restart reconciliation,
-> retained-worktree limits, and the cleanup CLI remain in issue #132.
+> **Implementation:** The control plane, UI, and crash-safe local Unix worker
+> are implemented. The worker uses durable attempt manifests, startup
+> reconciliation, repository-scoped retained-worktree limits, and explicit
+> preview or confirmed cleanup.
 
 ## 1. Executive summary
 

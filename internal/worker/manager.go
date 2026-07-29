@@ -55,20 +55,25 @@ type Manager struct {
 	repositories      []Repository
 	repositoriesByKey map[string]Repository
 	client            *client
+	manifests         *manifestStore
 	slots             chan struct{}
 
-	stateMutex  sync.Mutex
-	health      health
-	active      map[string]*attemptHandle
-	seen        map[string]bool
-	retained    map[string]protocol.RetainedWorktree
-	pending     map[string]context.CancelFunc
-	fatalHealth error
-	registered  bool
-	closed      bool
+	stateMutex     sync.Mutex
+	health         health
+	active         map[string]*attemptHandle
+	seen           map[string]bool
+	retained       map[string]protocol.RetainedWorktree
+	retainedCounts map[string]int
+	pending        map[string]context.CancelFunc
+	fatalHealth    error
+	registered     bool
+	closed         bool
 
 	randomMutex sync.Mutex
-	waitGroup   sync.WaitGroup
+	// registrationMutex keeps a periodic registration from overtaking the
+	// terminal-attempt to retained-worktree capacity handoff.
+	registrationMutex sync.Mutex
+	waitGroup         sync.WaitGroup
 }
 
 type attemptHandle struct {
@@ -76,10 +81,11 @@ type attemptHandle struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 
-	mutex      sync.Mutex
-	reason     string
-	expiry     time.Time
-	supervisor *supervisorProcess
+	mutex         sync.Mutex
+	reason        string
+	expiry        time.Time
+	supervisor    *supervisorProcess
+	manifestReady bool
 }
 
 func New(config Config, options Options, logger *slog.Logger) (*Manager, error) {
@@ -133,11 +139,13 @@ func New(config Config, options Options, logger *slog.Logger) (*Manager, error) 
 		repositories:      repositories,
 		repositoriesByKey: byKey,
 		client:            newClient(config.Server, options.HTTPClient),
+		manifests:         newManifestStore(dataDirectory, id),
 		slots:             make(chan struct{}, config.MaxConcurrent),
 		health:            health{State: "unhealthy"},
 		active:            make(map[string]*attemptHandle),
 		seen:              make(map[string]bool),
 		retained:          make(map[string]protocol.RetainedWorktree),
+		retainedCounts:    make(map[string]int),
 		pending:           make(map[string]context.CancelFunc),
 	}, nil
 }
@@ -192,6 +200,24 @@ func (manager *Manager) ID() string { return manager.id }
 
 func (manager *Manager) Run(ctx context.Context) error {
 	defer manager.Close()
+	for {
+		err := manager.reconcile(ctx)
+		if err == nil {
+			break
+		}
+		if !reconciliationNeedsRetry(err) {
+			manager.markUnhealthy("startup_reconciliation", err)
+			break
+		}
+		manager.logger.Warn("startup_reconciliation_retry", "error_class", "transient", "error", err)
+		timer := time.NewTimer(manager.options.LeaseRetryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+	}
 	manager.setHealth(checkHealth(ctx, manager.options.GitExecutable, manager.options.CodexExecutable))
 	manager.register(ctx)
 
@@ -281,6 +307,7 @@ func (manager *Manager) registration() protocol.WorkerRegistration {
 	for _, repository := range manager.repositories {
 		repositories = append(repositories, protocol.RepositoryRegistration{
 			Key: repository.Key, RemoteIdentity: repository.RemoteIdentity,
+			RetainedCount: manager.retainedCounts[repository.RemoteIdentity],
 		})
 	}
 	return protocol.WorkerRegistration{
@@ -296,6 +323,12 @@ func (manager *Manager) registration() protocol.WorkerRegistration {
 }
 
 func (manager *Manager) register(ctx context.Context) {
+	manager.registrationMutex.Lock()
+	defer manager.registrationMutex.Unlock()
+	manager.registerLocked(ctx)
+}
+
+func (manager *Manager) registerLocked(ctx context.Context) {
 	requestContext, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	if _, err := manager.client.register(requestContext, manager.id, manager.registration()); err != nil {
@@ -442,21 +475,62 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 	})
 	defer taskTimer.Stop()
 	worktreeRoot := filepath.Join(manager.dataDirectory, "worktrees")
-	value, err := createWorktree(handle.context, manager.options.GitExecutable, worktreeRoot,
+	value, err := prepareWorktree(handle.context, manager.options.GitExecutable, worktreeRoot,
 		repository, claim.Task.ID, claim.Attempt.ID)
 	if err != nil {
+		manager.finishWithoutWorktree(claim, token, handle, terminalForStop(handle), stoppedAttemptError(handle, err))
+		return
+	}
+	manifest := attemptManifest{
+		TaskID: claim.Task.ID, ExecutionID: claim.Execution.ID, AttemptID: claim.Attempt.ID,
+		RepositoryID: claim.Repository.ID, RepositoryKey: repository.Key,
+		RepositoryPath: repository.Path, RemoteIdentity: repository.RemoteIdentity,
+		BaseCommit: value.BaseCommit, WorktreePath: value.Path, Branch: value.Branch,
+		LeaseDeadline: claim.Attempt.LeaseExpiresAt, Lifecycle: manifestPreparing,
+	}
+	if err := manager.manifests.create(manifest); err != nil {
+		manager.markUnhealthy("manifest_write", err)
+		manager.finishWithoutWorktree(claim, token, handle, "failed", err)
+		return
+	}
+	handle.setManifestReady()
+	if err := addPreparedWorktree(handle.context, manager.options.GitExecutable, repository, value); err != nil {
 		state := "failed"
 		if handle.stopReason() == "cancelled" {
 			state = "cancelled"
 		}
 		err = stoppedAttemptError(handle, err)
-		if value.Path != "" {
-			if _, pathErr := os.Lstat(value.Path); pathErr == nil {
-				manager.finishWithWorktree(claim, token, handle, repository, value, state, "", err.Error())
-				return
-			}
+		persisted, loadErr := manager.manifests.load(claim.Attempt.ID)
+		inspection, inspectErr := inspectManifestWorktree(
+			context.Background(), manager.options.GitExecutable, manager.dataDirectory, persisted)
+		if loadErr != nil || inspectErr != nil {
+			identityErr := errors.Join(loadErr, inspectErr)
+			_ = manager.persistLifecycle(claim.Attempt.ID, manifestInconsistent, func(manifest *attemptManifest) {
+				manifest.RetentionReason = boundedText(identityErr.Error(), 1000)
+			})
+			manager.markUnhealthy("worktree_identity", identityErr)
+			manager.complete(claim.Attempt.ID, token, state, "", err.Error(), handle)
+			return
+		}
+		if inspection.PathExists && inspection.Registered {
+			manager.finishWithWorktree(claim, token, handle, repository, value, state, "", err.Error())
+			return
+		}
+		if inspection.PathExists || inspection.Registered {
+			identityErr := errors.New("worktree creation left partial filesystem or Git registration state")
+			_ = manager.persistLifecycle(claim.Attempt.ID, manifestInconsistent, func(manifest *attemptManifest) {
+				manifest.RetentionReason = identityErr.Error()
+			})
+			manager.markUnhealthy("worktree_identity", identityErr)
+			manager.complete(claim.Attempt.ID, token, state, "", err.Error(), handle)
+			return
 		}
 		manager.finishWithoutWorktree(claim, token, handle, state, err)
+		return
+	}
+	if err := manager.persistLifecycle(claim.Attempt.ID, manifestWorktreeCreated, nil); err != nil {
+		manager.markUnhealthy("manifest_write", err)
+		manager.finishWithWorktree(claim, token, handle, repository, value, "failed", "", err.Error())
 		return
 	}
 
@@ -481,6 +555,21 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		_ = process.closeControl()
 		manager.finishWithWorktree(claim, token, handle, repository, value,
 			terminalForStop(handle), "", stoppedAttemptError(handle, err).Error())
+		return
+	}
+	if _, err := manager.manifests.update(claim.Attempt.ID, func(manifest *attemptManifest) error {
+		manifest.SupervisorPID = process.supervisorPID
+		manifest.SupervisorIdentity = process.supervisorIdentity
+		manifest.ProcessGroupID = process.processGroupID
+		manifest.ProcessGroupIdentity = process.groupIdentity
+		manifest.ProcessActive = true
+		manifest.LeaseDeadline = handle.leaseExpiry()
+		manifest.Lifecycle = manifestSupervisorReady
+		return nil
+	}); err != nil {
+		manager.emergencyStop(process, err)
+		manager.markUnhealthy("manifest_write", err)
+		manager.finishWithWorktree(claim, token, handle, repository, value, "failed", "", err.Error())
 		return
 	}
 	handle.setSupervisor(process)
@@ -510,6 +599,13 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		message := manager.waitForSupervisor(process)
 		manager.finishWithWorktree(claim, token, handle, repository, value, "failed", message.Result,
 			"control plane did not accept the running transition")
+		return
+	}
+	if err := manager.persistLifecycle(claim.Attempt.ID, manifestRunning, nil); err != nil {
+		handle.stop("failed")
+		manager.emergencyStop(process, err)
+		manager.markUnhealthy("manifest_write", err)
+		manager.finishWithWorktree(claim, token, handle, repository, value, "failed", "", err.Error())
 		return
 	}
 	if err := process.send("start"); err != nil {
@@ -563,6 +659,16 @@ func (manager *Manager) heartbeatAttempt(handle *attemptHandle, attemptID, token
 		heartbeat, err := manager.client.heartbeat(requestContext, attemptID, token)
 		cancel()
 		if err == nil {
+			if handle.hasManifest() {
+				if _, persistErr := manager.manifests.update(attemptID, func(manifest *attemptManifest) error {
+					manifest.LeaseDeadline = heartbeat.LeaseExpiresAt
+					return nil
+				}); persistErr != nil {
+					manager.markUnhealthy("manifest_write", persistErr)
+					handle.stop("failed")
+					return
+				}
+			}
 			handle.updateExpiry(heartbeat.LeaseExpiresAt)
 			if heartbeat.CancellationRequested {
 				handle.stop("cancelled")
@@ -595,6 +701,18 @@ func (handle *attemptHandle) setSupervisor(process *supervisorProcess) {
 	} else {
 		_ = process.renew(expiry)
 	}
+}
+
+func (handle *attemptHandle) setManifestReady() {
+	handle.mutex.Lock()
+	handle.manifestReady = true
+	handle.mutex.Unlock()
+}
+
+func (handle *attemptHandle) hasManifest() bool {
+	handle.mutex.Lock()
+	defer handle.mutex.Unlock()
+	return handle.manifestReady
 }
 
 func (handle *attemptHandle) updateExpiry(expiry time.Time) {
@@ -661,6 +779,7 @@ func (manager *Manager) waitForSupervisorMessage(process *supervisorProcess) sup
 			if message.Type == "exit" || message.Type == "output" {
 				if message.Type == "exit" {
 					_ = process.closeControl()
+					process.markStopped()
 				}
 				return message
 			}
@@ -668,11 +787,15 @@ func (manager *Manager) waitForSupervisorMessage(process *supervisorProcess) sup
 			select {
 			case message := <-process.messages:
 				if message.Type == "exit" || message.Type == "output" {
+					if message.Type == "exit" {
+						process.markStopped()
+					}
 					return message
 				}
 			default:
 			}
 			manager.emergencyStop(process, err)
+			manager.markUnhealthy("attempt_supervisor", err)
 			return supervisorMessage{Type: "exit", Reason: "supervisor_error", ExitCode: -1,
 				Error: "attempt supervisor output ended unexpectedly"}
 		}
@@ -684,7 +807,9 @@ func (manager *Manager) emergencyStop(process *supervisorProcess, cause error) {
 	if process.processGroupID > 0 && process.groupIdentity != "" {
 		if err := stopOwnedProcessGroup(int(process.processGroupID), process.groupIdentity, terminationGrace); err != nil {
 			manager.markUnhealthy("process_group_stop", errors.Join(cause, err))
+			return
 		}
+		process.markStopped()
 	}
 }
 
@@ -699,6 +824,15 @@ func (manager *Manager) finishWithoutWorktree(
 	if cause != nil {
 		errorText = boundedText(cause.Error(), protocol.MaxErrorBytes)
 	}
+	if _, err := manager.manifests.load(claim.Attempt.ID); err == nil {
+		if persistErr := manager.persistLifecycle(claim.Attempt.ID, manifestNotCreated, func(manifest *attemptManifest) {
+			manifest.TerminalState = state
+			manifest.RetentionReason = ""
+			manifest.ProcessActive = false
+		}); persistErr != nil {
+			manager.markUnhealthy("manifest_write", persistErr)
+		}
+	}
 	manager.complete(claim.Attempt.ID, token, state, "", errorText, handle)
 }
 
@@ -712,22 +846,46 @@ func (manager *Manager) finishWithWorktree(
 	result string,
 	errorText string,
 ) {
+	manager.registrationMutex.Lock()
+	defer manager.registrationMutex.Unlock()
+	defer func() {
+		registerContext, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		manager.registerLocked(registerContext)
+	}()
+
 	result = boundedText(result, protocol.MaxResultBytes)
 	errorText = boundedText(errorText, protocol.MaxErrorBytes)
+	if err := manager.persistLifecycle(claim.Attempt.ID, manifestCompleted, func(manifest *attemptManifest) {
+		manifest.TerminalState = state
+		manifest.ProcessActive = handle.processStillActive()
+	}); err != nil {
+		manager.markUnhealthy("manifest_write", err)
+		errorText = firstNonEmpty(errorText, err.Error())
+	}
 	completed := manager.complete(claim.Attempt.ID, token, state, result, errorText, handle)
 	if completed && state == "succeeded" {
-		cleanupContext, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
-		err := cleanupSuccessfulWorktree(cleanupContext, manager.options.GitExecutable,
-			filepath.Join(manager.dataDirectory, "worktrees"), repository, value)
-		cancel()
+		err := manager.cleanCompletedWorktree(claim.Attempt.ID)
 		if err == nil {
 			manager.logger.Info("attempt_worktree_cleaned", "attempt_id", claim.Attempt.ID, "repository", repository.Key)
+			return
+		}
+		if manifest, loadErr := manager.manifests.load(claim.Attempt.ID); loadErr == nil &&
+			manifest.Lifecycle == manifestCleanupStarted {
+			manager.markUnhealthy("worktree_cleanup", err)
 			return
 		}
 		errorText = err.Error()
 	}
 	reason := firstNonEmpty(errorText, state+" attempt retained for inspection")
 	manager.retain(claim, repository, value, reason)
+}
+
+func (handle *attemptHandle) processStillActive() bool {
+	handle.mutex.Lock()
+	process := handle.supervisor
+	handle.mutex.Unlock()
+	return process != nil && !process.isStopped()
 }
 
 func (manager *Manager) complete(
@@ -760,12 +918,34 @@ func (manager *Manager) complete(
 }
 
 func (manager *Manager) retain(claim protocol.Claim, repository Repository, value worktree, reason string) {
-	manager.stateMutex.Lock()
-	manager.retained[claim.Attempt.ID] = protocol.RetainedWorktree{
-		AttemptID: claim.Attempt.ID, RepositoryID: claim.Repository.ID,
-		Path: value.Path, Reason: boundedText(reason, 1000),
+	manifest, err := manager.manifests.load(claim.Attempt.ID)
+	if err != nil {
+		manager.markUnhealthy("manifest_read", err)
+		return
 	}
-	manager.stateMutex.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*gitCommandTimeout)
+	inspection, inspectErr := inspectManifestWorktree(ctx, manager.options.GitExecutable, manager.dataDirectory, manifest)
+	cancel()
+	if inspectErr != nil || !inspection.PathExists || !inspection.Registered {
+		if inspectErr == nil {
+			inspectErr = errors.New("worktree exists in only one of the filesystem and Git worktree registry")
+		}
+		_ = manager.persistLifecycle(claim.Attempt.ID, manifestInconsistent, func(value *attemptManifest) {
+			value.RetentionReason = boundedText(inspectErr.Error(), 1000)
+		})
+		manager.markUnhealthy("worktree_identity", inspectErr)
+		return
+	}
+	updated, err := manager.manifests.update(claim.Attempt.ID, func(manifest *attemptManifest) error {
+		manifest.Lifecycle = manifestRetained
+		manifest.RetentionReason = boundedText(reason, 1000)
+		return nil
+	})
+	if err != nil {
+		manager.markUnhealthy("manifest_write", err)
+		return
+	}
+	manager.recordRetained(updated)
 	manager.logger.Info("attempt_worktree_retained", "attempt_id", claim.Attempt.ID, "repository", repository.Key)
 }
 
