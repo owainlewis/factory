@@ -15,11 +15,21 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Install Rust components
         run: rustup component add rustfmt clippy
-      - name: Check formatting
+      - name: Check Go formatting
+        run: test -z "$(gofmt -l cmd internal migrations)"
+      - name: Run Go vet
+        run: go vet ./...
+      - name: Run Go tests
+        run: go test ./...
+      - name: Check Rust formatting
         run: cargo fmt --all --check
-      - name: Run Clippy
+      - name: Run Rust Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
-      - name: Run tests
+      - name: Run Rust tests
         run: cargo test --locked --all-targets

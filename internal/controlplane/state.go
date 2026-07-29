@@ -1,0 +1,648 @@
+package controlplane
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"strings"
+
+	"github.com/owainlewis/factory/internal/protocol"
+)
+
+func (s *Store) Claim(ctx context.Context, workerID string, input protocol.ClaimRequest) (*protocol.Claim, error) {
+	input.RequestID = strings.TrimSpace(input.RequestID)
+	if input.RequestID == "" || len(input.RequestID) > 200 {
+		return nil, invalid("invalid_request_id", "request_id is required")
+	}
+	if err := validateToken(input.LeaseToken); err != nil {
+		return nil, err
+	}
+	digest := digestToken(input.LeaseToken)
+	now := s.now()
+	nowMillis := now.UnixMilli()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	defer tx.Rollback()
+
+	var storedDigest []byte
+	var storedAttempt sql.NullString
+	var claimCreated int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT lease_digest, attempt_id, created_at FROM claim_requests
+		WHERE worker_id = ? AND request_id = ?
+	`, workerID, input.RequestID).Scan(&storedDigest, &storedAttempt, &claimCreated)
+	if err == nil {
+		if !equalDigest(storedDigest, digest) {
+			return nil, conflict("claim_request_conflict", "request_id was already used with a different lease token")
+		}
+		if !storedAttempt.Valid {
+			if now.Sub(fromMillis(claimCreated)) <= protocol.EmptyClaimTTL {
+				if err := tx.Commit(); err != nil {
+					return nil, unavailable(err)
+				}
+				return nil, nil
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM claim_requests WHERE worker_id = ? AND request_id = ?`, workerID, input.RequestID); err != nil {
+				return nil, unavailable(err)
+			}
+		} else {
+			var state string
+			var expiry int64
+			var attemptDigest []byte
+			err := tx.QueryRowContext(ctx, `
+				SELECT state, lease_expires_at, lease_digest FROM attempts WHERE id = ?
+			`, storedAttempt.String).Scan(&state, &expiry, &attemptDigest)
+			if err != nil {
+				return nil, unavailable(err)
+			}
+			if !equalDigest(attemptDigest, digest) || !isActive(state) || expiry <= nowMillis {
+				return nil, conflict("lease_not_owner", "the claim no longer owns an active lease")
+			}
+			if err := tx.Commit(); err != nil {
+				return nil, unavailable(err)
+			}
+			claim, err := s.claimDetail(ctx, storedAttempt.String)
+			return &claim, err
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, unavailable(err)
+	}
+
+	var capacity, healthy int
+	var lastHeartbeat int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT capacity, health = 'healthy', last_heartbeat FROM workers WHERE id = ?
+	`, workerID).Scan(&capacity, &healthy, &lastHeartbeat)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	var active int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM attempts
+		WHERE worker_id = ? AND state IN ('preparing', 'running') AND lease_expires_at > ?
+	`, workerID, nowMillis).Scan(&active); err != nil {
+		return nil, unavailable(err)
+	}
+	if healthy == 0 || now.Sub(fromMillis(lastHeartbeat)) > protocol.WorkerOnlineWindow || active >= capacity {
+		if err := insertEmptyClaim(ctx, tx, workerID, input.RequestID, digest, nowMillis); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, unavailable(err)
+		}
+		return nil, nil
+	}
+
+	var executionID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT e.id
+		FROM executions e
+		JOIN tasks t ON t.id = e.task_id
+		JOIN worker_repositories wr
+		  ON wr.worker_id = e.assigned_worker_id AND wr.repository_id = t.repository_id
+		WHERE e.assigned_worker_id = ?
+		  AND e.state = 'queued'
+		  AND wr.advertised = 1
+		  AND wr.retained_count < ?
+		ORDER BY e.created_at, e.id
+		LIMIT 1
+	`, workerID, protocol.MaxRetainedPerRepo).Scan(&executionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		if err := insertEmptyClaim(ctx, tx, workerID, input.RequestID, digest, nowMillis); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, unavailable(err)
+		}
+		return nil, nil
+	}
+	if err != nil {
+		return nil, unavailable(err)
+	}
+
+	attemptID, err := newID()
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	var attemptNumber int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM attempts WHERE execution_id = ?
+	`, executionID).Scan(&attemptNumber); err != nil {
+		return nil, unavailable(err)
+	}
+	expiry := now.Add(protocol.LeaseDuration).UnixMilli()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO attempts(id, execution_id, worker_id, attempt_number, state, lease_digest, lease_expires_at, created_at)
+		VALUES (?, ?, ?, ?, 'preparing', ?, ?, ?)
+	`, attemptID, executionID, workerID, attemptNumber, digest, expiry, nowMillis); err != nil {
+		return nil, unavailable(err)
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE executions SET state = 'preparing', cancellation_requested = 0, updated_at = ?
+		WHERE id = ? AND state = 'queued'
+	`, nowMillis, executionID)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		return nil, conflict("claim_conflict", "execution is no longer queued")
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO claim_requests(worker_id, request_id, lease_digest, attempt_id, created_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, workerID, input.RequestID, digest, attemptID, nowMillis); err != nil {
+		return nil, unavailable(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, unavailable(err)
+	}
+	claim, err := s.claimDetail(ctx, attemptID)
+	return &claim, err
+}
+
+func insertEmptyClaim(ctx context.Context, tx *sql.Tx, workerID, requestID string, digest []byte, now int64) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO claim_requests(worker_id, request_id, lease_digest, attempt_id, created_at)
+		VALUES (?, ?, ?, NULL, ?)
+	`, workerID, requestID, digest, now)
+	if err != nil {
+		return unavailable(err)
+	}
+	return nil
+}
+
+func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Claim, error) {
+	var claim protocol.Claim
+	row := s.db.QueryRowContext(ctx, `
+		SELECT a.id, a.execution_id, a.worker_id, a.attempt_number, a.state, a.lease_expires_at,
+		       a.supervisor_pid, a.process_identity, a.process_group_id, a.result, a.error,
+		       a.started_at, a.completed_at, a.created_at
+		FROM attempts a WHERE a.id = ?
+	`, attemptID)
+	var err error
+	claim.Attempt, err = scanAttempt(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return claim, ErrNotFound
+	}
+	if err != nil {
+		return claim, unavailable(err)
+	}
+	row = s.db.QueryRowContext(ctx, `
+		SELECT id, task_id, assigned_worker_id, required_runtime, state,
+		       cancellation_requested, created_at, updated_at
+		FROM executions WHERE id = ?
+	`, claim.Attempt.ExecutionID)
+	claim.Execution, err = scanExecution(row)
+	if err != nil {
+		return claim, unavailable(err)
+	}
+	row = s.db.QueryRowContext(ctx, `
+		SELECT t.id, t.request_key, t.title, t.description, t.repository_id, t.timeout_seconds,
+		       e.assigned_worker_id, e.state, t.created_at
+		FROM tasks t JOIN executions e ON e.task_id = t.id WHERE t.id = ?
+	`, claim.Execution.TaskID)
+	claim.Task, err = scanTask(row, true)
+	if err != nil {
+		return claim, unavailable(err)
+	}
+	err = s.db.QueryRowContext(ctx, `
+		SELECT r.id, wr.display_key, r.remote_identity, wr.retained_count
+		FROM repositories r JOIN worker_repositories wr ON wr.repository_id = r.id
+		WHERE r.id = ? AND wr.worker_id = ?
+	`, claim.Task.RepositoryID, claim.Attempt.WorkerID).Scan(
+		&claim.Repository.ID, &claim.Repository.Key, &claim.Repository.RemoteIdentity, &claim.Repository.RetainedCount)
+	if err != nil {
+		return claim, unavailable(err)
+	}
+	return claim, nil
+}
+
+type leaseState struct {
+	attemptState   string
+	executionID    string
+	executionState string
+	digest         []byte
+	expiry         int64
+	cancel         bool
+}
+
+func loadLease(ctx context.Context, tx *sql.Tx, attemptID string) (leaseState, error) {
+	var value leaseState
+	var cancel int
+	err := tx.QueryRowContext(ctx, `
+		SELECT a.state, a.execution_id, e.state, a.lease_digest, a.lease_expires_at, e.cancellation_requested
+		FROM attempts a JOIN executions e ON e.id = a.execution_id
+		WHERE a.id = ?
+	`, attemptID).Scan(&value.attemptState, &value.executionID, &value.executionState, &value.digest, &value.expiry, &cancel)
+	if errors.Is(err, sql.ErrNoRows) {
+		return value, ErrNotFound
+	}
+	if err != nil {
+		return value, unavailable(err)
+	}
+	value.cancel = cancel != 0
+	return value, nil
+}
+
+func verifyActiveLease(value leaseState, token string, now int64) error {
+	if err := validateToken(token); err != nil {
+		return err
+	}
+	if !equalDigest(value.digest, digestToken(token)) || !isActive(value.attemptState) || value.expiry <= now {
+		return conflict("lease_not_owner", "the lease token does not own an active attempt")
+	}
+	return nil
+}
+
+func isActive(state string) bool { return state == "preparing" || state == "running" }
+func isTerminal(state string) bool {
+	return state == "succeeded" || state == "failed" || state == "cancelled" || state == "lost"
+}
+
+func (s *Store) StartAttempt(ctx context.Context, attemptID string, input protocol.StartAttemptRequest) (protocol.Attempt, error) {
+	now := s.now().UnixMilli()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.Attempt{}, unavailable(err)
+	}
+	defer tx.Rollback()
+	lease, err := loadLease(ctx, tx, attemptID)
+	if err != nil {
+		return protocol.Attempt{}, err
+	}
+	if err := verifyActiveLease(lease, input.LeaseToken, now); err != nil {
+		return protocol.Attempt{}, err
+	}
+	if lease.attemptState == "preparing" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE attempts SET state = 'running', supervisor_pid = ?, process_identity = ?,
+			       process_group_id = ?, started_at = ?
+			WHERE id = ? AND state = 'preparing'
+		`, input.SupervisorPID, nullString(input.ProcessIdentity), input.ProcessGroupID, now, attemptID); err != nil {
+			return protocol.Attempt{}, unavailable(err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE executions SET state = 'running', updated_at = ? WHERE id = ? AND state = 'preparing'
+		`, now, lease.executionID); err != nil {
+			return protocol.Attempt{}, unavailable(err)
+		}
+	} else if lease.attemptState != "running" {
+		return protocol.Attempt{}, conflict("invalid_transition", "attempt cannot be started from its current state")
+	}
+	if err := tx.Commit(); err != nil {
+		return protocol.Attempt{}, unavailable(err)
+	}
+	return s.Attempt(ctx, attemptID)
+}
+
+func nullString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func (s *Store) Heartbeat(ctx context.Context, attemptID, token string) (protocol.HeartbeatResponse, error) {
+	now := s.now()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.HeartbeatResponse{}, unavailable(err)
+	}
+	defer tx.Rollback()
+	lease, err := loadLease(ctx, tx, attemptID)
+	if err != nil {
+		return protocol.HeartbeatResponse{}, err
+	}
+	if err := verifyActiveLease(lease, token, now.UnixMilli()); err != nil {
+		return protocol.HeartbeatResponse{}, err
+	}
+	expiry := now.Add(protocol.LeaseDuration)
+	if _, err := tx.ExecContext(ctx, `UPDATE attempts SET lease_expires_at = ? WHERE id = ?`, expiry.UnixMilli(), attemptID); err != nil {
+		return protocol.HeartbeatResponse{}, unavailable(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return protocol.HeartbeatResponse{}, unavailable(err)
+	}
+	return protocol.HeartbeatResponse{LeaseExpiresAt: expiry.UTC(), CancellationRequested: lease.cancel}, nil
+}
+
+func (s *Store) AppendEvents(ctx context.Context, attemptID string, input protocol.EventBatchRequest) error {
+	if len(input.Events) == 0 || len(input.Events) > protocol.MaxEventsPerBatch {
+		return invalid("invalid_event_batch", "an event batch must contain 1 through 100 events")
+	}
+	encoded, _ := json.Marshal(input)
+	if len(encoded) > protocol.MaxEventBatchBytes {
+		return invalid("event_batch_too_large", "event batch exceeds 256 KiB")
+	}
+	var previous int64 = -1
+	for _, event := range input.Events {
+		if event.Sequence < 0 || event.Sequence <= previous || strings.TrimSpace(event.Kind) == "" || len(event.Kind) > 100 {
+			return invalid("invalid_event", "event sequences must be non-negative and strictly increasing, with a kind")
+		}
+		if len(event.Payload) > protocol.MaxEventBytes {
+			return invalid("event_too_large", "one event exceeds 64 KiB")
+		}
+		if !json.Valid(event.Payload) {
+			return invalid("invalid_event", "event payload must be valid JSON")
+		}
+		previous = event.Sequence
+	}
+	now := s.now().UnixMilli()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return unavailable(err)
+	}
+	defer tx.Rollback()
+	lease, err := loadLease(ctx, tx, attemptID)
+	if err != nil {
+		return err
+	}
+	if err := verifyActiveLease(lease, input.LeaseToken, now); err != nil {
+		return err
+	}
+	var storedBytes int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(payload_bytes), 0) FROM attempt_events WHERE attempt_id = ?`, attemptID).Scan(&storedBytes); err != nil {
+		return unavailable(err)
+	}
+	type pendingEvent struct {
+		event protocol.AttemptEvent
+	}
+	var pending []pendingEvent
+	var maxSequence int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(sequence), -1) FROM attempt_events WHERE attempt_id = ?
+	`, attemptID).Scan(&maxSequence); err != nil {
+		return unavailable(err)
+	}
+	for _, event := range input.Events {
+		var kind string
+		var payload []byte
+		err := tx.QueryRowContext(ctx, `
+			SELECT kind, payload FROM attempt_events WHERE attempt_id = ? AND sequence = ?
+		`, attemptID, event.Sequence).Scan(&kind, &payload)
+		if err == nil {
+			if kind != event.Kind || !jsonEqual(payload, event.Payload) {
+				return conflict("event_conflict", "an event sequence was replayed with different content")
+			}
+			continue
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return unavailable(err)
+		}
+		if event.Sequence <= maxSequence {
+			return conflict("event_out_of_order", "a new event sequence must follow stored events")
+		}
+		storedBytes += len(event.Payload)
+		pending = append(pending, pendingEvent{event: event})
+		maxSequence = event.Sequence
+	}
+	if storedBytes > protocol.MaxAttemptEventBytes {
+		return &ServiceError{Code: "event_budget_exceeded", Message: "attempt event storage exceeds 10 MiB", Status: 413}
+	}
+	for _, item := range pending {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO attempt_events(attempt_id, sequence, kind, payload, payload_bytes, server_time)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, attemptID, item.event.Sequence, item.event.Kind, []byte(item.event.Payload), len(item.event.Payload), now); err != nil {
+			return unavailable(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return unavailable(err)
+	}
+	return nil
+}
+
+func jsonEqual(a, b []byte) bool {
+	return bytes.Equal(a, b)
+}
+
+func (s *Store) Events(ctx context.Context, attemptID string, after int64) ([]protocol.AttemptEvent, error) {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM attempts WHERE id = ?`, attemptID).Scan(&exists); err != nil {
+		return nil, unavailable(err)
+	}
+	if exists == 0 {
+		return nil, ErrNotFound
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT sequence, kind, payload, server_time
+		FROM attempt_events WHERE attempt_id = ? AND sequence > ?
+		ORDER BY sequence
+	`, attemptID, after)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	defer rows.Close()
+	var events []protocol.AttemptEvent
+	for rows.Next() {
+		var event protocol.AttemptEvent
+		var payload []byte
+		var serverTime int64
+		if err := rows.Scan(&event.Sequence, &event.Kind, &payload, &serverTime); err != nil {
+			return nil, unavailable(err)
+		}
+		event.Payload = append(event.Payload[:0], payload...)
+		event.ServerTime = fromMillis(serverTime)
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input protocol.CompleteAttemptRequest) (protocol.Attempt, error) {
+	if input.State != "succeeded" && input.State != "failed" && input.State != "cancelled" {
+		return protocol.Attempt{}, invalid("invalid_terminal_state", "state must be succeeded, failed, or cancelled")
+	}
+	if len([]byte(input.Result)) > protocol.MaxResultBytes || len([]byte(input.Error)) > protocol.MaxErrorBytes {
+		return protocol.Attempt{}, &ServiceError{Code: "result_too_large", Message: "result or error exceeds its storage limit", Status: 413}
+	}
+	if err := validateToken(input.LeaseToken); err != nil {
+		return protocol.Attempt{}, err
+	}
+	now := s.now().UnixMilli()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.Attempt{}, unavailable(err)
+	}
+	defer tx.Rollback()
+	lease, err := loadLease(ctx, tx, attemptID)
+	if err != nil {
+		return protocol.Attempt{}, err
+	}
+	if isTerminal(lease.attemptState) {
+		if lease.attemptState == "lost" || !equalDigest(lease.digest, digestToken(input.LeaseToken)) {
+			return protocol.Attempt{}, conflict("lease_not_owner", "the lease token does not own this terminal attempt")
+		}
+		if err := tx.Commit(); err != nil {
+			return protocol.Attempt{}, unavailable(err)
+		}
+		return s.Attempt(ctx, attemptID)
+	}
+	if err := verifyActiveLease(lease, input.LeaseToken, now); err != nil {
+		return protocol.Attempt{}, err
+	}
+	if input.State == "succeeded" && lease.attemptState != "running" {
+		return protocol.Attempt{}, conflict("invalid_transition", "only a running attempt can succeed")
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE attempts SET state = ?, result = ?, error = ?, completed_at = ?
+		WHERE id = ? AND state IN ('preparing', 'running')
+	`, input.State, nullString(input.Result), nullString(input.Error), now, attemptID); err != nil {
+		return protocol.Attempt{}, unavailable(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE executions SET state = ?, updated_at = ?
+		WHERE id = ? AND state IN ('preparing', 'running')
+	`, input.State, now, lease.executionID); err != nil {
+		return protocol.Attempt{}, unavailable(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return protocol.Attempt{}, unavailable(err)
+	}
+	return s.Attempt(ctx, attemptID)
+}
+
+func (s *Store) Attempt(ctx context.Context, id string) (protocol.Attempt, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, execution_id, worker_id, attempt_number, state, lease_expires_at,
+		       supervisor_pid, process_identity, process_group_id, result, error,
+		       started_at, completed_at, created_at
+		FROM attempts WHERE id = ?
+	`, id)
+	value, err := scanAttempt(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return value, ErrNotFound
+	}
+	if err != nil {
+		return value, unavailable(err)
+	}
+	return value, nil
+}
+
+func (s *Store) CancelTask(ctx context.Context, taskID string) (protocol.TaskDetail, error) {
+	now := s.now().UnixMilli()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.TaskDetail{}, unavailable(err)
+	}
+	defer tx.Rollback()
+	var executionID, state string
+	err = tx.QueryRowContext(ctx, `SELECT id, state FROM executions WHERE task_id = ?`, taskID).Scan(&executionID, &state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.TaskDetail{}, ErrNotFound
+	}
+	if err != nil {
+		return protocol.TaskDetail{}, unavailable(err)
+	}
+	switch state {
+	case "queued":
+		_, err = tx.ExecContext(ctx, `UPDATE executions SET state = 'cancelled', updated_at = ? WHERE id = ?`, now, executionID)
+	case "preparing", "running":
+		_, err = tx.ExecContext(ctx, `UPDATE executions SET cancellation_requested = 1, updated_at = ? WHERE id = ?`, now, executionID)
+	}
+	if err != nil {
+		return protocol.TaskDetail{}, unavailable(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return protocol.TaskDetail{}, unavailable(err)
+	}
+	return s.Task(ctx, taskID)
+}
+
+func (s *Store) RetryExecution(ctx context.Context, executionID string) (protocol.TaskDetail, error) {
+	now := s.now().UnixMilli()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.TaskDetail{}, unavailable(err)
+	}
+	defer tx.Rollback()
+	var taskID, state string
+	err = tx.QueryRowContext(ctx, `SELECT task_id, state FROM executions WHERE id = ?`, executionID).Scan(&taskID, &state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.TaskDetail{}, ErrNotFound
+	}
+	if err != nil {
+		return protocol.TaskDetail{}, unavailable(err)
+	}
+	if state != "failed" && state != "cancelled" {
+		return protocol.TaskDetail{}, conflict("retry_not_allowed", "only a failed or cancelled execution can be retried")
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE executions SET state = 'queued', cancellation_requested = 0, updated_at = ? WHERE id = ?
+	`, now, executionID); err != nil {
+		return protocol.TaskDetail{}, unavailable(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return protocol.TaskDetail{}, unavailable(err)
+	}
+	return s.Task(ctx, taskID)
+}
+
+type ExpiredLease struct {
+	AttemptID   string
+	ExecutionID string
+}
+
+func (s *Store) SweepExpired(ctx context.Context) ([]ExpiredLease, error) {
+	now := s.now().UnixMilli()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM claim_requests
+		WHERE attempt_id IS NULL AND created_at < ?
+	`, now-protocol.EmptyClaimTTL.Milliseconds()); err != nil {
+		return nil, unavailable(err)
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, execution_id FROM attempts
+		WHERE state IN ('preparing', 'running') AND lease_expires_at <= ?
+	`, now)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	var values []ExpiredLease
+	for rows.Next() {
+		var value ExpiredLease
+		if err := rows.Scan(&value.AttemptID, &value.ExecutionID); err != nil {
+			rows.Close()
+			return nil, unavailable(err)
+		}
+		values = append(values, value)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, unavailable(err)
+	}
+	for _, value := range values {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE attempts SET state = 'lost', error = 'lease expired', completed_at = ?
+			WHERE id = ? AND state IN ('preparing', 'running') AND lease_expires_at <= ?
+		`, now, value.AttemptID, now)
+		if err != nil {
+			return nil, unavailable(err)
+		}
+		changed, _ := result.RowsAffected()
+		if changed == 1 {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE executions SET state = 'failed', updated_at = ?
+				WHERE id = ? AND state IN ('preparing', 'running')
+				`, now, value.ExecutionID); err != nil {
+				return nil, unavailable(err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, unavailable(err)
+	}
+	return values, nil
+}

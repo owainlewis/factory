@@ -18,13 +18,15 @@ Security vulnerabilities should be reported privately as described in
 
 ## Development setup
 
-Factory requires a current stable Rust toolchain. Some integration tests also
-exercise local `git` and GitHub CLI behavior.
+Factory V1 requires a current stable Rust toolchain. Factory V2 requires Go
+1.24 or newer. Some integration tests also exercise local `git` and GitHub CLI
+behavior.
 
 ```sh
 git clone https://github.com/owainlewis/factory.git
 cd factory
 cargo build --locked
+go build ./...
 ```
 
 To exercise Factory against GitHub, install and authenticate the GitHub CLI.
@@ -39,6 +41,9 @@ Most unit and integration tests do not require live GitHub access.
 4. Run the project checks:
 
 ```sh
+test -z "$(gofmt -l cmd internal migrations)"
+go vet ./...
+go test ./...
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked --all-targets

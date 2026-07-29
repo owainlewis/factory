@@ -557,10 +557,15 @@ V2 state is stored below `~/.factory-v2/` by default:
 ```text
 ~/.factory-v2/
   server/factory.sqlite3
+  server/factory.sqlite3.v2-control-plane
   workers/owains-mac/worker-id
   workers/owains-mac/attempts/
   workers/owains-mac/worktrees/
 ```
+
+The server writes the adjacent `v2-control-plane` marker before creating its
+database. It refuses to open an existing database without that marker, which
+keeps an accidentally selected V1 or unrelated SQLite file untouched.
 
 `FACTORY_V2_DATA_HOME` may override the root. V2 refuses a data root containing
 a V1 database marker, and V1 never searches this path.
