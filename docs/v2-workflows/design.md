@@ -236,6 +236,14 @@ instructions. The server validates the revision and enabled workflow inside
 the task-creation transaction. An exact task request-key replay returns the
 original task before revalidating workflow state.
 
+`GET /api/v1/tasks/by-request-key?key=REQUEST_KEY` provides the indexed recovery
+path for a client whose create response was lost. The query value supports the
+existing request-key character set without path ambiguity. It returns the
+original task before the client resolves mutable worker, repository, or
+workflow names. Task creation still checks the same globally unique key before
+validation, so a concurrent create between lookup and submission returns the
+original task.
+
 The stored task adds nullable workflow ID and revision ID, workflow-name and
 revision-number snapshots, and a required resolved prompt. Browser list and
 detail projections keep `task.description` as the original free-text context;

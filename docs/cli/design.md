@@ -252,6 +252,9 @@ framework solely for command parsing.
   means Blank task.
 - A generated request key is a random UUID. An explicit request key enables
   safe replay by scripts.
+- Before resolving mutable worker, repository, workflow, or schedule names, a
+  command with an explicit request key looks up an existing task by that key.
+  If found, it returns or waits for that task without sending a mutation.
 - The CLI retries an uncertain task submission three times with delays of one,
   two, and four seconds, always using the same request key. If the outcome
   remains unknown, it prints that key so the operator can replay the command.
@@ -418,6 +421,17 @@ The task-list API accepts an exact `state` query parameter. The server applies
 that filter before cursor pagination, so each page contains up to the requested
 number of matching tasks and its next cursor continues the same filtered query.
 
+`GET /api/v1/tasks/by-request-key?key=REQUEST_KEY` returns the one task created
+by that globally unique key or not found. The key is query-encoded because the
+existing request-key contract permits characters that are unsafe in a path
+segment. This is an indexed exact lookup, not a list scan. `factory run` and
+`factory schedules run` call it before resolving mutable friendly names when
+the operator supplies `--request-key`. A found task is the replay result even
+if its worker, repository advertisement, workflow, or schedule has since
+changed. A not-found result proceeds through normal resolution and task
+creation; the create transaction still checks the key before validating
+current target state, closing the lookup-to-create race.
+
 The workflow-list and schedule-list APIs accept an exact Boolean `enabled`
 query parameter and an exact `name` query parameter. The server applies filters
 before cursor pagination and each next cursor continues the same filtered
@@ -460,6 +474,9 @@ server URL and suggest `factory start` or `factory status`.
 
 Finite API calls have a 10-second request timeout, except `run --wait`.
 Submission retries reuse the same request key and never create a second task.
+An explicit-key recovery lookup uses the same finite retry policy as a task
+submission. If its outcome remains unknown, the command exits 1 without
+resolving names or sending a mutation.
 `run --wait` gives each poll a 10-second timeout and retries connection failures
 up to five times, with delays of 1, 2, 4, 8, then 10 seconds before each retry.
 It reports the loss of connection once and recovers without restart when a
@@ -563,10 +580,10 @@ rule, usage failure, exit code, and help example. Golden tests will cover human
 and JSON output with stdout and stderr captured separately.
 
 HTTP client tests will use a local test server to prove name resolution,
-pagination, request-key replay, API error display, wait polling, disconnect
-backoff and exhaustion, and Ctrl-C behavior. They will assert that ambiguous
-input causes no mutating request and that explicit context ignores inherited
-empty non-terminal stdin.
+pagination, request-key replay before mutable-name resolution, lookup-to-create
+races, API error display, wait polling, disconnect backoff and exhaustion, and
+Ctrl-C behavior. They will assert that ambiguous input causes no mutating
+request and that explicit context ignores inherited empty non-terminal stdin.
 
 Process tests will start the real server with temporary state and fake worker
 entry points. They will cover readiness bounds, multiple workers, child
