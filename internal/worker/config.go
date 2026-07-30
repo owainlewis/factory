@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/owainlewis/factory/internal/protocol"
 	"github.com/owainlewis/factory/internal/statepath"
 )
 
@@ -27,6 +28,7 @@ type RepositoryConfig struct {
 type Config struct {
 	Server        string                      `toml:"server"`
 	Name          string                      `toml:"name"`
+	Runtime       string                      `toml:"runtime"`
 	MaxConcurrent int                         `toml:"max_concurrent"`
 	DataDirectory string                      `toml:"data_directory"`
 	Repositories  map[string]RepositoryConfig `toml:"repositories"`
@@ -56,6 +58,9 @@ func LoadConfig(path string) (Config, error) {
 	if config.Server == "" {
 		config.Server = defaultServer
 	}
+	if config.Runtime == "" {
+		config.Runtime = protocol.RuntimeCodex
+	}
 	if config.MaxConcurrent == 0 {
 		config.MaxConcurrent = defaultMaxConcurrent
 	}
@@ -84,6 +89,9 @@ func validateConfig(config Config) error {
 	}
 	if strings.TrimSpace(config.Name) == "" || len(config.Name) > 200 {
 		return errors.New("name is required and must be at most 200 bytes")
+	}
+	if config.Runtime != "" && !protocol.SupportedRuntime(config.Runtime) {
+		return errors.New("runtime must be codex or claude-code")
 	}
 	if config.MaxConcurrent < 1 || config.MaxConcurrent > maxConcurrent {
 		return fmt.Errorf("max_concurrent must be between 1 and %d", maxConcurrent)

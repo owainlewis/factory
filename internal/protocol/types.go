@@ -6,6 +6,8 @@ import (
 )
 
 const (
+	RuntimeCodex         = "codex"
+	RuntimeClaudeCode    = "claude-code"
 	MaxBodyBytes         = 1 << 20
 	MaxDescriptionBytes  = 64 << 10
 	MaxEventBatchBytes   = 256 << 10
@@ -26,6 +28,10 @@ const (
 	MaxEventPageSize     = 500
 )
 
+func SupportedRuntime(value string) bool {
+	return value == RuntimeCodex || value == RuntimeClaudeCode
+}
+
 type RepositoryRegistration struct {
 	Key            string `json:"key"`
 	RemoteIdentity string `json:"remote_identity"`
@@ -43,7 +49,8 @@ type RetainedWorktree struct {
 type WorkerRegistration struct {
 	Name                   string                   `json:"name"`
 	WorkerVersion          string                   `json:"worker_version"`
-	CodexVersion           string                   `json:"codex_version"`
+	Runtime                string                   `json:"runtime"`
+	RuntimeVersion         string                   `json:"runtime_version"`
 	Capacity               int                      `json:"capacity"`
 	ActiveCount            int                      `json:"active_count"`
 	Health                 string                   `json:"health"`
@@ -64,7 +71,8 @@ type Worker struct {
 	ID                string             `json:"id"`
 	Name              string             `json:"name"`
 	WorkerVersion     string             `json:"worker_version"`
-	CodexVersion      string             `json:"codex_version"`
+	Runtime           string             `json:"runtime"`
+	RuntimeVersion    string             `json:"runtime_version"`
 	Capacity          int                `json:"capacity"`
 	ActiveCount       int                `json:"active_count"`
 	Health            string             `json:"health"`

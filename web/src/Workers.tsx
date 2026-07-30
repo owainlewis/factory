@@ -14,7 +14,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { api } from "./api";
-import { stateLabel, timeAgo } from "./format";
+import { runtimeLabel, stateLabel, timeAgo } from "./format";
 import { useVisibleInterval } from "./polling";
 import type { Worker } from "./types";
 import {
@@ -72,6 +72,9 @@ export function WorkersView({
                 <span className={`presence ${worker.online ? "online" : "offline"}`} aria-hidden="true" />
                 <span>
                   <strong>{worker.name}</strong>
+                  <span className={`runtime-badge runtime-${worker.runtime}`}>
+                    <Play size={10} /> {runtimeLabel(worker.runtime)}
+                  </span>
                   <small>
                     {worker.online ? "Online" : "Offline"} ·{" "}
                     <span className={worker.health === "healthy" ? "healthy-text" : "danger-text"}>
@@ -91,7 +94,7 @@ export function WorkersView({
                 {worker.repositories.map((repo) => <span className="tag" key={repo.id}>{repo.key}</span>)}
               </span>
               <span className="versions">
-                <small>Codex {worker.codex_version || "unknown"}</small>
+                <small>{runtimeLabel(worker.runtime)} {worker.runtime_version || "unknown"}</small>
                 <small>Worker {worker.worker_version || "unknown"}</small>
               </span>
               <span className="last-seen">{timeAgo(worker.last_heartbeat)}</span>
@@ -141,6 +144,9 @@ export function WorkerDetail({ id, onBack }: { id: string; onBack: () => void })
             <span className={data.health === "healthy" ? "healthy-text" : "danger-text"}>{stateLabel(data.health)}</span>
           </div>
           <h1>{data.name}</h1>
+          <span className={`runtime-badge runtime-${data.runtime}`}>
+            <Play size={10} /> {runtimeLabel(data.runtime)}
+          </span>
           <p>Registered {new Date(data.registered_at).toLocaleString()}</p>
         </div>
         <span className="worker-id" title={data.id}>{data.id}</span>
@@ -149,7 +155,7 @@ export function WorkerDetail({ id, onBack }: { id: string; onBack: () => void })
 
       <div className="worker-summary">
         <SummaryItem label="Active capacity" value={`${data.active_count} / ${data.capacity}`} icon={<CircleDot size={17} />} />
-        <SummaryItem label="Codex version" value={data.codex_version || "Unknown"} icon={<Play size={17} />} />
+        <SummaryItem label={`${runtimeLabel(data.runtime)} version`} value={data.runtime_version || "Unknown"} icon={<Play size={17} />} />
         <SummaryItem label="Worker version" value={data.worker_version || "Unknown"} icon={<Server size={17} />} />
         <SummaryItem label="Last seen" value={timeAgo(data.last_heartbeat)} icon={<Clock3 size={17} />} />
       </div>

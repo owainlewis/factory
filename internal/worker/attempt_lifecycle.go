@@ -127,11 +127,12 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 	}
 	defer os.Remove(path)
 	process, err := startSupervisor(manager.options.SupervisorCommand, supervisorInit{
-		CodexExecutable: manager.options.CodexExecutable,
-		Worktree:        value.Path,
-		ResultPath:      path,
-		Prompt:          buildPrompt(claim),
-		TimeoutSeconds:  remainingTimeoutSeconds(taskDeadline),
+		Runtime:           manager.config.Runtime,
+		RuntimeExecutable: manager.options.RuntimeExecutable,
+		Worktree:          value.Path,
+		ResultPath:        path,
+		Prompt:            buildPrompt(claim),
+		TimeoutSeconds:    remainingTimeoutSeconds(taskDeadline),
 	}, os.Stderr)
 	if err != nil {
 		manager.finishWithWorktree(claim, token, handle, repository, value, "failed", "", err.Error())
@@ -201,7 +202,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 	}
 	manager.logger.Info("attempt_started", "attempt_id", claim.Attempt.ID, "repository", repository.Key,
 		"process", processSummary(process))
-	sender := newEventSender(handle.context, manager.client, claim.Attempt.ID, token)
+	sender := newEventSender(handle.context, manager.client, claim.Attempt.ID, token, manager.config.Runtime)
 	message := manager.waitForSupervisorWithEvents(process, sender)
 	sender.closeAndWait(5 * time.Second)
 	manager.finishWithWorktree(claim, token, handle, repository, value,
@@ -215,8 +216,8 @@ func (manager *Manager) validateClaim(claim protocol.Claim) (Repository, error) 
 	if claim.Attempt.WorkerID != manager.id || claim.Execution.AssignedWorkerID != manager.id {
 		return Repository{}, errors.New("claim is assigned to a different worker")
 	}
-	if claim.Execution.RequiredRuntime != "codex" {
-		return Repository{}, errors.New("claim requires an unsupported runtime")
+	if claim.Execution.RequiredRuntime != manager.config.Runtime {
+		return Repository{}, errors.New("claim requires a different worker runtime")
 	}
 	if claim.Task.RepositoryID != claim.Repository.ID {
 		return Repository{}, errors.New("claim repository IDs do not match")

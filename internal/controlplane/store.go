@@ -211,6 +211,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", entry.Name(), err)
 		}
+		if bytes.HasPrefix(body, []byte("-- factory: foreign-keys-off")) {
+			if err := s.applyForeignKeyRebuildMigration(ctx, entry.Name(), v, body); err != nil {
+				return err
+			}
+			continue
+		}
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin migration %s: %w", entry.Name(), err)
@@ -225,6 +231,65 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit migration %s: %w", entry.Name(), err)
 		}
+	}
+	return nil
+}
+
+func (s *Store) applyForeignKeyRebuildMigration(
+	ctx context.Context,
+	name string,
+	version int,
+	body []byte,
+) (resultErr error) {
+	connection, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("reserve connection for migration %s: %w", name, err)
+	}
+	defer connection.Close()
+	if _, err := connection.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("disable foreign keys for migration %s: %w", name, err)
+	}
+	defer func() {
+		if _, err := connection.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("restore foreign keys after migration %s: %w", name, err))
+			return
+		}
+		var enabled int
+		if err := connection.QueryRowContext(context.Background(), `PRAGMA foreign_keys`).Scan(&enabled); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("verify foreign keys after migration %s: %w", name, err))
+		} else if enabled != 1 {
+			resultErr = errors.Join(resultErr, fmt.Errorf("verify foreign keys after migration %s: foreign keys remain disabled", name))
+		}
+	}()
+	tx, err := connection.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration %s: %w", name, err)
+	}
+	if _, err = tx.ExecContext(ctx, string(body)); err == nil {
+		var rows *sql.Rows
+		rows, err = tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
+		if err == nil {
+			if rows.Next() {
+				err = errors.New("foreign key violation found")
+			} else if rowsErr := rows.Err(); rowsErr != nil {
+				err = rowsErr
+			}
+			if closeErr := rows.Close(); err == nil {
+				err = closeErr
+			}
+		}
+	}
+	if err == nil {
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`,
+			version, time.Now().UnixMilli())
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("apply migration %s: %w", name, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration %s: %w", name, err)
 	}
 	return nil
 }
@@ -297,6 +362,17 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" || len(input.Name) > 200 {
 		return protocol.Worker{}, invalid("invalid_worker", "worker name is required and must be at most 200 bytes")
+	}
+	input.Runtime = strings.TrimSpace(input.Runtime)
+	input.RuntimeVersion = strings.TrimSpace(input.RuntimeVersion)
+	if input.Runtime == "" {
+		input.Runtime = protocol.RuntimeCodex
+	}
+	if !protocol.SupportedRuntime(input.Runtime) {
+		return protocol.Worker{}, invalid("invalid_runtime", "runtime must be codex or claude-code")
+	}
+	if len(input.RuntimeVersion) > 1024 {
+		return protocol.Worker{}, invalid("invalid_runtime_version", "runtime_version must be at most 1024 bytes")
 	}
 	if input.Capacity < 1 || input.Capacity > 4 || input.ActiveCount < 0 || input.ActiveCount > input.Capacity {
 		return protocol.Worker{}, invalid("invalid_capacity", "capacity must be 1 through 4 and active_count cannot exceed it")
@@ -377,6 +453,17 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 		return protocol.Worker{}, unavailable(err)
 	}
 	defer tx.Rollback()
+	var existingRuntime string
+	err = tx.QueryRowContext(ctx, `SELECT runtime FROM workers WHERE id = ?`, workerID).Scan(&existingRuntime)
+	if err == nil && existingRuntime != input.Runtime {
+		return protocol.Worker{}, conflict(
+			"worker_runtime_changed",
+			"a worker runtime cannot change; use a new worker data directory for a new identity",
+		)
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return protocol.Worker{}, unavailable(err)
+	}
 	advertisedRepositoryIDs := make(map[string]bool, len(input.Repositories))
 	for _, repo := range input.Repositories {
 		var existingID string
@@ -398,13 +485,17 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 		}
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO workers(id, name, worker_version, codex_version, capacity, active_count, health, retained_worktrees_json, registered_at, last_heartbeat)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO workers(
+			id, name, worker_version, runtime, runtime_version, capacity, active_count,
+			health, retained_worktrees_json, registered_at, last_heartbeat
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
-			name=excluded.name, worker_version=excluded.worker_version, codex_version=excluded.codex_version,
+			name=excluded.name, worker_version=excluded.worker_version, runtime_version=excluded.runtime_version,
 			capacity=excluded.capacity, active_count=excluded.active_count, health=excluded.health,
 			retained_worktrees_json=excluded.retained_worktrees_json, last_heartbeat=excluded.last_heartbeat
-	`, workerID, input.Name, input.WorkerVersion, input.CodexVersion, input.Capacity, input.ActiveCount, input.Health, retained, now, now)
+	`, workerID, input.Name, input.WorkerVersion, input.Runtime, input.RuntimeVersion,
+		input.Capacity, input.ActiveCount, input.Health, retained, now, now)
 	if err != nil {
 		return protocol.Worker{}, unavailable(err)
 	}
@@ -533,7 +624,8 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 
 func (s *Store) Workers(ctx context.Context) ([]protocol.Worker, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT w.id, w.name, w.worker_version, w.codex_version, w.capacity, w.active_count, w.health,
+		SELECT w.id, w.name, w.worker_version, w.runtime, w.runtime_version,
+		       w.capacity, w.active_count, w.health,
 		       w.retained_worktrees_json, w.registered_at, w.last_heartbeat,
 		       COALESCE((
 		           SELECT t.title
@@ -574,7 +666,8 @@ func (s *Store) Workers(ctx context.Context) ([]protocol.Worker, error) {
 
 func (s *Store) Worker(ctx context.Context, id string) (protocol.Worker, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT w.id, w.name, w.worker_version, w.codex_version, w.capacity, w.active_count, w.health,
+		SELECT w.id, w.name, w.worker_version, w.runtime, w.runtime_version,
+		       w.capacity, w.active_count, w.health,
 		       w.retained_worktrees_json, w.registered_at, w.last_heartbeat,
 		       COALESCE((
 		           SELECT t.title
@@ -604,7 +697,7 @@ func scanWorker(row scanner, now time.Time) (protocol.Worker, error) {
 	var worker protocol.Worker
 	var retained []byte
 	var registered, heartbeat int64
-	if err := row.Scan(&worker.ID, &worker.Name, &worker.WorkerVersion, &worker.CodexVersion,
+	if err := row.Scan(&worker.ID, &worker.Name, &worker.WorkerVersion, &worker.Runtime, &worker.RuntimeVersion,
 		&worker.Capacity, &worker.ActiveCount, &worker.Health, &retained, &registered, &heartbeat,
 		&worker.CurrentTaskTitle); err != nil {
 		return worker, err
@@ -675,15 +768,17 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	if !errors.Is(err, sql.ErrNoRows) {
 		return protocol.TaskDetail{}, false, unavailable(err)
 	}
-	var valid int
+	var runtime string
 	err = tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM worker_repositories
-		WHERE worker_id = ? AND repository_id = ? AND advertised = 1
-	`, input.WorkerID, input.RepositoryID).Scan(&valid)
-	if err != nil {
+		SELECT w.runtime
+		FROM workers w
+		JOIN worker_repositories wr ON wr.worker_id = w.id
+		WHERE w.id = ? AND wr.repository_id = ? AND wr.advertised = 1
+	`, input.WorkerID, input.RepositoryID).Scan(&runtime)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return protocol.TaskDetail{}, false, unavailable(err)
 	}
-	if valid == 0 {
+	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.TaskDetail{}, false, invalid("repository_not_advertised", "repository is not advertised by the assigned worker")
 	}
 	taskID, err := newID()
@@ -701,8 +796,8 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO executions(id, task_id, assigned_worker_id, required_runtime, state, created_at, updated_at)
-			VALUES (?, ?, ?, 'codex', 'queued', ?, ?)
-		`, executionID, taskID, input.WorkerID, now, now)
+			VALUES (?, ?, ?, ?, 'queued', ?, ?)
+		`, executionID, taskID, input.WorkerID, runtime, now, now)
 	}
 	if err != nil {
 		return protocol.TaskDetail{}, false, unavailable(err)

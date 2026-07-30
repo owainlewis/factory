@@ -12,7 +12,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { invalidateControlPlane } from "./controlPlaneQueries";
-import { duration, eventText, stateLabel } from "./format";
+import { duration, eventText, runtimeLabel, stateLabel } from "./format";
 import { useVisibleInterval } from "./polling";
 import type {
   Attempt,
@@ -232,6 +232,7 @@ export function TaskDetail({
           <PanelHeading title="Assignment" />
           <dl className="metadata">
             <div><dt>Worker</dt><dd>{worker?.name ?? data.execution.assigned_worker_id}</dd></div>
+            <div><dt>Runtime</dt><dd>{runtimeLabel(data.execution.required_runtime)}</dd></div>
             <div><dt>Repository</dt><dd>{data.repository.key}</dd></div>
             <div><dt>Remote</dt><dd className="break-anywhere">{data.repository.remote_identity}</dd></div>
             <div><dt>Timeout</dt><dd>{formatTimeout(data.task.timeout_seconds)}</dd></div>

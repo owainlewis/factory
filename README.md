@@ -124,7 +124,7 @@ recovery, and cleanup.
 ## V2 control plane and local worker
 
 The local V2 server includes its web interface in the Go binary, and the Unix
-worker runs assigned Codex tasks in separate managed Git worktrees. Normal
+worker runs assigned Codex or Claude Code tasks in separate managed Git worktrees. Normal
 builds use the committed embedded UI and do not need Node.js:
 
 ```sh
@@ -157,11 +157,11 @@ V1 intentionally supports:
 
 - one repository or an explicit fleet of repository-owned configurations;
 - status, label, and schedule triggers;
-- Codex workers in managed worktrees or Docker clones;
+- Codex and Claude Code workers in managed worktrees;
 - explicit Markdown workflows;
 - durable queueing, supervision, history, cancellation, and recovery.
 
-Jira, Linear, cross-repository workflows, other agent runtimes, hosted workers,
+Jira, Linear, cross-repository workflows, additional agent runtimes, hosted workers,
 and webhook wake-ups can fit behind the same source, trigger, workflow, and
 worker boundaries later. This repository includes a
 [Jira source adapter](docs/jira.md) as an example of that extension point, but

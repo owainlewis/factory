@@ -2,21 +2,25 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
+
+	"github.com/owainlewis/factory/internal/protocol"
 )
 
 const healthCheckTimeout = 10 * time.Second
 
 type health struct {
-	State        string
-	GitVersion   string
-	CodexVersion string
-	Error        error
+	State          string
+	GitVersion     string
+	RuntimeVersion string
+	Error          error
 }
 
-func checkHealth(ctx context.Context, gitExecutable, codexExecutable string) health {
+func checkHealth(ctx context.Context, gitExecutable, runtime, runtimeExecutable string) health {
 	result := health{State: "unhealthy"}
 	gitContext, cancel := context.WithTimeout(ctx, healthCheckTimeout)
 	stdout, stderr, err := runCommand(gitContext, gitExecutable, "", 64<<10, "--version")
@@ -31,30 +35,51 @@ func checkHealth(ctx context.Context, gitExecutable, codexExecutable string) hea
 		return result
 	}
 
-	codexContext, cancel := context.WithTimeout(ctx, healthCheckTimeout)
-	stdout, stderr, err = runCommand(codexContext, codexExecutable, "", 64<<10, "--version")
+	runtimeContext, cancel := context.WithTimeout(ctx, healthCheckTimeout)
+	stdout, stderr, err = runCommand(runtimeContext, runtimeExecutable, "", 64<<10, "--version")
 	cancel()
 	if err != nil {
-		result.Error = errors.New("Codex version check failed; install Codex and make it available on PATH")
+		result.Error = fmt.Errorf("%s version check failed; install it and make it available on PATH", runtimeDisplayName(runtime))
 		return result
 	}
-	result.CodexVersion = strings.TrimSpace(string(stdout))
-	if result.CodexVersion == "" {
-		result.Error = errors.New("Codex version check returned no version")
+	result.RuntimeVersion = strings.TrimSpace(string(stdout))
+	if result.RuntimeVersion == "" {
+		result.Error = fmt.Errorf("%s version check returned no version", runtimeDisplayName(runtime))
 		return result
 	}
 
 	authContext, cancel := context.WithTimeout(ctx, healthCheckTimeout)
-	stdout, stderr, err = runCommand(authContext, codexExecutable, "", 64<<10, "login", "status")
+	var authArguments []string
+	if runtime == protocol.RuntimeClaudeCode {
+		authArguments = []string{"auth", "status", "--json"}
+	} else {
+		authArguments = []string{"login", "status"}
+	}
+	stdout, stderr, err = runCommand(authContext, runtimeExecutable, "", 64<<10, authArguments...)
 	cancel()
 	if err != nil {
-		result.Error = errors.New("Codex authentication check failed; run codex login and verify codex login status")
+		result.Error = fmt.Errorf("%s authentication check failed; authenticate the configured runtime", runtimeDisplayName(runtime))
 		return result
 	}
-	if strings.TrimSpace(string(stdout))+strings.TrimSpace(string(stderr)) == "" {
+	if runtime == protocol.RuntimeClaudeCode {
+		var status struct {
+			LoggedIn bool `json:"loggedIn"`
+		}
+		if json.Unmarshal(stdout, &status) != nil || !status.LoggedIn {
+			result.Error = errors.New("Claude Code authentication check reports that the worker is not logged in")
+			return result
+		}
+	} else if strings.TrimSpace(string(stdout))+strings.TrimSpace(string(stderr)) == "" {
 		result.Error = errors.New("Codex authentication check returned no status")
 		return result
 	}
 	result.State = "healthy"
 	return result
+}
+
+func runtimeDisplayName(runtime string) string {
+	if runtime == protocol.RuntimeClaudeCode {
+		return "Claude Code"
+	}
+	return "Codex"
 }

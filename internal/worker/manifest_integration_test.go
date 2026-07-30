@@ -224,7 +224,7 @@ func TestStartupReconciliationClassifiesManifestAndFilesystemState(t *testing.T)
 				map[string]repositoryFixture{"factory": repository}, 1)
 			t.Cleanup(func() { _ = manager.Close() })
 			workerValue, err := fixture.store.RegisterWorker(context.Background(), manager.ID(), protocol.WorkerRegistration{
-				Name: "test-worker", WorkerVersion: "test", CodexVersion: "test", Capacity: 1,
+				Name: "test-worker", WorkerVersion: "test", RuntimeVersion: "test", Capacity: 1,
 				Health: "healthy", Repositories: []protocol.RepositoryRegistration{{
 					Key: "factory", RemoteIdentity: repositoryIdentity(t, repository.path),
 				}},
@@ -441,7 +441,7 @@ func seedReconciliationManifest(
 	t.Helper()
 	repository := manager.repositories[0]
 	workerValue, err := fixture.store.RegisterWorker(context.Background(), manager.ID(), protocol.WorkerRegistration{
-		Name: "test-worker", WorkerVersion: "test", CodexVersion: "test", Capacity: manager.config.MaxConcurrent,
+		Name: "test-worker", WorkerVersion: "test", RuntimeVersion: "test", Capacity: manager.config.MaxConcurrent,
 		Health: "healthy", Repositories: []protocol.RepositoryRegistration{{
 			Key: repository.Key, RemoteIdentity: repository.RemoteIdentity,
 		}},
@@ -805,7 +805,7 @@ func TestDisposedAttemptHandoffDoesNotWaitForIdleWorker(t *testing.T) {
 		filepath.Join(t.TempDir(), "worker"),
 		map[string]repositoryFixture{"factory": repository}, 2)
 	t.Cleanup(func() { _ = manager.Close() })
-	manager.setHealth(health{State: "healthy", GitVersion: "test", CodexVersion: "test"})
+	manager.setHealth(health{State: "healthy", GitVersion: "test", RuntimeVersion: "test"})
 	manager.stateMutex.Lock()
 	manager.retainedCounts[manager.repositories[0].RemoteIdentity] = protocol.MaxRetainedPerRepo - 1
 	manager.stateMutex.Unlock()
@@ -857,7 +857,7 @@ func TestDisposedAttemptHandoffSurvivesFailedRegistrationAndRestart(t *testing.T
 	codexPath := filepath.Join(t.TempDir(), "codex")
 	firstManager := newTestManager(t, fixture, codexPath, dataDirectory,
 		map[string]repositoryFixture{"factory": repository}, 2)
-	firstManager.setHealth(health{State: "healthy", GitVersion: "test", CodexVersion: "test"})
+	firstManager.setHealth(health{State: "healthy", GitVersion: "test", RuntimeVersion: "test"})
 	firstManager.stateMutex.Lock()
 	firstManager.retainedCounts[firstManager.repositories[0].RemoteIdentity] = protocol.MaxRetainedPerRepo - 1
 	firstManager.stateMutex.Unlock()
@@ -894,7 +894,7 @@ func TestDisposedAttemptHandoffSurvivesFailedRegistrationAndRestart(t *testing.T
 	secondManager := newTestManager(t, fixture, codexPath, dataDirectory,
 		map[string]repositoryFixture{"factory": repository}, 2)
 	t.Cleanup(func() { _ = secondManager.Close() })
-	secondManager.setHealth(health{State: "healthy", GitVersion: "test", CodexVersion: "test"})
+	secondManager.setHealth(health{State: "healthy", GitVersion: "test", RuntimeVersion: "test"})
 	secondManager.stateMutex.Lock()
 	secondManager.retainedCounts[secondManager.repositories[0].RemoteIdentity] = protocol.MaxRetainedPerRepo - 1
 	secondManager.stateMutex.Unlock()
@@ -925,7 +925,7 @@ func TestDisposalJournalFailureDoesNotCompleteAttempt(t *testing.T) {
 		filepath.Join(t.TempDir(), "worker"),
 		map[string]repositoryFixture{"factory": repository}, 1)
 	t.Cleanup(func() { _ = manager.Close() })
-	manager.setHealth(health{State: "healthy", GitVersion: "test", CodexVersion: "test"})
+	manager.setHealth(health{State: "healthy", GitVersion: "test", RuntimeVersion: "test"})
 	manager.register(context.Background())
 	workerValue := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
 		return worker.Health == "healthy"
@@ -990,7 +990,7 @@ func TestAcknowledgedDisposedManifestIsPrunedBeforeSecondRestart(t *testing.T) {
 
 	firstRestart := newTestManager(t, fixture, codexPath, dataDirectory,
 		map[string]repositoryFixture{"factory": repository}, 1)
-	firstRestart.setHealth(health{State: "healthy", GitVersion: "test", CodexVersion: "test"})
+	firstRestart.setHealth(health{State: "healthy", GitVersion: "test", RuntimeVersion: "test"})
 	if err := firstRestart.reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -1064,7 +1064,7 @@ func TestDeletedDisposedAttemptDoesNotPoisonStartupReconciliation(t *testing.T) 
 	restart := newTestManager(t, fixture, codexPath, dataDirectory,
 		map[string]repositoryFixture{"factory": repository}, 1)
 	t.Cleanup(func() { _ = restart.Close() })
-	restart.setHealth(health{State: "healthy", GitVersion: "test", CodexVersion: "test"})
+	restart.setHealth(health{State: "healthy", GitVersion: "test", RuntimeVersion: "test"})
 	if err := restart.reconcile(context.Background()); err != nil {
 		t.Fatalf("journaled deleted disposal caused reconciliation failure: %v", err)
 	}
@@ -1147,7 +1147,7 @@ func TestDisposedManifestWaitsForHeartbeatBeforePruning(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	manager.setHealth(health{State: "healthy", GitVersion: "test", CodexVersion: "test"})
+	manager.setHealth(health{State: "healthy", GitVersion: "test", RuntimeVersion: "test"})
 	manager.options.LeaseRenewInterval = time.Millisecond
 	attemptContext, cancel := context.WithCancel(context.Background())
 	handle := &attemptHandle{
@@ -1230,7 +1230,7 @@ func TestPeriodicRegistrationCannotOvertakeRetainedCapacityHandoff(t *testing.T)
 	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
 		map[string]repositoryFixture{"factory": repository}, 2)
 	t.Cleanup(func() { _ = manager.Close() })
-	manager.setHealth(health{State: "healthy", GitVersion: "test", CodexVersion: "test"})
+	manager.setHealth(health{State: "healthy", GitVersion: "test", RuntimeVersion: "test"})
 	manager.stateMutex.Lock()
 	manager.retainedCounts[manager.repositories[0].RemoteIdentity] = protocol.MaxRetainedPerRepo - 1
 	manager.stateMutex.Unlock()
@@ -1487,7 +1487,7 @@ func TestSupervisorStopsAtLastRenewalWithoutPipeClosure(t *testing.T) {
 	process, err := startSupervisor(
 		[]string{os.Args[0], "-test.run=TestWorkerSupervisorHelperProcess", "--"},
 		supervisorInit{
-			CodexExecutable: codexPath, Worktree: repository.path,
+			RuntimeExecutable: codexPath, Worktree: repository.path,
 			ResultPath: filepath.Join(t.TempDir(), "result"),
 			Prompt:     "FAKE_MODE=fork", TimeoutSeconds: 60,
 		}, io.Discard)

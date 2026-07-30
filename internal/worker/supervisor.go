@@ -28,11 +28,12 @@ const (
 )
 
 type supervisorInit struct {
-	CodexExecutable string `json:"codex_executable"`
-	Worktree        string `json:"worktree"`
-	ResultPath      string `json:"result_path"`
-	Prompt          string `json:"prompt"`
-	TimeoutSeconds  int    `json:"timeout_seconds"`
+	Runtime           string `json:"runtime"`
+	RuntimeExecutable string `json:"runtime_executable"`
+	Worktree          string `json:"worktree"`
+	ResultPath        string `json:"result_path"`
+	Prompt            string `json:"prompt"`
+	TimeoutSeconds    int    `json:"timeout_seconds"`
 }
 
 type supervisorMessage struct {
@@ -83,7 +84,11 @@ func RunSupervisor(control *os.File, input io.Reader, output, errorOutput io.Wri
 	if err := decoder.Decode(&init); err != nil {
 		return fmt.Errorf("decode supervisor input: %w", err)
 	}
-	if init.CodexExecutable == "" || init.Worktree == "" || init.ResultPath == "" || init.TimeoutSeconds < 1 {
+	if init.Runtime == "" {
+		init.Runtime = protocol.RuntimeCodex
+	}
+	if !protocol.SupportedRuntime(init.Runtime) || init.RuntimeExecutable == "" ||
+		init.Worktree == "" || init.ResultPath == "" || init.TimeoutSeconds < 1 {
 		return errors.New("supervisor input is incomplete")
 	}
 	if init.TimeoutSeconds > int(protocol.MaxTimeout/time.Second) {
@@ -170,7 +175,7 @@ func RunSupervisor(control *os.File, input io.Reader, output, errorOutput io.Wri
 				_ = anchor.Wait()
 				return writer.send(supervisorMessage{Type: "exit", Reason: "timeout", Error: "task timeout reached"})
 			case "start":
-				return superviseCodex(init, anchor, anchorIdentity, groupID, commands, controlErrors, leaseTimer, writer)
+				return superviseRuntime(init, anchor, anchorIdentity, groupID, commands, controlErrors, leaseTimer, writer)
 			}
 		case err := <-controlErrors:
 			_ = stopOwnedProcessGroup(anchorPID, anchorIdentity, terminationGrace)
@@ -187,7 +192,7 @@ func RunSupervisor(control *os.File, input io.Reader, output, errorOutput io.Wri
 	}
 }
 
-func superviseCodex(
+func superviseRuntime(
 	init supervisorInit,
 	anchor *exec.Cmd,
 	anchorIdentity string,
@@ -197,23 +202,39 @@ func superviseCodex(
 	leaseTimer *time.Timer,
 	writer *synchronizedEncoder,
 ) error {
-	command := exec.Command(init.CodexExecutable,
-		"exec", "--json", "--color", "never", "--output-last-message", init.ResultPath, "-")
+	var arguments []string
+	var claudeResult *claudeResultCapture
+	switch init.Runtime {
+	case protocol.RuntimeCodex:
+		arguments = []string{"exec", "--json", "--color", "never", "--output-last-message", init.ResultPath, "-"}
+	case protocol.RuntimeClaudeCode:
+		arguments = []string{
+			"--print",
+			"--output-format", "stream-json",
+			"--verbose",
+			"--permission-mode", "bypassPermissions",
+		}
+		claudeResult = &claudeResultCapture{}
+	default:
+		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, errors.New("unsupported worker runtime"))
+	}
+	displayName := runtimeDisplayName(init.Runtime)
+	command := exec.Command(init.RuntimeExecutable, arguments...)
 	command.Dir = init.Worktree
 	configureExistingProcessGroup(command, groupID)
 	stdin, err := command.StdinPipe()
 	if err != nil {
-		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, fmt.Errorf("open Codex stdin: %w", err))
+		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, fmt.Errorf("open %s stdin: %w", displayName, err))
 	}
 	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
-		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, fmt.Errorf("create Codex stdout pipe: %w", err))
+		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, fmt.Errorf("create %s stdout pipe: %w", displayName, err))
 	}
 	stderr, stderrWriter, err := os.Pipe()
 	if err != nil {
 		stdout.Close()
 		stdoutWriter.Close()
-		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, fmt.Errorf("create Codex stderr pipe: %w", err))
+		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, fmt.Errorf("create %s stderr pipe: %w", displayName, err))
 	}
 	command.Stdout = stdoutWriter
 	command.Stderr = stderrWriter
@@ -222,7 +243,7 @@ func superviseCodex(
 		stdoutWriter.Close()
 		stderr.Close()
 		stderrWriter.Close()
-		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, fmt.Errorf("start Codex: %w", err))
+		return finishSupervisorStartFailure(anchor, anchorIdentity, writer, fmt.Errorf("start %s: %w", displayName, err))
 	}
 	stdoutWriter.Close()
 	stderrWriter.Close()
@@ -235,15 +256,19 @@ func superviseCodex(
 		promptErrors <- errors.Join(writeErr, closeErr)
 	}()
 	stderrTail := &tailBuffer{limit: protocol.MaxErrorBytes}
+	var captureLine func([]byte, bool)
+	if claudeResult != nil {
+		captureLine = claudeResult.capture
+	}
 	readers := sync.WaitGroup{}
 	readers.Add(2)
 	go func() {
 		defer readers.Done()
-		streamSupervisorOutput(stdout, "stdout", writer, nil)
+		streamSupervisorOutput(stdout, "stdout", writer, nil, captureLine)
 	}()
 	go func() {
 		defer readers.Done()
-		streamSupervisorOutput(stderr, "stderr", writer, stderrTail)
+		streamSupervisorOutput(stderr, "stderr", writer, stderrTail, nil)
 	}()
 	wait := make(chan error, 1)
 	go func() {
@@ -313,7 +338,7 @@ func superviseCodex(
 			}
 		case <-time.After(2 * time.Second):
 			if waitErr == nil {
-				waitErr = errors.New("Codex process did not reap after group termination")
+				waitErr = fmt.Errorf("%s process did not reap after group termination", displayName)
 			}
 		}
 	}
@@ -322,14 +347,27 @@ func superviseCodex(
 	select {
 	case promptErr := <-promptErrors:
 		if promptErr != nil && !errors.Is(promptErr, os.ErrClosed) && reason == "exited" && waitErr == nil {
-			waitErr = fmt.Errorf("send prompt to Codex: %w", promptErr)
+			waitErr = fmt.Errorf("send prompt to %s: %w", displayName, promptErr)
 		}
 	default:
 	}
 
-	result, truncated, resultErr := readBoundedText(init.ResultPath, protocol.MaxResultBytes)
-	if resultErr != nil && reason == "exited" && waitErr == nil {
-		waitErr = resultErr
+	var result string
+	var truncated bool
+	if claudeResult != nil {
+		result = claudeResult.result
+		truncated = claudeResult.truncated
+		if !claudeResult.found && reason == "exited" && waitErr == nil {
+			waitErr = errors.New("Claude Code returned no terminal result event")
+		} else if claudeResult.isError && reason == "exited" && waitErr == nil {
+			waitErr = errors.New(firstNonEmpty(result, "Claude Code reported a terminal error"))
+		}
+	} else {
+		var resultErr error
+		result, truncated, resultErr = readBoundedText(init.ResultPath, protocol.MaxResultBytes)
+		if resultErr != nil && reason == "exited" && waitErr == nil {
+			waitErr = resultErr
+		}
 	}
 	_ = os.Remove(init.ResultPath)
 	message := supervisorMessage{
@@ -409,7 +447,13 @@ func parseControlCommand(command string) (string, time.Duration, error) {
 	return "", 0, fmt.Errorf("unknown supervisor command %q", command)
 }
 
-func streamSupervisorOutput(reader io.Reader, stream string, writer *synchronizedEncoder, tail *tailBuffer) {
+func streamSupervisorOutput(
+	reader io.Reader,
+	stream string,
+	writer *synchronizedEncoder,
+	tail *tailBuffer,
+	capture func([]byte, bool),
+) {
 	buffered := bufio.NewReaderSize(reader, 32<<10)
 	line := make([]byte, 0, 32<<10)
 	hadData := false
@@ -433,6 +477,9 @@ func streamSupervisorOutput(reader io.Reader, stream string, writer *synchronize
 				if tail != nil {
 					_, _ = tail.Write([]byte{'\n'})
 				}
+				if capture != nil {
+					capture(line, truncated)
+				}
 				_ = writer.send(supervisorMessage{
 					Type: "output", Stream: stream, Text: string(line), Truncated: truncated,
 				})
@@ -445,6 +492,31 @@ func streamSupervisorOutput(reader io.Reader, stream string, writer *synchronize
 			return
 		}
 	}
+}
+
+type claudeResultCapture struct {
+	result    string
+	found     bool
+	isError   bool
+	truncated bool
+}
+
+func (capture *claudeResultCapture) capture(line []byte, lineTruncated bool) {
+	if lineTruncated {
+		return
+	}
+	var event struct {
+		Type    string `json:"type"`
+		Result  string `json:"result"`
+		IsError bool   `json:"is_error"`
+	}
+	if json.Unmarshal(line, &event) != nil || event.Type != "result" {
+		return
+	}
+	capture.result = boundedText(event.Result, protocol.MaxResultBytes)
+	capture.found = true
+	capture.isError = event.IsError
+	capture.truncated = len(event.Result) > protocol.MaxResultBytes
 }
 
 type tailBuffer struct {

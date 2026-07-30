@@ -12,6 +12,10 @@ export function stateLabel(state: string): string {
   return state.charAt(0).toUpperCase() + state.slice(1);
 }
 
+export function runtimeLabel(runtime: string): string {
+  return runtime === "claude-code" ? "Claude Code" : "Codex";
+}
+
 export function timeAgo(value: string, now = Date.now()): string {
   const seconds = Math.max(0, Math.floor((now - new Date(value).getTime()) / 1000));
   if (seconds < 10) return "just now";

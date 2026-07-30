@@ -2,8 +2,9 @@
 
 `factory-worker` is the local Unix execution process for Factory V2. It
 registers with the loopback control plane, advertises configured Git
-repositories, claims work assigned to its stable worker ID, and runs Codex in a
-V2-owned worktree.
+repositories, claims work assigned to its stable worker ID, and runs an agent in a
+V2-owned worktree. Each worker identity is configured for exactly one agent
+runtime: Codex or Claude Code.
 
 The worker is separate from Factory V1. It does not import the control-plane
 implementation, open SQLite, inspect V1 state, or use V1 worktree paths.
@@ -14,7 +15,8 @@ walkthrough, and browser proof, use the [complete local V2 guide](v2-local.md).
 
 - A Unix host.
 - Git available on `PATH`.
-- Codex available on `PATH` and authenticated. Verify with `codex login status`.
+- Codex or Claude Code available on `PATH` and authenticated. Verify with
+  `codex login status` or `claude auth status --json`.
 - A running `factory-server` on a loopback address.
 - One or more local non-bare Git repositories with an `origin` remote.
 
@@ -34,6 +36,7 @@ uses `FACTORY_V2_WORKER_CONFIG`, then
 ```toml
 server = "http://127.0.0.1:7337"
 name = "owains-mac"
+runtime = "codex"
 max_concurrent = 1
 data_directory = "/Users/owainlewis/.factory-v2/workers/owains-mac"
 
@@ -46,6 +49,10 @@ path = "/Users/owainlewis/Code/github/owainlewis/website"
 
 `server` must be plain HTTP on a loopback IP or `localhost`. The worker refuses
 public hosts. `max_concurrent` defaults to one and accepts one through four.
+`runtime` accepts `codex` or `claude-code` and defaults to `codex` for existing
+configuration files. The runtime becomes part of the stable worker identity.
+Changing it for a registered worker is rejected; use another data directory to
+create another worker identity.
 Repository keys are stable operator-chosen names. Repository and data paths may
 be relative to the configuration file.
 
@@ -74,9 +81,10 @@ Start the server first, then:
 ./factory-worker --config /path/to/worker.toml
 ```
 
-The worker checks Git, the Codex version, and Codex login status. Failed health
+The worker checks Git, the configured runtime version, and its authentication
+status. Failed health
 checks register the worker as unhealthy and prevent claims. Checks repeat every
-thirty seconds, so restoring Git or Codex recovers without restarting the
+thirty seconds, so restoring Git or the runtime recovers without restarting the
 worker.
 
 Healthy workers heartbeat their capacity and repositories, reserve a local
@@ -110,13 +118,13 @@ on a local branch named:
 factory-v2/<task-id-prefix>-<attempt-id-prefix>
 ```
 
-The Codex prompt contains a fixed Factory safety preamble, task title,
+The runtime prompt contains a fixed Factory safety preamble, task title,
 description, and repository identity. The prompt is sent over standard input
 and is not placed in command arguments or normal logs.
 
 A separate supervisor owns a process-group anchor. The control plane accepts
-the attempt start before the supervisor launches Codex. The supervisor then
-stops Codex and every descendant on:
+the attempt start before the supervisor launches the configured runtime. The
+supervisor then stops the runtime and every descendant on:
 
 - task cancellation;
 - task timeout;
@@ -128,8 +136,10 @@ early enough to kill a process that ignores the graceful signal before the
 thirty-second lease expires. Cancellation and shutdown use a five-second
 graceful period before killing the complete group.
 
-Codex JSON output is sent as ordered bounded events. One event, one batch, total
-event history, result, and error sizes follow the limits in the V2 architecture.
+Codex JSON lines or Claude Code stream-JSON output are sent as ordered bounded events.
+The final Codex message file or Claude Code terminal result event becomes the
+bounded attempt result. One event, one batch, total event history, result, and error sizes
+follow the limits in the V2 architecture.
 Reaching an event limit does not stop lease renewal, cancellation, or terminal
 completion.
 
@@ -150,7 +160,7 @@ inspection.
 
 At startup, before registration or claims, the worker reads every attempt
 manifest. It stops any still-live process group only when the recorded process
-identity still matches. It never resumes Codex. It then compares the manifest,
+identity still matches. It never resumes an agent runtime. It then compares the manifest,
 filesystem, and `git worktree list` and records one of these outcomes:
 
 - never created;

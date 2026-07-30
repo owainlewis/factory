@@ -75,6 +75,10 @@ func TestCapacityMigrationDerivesOnlyAttributableLegacyRetainedCounts(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	database.SetMaxOpenConns(1)
+	if _, err := database.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		if err := database.Close(); err != nil {
 			t.Error(err)
@@ -224,6 +228,25 @@ func TestCapacityMigrationDerivesOnlyAttributableLegacyRetainedCounts(t *testing
 	if acknowledged != 1 {
 		t.Fatalf("migrated acknowledged attempts = %d; want 1", acknowledged)
 	}
+	var runtime, runtimeVersion string
+	if err := database.QueryRow(`
+		SELECT runtime, runtime_version FROM workers WHERE id = 'worker-a'
+	`).Scan(&runtime, &runtimeVersion); err != nil {
+		t.Fatal(err)
+	}
+	if runtime != protocol.RuntimeCodex || runtimeVersion != "legacy" {
+		t.Fatalf("migrated worker runtime = %q %q", runtime, runtimeVersion)
+	}
+	foreignKeys, err := database.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if foreignKeys.Next() {
+		t.Fatal("runtime migration left a foreign key violation")
+	}
+	if err := foreignKeys.Close(); err != nil {
+		t.Fatal(err)
+	}
 	createTestTask(t, store, "post-migration-task", workerA, "legacy-repository")
 	claim := claimTestTask(t, store, workerA, "post-migration-claim", tokenA)
 	if claim.Task.RequestKey != "post-migration-task" {
@@ -335,18 +358,48 @@ func TestCapacityMigrationRequiresDrainedLegacyWorkers(t *testing.T) {
 func registerTestWorker(t *testing.T, store *Store, id string, capacity int, repositories ...protocol.RepositoryRegistration) protocol.Worker {
 	t.Helper()
 	worker, err := store.RegisterWorker(context.Background(), id, protocol.WorkerRegistration{
-		Name:          id,
-		WorkerVersion: "test",
-		CodexVersion:  "codex-test",
-		Capacity:      capacity,
-		ActiveCount:   0,
-		Health:        "healthy",
-		Repositories:  repositories,
+		Name:           id,
+		WorkerVersion:  "test",
+		RuntimeVersion: "codex-test",
+		Capacity:       capacity,
+		ActiveCount:    0,
+		Health:         "healthy",
+		Repositories:   repositories,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return worker
+}
+
+func TestWorkerRuntimeDeterminesExecutionAndCannotChange(t *testing.T) {
+	store := newTestStore(t)
+	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name:           "claude-worker",
+		WorkerVersion:  "test",
+		Runtime:        protocol.RuntimeClaudeCode,
+		RuntimeVersion: "2.1.220",
+		Capacity:       1,
+		Health:         "healthy",
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "factory", RemoteIdentity: "github.com/example/factory",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := createTestTask(t, store, "claude-task", worker.ID, worker.Repositories[0].ID)
+	if task.Execution.RequiredRuntime != protocol.RuntimeClaudeCode {
+		t.Fatalf("execution runtime = %q", task.Execution.RequiredRuntime)
+	}
+	_, err = store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: "changed-worker", WorkerVersion: "test", Runtime: protocol.RuntimeCodex,
+		Capacity: 1, Health: "healthy",
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "factory", RemoteIdentity: "github.com/example/factory",
+		}},
+	})
+	assertErrorCode(t, err, "worker_runtime_changed")
 }
 
 func createTestTask(t *testing.T, store *Store, requestKey, workerID, repositoryID string) protocol.TaskDetail {
@@ -427,7 +480,7 @@ func TestDeleteTaskRequiresTerminalUnretainedHistoryAndPreservesUnrelatedData(t 
 		"worktree_disposition_pending",
 	)
 	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-		Name: "worker-a", WorkerVersion: "test", CodexVersion: "codex-test",
+		Name: "worker-a", WorkerVersion: "test", RuntimeVersion: "codex-test",
 		Capacity: 2, Health: "healthy",
 		Repositories: []protocol.RepositoryRegistration{{
 			Key: "factory", RemoteIdentity: "github.com/owainlewis/factory", RetainedCount: 1,
@@ -443,7 +496,7 @@ func TestDeleteTaskRequiresTerminalUnretainedHistoryAndPreservesUnrelatedData(t 
 	assertErrorCode(t, store.DeleteTask(context.Background(), target.Task.ID), "retained_worktree")
 
 	disposedRegistration := protocol.WorkerRegistration{
-		Name: "worker-a", WorkerVersion: "test", CodexVersion: "codex-test",
+		Name: "worker-a", WorkerVersion: "test", RuntimeVersion: "codex-test",
 		Capacity: 2, Health: "healthy", CapacityHandoffVersion: 1,
 		Repositories: []protocol.RepositoryRegistration{{
 			Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
@@ -767,7 +820,7 @@ func TestUnhealthyAndOfflineWorkersDoNotClaim(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
 	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-		Name: workerA, WorkerVersion: "test", CodexVersion: "test", Capacity: 1, Health: "unhealthy",
+		Name: workerA, WorkerVersion: "test", RuntimeVersion: "test", Capacity: 1, Health: "unhealthy",
 		Repositories: []protocol.RepositoryRegistration{{Key: "factory", RemoteIdentity: "github.com/owainlewis/factory"}},
 	})
 	if err != nil {
@@ -1013,7 +1066,7 @@ func TestActiveRegistrationDoesNotAcknowledgeSweptAttempt(t *testing.T) {
 		t.Fatalf("swept attempts = %#v", expired)
 	}
 	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-		Name: "worker-a", WorkerVersion: "test", CodexVersion: "test",
+		Name: "worker-a", WorkerVersion: "test", RuntimeVersion: "test",
 		Capacity: 2, ActiveCount: 1, Health: "healthy", Repositories: []protocol.RepositoryRegistration{repository},
 	}); err != nil {
 		t.Fatal(err)
@@ -1029,7 +1082,7 @@ func TestActiveRegistrationDoesNotAcknowledgeSweptAttempt(t *testing.T) {
 	}
 
 	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-		Name: "worker-a", WorkerVersion: "test", CodexVersion: "test",
+		Name: "worker-a", WorkerVersion: "test", RuntimeVersion: "test",
 		Capacity: 2, ActiveCount: 0, Health: "healthy", Repositories: []protocol.RepositoryRegistration{repository},
 	}); err != nil {
 		t.Fatal(err)
@@ -1069,7 +1122,7 @@ func TestLegacyRegistrationDerivesRetainedCountBeforeAcknowledgingHandoff(t *tes
 		}
 	}
 	registered, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-		Name: "legacy-worker", WorkerVersion: "legacy", CodexVersion: "test",
+		Name: "legacy-worker", WorkerVersion: "legacy", RuntimeVersion: "test",
 		Capacity: 2, ActiveCount: 0, Health: "healthy",
 		Repositories: []protocol.RepositoryRegistration{{
 			Key: "factory", RemoteIdentity: "github.com/example/legacy-worker",
@@ -1118,7 +1171,7 @@ func TestActiveLegacyRegistrationCannotAcknowledgeUnlistedHandoff(t *testing.T) 
 		}
 	}
 	legacyRegistration := protocol.WorkerRegistration{
-		Name: "legacy-worker", WorkerVersion: "legacy", CodexVersion: "test",
+		Name: "legacy-worker", WorkerVersion: "legacy", RuntimeVersion: "test",
 		Capacity: 2, ActiveCount: 0, Health: "healthy",
 		Repositories: []protocol.RepositoryRegistration{{
 			Key: "factory", RemoteIdentity: "github.com/example/legacy-overlap",
@@ -1201,7 +1254,7 @@ func TestActiveRegistrationAcknowledgesExplicitDisposedAttempt(t *testing.T) {
 	second := createTestTask(t, store, "explicit-disposal-second", workerA, worker.Repositories[0].ID)
 
 	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-		Name: "modern-worker", WorkerVersion: "test", CodexVersion: "test",
+		Name: "modern-worker", WorkerVersion: "test", RuntimeVersion: "test",
 		Capacity: 2, ActiveCount: 1, Health: "healthy",
 		Repositories: []protocol.RepositoryRegistration{{
 			Key: "factory", RemoteIdentity: "github.com/example/explicit-disposal",
@@ -1232,7 +1285,7 @@ func TestVersionedRegistrationDoesNotBulkAcknowledgeUnlistedAttempt(t *testing.T
 	createTestTask(t, store, "versioned-handoff-second", workerA, worker.Repositories[0].ID)
 
 	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-		Name: "modern-worker", WorkerVersion: "test", CodexVersion: "test",
+		Name: "modern-worker", WorkerVersion: "test", RuntimeVersion: "test",
 		Capacity: 2, ActiveCount: 0, Health: "healthy", CapacityHandoffVersion: 1,
 		Repositories: []protocol.RepositoryRegistration{{
 			Key: "factory", RemoteIdentity: "github.com/example/versioned-handoff",
@@ -1264,7 +1317,7 @@ func TestRegistrationCanPreAcknowledgeDisposedAttemptBeforeLeaseSweep(t *testing
 	second := createTestTask(t, store, "preacknowledged-second", workerA, worker.Repositories[0].ID)
 
 	registration := protocol.WorkerRegistration{
-		Name: "modern-worker", WorkerVersion: "test", CodexVersion: "test",
+		Name: "modern-worker", WorkerVersion: "test", RuntimeVersion: "test",
 		Capacity: 2, ActiveCount: 1, Health: "healthy", CapacityHandoffVersion: 1,
 		Repositories: []protocol.RepositoryRegistration{{
 			Key: "factory", RemoteIdentity: "github.com/example/preacknowledged-disposal",
@@ -1316,7 +1369,7 @@ func TestRegistrationAcceptsMissingDisposedAttemptForIdempotentHistoryDeletion(t
 	})
 
 	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-		Name: "modern-worker", WorkerVersion: "test", CodexVersion: "test",
+		Name: "modern-worker", WorkerVersion: "test", RuntimeVersion: "test",
 		Capacity: 2, ActiveCount: 1, Health: "healthy",
 		Repositories: []protocol.RepositoryRegistration{{
 			Key: "factory", RemoteIdentity: "github.com/example/unproven-disposal",
@@ -1355,7 +1408,7 @@ func TestUnattributedRetainedSummaryPreservesRegistrationContractWithoutAcknowle
 			second := createTestTask(t, store, testCase.name+"-second", workerA, worker.Repositories[0].ID)
 
 			registered, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-				Name: "legacy-display-client", WorkerVersion: "legacy", CodexVersion: "test",
+				Name: "legacy-display-client", WorkerVersion: "legacy", RuntimeVersion: "test",
 				Capacity: 2, ActiveCount: 0, Health: "healthy",
 				Repositories: []protocol.RepositoryRegistration{{
 					Key: "factory", RemoteIdentity: remote,
@@ -1859,7 +1912,7 @@ func TestWorkerRepositoryIdentityCannotChangeForAKey(t *testing.T) {
 		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
 	_, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-		Name: "worker-a", WorkerVersion: "test", CodexVersion: "test", Capacity: 1, Health: "healthy",
+		Name: "worker-a", WorkerVersion: "test", RuntimeVersion: "test", Capacity: 1, Health: "healthy",
 		Repositories: []protocol.RepositoryRegistration{
 			{Key: "factory", RemoteIdentity: "github.com/owainlewis/different"},
 		},

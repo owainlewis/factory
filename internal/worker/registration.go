@@ -26,7 +26,10 @@ func (manager *Manager) setHealth(value health) {
 		manager.logger.Warn("worker_unhealthy", "error_class", "runtime_health", "error", value.Error)
 	}
 	if value.State == "healthy" && previous != "healthy" {
-		manager.logger.Info("worker_healthy", "git_version", value.GitVersion, "codex_version", value.CodexVersion)
+		manager.logger.Info("worker_healthy",
+			"git_version", value.GitVersion,
+			"runtime", manager.config.Runtime,
+			"runtime_version", value.RuntimeVersion)
 	}
 }
 
@@ -68,7 +71,8 @@ func (manager *Manager) registration() protocol.WorkerRegistration {
 	return protocol.WorkerRegistration{
 		Name:                   strings.TrimSpace(manager.config.Name),
 		WorkerVersion:          manager.options.WorkerVersion,
-		CodexVersion:           manager.health.CodexVersion,
+		Runtime:                manager.config.Runtime,
+		RuntimeVersion:         manager.health.RuntimeVersion,
 		Capacity:               manager.config.MaxConcurrent,
 		ActiveCount:            len(manager.slots),
 		Health:                 manager.health.State,

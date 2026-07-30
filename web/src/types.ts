@@ -1,4 +1,5 @@
 export type TaskState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type Runtime = "codex" | "claude-code";
 
 export interface Repository {
   id: string;
@@ -19,7 +20,8 @@ export interface Worker {
   id: string;
   name: string;
   worker_version: string;
-  codex_version: string;
+  runtime: Runtime;
+  runtime_version: string;
   capacity: number;
   active_count: number;
   health: "healthy" | "unhealthy";
@@ -52,7 +54,7 @@ export interface Execution {
   id: string;
   task_id: string;
   assigned_worker_id: string;
-  required_runtime: "codex";
+  required_runtime: Runtime;
   state: "queued" | "preparing" | "running" | "succeeded" | "failed" | "cancelled";
   cancellation_requested: boolean;
   created_at: string;

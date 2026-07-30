@@ -91,7 +91,7 @@ func requireStatus(t *testing.T, response *http.Response, expected int) {
 func registerHTTPWorker(t *testing.T, fixture *httpFixture, id, key, remote string, capacity int) protocol.Worker {
 	t.Helper()
 	response := fixture.request(http.MethodPut, "/api/v1/workers/"+id, "application/json", "", protocol.WorkerRegistration{
-		Name: id, WorkerVersion: "test", CodexVersion: "codex-test", Capacity: capacity, Health: "healthy",
+		Name: id, WorkerVersion: "test", RuntimeVersion: "codex-test", Capacity: capacity, Health: "healthy",
 		Repositories: []protocol.RepositoryRegistration{{Key: key, RemoteIdentity: remote}},
 	})
 	requireStatus(t, response, http.StatusOK)
@@ -155,7 +155,7 @@ func TestHTTPDeleteTaskHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := fixture.store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-		Name: workerA, WorkerVersion: "test", CodexVersion: "codex-test",
+		Name: workerA, WorkerVersion: "test", RuntimeVersion: "codex-test",
 		Capacity: 1, Health: "healthy",
 		Repositories: []protocol.RepositoryRegistration{{
 			Key: "factory", RemoteIdentity: "github.com/owainlewis/factory", RetainedCount: 1,

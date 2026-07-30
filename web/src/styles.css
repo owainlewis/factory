@@ -129,6 +129,12 @@ h1, h2, h3, p { margin-top: 0; }
 .worker-identity > span:last-child { min-width: 0; }
 .worker-identity strong, .worker-identity small, .worker-identity em { display: block; }
 .worker-identity strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.runtime-badge {
+  width: fit-content; display: inline-flex; align-items: center; gap: 4px; margin-top: 5px; padding: 3px 6px;
+  border: 1px solid #d9d6ce; border-radius: 999px; background: #f2f1ed; color: #5f5d57;
+  font-size: 8px; font-weight: 700; line-height: 1;
+}
+.runtime-badge.runtime-claude-code { border-color: #e5c7b4; background: #fbf0e9; color: #9a4f28; }
 .worker-identity small { margin-top: 4px; color: var(--text-muted); font-size: 9px; }
 .worker-identity em { max-width: 220px; margin-top: 6px; overflow: hidden; color: var(--running); font-size: 9px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .presence { flex: none; width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; }

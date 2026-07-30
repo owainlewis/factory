@@ -86,6 +86,7 @@ func run() error {
 	logger.Info("worker_started",
 		"worker_id", manager.ID(),
 		"name", config.Name,
+		"runtime", config.Runtime,
 		"server", config.Server,
 		"data_directory", config.DataDirectory,
 		"repository_count", len(config.Repositories),

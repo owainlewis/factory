@@ -10,6 +10,7 @@ import {
 } from "react";
 import { api } from "./api";
 import { invalidateControlPlane } from "./controlPlaneQueries";
+import { runtimeLabel } from "./format";
 import type { CreateTaskInput, Worker } from "./types";
 import { InlineError } from "./ui";
 
@@ -119,7 +120,14 @@ export function DelegateDrawer({
             <Field label="Title" htmlFor={titleID} error={errors.title}>
               <input ref={titleRef} id={titleID} name="title" aria-invalid={Boolean(errors.title)} placeholder="Fix stale worker status" />
             </Field>
-            <Field label="Description" htmlFor={descriptionID} error={errors.description} hint="This becomes the Codex prompt.">
+            <Field
+              label="Description"
+              htmlFor={descriptionID}
+              error={errors.description}
+              hint={selectedWorker
+                ? `This becomes the ${runtimeLabel(selectedWorker.runtime)} prompt.`
+                : "This becomes the selected worker runtime prompt."}
+            >
               <textarea id={descriptionID} name="description" rows={9} aria-invalid={Boolean(errors.description)} placeholder="Describe the outcome, constraints, and checks…" />
             </Field>
             <Field label="Worker" htmlFor="delegate-worker" error={errors.worker}>
@@ -134,7 +142,9 @@ export function DelegateDrawer({
               >
                 <option value="">{workersPending ? "Loading workers…" : workers.length ? "Choose a worker" : "No workers registered"}</option>
                 {workers.map((worker) => (
-                  <option key={worker.id} value={worker.id}>{worker.name} · {worker.online ? "online" : "offline"}</option>
+                  <option key={worker.id} value={worker.id}>
+                    {worker.name} · {runtimeLabel(worker.runtime)} · {worker.online ? "online" : "offline"}
+                  </option>
                 ))}
               </select>
             </Field>

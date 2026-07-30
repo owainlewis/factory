@@ -14,6 +14,7 @@ type eventSender struct {
 	client    *client
 	attemptID string
 	token     string
+	kind      string
 	input     chan protocol.AttemptEvent
 	done      chan struct{}
 	mutex     sync.Mutex
@@ -22,9 +23,9 @@ type eventSender struct {
 	closed    bool
 }
 
-func newEventSender(ctx context.Context, client *client, attemptID, token string) *eventSender {
+func newEventSender(ctx context.Context, client *client, attemptID, token, kind string) *eventSender {
 	sender := &eventSender{
-		client: client, attemptID: attemptID, token: token,
+		client: client, attemptID: attemptID, token: token, kind: kind,
 		input: make(chan protocol.AttemptEvent, 100), done: make(chan struct{}),
 	}
 	go sender.run(ctx)
@@ -38,7 +39,7 @@ func (sender *eventSender) enqueue(stream, text string, truncated bool) {
 		return
 	}
 	payload := eventPayload(stream, text, truncated)
-	event := protocol.AttemptEvent{Sequence: sender.next, Kind: "codex", Payload: payload}
+	event := protocol.AttemptEvent{Sequence: sender.next, Kind: sender.kind, Payload: payload}
 	select {
 	case sender.input <- event:
 		sender.next++

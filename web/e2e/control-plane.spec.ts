@@ -42,6 +42,7 @@ async function registerWorker(
   repositories: typeof onlineRepositories,
   activeCount = 0,
   disposedAttemptIDs: string[] = [],
+  runtime: "codex" | "claude-code" = "codex",
 ) {
   return json<{
     repositories: Array<{ id: string; key: string }>;
@@ -50,7 +51,8 @@ async function registerWorker(
       data: {
         name,
         worker_version: "2.0.0-test",
-        codex_version: "0.42.0-test",
+        runtime,
+        runtime_version: runtime === "claude-code" ? "2.1.220-test" : "0.42.0-test",
         capacity: 2,
         active_count: activeCount,
         health: "healthy",
@@ -187,7 +189,15 @@ test.beforeAll(async () => {
     (repository) => repository.key === "handbook-demo",
   )!.id;
 
-  const offline = await registerWorker(api, workerOffline, "Archive Mac", offlineRepositories);
+  const offline = await registerWorker(
+    api,
+    workerOffline,
+    "Archive Mac",
+    offlineRepositories,
+    0,
+    [],
+    "claude-code",
+  );
   identifiers.offlineRepository = offline.repositories[0].id;
 
   // Registrations become offline after the server's documented 30 second window.
@@ -410,6 +420,7 @@ test("shows worker capacity, current work, retained cleanup, and saves Workers",
   const offlineRow = page.getByRole("button", { name: /Archive Mac/ });
   await expect(offlineRow).toBeVisible();
   await expect(offlineRow).toContainText("Offline");
+  await expect(offlineRow).toContainText("Claude Code");
   await page.screenshot({ path: "test-results/screenshots/workers-desktop.png", fullPage: true });
 
   await page.getByRole("button", { name: /Build Mac/ }).click();
@@ -425,6 +436,7 @@ test("delegates with worker-specific repositories and preserves the task on refr
   const dialog = page.getByRole("dialog", { name: "Delegate task" });
   await dialog.getByLabel("Worker").selectOption(workerOffline);
   await expect(dialog.getByText(/task will queue until it returns/i)).toBeVisible();
+  await expect(dialog.getByText("This becomes the Claude Code prompt.")).toBeVisible();
   await expect(dialog.getByLabel("Repository").getByRole("option", { name: /archive/ })).toHaveCount(1);
   await expect(dialog.getByLabel("Repository").getByRole("option", { name: /factory/ })).toHaveCount(0);
   await dialog.getByLabel("Title").fill("Durable delegated browser task");
@@ -432,6 +444,7 @@ test("delegates with worker-specific repositories and preserves the task on refr
   await dialog.getByLabel("Repository").selectOption(identifiers.offlineRepository);
   await dialog.getByRole("button", { name: "Delegate task" }).click();
   await expect(page.getByRole("heading", { name: "Durable delegated browser task" })).toBeVisible();
+  await expect(page.getByText("Claude Code", { exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("heading", { name: "Durable delegated browser task" })).toBeVisible();
   browser.assertClean();

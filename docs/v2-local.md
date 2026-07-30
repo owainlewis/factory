@@ -2,7 +2,8 @@
 
 This guide starts the complete local V2 control plane on Unix: one Go server
 with its embedded UI and one Go worker that can run Codex across two local Git
-repositories. V1 remains separate and unchanged.
+repositories. A worker can instead run Claude Code. V1 remains separate and
+unchanged.
 
 ## Prerequisites
 
@@ -11,16 +12,19 @@ Install:
 - Go 1.24 or newer;
 - Git;
 - curl;
-- the Codex CLI.
+- the Codex or Claude Code CLI.
 
 Node.js 22 and npm are needed only when changing the web UI. Normal builds use
 the reviewed `web/dist` assets committed to the repository.
 
-Authenticate Codex before starting the worker:
+Authenticate the runtime before starting the worker:
 
 ```sh
 codex login
 codex login status
+# Or:
+claude auth login
+claude auth status --json
 ```
 
 Each configured repository must be a local non-bare Git repository with an
@@ -44,6 +48,7 @@ The sample config is:
 ```toml
 server = "http://127.0.0.1:7337"
 name = "local"
+runtime = "codex"
 max_concurrent = 1
 data_directory = "data/workers/local"
 
@@ -57,6 +62,11 @@ path = "/absolute/path/to/another-repository"
 Relative paths are resolved from the configuration file. Repository keys are
 stable display names. Use a different worker data directory for every worker
 process.
+
+To run both agents locally, copy the worker file and set the second worker to
+`runtime = "claude-code"`. Give it a different `name` and `data_directory`.
+Both workers may advertise the same repositories and appear as separate
+schedulable identities in the UI.
 
 ## Build and start
 
@@ -102,7 +112,7 @@ Open **Workers** and confirm that `local` is online, healthy, and advertises
 both repositories. Select **Delegate task**, then enter:
 
 - a title;
-- the full Codex prompt in Description;
+- the full agent prompt in Description;
 - the worker;
 - one repository advertised by that worker;
 - a timeout.
@@ -144,7 +154,7 @@ curl --fail -X DELETE -H 'Content-Type: application/json' \
 
 ## Results, restarts, and cleanup
 
-Codex runs in:
+The selected worker runtime runs in:
 
 ```text
 <worker data_directory>/worktrees/<attempt-id>
@@ -182,7 +192,7 @@ commit, and Git registration.
 The server and worker may be restarted with the same start command. The server
 reopens durable task history. The worker reuses its ID, stops any verified
 leftover process group, reconciles every attempt manifest, and reports retained
-or missing worktrees before claiming new work. It never resumes Codex after a
+or missing worktrees before claiming new work. It never resumes an agent after a
 worker restart.
 
 ## V1 isolation
@@ -243,7 +253,8 @@ expires, cancel it in the UI. CI never uses local credentials.
 
 ## Limits and later ingest
 
-The MVP is local-only, loopback-only, Unix-only, Codex-only, and manually
+The MVP is local-only, loopback-only, Unix-only, supports Codex and Claude Code,
+and is manually
 triggered. It has no login, OIDC, public binding, remote workers, Kubernetes,
 WebSockets, server-sent events, scheduler, automatic merge, or source ingest.
 

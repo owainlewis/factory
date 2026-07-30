@@ -108,6 +108,35 @@ case "$prompt" in
 esac
 `
 
+const fakeClaudeScript = `#!/bin/sh
+set -eu
+if [ "${1:-}" = "--version" ]; then
+  echo "2.1.220 (Claude Code)"
+  exit 0
+fi
+if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ] && [ "${3:-}" = "--json" ]; then
+  echo '{"loggedIn":true}'
+  exit 0
+fi
+if [ "${1:-}" != "--print" ] ||
+   [ "${2:-}" != "--output-format" ] ||
+   [ "${3:-}" != "stream-json" ] ||
+   [ "${4:-}" != "--verbose" ] ||
+   [ "${5:-}" != "--permission-mode" ] ||
+   [ "${6:-}" != "bypassPermissions" ]; then
+  echo "unexpected fake Claude Code arguments" >&2
+  exit 90
+fi
+prompt="$(cat)"
+if [ "$prompt" != "complete this task" ]; then
+  echo "unexpected fake Claude Code prompt" >&2
+  exit 91
+fi
+echo '{"type":"system","subtype":"init"}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
+echo '{"type":"result","subtype":"success","result":"completed by fake Claude Code"}'
+`
+
 func TestWorkerSupervisorHelperProcess(t *testing.T) {
 	if os.Getenv("FACTORY_TEST_SUPERVISOR") != "1" {
 		return
@@ -196,10 +225,73 @@ func writeFakeCodex(t *testing.T, path string) {
 	}
 }
 
+func writeFakeClaude(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(fakeClaudeScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClaudeCodeHealthAndSupervisorContract(t *testing.T) {
+	claudePath := filepath.Join(t.TempDir(), "claude")
+	writeFakeClaude(t, claudePath)
+	value := checkHealth(context.Background(), "git", protocol.RuntimeClaudeCode, claudePath)
+	if value.State != "healthy" || value.RuntimeVersion != "2.1.220 (Claude Code)" {
+		t.Fatalf("Claude Code health = %#v", value)
+	}
+
+	t.Setenv("FACTORY_TEST_SUPERVISOR", "1")
+	repository := createRepository(t, "claude-supervisor")
+	process, err := startSupervisor(
+		[]string{os.Args[0], "-test.run=TestWorkerSupervisorHelperProcess", "--"},
+		supervisorInit{
+			Runtime:           protocol.RuntimeClaudeCode,
+			RuntimeExecutable: claudePath,
+			Worktree:          repository.path,
+			ResultPath:        filepath.Join(t.TempDir(), "unused-result"),
+			Prompt:            "complete this task",
+			TimeoutSeconds:    60,
+		},
+		io.Discard,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.awaitReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.send("start"); err != nil {
+		t.Fatal(err)
+	}
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+	sawResultEvent := false
+	for {
+		select {
+		case message := <-process.messages:
+			if message.Type == "output" && strings.Contains(message.Text, `"type":"result"`) {
+				sawResultEvent = true
+			}
+			if message.Type != "exit" {
+				continue
+			}
+			if message.ExitCode != 0 || message.Reason != "exited" ||
+				message.Result != "completed by fake Claude Code" || !sawResultEvent {
+				t.Fatalf("Claude Code supervisor exit = %#v", message)
+			}
+			return
+		case err := <-process.decodeErrors:
+			t.Fatalf("decode Claude Code supervisor output: %v", err)
+		case <-timeout.C:
+			t.Fatal("Claude Code supervisor did not exit")
+		}
+	}
+}
+
 func testOptions(codexPath string) Options {
 	return Options{
 		GitExecutable:        "git",
-		CodexExecutable:      codexPath,
+		RuntimeExecutable:    codexPath,
 		SupervisorCommand:    []string{os.Args[0], "-test.run=TestWorkerSupervisorHelperProcess", "--"},
 		WorkerVersion:        "test",
 		PollInterval:         20 * time.Millisecond,
@@ -369,7 +461,7 @@ func TestConfigurationStableIdentityLockAndHealthRecovery(t *testing.T) {
 	}
 	writeFakeCodex(t, codexPath)
 	waitForWorker(t, fixture.store, firstID, func(worker protocol.Worker) bool {
-		return worker.Health == "healthy" && worker.CodexVersion == "codex-cli test-1.0"
+		return worker.Health == "healthy" && worker.RuntimeVersion == "codex-cli test-1.0"
 	})
 	cancel()
 	if err := <-done; err != nil {
@@ -1085,7 +1177,7 @@ func TestParentPipeLossStopsCodexGroup(t *testing.T) {
 	process, err := startSupervisor(
 		[]string{os.Args[0], "-test.run=TestWorkerSupervisorHelperProcess", "--"},
 		supervisorInit{
-			CodexExecutable: codexPath, Worktree: repository.path, ResultPath: result,
+			RuntimeExecutable: codexPath, Worktree: repository.path, ResultPath: result,
 			Prompt: "FAKE_MODE=fork", TimeoutSeconds: 60,
 		}, io.Discard)
 	if err != nil {
@@ -1168,6 +1260,7 @@ func TestLoadConfigRejectsUnknownAndResolvesRelativePaths(t *testing.T) {
 	configPath := filepath.Join(root, "worker.toml")
 	body := fmt.Sprintf(`server = "http://127.0.0.1:7337"
 name = "local"
+runtime = "claude-code"
 max_concurrent = 1
 data_directory = "data"
 
@@ -1183,6 +1276,9 @@ path = %q
 	}
 	if config.DataDirectory != filepath.Join(root, "data") {
 		t.Fatalf("resolved data directory = %s", config.DataDirectory)
+	}
+	if config.Runtime != protocol.RuntimeClaudeCode {
+		t.Fatalf("runtime = %q", config.Runtime)
 	}
 	if err := os.WriteFile(configPath, []byte(body+"unsafe_shortcut = true\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1281,7 +1377,7 @@ func TestSupervisorOutputBoundsOneLogicalLineAndPreservesNextLine(t *testing.T) 
 	second := `{"type":"item.completed","text":"next"}`
 	var output bytes.Buffer
 	writer := &synchronizedEncoder{encoder: json.NewEncoder(&output)}
-	streamSupervisorOutput(strings.NewReader(first+"\n"+second+"\n"), "stdout", writer, nil)
+	streamSupervisorOutput(strings.NewReader(first+"\n"+second+"\n"), "stdout", writer, nil, nil)
 
 	decoder := json.NewDecoder(&output)
 	var messages []supervisorMessage
@@ -1329,7 +1425,7 @@ func TestEventSenderRetriesTransientFailureWithSameSequence(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sender := newEventSender(ctx, newClient(server.URL, nil), "attempt", "lease")
+	sender := newEventSender(ctx, newClient(server.URL, nil), "attempt", "lease", protocol.RuntimeClaudeCode)
 	sender.enqueue("stderr", "retry me", false)
 	sender.closeAndWait(5 * time.Second)
 	if count.Load() != 2 {
@@ -1339,6 +1435,8 @@ func TestEventSenderRetriesTransientFailureWithSameSequence(t *testing.T) {
 	second := <-requests
 	if len(first.Events) != 1 || len(second.Events) != 1 ||
 		first.Events[0].Sequence != 0 || second.Events[0].Sequence != 0 ||
+		first.Events[0].Kind != protocol.RuntimeClaudeCode ||
+		second.Events[0].Kind != protocol.RuntimeClaudeCode ||
 		!bytes.Equal(first.Events[0].Payload, second.Events[0].Payload) {
 		t.Fatalf("event retry changed content: first=%#v second=%#v", first.Events, second.Events)
 	}

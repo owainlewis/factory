@@ -2,6 +2,8 @@
 # with absolute paths to local non-bare Git repositories that have an origin.
 server = "http://127.0.0.1:7337"
 name = "local"
+# One worker identity runs exactly one runtime: "codex" or "claude-code".
+runtime = "codex"
 max_concurrent = 1
 data_directory = "data/workers/local"
 

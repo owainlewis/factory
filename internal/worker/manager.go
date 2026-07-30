@@ -29,7 +29,7 @@ const (
 
 type Options struct {
 	GitExecutable        string
-	CodexExecutable      string
+	RuntimeExecutable    string
 	SupervisorCommand    []string
 	HTTPClient           *http.Client
 	Random               io.Reader
@@ -80,10 +80,13 @@ func New(config Config, options Options, logger *slog.Logger) (*Manager, error) 
 	if err := ensureSupportedPlatform(); err != nil {
 		return nil, err
 	}
+	if config.Runtime == "" {
+		config.Runtime = protocol.RuntimeCodex
+	}
 	if err := validateConfig(config); err != nil {
 		return nil, err
 	}
-	options = options.withDefaults()
+	options = options.withDefaults(config.Runtime)
 	if len(options.SupervisorCommand) == 0 {
 		return nil, errors.New("resolve factory-worker executable for attempt supervision")
 	}
@@ -139,12 +142,16 @@ func New(config Config, options Options, logger *slog.Logger) (*Manager, error) 
 	}, nil
 }
 
-func (options Options) withDefaults() Options {
+func (options Options) withDefaults(runtime string) Options {
 	if options.GitExecutable == "" {
 		options.GitExecutable = "git"
 	}
-	if options.CodexExecutable == "" {
-		options.CodexExecutable = "codex"
+	if options.RuntimeExecutable == "" {
+		if runtime == protocol.RuntimeClaudeCode {
+			options.RuntimeExecutable = "claude"
+		} else {
+			options.RuntimeExecutable = "codex"
+		}
 	}
 	if len(options.SupervisorCommand) == 0 {
 		executable, err := os.Executable()
@@ -207,7 +214,8 @@ func (manager *Manager) Run(ctx context.Context) error {
 		case <-timer.C:
 		}
 	}
-	manager.setHealth(checkHealth(ctx, manager.options.GitExecutable, manager.options.CodexExecutable))
+	manager.setHealth(checkHealth(ctx, manager.options.GitExecutable,
+		manager.config.Runtime, manager.options.RuntimeExecutable))
 	manager.register(ctx)
 
 	healthTicker := time.NewTicker(manager.options.HealthInterval)
@@ -223,7 +231,8 @@ func (manager *Manager) Run(ctx context.Context) error {
 			manager.stopAll("cancelled")
 			return manager.waitForShutdown()
 		case <-healthTicker.C:
-			manager.setHealth(checkHealth(ctx, manager.options.GitExecutable, manager.options.CodexExecutable))
+			manager.setHealth(checkHealth(ctx, manager.options.GitExecutable,
+				manager.config.Runtime, manager.options.RuntimeExecutable))
 		case <-registrationTicker.C:
 			manager.register(ctx)
 		case <-claimTimer.C:

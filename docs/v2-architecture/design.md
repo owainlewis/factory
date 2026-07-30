@@ -16,11 +16,11 @@ registered workers.
 
 The V2 MVP adds the smallest useful control-plane and worker split. A local Go
 server serves a React UI and stores tasks in SQLite. One local Go worker
-registers with the server, polls for work, and launches Codex in a managed Git
+registers with the server, polls for work, and launches Codex or Claude Code in a managed Git
 worktree. The UI shows registered workers and lets the operator delegate a
-titled task to one worker. The task description is the Codex prompt.
+titled task to one worker. The task description is the agent prompt.
 
-The MVP is local-only, Unix-only, Codex-only, and manually triggered. It has no
+The MVP is local-only, Unix-only, supports Codex and Claude Code, and is manually triggered. It has no
 login, OIDC, source poller, scheduler, Postgres, WebSocket, remote worker,
 automatic retry, or workflow synchronization. The main downside is that it does
 not yet deliver the full fleet architecture. It proves the control-plane
@@ -55,7 +55,7 @@ state, configuration, and tests. The MVP does not import V1 history or replace
 the V1 daemon.
 
 Success means a person can start the server and worker, open the UI, see the
-worker and its repositories, delegate a titled task, watch Codex run, inspect
+worker and its repositories, delegate a titled task, watch an agent run, inspect
 the result, and cancel a run without using the V1 process.
 
 ## 3. System context
@@ -66,12 +66,12 @@ flowchart LR
     W["Local Go worker"] -->|"Register, claim, heartbeat, events"| S
     S --> DB[("SQLite")]
     W --> WT["Managed Git worktree"]
-    WT --> C["Codex CLI"]
+    WT --> C["Codex or Claude Code CLI"]
 ```
 
-The server owns durable coordination. It does not run Codex or touch repository
+The server owns durable coordination. It does not run agent CLIs or touch repository
 working trees. The worker owns local execution. It does not read or write the
-server database. Codex owns adaptive engineering work inside its worktree.
+server database. The selected agent owns adaptive engineering work inside its worktree.
 
 The server listens only on `127.0.0.1`. The browser and worker must run on the
 same host. Remote network access is not part of the MVP.
@@ -83,13 +83,13 @@ same host. Remote network access is not part of the MVP.
 The operator starts `factory-server`. It opens its SQLite database, applies
 migrations, serves the compiled UI, and begins accepting worker heartbeats.
 
-The operator starts `factory-worker` with one or more configured repository
-paths. The worker creates a stable worker ID on first start, verifies Git and
-Codex, and registers its name, health, Codex version, capacity, and repository
-identities with the server.
+The operator starts `factory-worker` with one configured runtime and one or
+more repository paths. The worker creates a stable worker ID on first start,
+verifies Git and its runtime, and registers its name, runtime, health, runtime
+version, capacity, and repository identities with the server.
 
 The operator opens the UI. The Workers page shows the local worker as online,
-with its Codex version, capacity, and repositories. The operator opens the task
+with its runtime and version, capacity, and repositories. The operator opens the task
 drawer, enters a title and description, chooses the worker and one of that
 worker's repositories, and delegates the task. The server stores the normalized
 task and one execution targeted to that worker.
@@ -100,11 +100,11 @@ changes the execution from `queued` to `preparing`, creates an attempt, and
 stores the claim result. Replaying the same request returns the same attempt.
 
 The worker creates a managed Git worktree using the configured repository path.
-It then starts Codex and moves the attempt to `running`. While Codex runs, the
+It then starts the configured runtime and moves the attempt to `running`. While the runtime runs, the
 worker renews the lease and sends bounded progress events. The browser polls
 the task detail endpoint every two seconds and shows new events.
 
-When Codex exits, the worker posts the result. The server accepts it only when
+When the agent exits, the worker posts the result. The server accepts it only when
 the lease still owns the attempt. It records `succeeded`, `failed`, or
 `cancelled`. Successful clean worktrees and safe managed local branches are
 removed. Failed, cancelled, dirty, or unpublished worktrees and branches are
@@ -117,20 +117,20 @@ retained for inspection.
 The server owns the HTTP API, UI assets, SQLite migrations, worker health,
 tasks, attempts, leases, cancellation requests, and bounded event history. It
 depends on SQLite and the compiled UI. It does not execute source adapters,
-Git, Codex, or sandbox commands.
+Git, agent, or sandbox commands.
 
 #### `factory-worker`
 
 The worker owns runtime health checks, local capacity, repository path mapping,
-worktree lifecycle, Codex process supervision, event collection, lease renewal,
-and cancellation. It depends on Git, Codex, and a Unix process model. It does
+worktree lifecycle, agent process supervision, event collection, lease renewal,
+and cancellation. It depends on Git, its configured runtime, and a Unix process model. It does
 not schedule tasks, choose global task priority, or access SQLite.
 
 Each attempt runs through a small supervisor subprocess of the worker binary.
-The supervisor owns the Codex process group and watches a control pipe from the
+The supervisor owns the agent process group and watches a control pipe from the
 main worker. Parent exit closes the pipe, which makes the supervisor terminate
-Codex before it exits. Every successful server lease renewal also sends a new
-lease deadline over the pipe. The supervisor terminates Codex when that
+the agent before it exits. Every successful server lease renewal also sends a new
+lease deadline over the pipe. The supervisor terminates the agent when that
 deadline passes even if the main worker is hung or stopped. The main worker
 records the supervisor process ID, process identity, and process-group ID for
 startup reconciliation.
@@ -147,7 +147,7 @@ The UI has four MVP surfaces:
   cancelled tasks as compact status columns on desktop and one grouped list on
   narrow screens.
 - Workers shows every registered worker, health, active and total capacity,
-  Codex version, repositories, and last-seen time.
+  runtime and version, repositories, and last-seen time.
 - Delegate task is a drawer containing title, description, worker, repository,
   and timeout.
 - Task detail shows the description, assigned worker, status, elapsed time,
@@ -240,25 +240,27 @@ small menu.
 The design avoids large metric tiles and infrastructure-heavy dashboards. Work
 is the primary surface and Workers is the operational surface.
 
-#### Codex only
+#### One worker, one concrete runtime
 
-The worker directly implements the Codex adapter. The protocol still records
-the runtime name as `codex`, but the code does not introduce a plugin system for
-one implementation. A runtime interface is extracted when a second runtime is
-implemented in V2. V1's existing generic runtime support remains available and
-is not removed.
+Each worker identity advertises exactly one immutable runtime, `codex` or
+`claude-code`. Several workers may use the same runtime. The selected worker
+determines the execution runtime, so task creation does not duplicate that
+choice. Runtime commands stay in worker configuration and are never supplied
+by the control plane. Both runtimes use the same HTTP claim, event, result,
+lease, cancellation, and worktree contract. The code uses a concrete switch
+for two commands and does not add a runtime plugin system.
 
 #### Keep task, execution, and attempt
 
 A task is the user's titled intent and description. An execution is its
 assignment to one worker and runtime. An attempt is one worker process
-invocation. The MVP creates one Codex execution per task, but retaining these
+invocation. The MVP creates one execution per task, but retaining these
 three records avoids mixing user intent with assignment and lease history.
 
 #### Keep leases and process supervision
 
 The worker renews a short lease while it owns work. Lease tokens fence late
-writes after a crash. If the worker loses the server, it stops Codex before the
+writes after a crash. If the worker loses the server, it stops the agent before the
 lease expires. This is more work than a basic queue, but it is part of the
 reliability kernel and prevents overlapping agents.
 
@@ -283,7 +285,7 @@ same-origin content security policy to the UI.
 6. An execution targets only a repository advertised by its assigned worker.
 7. A terminal attempt never becomes active again.
 8. Task state is computed from execution state and is not stored separately.
-9. Losing the lease causes the supervisor to stop the complete Codex process
+9. Losing the lease causes the supervisor to stop the complete agent process
    group even when the main worker is hung.
 10. The server never receives an arbitrary local working-directory path from a
    task.
@@ -303,17 +305,17 @@ same-origin content security policy to the UI.
 - The worker must persist its worker ID across restarts.
 - The worker must hold an exclusive lock on its data directory for its complete
   lifetime and refuse to start when another process holds it.
-- The worker must advertise its repositories, Codex version, health, capacity,
+- The worker must advertise its repositories, runtime, runtime version, health, capacity,
   active count, worker version, and last heartbeat.
 - A worker is online when its last heartbeat is no more than thirty seconds
   old. Otherwise the UI shows it as offline and it cannot claim work.
 - The UI must show Work, Workers, Delegate task, and Task detail surfaces.
-- Workers must show worker name, online state, capacity, active count, Codex
+- Workers must show worker name, online state, capacity, active count, runtime
   version, repositories, worker version, and last-seen time.
 - Task creation must accept a title, description, worker, repository, timeout,
   and client request key.
 - Title is required and limited to 200 Unicode characters.
-- Description is required, limited to 64 KiB, and becomes the Codex prompt.
+- Description is required, limited to 64 KiB, and becomes the agent prompt.
 - Choosing a worker must restrict the repository choices to repositories that
   worker advertised.
 - One worker may advertise and execute tasks for several repositories.
@@ -378,7 +380,7 @@ The first API surface is:
 - `POST /api/v1/workers/{worker_id}/claims` accepts a worker-generated request
   ID and lease token, claims at most one eligible execution, and returns `204`
   when no work is available. Exact replay returns the stored result.
-- `POST /api/v1/attempts/{id}/start` records that Codex started.
+- `POST /api/v1/attempts/{id}/start` records that the agent started.
 - `PUT /api/v1/attempts/{id}/heartbeat` renews the lease and returns whether
   cancellation was requested.
 - `POST /api/v1/attempts/{id}/events` stores an ordered event batch.
@@ -415,7 +417,7 @@ Task creation accepts one normalized body:
 The server trims the title, rejects a blank title or description, preserves
 description whitespace, validates the worker and repository relationship, and
 stores the body before returning `201`. It does not accept a separate `prompt`
-field. The worker builds the Codex input from a fixed Factory safety preamble,
+field. The worker builds the agent input from a fixed Factory safety preamble,
 task title, task description, and repository identity.
 
 A claim body contains:
@@ -432,7 +434,7 @@ stores either the claimed attempt ID or an empty result and stores only the
 SHA-256 digest of the supplied lease token. Repeating the same body returns the
 same attempt only while that attempt is active and its lease is unexpired.
 Replaying an expired or terminal claim returns `409 lease_not_owner`, and the
-worker must not create a worktree or start Codex. Reusing the request ID with a
+worker must not create a worktree or start an agent. Reusing the request ID with a
 different token returns `409 claim_request_conflict`. Empty claim records
 return `204` for five minutes, which is longer than the ten-second HTTP request
 deadline. The worker creates a new request ID after receiving `204`.
@@ -451,7 +453,7 @@ second local model.
 
 ### Data
 
-`workers` stores the worker ID, name, worker version, Codex version, capacity,
+`workers` stores the worker ID, name, worker version, immutable runtime, runtime version, capacity,
 active count, health, retained-worktree summaries, registration time, and last
 heartbeat.
 
@@ -463,7 +465,8 @@ advertises and the worker's configured display key.
 ID, timeout, and created time. It does not store state.
 
 `executions` stores the execution ID, task ID, assigned worker ID, required
-runtime, state, and created time. The MVP always uses `codex`.
+runtime, state, and created time. Task creation copies the selected worker's
+runtime into the execution.
 
 `attempts` stores the attempt ID, execution ID, worker ID, attempt number,
 state, lease digest, lease expiry, process observations, result, error, and
@@ -486,7 +489,7 @@ its execution. The MVP has one execution per task, so the mapping is exact.
 | --- | --- | --- | --- |
 | Create task | none | `queued` | none |
 | Claim | `queued` | `preparing` | create `preparing` |
-| Start Codex | `preparing` | `running` | `preparing` to `running` |
+| Start agent | `preparing` | `running` | `preparing` to `running` |
 | Complete successfully | `running` | `succeeded` | `running` to `succeeded` |
 | Complete with error | `preparing` or `running` | `failed` | active to `failed` |
 | Cancel queued | `queued` | `cancelled` | none |
@@ -534,7 +537,7 @@ process fields and contains:
 - lifecycle state, created time, updated time, and cleanup result.
 
 Every manifest change uses a same-directory temporary file, file `fsync`,
-rename, and parent-directory `fsync`. Codex cannot start until the update
+rename, and parent-directory `fsync`. The agent cannot start until the update
 containing supervisor process identity and process-group identity is durable.
 Lease deadline, lifecycle, retention, and cleanup changes use the same update
 sequence.
@@ -603,7 +606,7 @@ changes each expired active attempt to `lost` and its execution to `failed`
 only when the stored attempt ID and lease expiry still match. This makes dead
 work visible without requiring another worker request.
 
-If Codex or Git is missing or unhealthy, the worker reports unhealthy and does
+If the configured runtime or Git is missing or unhealthy, the worker reports unhealthy and does
 not claim work. It repeats health checks every thirty seconds and recovers
 without a restart.
 
@@ -615,12 +618,12 @@ configuration is restored.
 
 An attempt lease lasts thirty seconds. The worker renews it every ten seconds
 and retries a failed renewal every two seconds. If thirty seconds pass after
-the last successful server response, the worker terminates the Codex process
+the last successful server response, the worker terminates the agent process
 group. A late heartbeat, event, or completion receives
 `409 lease_not_owner`.
 
 If the main worker crashes, its control pipe closes. The per-attempt supervisor
-then terminates Codex and its descendants. If the supervisor crashes while the
+then terminates the agent and its descendants. If the supervisor crashes while the
 main worker remains alive, the worker terminates the recorded process group.
 After each successful server renewal, the main worker gives the supervisor a
 new monotonic deadline. Missing that deadline terminates the process group even
@@ -639,7 +642,7 @@ before worktree creation whose path is absent from both sources is marked
 one source, or with an identity mismatch, is marked inconsistent and makes the
 worker unhealthy until the operator resolves it. Any other unexpectedly absent
 previously created worktree is marked missing, reported in worker detail, and
-does not consume retained capacity. The worker never resumes Codex
+does not consume retained capacity. The worker never resumes an agent
 automatically and does not claim new work until reconciliation finishes.
 
 If the terminal request is lost, the worker retries it with the same lease
@@ -652,11 +655,11 @@ returns that state. The worker sends a graceful termination signal, waits five
 seconds, then kills the process group. If it cannot prove that the group
 stopped, it marks itself unhealthy and accepts no more work.
 
-Ctrl-C on the worker stops claims, cancels active Codex processes, waits up to
+Ctrl-C on the worker stops claims, cancels active agent processes, waits up to
 thirty seconds, records best-effort terminal state, and exits. Ctrl-C on the
 server stops new requests, waits up to ten seconds for active HTTP requests,
 flushes SQLite, and exits. The worker then reaches its lease deadline and stops
-Codex if the server does not return.
+the agent if the server does not return.
 
 Successful clean worktrees are removed after completion. Their exact managed
 local branch is also removed when its head is the original base or is
@@ -700,7 +703,7 @@ checks `Host`, rejects cross-origin `Origin` values, sends no permissive CORS
 headers, and rejects form content types. This prevents an unrelated website
 from using the operator's browser to submit local tasks.
 
-Git, GitHub, Codex, and sandbox credentials stay on the worker. The server
+Git, GitHub, agent, and sandbox credentials stay on the worker. The server
 stores no credential values. Prompts and agent summaries are sensitive project
 data and remain in the local SQLite database until removed.
 
@@ -714,7 +717,7 @@ events and 256 KiB. One event is at most 64 KiB. One attempt stores at most
 is full, progress events are rejected while heartbeat, cancellation, and
 terminal completion continue to work.
 
-The worker defaults to one concurrent Codex process. The maximum supported MVP
+The worker defaults to one concurrent agent process. The maximum supported MVP
 value is four. Each task timeout defaults to two hours and cannot exceed eight
 hours.
 
@@ -732,12 +735,12 @@ and model output.
 - One Unix worker registers and appears online in the UI.
 - Two simulated workers register with different capacity and repositories, and
   both appear correctly on the Workers page.
-- An unhealthy Codex installation appears unhealthy and receives no work.
+- An unhealthy configured runtime appears unhealthy and receives no work.
 - The Delegate task drawer requires title, description, worker, and one of that
   worker's repositories.
 - A task stores title and description once when its request is repeated.
 - A task delegated to worker A cannot be claimed by worker B.
-- The worker claims the task, creates a managed worktree, starts Codex, reports
+- The worker claims the task, creates a managed worktree, starts its agent, reports
   progress, and records the result.
 - Tasks for two repositories advertised by one worker create worktrees from the
   correct repository in both cases.
@@ -745,18 +748,18 @@ and model output.
 - Losing a successful claim response and replaying the same request while its
   lease is active returns the same attempt without creating another attempt.
 - Replaying that request after lease expiry returns `lease_not_owner` and does
-  not create a worktree or start Codex.
+  not create a worktree or start an agent.
 - The server startup sweep and periodic sweep mark expired active attempts
   `lost` and their executions `failed`.
 - Cancelling queued work assigned to an offline worker makes it `cancelled`
   without creating an attempt.
-- UI cancellation stops Codex and its child processes within fifteen seconds.
-- Disconnecting the worker from the server stops Codex within thirty seconds of
+- UI cancellation stops the agent and its child processes within fifteen seconds.
+- Disconnecting the worker from the server stops the agent within thirty seconds of
   the last successful lease renewal.
-- Killing and restarting the worker leaves no unattended Codex child and does
+- Killing and restarting the worker leaves no unattended agent child and does
   not create an overlapping attempt.
 - Stopping the main worker process without closing its pipe causes the
-  supervisor deadline to stop Codex within thirty seconds of the last renewal.
+  supervisor deadline to stop the agent within thirty seconds of the last renewal.
 - A second worker process using the same data directory is refused while the
   first holds its lock.
 - The UI works through HTTP polling with no WebSocket or server-sent event
@@ -778,7 +781,7 @@ and model output.
 - Before every worktree is created, its initial manifest is durably written
   through a same-directory temporary file, file `fsync`, rename, and
   parent-directory `fsync`. Every later manifest update is durable, and process
-  identity is recorded before Codex starts.
+  identity is recorded before the agent starts.
 - V2 never opens or modifies a V1 SQLite database.
 
 ## 10. Test approach
@@ -792,7 +795,7 @@ database. They prove that one execution has one owner, lost claim responses are
 idempotent, conflicting claim requests fail, event replay is idempotent, and
 startup and periodic expiry sweeps close dead attempts.
 
-Worker tests use a fake Codex executable that emits events, exits with selected
+Worker tests use fake Codex and Claude Code executables that emit events, exit with selected
 codes, hangs, forks children, and ignores graceful termination. Tests cover
 timeout, cancellation, server loss, main-worker crash, stopped main worker,
 supervisor crash, exclusive data-directory locking, atomic manifests, startup
@@ -848,7 +851,7 @@ There are no blocking open questions for the MVP.
   ten-repository ingest stretch goal.
 - Schedules and cron.
 - Repository workflow synchronization.
-- Claude Code and runtime plugins.
+- Runtime plugins and operator-supplied runtime commands.
 - Worker labels, pools, placement rules, and task priority.
 - Automatic retries.
 - WebSockets, server-sent events, and message brokers.
