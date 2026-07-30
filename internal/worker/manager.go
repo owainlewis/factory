@@ -81,6 +81,11 @@ type attemptHandle struct {
 	context context.Context
 	cancel  context.CancelFunc
 	done    chan struct{}
+	// heartbeatDone is closed after the heartbeat goroutine has stopped all
+	// manifest writes. doneOnce lets terminal handoff join it before runAttempt
+	// performs its final deferred cleanup.
+	heartbeatDone chan struct{}
+	doneOnce      sync.Once
 
 	mutex         sync.Mutex
 	reason        string
@@ -467,7 +472,8 @@ func (manager *Manager) cancelPendingClaimsLocked() {
 func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim, token string) {
 	attemptContext, cancel := context.WithCancel(parent)
 	handle := &attemptHandle{
-		context: attemptContext, cancel: cancel, done: make(chan struct{}), expiry: claim.Attempt.LeaseExpiresAt,
+		context: attemptContext, cancel: cancel, done: make(chan struct{}),
+		heartbeatDone: make(chan struct{}), expiry: claim.Attempt.LeaseExpiresAt,
 	}
 	manager.stateMutex.Lock()
 	manager.active[claim.Attempt.ID] = handle
@@ -476,7 +482,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		handle.stop("cancelled")
 	}
 	defer func() {
-		close(handle.done)
+		handle.stopHeartbeat()
 		cancel()
 		manager.stateMutex.Lock()
 		delete(manager.active, claim.Attempt.ID)
@@ -666,6 +672,7 @@ func (manager *Manager) validateClaim(claim protocol.Claim) (Repository, error) 
 }
 
 func (manager *Manager) heartbeatAttempt(handle *attemptHandle, attemptID, token string) {
+	defer close(handle.heartbeatDone)
 	delay := manager.options.LeaseRenewInterval
 	for {
 		timer := time.NewTimer(delay)
@@ -707,6 +714,18 @@ func (manager *Manager) heartbeatAttempt(handle *attemptHandle, attemptID, token
 			return
 		}
 		delay = manager.options.LeaseRetryInterval
+	}
+}
+
+func (handle *attemptHandle) stopHeartbeat() {
+	if handle.done == nil {
+		return
+	}
+	handle.doneOnce.Do(func() {
+		close(handle.done)
+	})
+	if handle.heartbeatDone != nil {
+		<-handle.heartbeatDone
 	}
 }
 
@@ -842,11 +861,7 @@ func (manager *Manager) finishWithoutWorktree(
 ) {
 	manager.registrationMutex.Lock()
 	defer manager.registrationMutex.Unlock()
-	defer func() {
-		registerContext, cancel := context.WithTimeout(context.Background(), requestTimeout)
-		defer cancel()
-		manager.registerLocked(registerContext)
-	}()
+	defer manager.registerAfterAttempt(handle)
 
 	errorText := ""
 	if cause != nil {
@@ -880,11 +895,7 @@ func (manager *Manager) finishWithWorktree(
 ) {
 	manager.registrationMutex.Lock()
 	defer manager.registrationMutex.Unlock()
-	defer func() {
-		registerContext, cancel := context.WithTimeout(context.Background(), requestTimeout)
-		defer cancel()
-		manager.registerLocked(registerContext)
-	}()
+	defer manager.registerAfterAttempt(handle)
 
 	result = boundedText(result, protocol.MaxResultBytes)
 	errorText = boundedText(errorText, protocol.MaxErrorBytes)
@@ -914,6 +925,13 @@ func (manager *Manager) finishWithWorktree(
 	}
 	reason := firstNonEmpty(errorText, state+" attempt retained for inspection")
 	manager.retain(claim, repository, value, reason)
+}
+
+func (manager *Manager) registerAfterAttempt(handle *attemptHandle) {
+	handle.stopHeartbeat()
+	registerContext, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	manager.registerLocked(registerContext)
 }
 
 func (handle *attemptHandle) processStillActive() bool {

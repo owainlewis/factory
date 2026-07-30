@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -882,6 +883,125 @@ func TestAcknowledgedDisposedManifestIsPrunedBeforeSecondRestart(t *testing.T) {
 	}
 	if got := secondRestart.registration().DisposedAttemptIDs; len(got) != 0 {
 		t.Fatalf("second restart republished acknowledged disposals: %#v", got)
+	}
+}
+
+func TestDisposedManifestWaitsForHeartbeatBeforePruning(t *testing.T) {
+	var blockHeartbeat atomic.Bool
+	var watchRegistration atomic.Bool
+	heartbeatReached := make(chan struct{}, 1)
+	releaseHeartbeat := make(chan struct{}, 1)
+	defer func() {
+		select {
+		case releaseHeartbeat <- struct{}{}:
+		default:
+		}
+	}()
+	registrationReached := make(chan struct{}, 1)
+	fixture := newServerFixture(t, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			if strings.HasSuffix(request.URL.Path, "/heartbeat") && blockHeartbeat.Load() {
+				response := httptest.NewRecorder()
+				next.ServeHTTP(response, request)
+				heartbeatReached <- struct{}{}
+				<-releaseHeartbeat
+				for key, values := range response.Header() {
+					writer.Header()[key] = append([]string(nil), values...)
+				}
+				writer.WriteHeader(response.Code)
+				_, _ = writer.Write(response.Body.Bytes())
+				return
+			}
+			if request.Method == http.MethodPut &&
+				strings.HasPrefix(request.URL.Path, "/api/v1/workers/") &&
+				watchRegistration.Load() {
+				registrationReached <- struct{}{}
+			}
+			next.ServeHTTP(writer, request)
+		})
+	})
+	repository := createRepository(t, "heartbeat-pruning")
+	manager := newTestManager(t, fixture, filepath.Join(t.TempDir(), "codex"),
+		filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"factory": repository}, 1)
+	t.Cleanup(func() { _ = manager.Close() })
+	claim := seedReconciliationManifest(t, fixture, manager, manifestWorktreeCreated)
+	manifest, err := manager.manifests.load(claim.Attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := inspectManifestWorktree(context.Background(), "git", manager.dataDirectory, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := removeInspectedWorktree(context.Background(), "git", inspection, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.persistLifecycle(claim.Attempt.ID, manifestCleaned, func(value *attemptManifest) {
+		value.TerminalState = "failed"
+		value.ProcessActive = false
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager.setHealth(health{State: "healthy", GitVersion: "test", CodexVersion: "test"})
+	manager.options.LeaseRenewInterval = time.Millisecond
+	attemptContext, cancel := context.WithCancel(context.Background())
+	handle := &attemptHandle{
+		context: attemptContext, cancel: cancel, done: make(chan struct{}),
+		heartbeatDone: make(chan struct{}), expiry: claim.Attempt.LeaseExpiresAt,
+		manifestReady: true,
+	}
+	defer cancel()
+	blockHeartbeat.Store(true)
+	go manager.heartbeatAttempt(handle, claim.Attempt.ID, strings.Repeat("r", 43))
+	select {
+	case <-heartbeatReached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("heartbeat did not reach the server")
+	}
+	if _, err := fixture.store.CompleteAttempt(context.Background(), claim.Attempt.ID,
+		protocol.CompleteAttemptRequest{
+			LeaseToken: strings.Repeat("r", 43), State: "failed", Error: "complete",
+		}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.recordDisposed(claim.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	watchRegistration.Store(true)
+	registrationDone := make(chan struct{})
+	go func() {
+		manager.registrationMutex.Lock()
+		defer manager.registrationMutex.Unlock()
+		manager.registerAfterAttempt(handle)
+		close(registrationDone)
+	}()
+	select {
+	case <-registrationReached:
+		t.Fatal("registration pruned the manifest before the heartbeat stopped")
+	case <-time.After(100 * time.Millisecond):
+	}
+	releaseHeartbeat <- struct{}{}
+	select {
+	case <-registrationReached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("registration did not proceed after the heartbeat stopped")
+	}
+	select {
+	case <-registrationDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("registration did not finish")
+	}
+	if _, err := manager.manifests.load(claim.Attempt.ID); err == nil {
+		t.Fatal("acknowledged manifest was not pruned")
+	}
+	manager.stateMutex.Lock()
+	workerHealth := manager.health.State
+	fatalHealth := manager.fatalHealth
+	manager.stateMutex.Unlock()
+	if workerHealth != "healthy" || fatalHealth != nil {
+		t.Fatalf("late heartbeat made worker unhealthy: health=%s error=%v", workerHealth, fatalHealth)
 	}
 }
 
