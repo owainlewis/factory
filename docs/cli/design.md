@@ -283,7 +283,7 @@ factory status
 
 factory tasks list [--state STATE] [--limit N] [--cursor CURSOR]
 factory tasks show TASK_ID
-factory tasks cancel TASK_ID
+factory tasks cancel [--confirm] TASK_ID
 factory tasks retry TASK_ID
 factory tasks delete [--confirm] TASK_ID
 
