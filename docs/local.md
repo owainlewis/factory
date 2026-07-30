@@ -185,7 +185,7 @@ Use the task detail result to find the path. Preview the cleanup decision:
 
 ```sh
 ~/.factory/bin/factory-worker cleanup ATTEMPT_ID \
-  -config ~/.factory/worker.toml
+  --config ~/.factory/worker.toml
 ```
 
 Add `--confirm` to remove the worktree. The local branch is preserved, but

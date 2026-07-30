@@ -170,6 +170,12 @@ had at least one explicit retry. Factory does not infer merged pull requests or
 triaged tickets from an agent's text output. Those metrics require
 provider-confirmed source events in a future ingest integration.
 
+The retry migration backfills evidence retained in attempt counts and executions
+still queued after a retry. Older executions that completed after a pre-claim
+retry are indistinguishable from executions completed on their first run, so
+historical retry rate is a lower bound until that retained history expires or
+is deleted.
+
 ## Storage
 
 Factory uses one default home:

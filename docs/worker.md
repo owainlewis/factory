@@ -110,14 +110,14 @@ retained. The task result records the path and branch.
 Preview manual cleanup without changing the worktree:
 
 ```sh
-factory-worker cleanup ATTEMPT_ID -config ~/.factory/worker.toml
+factory-worker cleanup ATTEMPT_ID --config ~/.factory/worker.toml
 ```
 
 If the preview is correct, confirm removal:
 
 ```sh
 factory-worker cleanup ATTEMPT_ID \
-  -config ~/.factory/worker.toml \
+  --config ~/.factory/worker.toml \
   --confirm
 ```
 

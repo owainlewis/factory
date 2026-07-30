@@ -97,10 +97,19 @@ func TestRetryCountMigrationBackfillsHistoricalAttempts(t *testing.T) {
 		INSERT INTO tasks(
 			id, request_key, title, description, repository_id, timeout_seconds, created_at
 		) VALUES ('task', 'task', 'task', 'task', 'repository', 60, 1);
+		INSERT INTO tasks(
+			id, request_key, title, description, repository_id, timeout_seconds, created_at
+		) VALUES ('queued-task', 'queued-task', 'queued', 'queued', 'repository', 60, 1);
 		INSERT INTO executions(
 			id, task_id, assigned_worker_id, required_runtime, state,
 			cancellation_requested, created_at, updated_at
 		) VALUES ('execution', 'task', 'worker', 'codex', 'succeeded', 0, 1, 3);
+		INSERT INTO executions(
+			id, task_id, assigned_worker_id, required_runtime, state,
+			cancellation_requested, created_at, updated_at
+		) VALUES (
+			'queued-execution', 'queued-task', 'worker', 'codex', 'queued', 0, 1, 2
+		);
 		INSERT INTO attempts(
 			id, execution_id, worker_id, attempt_number, state, lease_digest,
 			lease_expires_at, completed_at, created_at
@@ -127,6 +136,14 @@ func TestRetryCountMigrationBackfillsHistoricalAttempts(t *testing.T) {
 	}
 	if retryCount != 1 {
 		t.Fatalf("backfilled retry count = %d; want 1", retryCount)
+	}
+	if err := database.QueryRow(`
+		SELECT retry_count FROM executions WHERE id = 'queued-execution'
+	`).Scan(&retryCount); err != nil {
+		t.Fatal(err)
+	}
+	if retryCount != 1 {
+		t.Fatalf("queued retry count = %d; want 1", retryCount)
 	}
 }
 
