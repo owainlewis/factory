@@ -26,6 +26,10 @@ automatic retry, or workflow synchronization. The main downside is that it does
 not yet deliver the full fleet architecture. It proves the control-plane
 boundary and preserves the hard reliability work before adding scale.
 
+The proposed [V2 workflow design](../v2-workflows/design.md) is the next
+control-plane extension. It keeps the implemented task and worker boundary,
+while defining a task as free-text context plus an optional reusable workflow.
+
 ## 2. Context and scope
 
 V1 combines source polling, scheduling, durable task storage, workspace
