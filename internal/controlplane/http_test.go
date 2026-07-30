@@ -98,6 +98,100 @@ func registerHTTPWorker(t *testing.T, fixture *httpFixture, id, key, remote stri
 	return decodeResponse[protocol.Worker](t, response)
 }
 
+func TestHTTPWorkerRegistrationSupportsLegacyAndRuntimeAwareContracts(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	type legacyWorker struct {
+		ID                string                      `json:"id"`
+		Name              string                      `json:"name"`
+		WorkerVersion     string                      `json:"worker_version"`
+		CodexVersion      string                      `json:"codex_version"`
+		Capacity          int                         `json:"capacity"`
+		ActiveCount       int                         `json:"active_count"`
+		Health            string                      `json:"health"`
+		Online            bool                        `json:"online"`
+		Repositories      []protocol.Repository       `json:"repositories"`
+		RetainedWorktrees []protocol.RetainedWorktree `json:"retained_worktrees"`
+		CurrentTaskTitle  string                      `json:"current_task_title,omitempty"`
+		RegisteredAt      time.Time                   `json:"registered_at"`
+		LastHeartbeat     time.Time                   `json:"last_heartbeat"`
+	}
+	legacyRequest := func(name string) map[string]any {
+		return map[string]any{
+			"name": name, "worker_version": "legacy", "capacity": 1, "active_count": 0,
+			"health": "healthy",
+			"repositories": []protocol.RepositoryRegistration{{
+				Key: "factory", RemoteIdentity: "github.com/example/" + name,
+			}},
+		}
+	}
+	legacyCases := []struct {
+		name         string
+		codexVersion any
+		includeField bool
+		wantVersion  string
+	}{
+		{name: "legacy-string", codexVersion: "0.42.0", includeField: true, wantVersion: "0.42.0"},
+		{name: "legacy-omitted"},
+		{name: "legacy-null", codexVersion: nil, includeField: true},
+	}
+	for _, test := range legacyCases {
+		t.Run(test.name, func(t *testing.T) {
+			requestBody := legacyRequest(test.name)
+			if test.includeField {
+				requestBody["codex_version"] = test.codexVersion
+			}
+			response := fixture.request(
+				http.MethodPut, "/api/v1/workers/"+test.name, "application/json", "", requestBody,
+			)
+			requireStatus(t, response, http.StatusOK)
+			var legacyResponse legacyWorker
+			decoder := json.NewDecoder(response.Body)
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&legacyResponse); err != nil {
+				response.Body.Close()
+				t.Fatalf("strict legacy response decode: %v", err)
+			}
+			response.Body.Close()
+			if legacyResponse.CodexVersion != test.wantVersion {
+				t.Fatalf("legacy codex version = %q", legacyResponse.CodexVersion)
+			}
+			stored, err := fixture.store.Worker(context.Background(), test.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.Runtime != protocol.RuntimeCodex || stored.RuntimeVersion != test.wantVersion {
+				t.Fatalf("stored legacy runtime = %q %q", stored.Runtime, stored.RuntimeVersion)
+			}
+		})
+	}
+
+	mixedRequest := legacyRequest("mixed-worker")
+	mixedRequest["codex_version"] = ""
+	mixedRequest["runtime"] = ""
+	mixedRequest["runtime_version"] = ""
+	response := fixture.request(
+		http.MethodPut, "/api/v1/workers/mixed-worker", "application/json", "", mixedRequest,
+	)
+	requireStatus(t, response, http.StatusBadRequest)
+	response.Body.Close()
+
+	response = fixture.request(
+		http.MethodPut, "/api/v1/workers/claude-worker", "application/json", "",
+		protocol.WorkerRegistration{
+			Name: "claude-worker", WorkerVersion: "test", Runtime: protocol.RuntimeClaudeCode,
+			RuntimeVersion: "2.1.220", Capacity: 1, Health: "healthy",
+			Repositories: []protocol.RepositoryRegistration{{
+				Key: "factory", RemoteIdentity: "github.com/example/claude-factory",
+			}},
+		},
+	)
+	requireStatus(t, response, http.StatusOK)
+	runtimeAware := decodeResponse[protocol.Worker](t, response)
+	if runtimeAware.Runtime != protocol.RuntimeClaudeCode || runtimeAware.RuntimeVersion != "2.1.220" {
+		t.Fatalf("runtime-aware response = %q %q", runtimeAware.Runtime, runtimeAware.RuntimeVersion)
+	}
+}
+
 func TestHTTPDeleteTaskHistory(t *testing.T) {
 	fixture := newHTTPFixture(t)
 	worker := registerHTTPWorker(t, fixture, workerA, "factory", "github.com/owainlewis/factory", 1)

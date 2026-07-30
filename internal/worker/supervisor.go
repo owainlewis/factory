@@ -465,6 +465,9 @@ func streamSupervisorOutput(
 			if tail != nil {
 				_, _ = tail.Write(fragment)
 			}
+			if capture != nil {
+				capture(fragment, false)
+			}
 			remaining := maxSupervisorLineBytes - len(line)
 			if len(fragment) > remaining {
 				fragment = fragment[:remaining]
@@ -478,7 +481,7 @@ func streamSupervisorOutput(
 					_, _ = tail.Write([]byte{'\n'})
 				}
 				if capture != nil {
-					capture(line, truncated)
+					capture(nil, true)
 				}
 				_ = writer.send(supervisorMessage{
 					Type: "output", Stream: stream, Text: string(line), Truncated: truncated,
@@ -499,24 +502,291 @@ type claudeResultCapture struct {
 	found     bool
 	isError   bool
 	truncated bool
+	line      claudeResultLineCapture
 }
 
-func (capture *claudeResultCapture) capture(line []byte, lineTruncated bool) {
-	if lineTruncated {
+type claudeResultLineCapture struct {
+	sanitized        []byte
+	result           []byte
+	invalid          bool
+	depth            int
+	expectTopKey     bool
+	inString         bool
+	stringEscaped    bool
+	stringIsKey      bool
+	keyRaw           []byte
+	keyTooLarge      bool
+	awaitingColon    bool
+	candidateKey     string
+	valueKey         string
+	inResult         bool
+	resultEscaped    bool
+	unicodeDigits    int
+	unicodeValue     rune
+	pendingSurrogate rune
+	resultSeen       bool
+	resultTruncated  bool
+}
+
+func (capture *claudeResultCapture) capture(fragment []byte, end bool) {
+	if len(fragment) > 0 {
+		capture.line.write(fragment)
+	}
+	if !end {
 		return
+	}
+	capture.finishLine()
+}
+
+func (capture *claudeResultCapture) finishLine() {
+	line := &capture.line
+	if line.inResult {
+		line.invalid = true
 	}
 	var event struct {
 		Type    string `json:"type"`
 		Result  string `json:"result"`
 		IsError bool   `json:"is_error"`
 	}
-	if json.Unmarshal(line, &event) != nil || event.Type != "result" {
+	if line.invalid || json.Unmarshal(line.sanitized, &event) != nil || event.Type != "result" {
+		line.reset()
 		return
 	}
-	capture.result = boundedText(event.Result, protocol.MaxResultBytes)
+	result := event.Result
+	truncated := false
+	if line.resultSeen {
+		result = strings.ToValidUTF8(string(line.result), "\uFFFD")
+		truncated = line.resultTruncated || len(result) > protocol.MaxResultBytes
+	}
+	capture.result = boundedText(result, protocol.MaxResultBytes)
 	capture.found = true
 	capture.isError = event.IsError
-	capture.truncated = len(event.Result) > protocol.MaxResultBytes
+	capture.truncated = truncated || len(event.Result) > protocol.MaxResultBytes
+	line.reset()
+}
+
+func (line *claudeResultLineCapture) write(fragment []byte) {
+	for _, value := range fragment {
+		if line.inResult {
+			line.writeResultByte(value)
+			continue
+		}
+		line.appendSanitized(value)
+		if line.inString {
+			line.writeStringByte(value)
+			continue
+		}
+		if value == ' ' || value == '\t' || value == '\r' {
+			continue
+		}
+		if line.awaitingColon {
+			line.awaitingColon = false
+			if value == ':' {
+				line.valueKey = line.candidateKey
+				continue
+			}
+			line.valueKey = ""
+		}
+		if line.valueKey != "" {
+			key := line.valueKey
+			line.valueKey = ""
+			if key == "result" {
+				line.resultSeen = false
+				line.result = line.result[:0]
+				line.resultTruncated = false
+				line.pendingSurrogate = 0
+				if value == '"' {
+					line.resultSeen = true
+					line.inResult = true
+					continue
+				}
+			}
+		}
+		switch value {
+		case '"':
+			line.inString = true
+			line.stringEscaped = false
+			line.stringIsKey = line.depth == 1 && line.expectTopKey
+			line.keyRaw = line.keyRaw[:0]
+			line.keyTooLarge = false
+			line.expectTopKey = false
+		case '{', '[':
+			line.depth++
+			if value == '{' && line.depth == 1 {
+				line.expectTopKey = true
+			}
+		case '}', ']':
+			line.depth--
+		case ',':
+			if line.depth == 1 {
+				line.expectTopKey = true
+			}
+		}
+	}
+}
+
+func (line *claudeResultLineCapture) appendSanitized(value byte) {
+	if len(line.sanitized) == maxSupervisorLineBytes {
+		line.invalid = true
+		return
+	}
+	line.sanitized = append(line.sanitized, value)
+}
+
+func (line *claudeResultLineCapture) writeStringByte(value byte) {
+	if line.stringIsKey && value != '"' {
+		if len(line.keyRaw) < 256 {
+			line.keyRaw = append(line.keyRaw, value)
+		} else {
+			line.keyTooLarge = true
+		}
+	}
+	if line.stringEscaped {
+		line.stringEscaped = false
+		return
+	}
+	if value == '\\' {
+		line.stringEscaped = true
+		return
+	}
+	if value != '"' {
+		return
+	}
+	line.inString = false
+	if !line.stringIsKey || line.keyTooLarge {
+		return
+	}
+	quoted := make([]byte, 0, len(line.keyRaw)+2)
+	quoted = append(quoted, '"')
+	quoted = append(quoted, line.keyRaw...)
+	quoted = append(quoted, '"')
+	var key string
+	if json.Unmarshal(quoted, &key) == nil {
+		line.candidateKey = key
+		line.awaitingColon = true
+	}
+}
+
+func (line *claudeResultLineCapture) writeResultByte(value byte) {
+	if line.unicodeDigits > 0 {
+		digit, ok := hexDigit(value)
+		if !ok {
+			line.invalid = true
+			line.unicodeDigits = 0
+			return
+		}
+		line.unicodeValue = line.unicodeValue<<4 | rune(digit)
+		line.unicodeDigits--
+		if line.unicodeDigits == 0 {
+			line.appendUnicode(line.unicodeValue)
+		}
+		return
+	}
+	if line.resultEscaped {
+		line.resultEscaped = false
+		switch value {
+		case '"', '\\', '/':
+			line.flushPendingSurrogate()
+			line.appendResult([]byte{value})
+		case 'b':
+			line.flushPendingSurrogate()
+			line.appendResult([]byte{'\b'})
+		case 'f':
+			line.flushPendingSurrogate()
+			line.appendResult([]byte{'\f'})
+		case 'n':
+			line.flushPendingSurrogate()
+			line.appendResult([]byte{'\n'})
+		case 'r':
+			line.flushPendingSurrogate()
+			line.appendResult([]byte{'\r'})
+		case 't':
+			line.flushPendingSurrogate()
+			line.appendResult([]byte{'\t'})
+		case 'u':
+			line.unicodeDigits = 4
+			line.unicodeValue = 0
+		default:
+			line.invalid = true
+		}
+		return
+	}
+	switch {
+	case value == '"':
+		line.flushPendingSurrogate()
+		line.inResult = false
+		line.appendSanitized(value)
+	case value == '\\':
+		line.resultEscaped = true
+	case value < 0x20:
+		line.invalid = true
+	default:
+		line.flushPendingSurrogate()
+		line.appendResult([]byte{value})
+	}
+}
+
+func (line *claudeResultLineCapture) appendUnicode(value rune) {
+	switch {
+	case value >= 0xD800 && value <= 0xDBFF:
+		line.flushPendingSurrogate()
+		line.pendingSurrogate = value
+	case value >= 0xDC00 && value <= 0xDFFF && line.pendingSurrogate != 0:
+		combined := 0x10000 + (line.pendingSurrogate-0xD800)<<10 + value - 0xDC00
+		line.pendingSurrogate = 0
+		line.appendRune(combined)
+	case value >= 0xDC00 && value <= 0xDFFF:
+		line.appendRune(utf8.RuneError)
+	default:
+		line.flushPendingSurrogate()
+		line.appendRune(value)
+	}
+}
+
+func (line *claudeResultLineCapture) flushPendingSurrogate() {
+	if line.pendingSurrogate == 0 {
+		return
+	}
+	line.pendingSurrogate = 0
+	line.appendRune(utf8.RuneError)
+}
+
+func (line *claudeResultLineCapture) appendRune(value rune) {
+	var encoded [utf8.UTFMax]byte
+	count := utf8.EncodeRune(encoded[:], value)
+	line.appendResult(encoded[:count])
+}
+
+func (line *claudeResultLineCapture) appendResult(value []byte) {
+	if len(line.result) < protocol.MaxResultBytes+utf8.UTFMax {
+		remaining := protocol.MaxResultBytes + utf8.UTFMax - len(line.result)
+		if len(value) > remaining {
+			value = value[:remaining]
+		}
+		line.result = append(line.result, value...)
+	}
+	if len(line.result) > protocol.MaxResultBytes {
+		line.resultTruncated = true
+	}
+}
+
+func (line *claudeResultLineCapture) reset() {
+	sanitized := line.sanitized[:0]
+	result := line.result[:0]
+	*line = claudeResultLineCapture{sanitized: sanitized, result: result}
+}
+
+func hexDigit(value byte) (byte, bool) {
+	switch {
+	case value >= '0' && value <= '9':
+		return value - '0', true
+	case value >= 'a' && value <= 'f':
+		return value - 'a' + 10, true
+	case value >= 'A' && value <= 'F':
+		return value - 'A' + 10, true
+	default:
+		return 0, false
+	}
 }
 
 type tailBuffer struct {

@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,42 @@ import (
 type API struct {
 	store  *Store
 	logger *slog.Logger
+}
+
+type workerRegistrationRequest struct {
+	protocol.WorkerRegistration
+	Runtime        registrationString `json:"runtime"`
+	RuntimeVersion registrationString `json:"runtime_version"`
+	CodexVersion   registrationString `json:"codex_version"`
+}
+
+type registrationString struct {
+	Value   string
+	Present bool
+}
+
+func (value *registrationString) UnmarshalJSON(body []byte) error {
+	value.Present = true
+	if bytes.Equal(bytes.TrimSpace(body), []byte("null")) {
+		return nil
+	}
+	return json.Unmarshal(body, &value.Value)
+}
+
+type legacyWorkerResponse struct {
+	ID                string                      `json:"id"`
+	Name              string                      `json:"name"`
+	WorkerVersion     string                      `json:"worker_version"`
+	CodexVersion      string                      `json:"codex_version"`
+	Capacity          int                         `json:"capacity"`
+	ActiveCount       int                         `json:"active_count"`
+	Health            string                      `json:"health"`
+	Online            bool                        `json:"online"`
+	Repositories      []protocol.Repository       `json:"repositories"`
+	RetainedWorktrees []protocol.RetainedWorktree `json:"retained_worktrees"`
+	CurrentTaskTitle  string                      `json:"current_task_title,omitempty"`
+	RegisteredAt      time.Time                   `json:"registered_at"`
+	LastHeartbeat     time.Time                   `json:"last_heartbeat"`
 }
 
 func NewHandler(store *Store, logger *slog.Logger) http.Handler {
@@ -113,13 +150,36 @@ func (a *API) registerWorker(w http.ResponseWriter, r *http.Request) {
 	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
 		return
 	}
-	var input protocol.WorkerRegistration
+	var input workerRegistrationRequest
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	worker, err := a.store.RegisterWorker(r.Context(), r.PathValue("worker_id"), input)
+	legacyRequest := !input.Runtime.Present && !input.RuntimeVersion.Present
+	if input.CodexVersion.Present && !legacyRequest {
+		writeError(w, invalid("invalid_runtime", "use codex_version or runtime fields, not both"))
+		return
+	}
+	if legacyRequest {
+		input.WorkerRegistration.Runtime = protocol.RuntimeCodex
+		input.WorkerRegistration.RuntimeVersion = input.CodexVersion.Value
+	} else {
+		input.WorkerRegistration.Runtime = input.Runtime.Value
+		input.WorkerRegistration.RuntimeVersion = input.RuntimeVersion.Value
+	}
+	worker, err := a.store.RegisterWorker(r.Context(), r.PathValue("worker_id"), input.WorkerRegistration)
 	if err != nil {
 		writeError(w, err)
+		return
+	}
+	if legacyRequest {
+		writeJSON(w, http.StatusOK, legacyWorkerResponse{
+			ID: worker.ID, Name: worker.Name, WorkerVersion: worker.WorkerVersion,
+			CodexVersion: worker.RuntimeVersion, Capacity: worker.Capacity,
+			ActiveCount: worker.ActiveCount, Health: worker.Health, Online: worker.Online,
+			Repositories: worker.Repositories, RetainedWorktrees: worker.RetainedWorktrees,
+			CurrentTaskTitle: worker.CurrentTaskTitle, RegisteredAt: worker.RegisteredAt,
+			LastHeartbeat: worker.LastHeartbeat,
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, worker)

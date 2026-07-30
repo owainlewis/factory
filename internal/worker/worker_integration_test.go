@@ -132,6 +132,12 @@ if [ "$prompt" != "complete this task" ]; then
   echo "unexpected fake Claude Code prompt" >&2
   exit 91
 fi
+if [ "${FACTORY_TEST_CLAUDE_OVERSIZED_RESULT:-}" = "1" ]; then
+  printf '{"type":"result","subtype":"success","result":"'
+  head -c 1100000 /dev/zero | tr '\000' x
+  printf '"}\n'
+  exit 0
+fi
 echo '{"type":"system","subtype":"init"}'
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
 echo '{"type":"result","subtype":"success","result":"completed by fake Claude Code"}'
@@ -284,6 +290,62 @@ func TestClaudeCodeHealthAndSupervisorContract(t *testing.T) {
 			t.Fatalf("decode Claude Code supervisor output: %v", err)
 		case <-timeout.C:
 			t.Fatal("Claude Code supervisor did not exit")
+		}
+	}
+}
+
+func TestClaudeCodeSupervisorAcceptsOversizedResult(t *testing.T) {
+	t.Setenv("FACTORY_TEST_SUPERVISOR", "1")
+	t.Setenv("FACTORY_TEST_CLAUDE_OVERSIZED_RESULT", "1")
+	claudePath := filepath.Join(t.TempDir(), "claude")
+	writeFakeClaude(t, claudePath)
+	repository := createRepository(t, "claude-oversized-result")
+	process, err := startSupervisor(
+		[]string{os.Args[0], "-test.run=TestWorkerSupervisorHelperProcess", "--"},
+		supervisorInit{
+			Runtime:           protocol.RuntimeClaudeCode,
+			RuntimeExecutable: claudePath,
+			Worktree:          repository.path,
+			ResultPath:        filepath.Join(t.TempDir(), "unused-result"),
+			Prompt:            "complete this task",
+			TimeoutSeconds:    60,
+		},
+		io.Discard,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.awaitReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.send("start"); err != nil {
+		t.Fatal(err)
+	}
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+	sawTruncatedOutput := false
+	for {
+		select {
+		case message := <-process.messages:
+			if message.Type == "output" && message.Stream == "stdout" && message.Truncated {
+				sawTruncatedOutput = len(message.Text) == maxSupervisorLineBytes
+			}
+			if message.Type != "exit" {
+				continue
+			}
+			if message.ExitCode != 0 || message.Reason != "exited" || !message.Truncated ||
+				len(message.Result) != protocol.MaxResultBytes || !sawTruncatedOutput {
+				t.Fatalf("Claude Code oversized result exit = %#v; truncated output = %v",
+					message, sawTruncatedOutput)
+			}
+			if strings.Trim(message.Result, "x") != "" {
+				t.Fatal("Claude Code oversized result did not preserve its bounded prefix")
+			}
+			return
+		case err := <-process.decodeErrors:
+			t.Fatalf("decode Claude Code supervisor output: %v", err)
+		case <-timeout.C:
+			t.Fatal("Claude Code oversized result supervisor did not exit")
 		}
 	}
 }
@@ -1477,6 +1539,48 @@ func TestSupervisorOutputBoundsOneLogicalLineAndPreservesNextLine(t *testing.T) 
 	}
 	if messages[1].Text != second || messages[1].Truncated {
 		t.Fatalf("following message = %#v", messages[1])
+	}
+}
+
+func TestClaudeResultCaptureRejectsOversizedMalformedAndNonResultLines(t *testing.T) {
+	cases := map[string]string{
+		"malformed result": `{"type":"result","result":"` +
+			strings.Repeat("x", maxSupervisorLineBytes+100) + `\q"}`,
+		"non-result event": `{"type":"assistant","result":"` +
+			strings.Repeat("x", maxSupervisorLineBytes+100) + `"}`,
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			capture := &claudeResultCapture{}
+			writer := &synchronizedEncoder{encoder: json.NewEncoder(io.Discard)}
+			streamSupervisorOutput(strings.NewReader(input+"\n"), "stdout", writer, nil, capture.capture)
+			if capture.found {
+				t.Fatalf("oversized %s was accepted as a terminal result", name)
+			}
+		})
+	}
+}
+
+func TestClaudeResultCaptureDecodesEscapedResultBeyondOutputLimit(t *testing.T) {
+	result := strings.Repeat("\x00", maxSupervisorLineBytes/6+100)
+	input, err := json.Marshal(map[string]any{
+		"type":     "result",
+		"subtype":  "success",
+		"is_error": false,
+		"result":   result,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(input) <= maxSupervisorLineBytes || len(result) >= protocol.MaxResultBytes {
+		t.Fatalf("invalid test bounds: encoded=%d result=%d", len(input), len(result))
+	}
+	capture := &claudeResultCapture{}
+	writer := &synchronizedEncoder{encoder: json.NewEncoder(io.Discard)}
+	streamSupervisorOutput(bytes.NewReader(append(input, '\n')), "stdout", writer, nil, capture.capture)
+	if !capture.found || capture.truncated || capture.result != result {
+		t.Fatalf("escaped oversized-line result: found=%v truncated=%v result length=%d",
+			capture.found, capture.truncated, len(capture.result))
 	}
 }
 
