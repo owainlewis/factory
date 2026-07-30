@@ -250,7 +250,8 @@ framework solely for command parsing.
 - Default `run` output contains the task ID, queued state, assigned worker,
   repository, and absolute UI URL.
 - `run --wait` polls at two-second intervals and exits 0 only when the task
-  succeeds. Failed, lost, or cancelled work exits 1.
+  succeeds. Failed, lost, or cancelled work exits 1. Ctrl-C exits 130 without
+  cancelling the task.
 - `status` checks server health and reports worker online, health, capacity,
   active task count, and the latest task counts by state.
 - List commands default to 50 rows, accept `--limit` up to the API maximum, and
@@ -381,6 +382,10 @@ at most two matches for CLI name resolution. This lets the CLI distinguish
 missing, unique, and ambiguous names without downloading the fleet. Existing
 clients may ignore the additive `next_cursor` field.
 
+The task-list API accepts an exact `state` query parameter. The server applies
+that filter before cursor pagination, so each page contains up to the requested
+number of matching tasks and its next cursor continues the same filtered query.
+
 ### Naming and identity
 
 Worker IDs remain derived from the worker's persisted identity and worker names
@@ -407,9 +412,10 @@ when that key is replayed.
 ## 7. Failure behavior and lifecycle
 
 Usage and configuration errors exit 2 without making an API request. Runtime,
-network, API, and terminal task failures exit 1. Success exits 0. API errors
-include the server's stable error code and plain message. Transport errors name
-the server URL and suggest `factory start` or `factory status`.
+network, API, and terminal task failures exit 1. Success exits 0. Interrupting
+`run --wait` exits 130 after stopping only the local wait. API errors include
+the server's stable error code and plain message. Transport errors name the
+server URL and suggest `factory start` or `factory status`.
 
 Finite API calls have a 10-second request timeout, except `run --wait`.
 Submission retries reuse the same request key and never create a second task.
