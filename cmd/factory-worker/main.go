@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 
 	"github.com/owainlewis/factory/internal/worker"
 )
@@ -34,8 +35,12 @@ func run() error {
 		return err
 	}
 	if len(os.Args) > 1 && os.Args[1] == "cleanup" {
-		configPath, options, err := worker.ParseCleanupArguments(os.Args[2:], defaultConfig)
+		arguments := os.Args[2:]
+		configPath, options, err := worker.ParseCleanupArguments(arguments, defaultConfig)
 		if err != nil {
+			return err
+		}
+		if err := validateDefaultConfigSelection(cleanupConfigExplicit(arguments)); err != nil {
 			return err
 		}
 		config, err := worker.LoadConfig(configPath)
@@ -52,6 +57,9 @@ func run() error {
 		}
 		if flags.NArg() != 0 {
 			return fmt.Errorf("unexpected identity arguments: %v", flags.Args())
+		}
+		if err := validateDefaultConfigSelection(flagExplicit(flags, "config")); err != nil {
+			return err
 		}
 		config, err := worker.LoadConfig(*configPath)
 		if err != nil {
@@ -71,6 +79,9 @@ func run() error {
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %v", flags.Args())
+	}
+	if err := validateDefaultConfigSelection(flagExplicit(flags, "config")); err != nil {
+		return err
 	}
 	config, err := worker.LoadConfig(*configPath)
 	if err != nil {
@@ -96,4 +107,30 @@ func run() error {
 	}
 	logger.Info("worker_stopped", "worker_id", manager.ID())
 	return nil
+}
+
+func flagExplicit(flags *flag.FlagSet, name string) bool {
+	found := false
+	flags.Visit(func(value *flag.Flag) {
+		if value.Name == name {
+			found = true
+		}
+	})
+	return found
+}
+
+func cleanupConfigExplicit(arguments []string) bool {
+	for _, argument := range arguments {
+		if argument == "--config" || strings.HasPrefix(argument, "--config=") {
+			return true
+		}
+	}
+	return false
+}
+
+func validateDefaultConfigSelection(configExplicit bool) error {
+	if configExplicit {
+		return nil
+	}
+	return worker.ValidateNoLegacyDefaultConfig()
 }

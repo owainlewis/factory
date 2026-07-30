@@ -508,8 +508,9 @@ The worker uses one local TOML file:
 ```toml
 server = "http://127.0.0.1:7337"
 name = "owains-mac"
+runtime = "codex"
 max_concurrent = 1
-data_directory = "/Users/owainlewis/.factory-v2/workers/owains-mac"
+data_directory = "/Users/owainlewis/.factory/workers/owains-mac"
 
 [repositories.factory]
 path = "/Users/owainlewis/Code/github/owainlewis/factory"
@@ -577,12 +578,17 @@ The worker generates each random 256-bit lease token and keeps it in memory.
 SQLite stores only its SHA-256 digest. The token's entropy prevents an offline
 database reader from guessing the raw value.
 
-V2 state is stored below `~/.factory-v2/` by default:
+Factory uses one `~/.factory/` home by default. V1 repository ledgers, the V2
+control plane, worker identities, and built binaries have separate owned
+children:
 
 ```text
-~/.factory-v2/
+~/.factory/
+  <v1-repository-hash>/factory.sqlite3
+  bin/
   server/factory.sqlite3
   server/factory.sqlite3.v2-control-plane
+  worker.toml
   workers/owains-mac/worker-id
   workers/owains-mac/attempts/
   workers/owains-mac/worktrees/
@@ -593,7 +599,7 @@ database. It refuses to open an existing database without that marker, which
 keeps an accidentally selected V1 or unrelated SQLite file untouched.
 
 `FACTORY_V2_DATA_HOME` may override the root. V2 refuses a data root containing
-a V1 database marker, and V1 never searches this path.
+a V1 database marker. V1 and V2 never share a database or worktree directory.
 
 ## 7. Failure behavior and lifecycle
 

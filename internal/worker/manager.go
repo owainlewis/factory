@@ -329,7 +329,44 @@ func DefaultConfigPath() (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("resolve home directory: %w", err)
 		}
-		root = filepath.Join(home, ".factory-v2")
+		root = filepath.Join(home, ".factory")
 	}
 	return filepath.Join(root, "worker.toml"), nil
+}
+
+func ValidateNoLegacyDefaultConfig() error {
+	if os.Getenv("FACTORY_V2_WORKER_CONFIG") != "" || os.Getenv("FACTORY_V2_DATA_HOME") != "" {
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home directory: %w", err)
+	}
+	legacyRoot := filepath.Join(home, ".factory-v2")
+	legacyState, found, err := findLegacyWorkerState(legacyRoot)
+	if err != nil {
+		return err
+	}
+	if found {
+		return fmt.Errorf(
+			"found legacy V2 worker state at %s; refusing to create a new worker identity by default; set FACTORY_V2_DATA_HOME=%s to keep using it, or archive the old state after resolving its work",
+			legacyState,
+			legacyRoot,
+		)
+	}
+	return nil
+}
+
+func findLegacyWorkerState(root string) (string, bool, error) {
+	for _, candidate := range []string{
+		filepath.Join(root, "worker.toml"),
+		filepath.Join(root, "workers"),
+	} {
+		if _, err := os.Lstat(candidate); err == nil {
+			return candidate, true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", false, fmt.Errorf("inspect legacy V2 worker state %s: %w", candidate, err)
+		}
+	}
+	return "", false, nil
 }

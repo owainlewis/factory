@@ -3,17 +3,45 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-build_directory=${FACTORY_V2_BUILD_DIR:-"$root/.factory-v2/bin"}
 listen=${FACTORY_V2_LISTEN:-127.0.0.1:7337}
-data_home=${FACTORY_V2_DATA_HOME:-"$root/.factory-v2/data"}
-config=${1:-${FACTORY_V2_WORKER_CONFIG:-}}
-worker_ready_seconds=${FACTORY_V2_WORKER_READY_SECONDS:-40}
-
-if [ -z "$config" ]; then
-  echo "Usage: ./scripts/run-v2-local.sh /path/to/worker.toml" >&2
-  echo "Copy examples/v2-worker.toml and set both repository paths first." >&2
-  exit 2
+data_home=${FACTORY_V2_DATA_HOME:-}
+if [ -z "$data_home" ]; then
+  if [ -z "${HOME:-}" ]; then
+    echo "Factory V2 startup requires HOME or FACTORY_V2_DATA_HOME." >&2
+    exit 1
+  fi
+  legacy_data_home=
+  legacy_config=
+  if [ -f "$root/.factory-v2/worker.toml" ] ||
+    [ -f "$root/.factory-v2/data/server/factory.sqlite3" ] ||
+    [ -f "$root/.factory-v2/data/server/factory.sqlite3.v2-control-plane" ] ||
+    [ -d "$root/.factory-v2/data/workers" ]; then
+    legacy_data_home="$root/.factory-v2/data"
+    legacy_config="$root/.factory-v2/worker.toml"
+  elif [ -f "$HOME/.factory-v2/worker.toml" ] ||
+    [ -f "$HOME/.factory-v2/server/factory.sqlite3" ] ||
+    [ -f "$HOME/.factory-v2/server/factory.sqlite3.v2-control-plane" ] ||
+    [ -d "$HOME/.factory-v2/workers" ]; then
+    legacy_data_home="$HOME/.factory-v2"
+    legacy_config="$HOME/.factory-v2/worker.toml"
+  fi
+  if [ -n "$legacy_data_home" ]; then
+    echo "Factory found legacy V2 state and refused to replace it with an empty ~/.factory home." >&2
+    if [ -f "$legacy_config" ]; then
+      echo "Resolve its work by running:" >&2
+      echo "  FACTORY_V2_DATA_HOME=\"$legacy_data_home\" \"$root/scripts/run-v2-local.sh\" \"$legacy_config\"" >&2
+    else
+      echo "The matching worker configuration was not found at $legacy_config." >&2
+      echo "Set FACTORY_V2_DATA_HOME=$legacy_data_home when reopening factory-server, and restore the matching worker configuration before starting a worker." >&2
+    fi
+    echo "Archive the old state after its attempts and retained worktrees are resolved." >&2
+    exit 1
+  fi
+  data_home="$HOME/.factory"
 fi
+build_directory=${FACTORY_V2_BUILD_DIR:-"$data_home/bin"}
+config=${1:-${FACTORY_V2_WORKER_CONFIG:-"$data_home/worker.toml"}}
+worker_ready_seconds=${FACTORY_V2_WORKER_READY_SECONDS:-40}
 
 case "$(uname -s)" in
   Darwin|DragonFly|FreeBSD|Linux|NetBSD|OpenBSD|SunOS) ;;
@@ -25,6 +53,7 @@ esac
 
 if [ ! -f "$config" ]; then
   echo "Factory V2 worker configuration does not exist: $config" >&2
+  echo "Copy examples/v2-worker.toml there and set the repository paths first." >&2
   exit 1
 fi
 
@@ -34,7 +63,7 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 
 if [ "${FACTORY_V2_SKIP_BUILD:-0}" != "1" ]; then
-  "$root/scripts/build-v2.sh"
+  FACTORY_V2_BUILD_DIR="$build_directory" "$root/scripts/build-v2.sh"
 fi
 
 server_binary="$build_directory/factory-server"

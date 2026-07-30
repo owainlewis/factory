@@ -31,14 +31,14 @@ go build -o factory-worker ./cmd/factory-worker
 The worker reads one TOML file. Pass it with `--config`. Without that flag it
 uses `FACTORY_V2_WORKER_CONFIG`, then
 `$FACTORY_V2_DATA_HOME/worker.toml`, then
-`~/.factory-v2/worker.toml`.
+`~/.factory/worker.toml`.
 
 ```toml
 server = "http://127.0.0.1:7337"
 name = "owains-mac"
 runtime = "codex"
 max_concurrent = 1
-data_directory = "/Users/owainlewis/.factory-v2/workers/owains-mac"
+data_directory = "/Users/owainlewis/.factory/workers/owains-mac"
 
 [repositories.factory]
 path = "/Users/owainlewis/Code/github/owainlewis/factory"

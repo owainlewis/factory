@@ -51,6 +51,95 @@ EOF
 done
 chmod +x "$temporary/bin/go" "$temporary/bin/node" "$temporary/bin/npm"
 
+mkdir -p "$temporary/home"
+(
+  unset FACTORY_V2_BUILD_DIR FACTORY_V2_DATA_HOME
+  HOME="$temporary/home" \
+  FACTORY_V2_TEST_GO_LOG="$temporary/default-go.log" \
+  PATH="$temporary/bin:/usr/bin:/bin" \
+    "$root/scripts/build-v2.sh"
+)
+
+test -x "$temporary/home/.factory/bin/factory-server"
+test -x "$temporary/home/.factory/bin/factory-worker"
+test "$(wc -l <"$temporary/default-go.log" | tr -d ' ')" = "2"
+
+set +e
+output=$(
+  unset FACTORY_V2_BUILD_DIR FACTORY_V2_DATA_HOME FACTORY_V2_WORKER_CONFIG
+  HOME="$temporary/home-without-config" \
+    FACTORY_V2_SKIP_BUILD=1 \
+    PATH="$temporary/bin:/usr/bin:/bin" \
+    "$root/scripts/run-v2-local.sh" 2>&1
+)
+status=$?
+set -e
+
+if [ "$status" -ne 1 ]; then
+  echo "launcher without the default config exited $status, want 1" >&2
+  echo "$output" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$output" |
+  grep -q "$temporary/home-without-config/.factory/worker.toml"; then
+  echo "launcher did not select ~/.factory/worker.toml by default" >&2
+  echo "$output" >&2
+  exit 1
+fi
+
+legacy_checkout="$temporary/legacy-checkout"
+mkdir -p "$legacy_checkout/scripts" "$legacy_checkout/.factory-v2/data/server"
+cp "$root/scripts/run-v2-local.sh" "$legacy_checkout/scripts/run-v2-local.sh"
+: >"$legacy_checkout/.factory-v2/worker.toml"
+: >"$legacy_checkout/.factory-v2/data/server/factory.sqlite3"
+
+set +e
+output=$(
+  unset FACTORY_V2_BUILD_DIR FACTORY_V2_DATA_HOME FACTORY_V2_WORKER_CONFIG
+  HOME="$temporary/legacy-home-unused" \
+    "$legacy_checkout/scripts/run-v2-local.sh" 2>&1
+)
+status=$?
+set -e
+
+if [ "$status" -ne 1 ]; then
+  echo "launcher with legacy state exited $status, want 1" >&2
+  echo "$output" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$output" |
+  grep -Fq "FACTORY_V2_DATA_HOME=\"$legacy_checkout/.factory-v2/data\""; then
+  echo "launcher did not fail closed with the legacy recovery command" >&2
+  echo "$output" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$output" |
+  grep -Fq "\"$legacy_checkout/scripts/run-v2-local.sh\""; then
+  echo "launcher recovery command did not use its absolute script path" >&2
+  echo "$output" >&2
+  exit 1
+fi
+if [ -e "$temporary/legacy-home-unused/.factory" ]; then
+  echo "launcher created the new Factory home despite legacy state" >&2
+  exit 1
+fi
+
+rm "$legacy_checkout/.factory-v2/worker.toml"
+set +e
+output=$(
+  unset FACTORY_V2_BUILD_DIR FACTORY_V2_DATA_HOME FACTORY_V2_WORKER_CONFIG
+  HOME="$temporary/legacy-home-unused" \
+    "$legacy_checkout/scripts/run-v2-local.sh" 2>&1
+)
+status=$?
+set -e
+if [ "$status" -ne 1 ] ||
+  ! printf '%s\n' "$output" | grep -Fq "matching worker configuration was not found"; then
+  echo "launcher did not give safe server-only legacy recovery guidance" >&2
+  echo "$output" >&2
+  exit 1
+fi
+
 FACTORY_V2_BUILD_DIR="$temporary/output" \
 FACTORY_V2_TEST_GO_LOG="$temporary/go.log" \
 PATH="$temporary/bin:/usr/bin:/bin" \

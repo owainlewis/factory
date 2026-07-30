@@ -1288,6 +1288,82 @@ path = %q
 	}
 }
 
+func TestDefaultConfigPathUsesFactoryHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("FACTORY_V2_DATA_HOME", "")
+	t.Setenv("FACTORY_V2_WORKER_CONFIG", "")
+
+	path, err := DefaultConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".factory", "worker.toml"); path != want {
+		t.Fatalf("config path = %q, want %q", path, want)
+	}
+}
+
+func TestDefaultConfigPathHonorsOverrides(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FACTORY_V2_DATA_HOME", root)
+	t.Setenv("FACTORY_V2_WORKER_CONFIG", "")
+
+	path, err := DefaultConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root, "worker.toml"); path != want {
+		t.Fatalf("config path = %q, want %q", path, want)
+	}
+
+	explicit := filepath.Join(t.TempDir(), "custom.toml")
+	t.Setenv("FACTORY_V2_WORKER_CONFIG", explicit)
+	path, err = DefaultConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != explicit {
+		t.Fatalf("config path = %q, want %q", path, explicit)
+	}
+}
+
+func TestValidateNoLegacyDefaultConfigRefusesLegacyState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("FACTORY_V2_DATA_HOME", "")
+	t.Setenv("FACTORY_V2_WORKER_CONFIG", "")
+	legacyRoot := filepath.Join(home, ".factory-v2")
+	legacyConfig := filepath.Join(legacyRoot, "worker.toml")
+	if err := os.MkdirAll(legacyRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyConfig, []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ValidateNoLegacyDefaultConfig()
+	if err == nil {
+		t.Fatal("legacy V2 worker state was accepted")
+	}
+	for _, want := range []string{legacyConfig, "FACTORY_V2_DATA_HOME=" + legacyRoot} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not contain %q", err, want)
+		}
+	}
+
+	t.Setenv("FACTORY_V2_DATA_HOME", legacyRoot)
+	if err := ValidateNoLegacyDefaultConfig(); err != nil {
+		t.Fatalf("explicit legacy root validation: %v", err)
+	}
+	path, err := DefaultConfigPath()
+	if err != nil {
+		t.Fatalf("explicit legacy root: %v", err)
+	}
+	if path != legacyConfig {
+		t.Fatalf("explicit legacy config = %q, want %q", path, legacyConfig)
+	}
+}
+
 func TestServerURLRejectsNonLoopback(t *testing.T) {
 	for _, value := range []string{
 		"http://0.0.0.0:7337",

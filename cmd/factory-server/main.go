@@ -39,6 +39,19 @@ func run() (returnErr error) {
 	if err != nil {
 		return err
 	}
+	databaseExplicit := false
+	flag.Visit(func(value *flag.Flag) {
+		if value.Name == "database" {
+			databaseExplicit = true
+		}
+	})
+	if err := validateLegacyServerSelection(
+		os.Getenv("FACTORY_V2_DATA_HOME"),
+		databaseExplicit,
+		dataRoot,
+	); err != nil {
+		return err
+	}
 	if *database == defaultDatabase {
 		if err := validateV2DataRoot(dataRoot); err != nil {
 			return err
@@ -131,9 +144,44 @@ func defaultDatabasePath() (database string, root string, err error) {
 		if homeErr != nil {
 			return "", "", fmt.Errorf("resolve home directory: %w", homeErr)
 		}
-		root = filepath.Join(home, ".factory-v2")
+		root = filepath.Join(home, ".factory")
 	}
 	return filepath.Join(root, "server", "factory.sqlite3"), root, nil
+}
+
+func validateNoLegacyServerDefault(newRoot string) error {
+	legacyRoot := filepath.Join(filepath.Dir(newRoot), ".factory-v2")
+	legacyState, found, err := findLegacyServerState(legacyRoot)
+	if err != nil {
+		return err
+	}
+	if found {
+		return fmt.Errorf(
+			"found legacy V2 control-plane state at %s; refusing to abandon durable tasks for the new default; set FACTORY_V2_DATA_HOME=%s to keep using it, or archive the old state after resolving its work",
+			legacyState,
+			legacyRoot,
+		)
+	}
+	return nil
+}
+
+func validateLegacyServerSelection(dataHome string, databaseExplicit bool, newRoot string) error {
+	if dataHome != "" || databaseExplicit {
+		return nil
+	}
+	return validateNoLegacyServerDefault(newRoot)
+}
+
+func findLegacyServerState(root string) (string, bool, error) {
+	database := filepath.Join(root, "server", "factory.sqlite3")
+	for _, candidate := range []string{database, database + ".v2-control-plane"} {
+		if _, err := os.Lstat(candidate); err == nil {
+			return candidate, true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", false, fmt.Errorf("inspect legacy V2 control-plane state %s: %w", candidate, err)
+		}
+	}
+	return "", false, nil
 }
 
 func validateV2DataRoot(root string) error {

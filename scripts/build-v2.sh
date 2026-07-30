@@ -3,7 +3,15 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-build_directory=${FACTORY_V2_BUILD_DIR:-"$root/.factory-v2/bin"}
+data_home=${FACTORY_V2_DATA_HOME:-}
+if [ -z "$data_home" ]; then
+  if [ -z "${HOME:-}" ]; then
+    echo "Factory V2 build requires HOME or FACTORY_V2_DATA_HOME." >&2
+    exit 1
+  fi
+  data_home="$HOME/.factory"
+fi
+build_directory=${FACTORY_V2_BUILD_DIR:-"$data_home/bin"}
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then

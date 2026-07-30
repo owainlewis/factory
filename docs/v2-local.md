@@ -33,14 +33,14 @@ current `HEAD`.
 
 ## Fresh checkout
 
-Clone Factory, create a local ignored configuration, and edit the two
-repository paths:
+Clone Factory, create the local configuration, and edit the two repository
+paths:
 
 ```sh
 git clone https://github.com/owainlewis/factory.git
 cd factory
-mkdir -p .factory-v2
-cp examples/v2-worker.toml .factory-v2/worker.toml
+mkdir -p ~/.factory
+cp examples/v2-worker.toml ~/.factory/worker.toml
 ```
 
 The sample config is:
@@ -50,7 +50,7 @@ server = "http://127.0.0.1:7337"
 name = "local"
 runtime = "codex"
 max_concurrent = 1
-data_directory = "data/workers/local"
+data_directory = "workers/local"
 
 [repositories.factory]
 path = "/absolute/path/to/factory"
@@ -84,11 +84,11 @@ building the Go binaries:
 ./scripts/build-v2.sh
 ```
 
-After editing `.factory-v2/worker.toml`, one command builds and starts the
-server and worker:
+After editing `~/.factory/worker.toml`, one command builds and starts the server
+and worker:
 
 ```sh
-./scripts/run-v2-local.sh .factory-v2/worker.toml
+./scripts/run-v2-local.sh
 ```
 
 Open `http://127.0.0.1:7337/`. The script keeps both processes attached to the
@@ -174,15 +174,13 @@ branches are retained and shown on Worker detail with a cleanup command.
 Stop the worker before cleanup. Preview first:
 
 ```sh
-.factory-v2/bin/factory-worker cleanup ATTEMPT_ID \
-  --config .factory-v2/worker.toml
+~/.factory/bin/factory-worker cleanup ATTEMPT_ID
 ```
 
 After inspecting or preserving local changes, confirm:
 
 ```sh
-.factory-v2/bin/factory-worker cleanup ATTEMPT_ID --confirm \
-  --config .factory-v2/worker.toml
+~/.factory/bin/factory-worker cleanup ATTEMPT_ID --confirm
 ```
 
 Operator-confirmed cleanup preserves the branch. It removes only the
@@ -195,12 +193,38 @@ leftover process group, reconciles every attempt manifest, and reports retained
 or missing worktrees before claiming new work. It never resumes an agent after a
 worker restart.
 
-## V1 isolation
+## Factory home and V1 isolation
 
-The local script stores server state under `.factory-v2/data` by default, and
-the sample stores worker state below that same V2-only root. It never reads
-`.factory/` or V1's `factory.sqlite3`. Both server and worker refuse a selected
-V2 root that contains or sits below a V1 database marker.
+The local script keeps binaries, configuration, control-plane state, and worker
+state below one `~/.factory` home:
+
+```text
+~/.factory/
+  bin/
+  server/
+  worker.toml
+  workers/local/
+```
+
+V1 repository state may also live below `~/.factory`, in hash-named sibling
+directories. V1 and V2 never share a database or worktree directory. Both the
+server and worker refuse a selected path that contains or sits below an
+unscoped V1 `factory.sqlite3` marker.
+
+Earlier V2 previews used `.factory-v2` paths. Factory does not delete or move
+them automatically. When the old default contains a control-plane database,
+worker configuration, or worker data, Factory fails closed instead of showing
+an empty control plane or creating a new worker identity. Keep using the old
+root explicitly until its attempts and retained worktrees are resolved:
+
+```sh
+FACTORY_V2_DATA_HOME="$PWD/.factory-v2/data" \
+  ./scripts/run-v2-local.sh "$PWD/.factory-v2/worker.toml"
+```
+
+Then stop Factory, copy the configuration to `~/.factory/worker.toml`, change
+its `data_directory` to `workers/local`, and start the new default. This creates
+a new worker identity without making old manifest or Git worktree paths unsafe.
 
 Do not point `FACTORY_V2_DATA_HOME` or `data_directory` at a V1 state
 directory. The automated Go suite verifies that V1 database bytes and V1 Git
