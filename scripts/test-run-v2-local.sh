@@ -22,6 +22,10 @@ exec node -e '
       }
       return;
     }
+    if (process.env.FACTORY_V2_TEST_HANG_WORKERS) {
+      setTimeout(() => process.exit(0), 3000);
+      return;
+    }
     const workers = [{id:"existing-healthy-worker",health:"healthy",online:true}];
     if (existsSync(process.env.FACTORY_V2_TEST_WORKER_MARKER)) {
       workers.push({id:"new-unhealthy-worker",health:"unhealthy",online:true});
@@ -117,4 +121,33 @@ if [ "$status" -ne 1 ] ||
   exit 1
 fi
 
-echo "Factory V2 launcher rejects unhealthy workers, V1 writes, and server loss."
+rm -f "$temporary/worker-started"
+port=$(node -e '
+  const server = require("node:net").createServer();
+  server.listen(0, "127.0.0.1", () => {
+    console.log(server.address().port);
+    server.close();
+  });
+')
+set +e
+output=$(
+  FACTORY_V2_BUILD_DIR="$temporary/bin" \
+    FACTORY_V2_DATA_HOME="$temporary/data" \
+    FACTORY_V2_LISTEN="127.0.0.1:$port" \
+    FACTORY_V2_SKIP_BUILD=1 \
+    FACTORY_V2_TEST_HANG_WORKERS=1 \
+    FACTORY_V2_TEST_WORKER_MARKER="$temporary/worker-started" \
+    FACTORY_V2_WORKER_READY_SECONDS=1 \
+    "$root/scripts/run-v2-local.sh" "$temporary/worker.toml" 2>&1
+)
+status=$?
+set -e
+if [ "$status" -ne 1 ] ||
+  ! printf '%s\n' "$output" |
+    grep -q "Factory V2 worker did not register as healthy within 1 seconds"; then
+  echo "launcher did not bound a stalled readiness response" >&2
+  echo "$output" >&2
+  exit 1
+fi
+
+echo "Factory V2 launcher rejects unhealthy workers, V1 writes, server loss, and stalled readiness responses."

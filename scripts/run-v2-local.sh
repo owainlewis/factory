@@ -49,6 +49,17 @@ export FACTORY_V2_DATA_HOME="$data_home"
 server_pid=
 worker_pid=
 
+curl_before_deadline() {
+  endpoint=$1
+  deadline=$2
+  now=$(date +%s)
+  remaining=$((deadline - now))
+  if [ "$remaining" -le 0 ]; then
+    return 1
+  fi
+  curl --silent --show-error --fail --max-time "$remaining" "$endpoint"
+}
+
 stop_processes() {
   trap - INT TERM EXIT
   if [ -n "$worker_pid" ] && kill -0 "$worker_pid" 2>/dev/null; then
@@ -71,22 +82,22 @@ echo "Starting Factory V2 server on http://$listen/ ..."
 server_pid=$!
 
 ready=0
-attempt=0
-while [ "$attempt" -lt 100 ]; do
+server_ready_seconds=10
+server_ready_deadline=$(($(date +%s) + server_ready_seconds))
+while [ "$(date +%s)" -lt "$server_ready_deadline" ]; do
   if ! kill -0 "$server_pid" 2>/dev/null; then
     wait "$server_pid" || true
     echo "Factory V2 server exited before becoming ready. Check the error above." >&2
     exit 1
   fi
-  if curl --silent --show-error --fail "http://$listen/healthz" >/dev/null 2>&1; then
+  if curl_before_deadline "http://$listen/healthz" "$server_ready_deadline" >/dev/null 2>&1; then
     ready=1
     break
   fi
-  attempt=$((attempt + 1))
   sleep 0.1
 done
 if [ "$ready" != "1" ]; then
-  echo "Factory V2 server did not become healthy within 10 seconds." >&2
+  echo "Factory V2 server did not become healthy within $server_ready_seconds seconds." >&2
   exit 1
 fi
 
@@ -96,9 +107,8 @@ worker_id=$("$worker_binary" identity --config "$config")
 worker_pid=$!
 
 registered=0
-attempt=0
-worker_ready_attempts=$((worker_ready_seconds * 10))
-while [ "$attempt" -lt "$worker_ready_attempts" ]; do
+worker_ready_deadline=$(($(date +%s) + worker_ready_seconds))
+while [ "$(date +%s)" -lt "$worker_ready_deadline" ]; do
   if ! kill -0 "$server_pid" 2>/dev/null; then
     wait "$server_pid" || true
     echo "Factory V2 server stopped during worker startup." >&2
@@ -109,12 +119,11 @@ while [ "$attempt" -lt "$worker_ready_attempts" ]; do
     echo "Factory V2 worker exited during startup. Check the configuration and error above." >&2
     exit 1
   fi
-  if curl --silent --show-error --fail "http://$listen/api/v1/workers" |
+  if curl_before_deadline "http://$listen/api/v1/workers" "$worker_ready_deadline" |
     grep -q "\"id\":\"$worker_id\"[^}]*\"health\":\"healthy\",\"online\":true"; then
     registered=1
     break
   fi
-  attempt=$((attempt + 1))
   sleep 0.1
 done
 if [ "$registered" != "1" ]; then
