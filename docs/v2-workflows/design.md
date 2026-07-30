@@ -205,7 +205,8 @@ small runtime-specific data plane.
 
 The API adds:
 
-- `GET /api/v1/workflows?limit=N&cursor=C` lists bounded workflow summaries.
+- `GET /api/v1/workflows?enabled=BOOL&limit=N&cursor=C` lists bounded workflow
+  summaries. The optional enabled filter is applied before cursor pagination.
 - `POST /api/v1/workflows` creates a workflow and revision 1. Its body includes
   a client mutation key.
 - `GET /api/v1/workflows/{id}` returns metadata and the current revision.
@@ -388,8 +389,8 @@ version adds no worker capability matching.
 Store and HTTP tests will cover name normalization, immutable revision
 increments, lost-response replay, mutation-key conflict, concurrent edit
 conflict, enable and disable behavior, pinned prompt composition, UTF-8 byte
-limits, atomic task snapshots, migration backfill, pagination, the revision
-limit, and stable errors.
+limits, atomic task snapshots, migration backfill, enabled-filtered pagination,
+the revision limit, and stable errors.
 
 Worker protocol tests will prove that claims carry the stored resolved prompt
 in `task.description` for blank and workflow tasks, including a worker built

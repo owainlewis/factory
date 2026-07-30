@@ -386,6 +386,10 @@ The task-list API accepts an exact `state` query parameter. The server applies
 that filter before cursor pagination, so each page contains up to the requested
 number of matching tasks and its next cursor continues the same filtered query.
 
+The workflow-list and schedule-list APIs accept an exact Boolean `enabled`
+query parameter. The server applies it before cursor pagination and each next
+cursor continues the same filtered query.
+
 ### Naming and identity
 
 Worker IDs remain derived from the worker's persisted identity and worker names
