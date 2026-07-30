@@ -221,7 +221,8 @@ framework solely for command parsing.
   10 seconds for health, then starts every selected worker and waits up to 40
   seconds for registration.
 - `factory start` accepts repeated `--worker-config` flags. With none, it uses
-  `~/.factory/worker.toml`.
+  `FACTORY_WORKER_CONFIG` when set, then `$FACTORY_HOME/worker.toml`.
+  `FACTORY_HOME` defaults to `~/.factory`.
 - Before starting any child, `factory start` verifies that each selected worker
   config's normalized `server` URL equals the HTTP endpoint derived from
   `--listen`. A mismatch names the config and both endpoints and exits 2.
@@ -247,8 +248,8 @@ framework solely for command parsing.
 - The CLI retries an uncertain task submission three times with delays of one,
   two, and four seconds, always using the same request key. If the outcome
   remains unknown, it prints that key so the operator can replay the command.
-- Default `run` output contains the task ID, queued state, assigned worker,
-  repository, and absolute UI URL.
+- Default `run` output contains the task ID, the current state returned by the
+  API, assigned worker, repository, and absolute UI URL.
 - `run --wait` polls at two-second intervals and exits 0 only when the task
   succeeds. Failed, lost, or cancelled work exits 1. Ctrl-C exits 130 without
   cancelling the task.
@@ -322,7 +323,8 @@ context that starts with `-`. Context with spaces should normally be quoted.
 `--file -` explicitly selects stdin. Supplying more than one context source is
 a usage error.
 
-The CLI configuration file is `~/.factory/config.toml`:
+`FACTORY_HOME` is the one Factory root and defaults to `~/.factory`. The client
+configuration file defaults to `$FACTORY_HOME/config.toml`:
 
 ```toml
 server = "http://127.0.0.1:7337"
@@ -331,11 +333,16 @@ default_repository = "factory"
 ```
 
 Only finite API client commands read this file. Server and worker runtime
-settings stay in their explicit flags and worker TOML files. Configuration
-precedence is command flag, environment variable, config file, then built-in
-default. The environment variables are `FACTORY_HOME`, `FACTORY_SERVER`,
-`FACTORY_WORKER_CONFIG`, and `FACTORY_CONFIG`. `FACTORY_HOME` defaults to
-`~/.factory`. Unknown config fields are errors.
+settings stay in their explicit flags and worker TOML files. Client
+configuration precedence is command flag, `FACTORY_SERVER`, this config file,
+then the built-in default. `FACTORY_CONFIG` selects another client config file.
+The server database defaults to
+`$FACTORY_HOME/server/factory.sqlite3`; `--database` overrides it. Worker config
+path precedence is `--worker-config` or `worker --config`,
+`FACTORY_WORKER_CONFIG`, then `$FACTORY_HOME/worker.toml`. GitHub ingest config
+defaults to `$FACTORY_HOME/ingest.toml` and its state defaults below
+`$FACTORY_HOME/ingest/github`; `ingest github --config` overrides its config.
+Unknown config fields are errors.
 
 A workflow apply file contains a stable name, optional summary, instructions,
 and enabled state:

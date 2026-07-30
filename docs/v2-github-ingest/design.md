@@ -186,8 +186,8 @@ the MVP larger.
 
 ## 6. Interfaces and data
 
-The default config path is `~/.factory/ingest.toml`. An explicit `--config`
-overrides it.
+The default config path is `$FACTORY_HOME/ingest.toml`.
+`FACTORY_HOME` defaults to `~/.factory`. An explicit `--config` overrides it.
 
 ```toml
 server = "http://127.0.0.1:7337"
@@ -206,8 +206,9 @@ Unknown fields are errors. The first slice always polls open issues. The server
 must be plain HTTP on loopback, matching the local worker trust model. The
 repository must be a normalized GitHub `owner/name`.
 
-The default state path is `~/.factory/ingest/github/ingest.sqlite3`. The database
-stores one current episode per repository, trigger, and issue:
+The default state path is
+`$FACTORY_HOME/ingest/github/ingest.sqlite3`. The database stores one current
+episode per repository, trigger, and issue:
 
 - issue number and URL;
 - random episode ID and derived request key;
