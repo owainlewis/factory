@@ -36,7 +36,8 @@ FACTORY_SKIP_INSTALL=1 ./scripts/build-ui.sh
 Run backend and launcher checks:
 
 ```sh
-gofmt -w ./cmd ./internal ./web
+find cmd internal migrations web -path web/node_modules -prune -o \
+  -name '*.go' -exec gofmt -w {} +
 go test ./...
 go vet ./...
 ./scripts/test-build.sh

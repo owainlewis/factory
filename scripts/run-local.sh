@@ -49,6 +49,7 @@ fi
 build_directory=${FACTORY_BUILD_DIR:-"$data_home/bin"}
 config=${1:-${FACTORY_WORKER_CONFIG:-${FACTORY_V2_WORKER_CONFIG:-"$data_home/worker.toml"}}}
 worker_ready_seconds=${FACTORY_WORKER_READY_SECONDS:-40}
+skip_build=${FACTORY_SKIP_BUILD:-${FACTORY_V2_SKIP_BUILD:-0}}
 
 case "$(uname -s)" in
   Darwin|DragonFly|FreeBSD|Linux|NetBSD|OpenBSD|SunOS) ;;
@@ -69,7 +70,7 @@ if ! command -v curl >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ "${FACTORY_SKIP_BUILD:-0}" != "1" ]; then
+if [ "$skip_build" != "1" ]; then
   FACTORY_BUILD_DIR="$build_directory" "$root/scripts/build.sh"
 fi
 

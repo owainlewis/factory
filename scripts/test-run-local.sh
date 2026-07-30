@@ -215,7 +215,6 @@ async function verifySignal(signal, suffix, listenVariable) {
     ...process.env,
     FACTORY_BUILD_DIR: join(temporary, "bin"),
     FACTORY_DATA_HOME: join(temporary, "data"),
-    FACTORY_SKIP_BUILD: "1",
     FACTORY_TEST_HEALTHY_WORKER: "1",
     FACTORY_TEST_SERVER_PID_FILE: serverPidFile,
     FACTORY_TEST_WORKER_MARKER: marker,
@@ -224,9 +223,14 @@ async function verifySignal(signal, suffix, listenVariable) {
   };
   delete environment.FACTORY_LISTEN;
   delete environment.FACTORY_V2_LISTEN;
+  delete environment.FACTORY_SKIP_BUILD;
+  delete environment.FACTORY_V2_SKIP_BUILD;
   environment[listenVariable] = `127.0.0.1:${port}`;
   if (listenVariable === "FACTORY_LISTEN") {
     environment.FACTORY_V2_LISTEN = "127.0.0.1:1";
+    environment.FACTORY_SKIP_BUILD = "1";
+  } else {
+    environment.FACTORY_V2_SKIP_BUILD = "1";
   }
 
   const launcher = spawn(join(root, "scripts/run-local.sh"), [config], {
