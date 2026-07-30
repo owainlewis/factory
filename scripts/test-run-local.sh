@@ -198,7 +198,7 @@ function terminateFrom(path) {
   if (isAlive(pid)) process.kill(pid, "SIGTERM");
 }
 
-async function verifySignal(signal, suffix) {
+async function verifySignal(signal, suffix, listenVariable) {
   const root = process.argv[2];
   const temporary = process.argv[3];
   const config = process.argv[4];
@@ -211,19 +211,26 @@ async function verifySignal(signal, suffix) {
   let signalled = false;
   let timedOut = false;
 
+  const environment = {
+    ...process.env,
+    FACTORY_BUILD_DIR: join(temporary, "bin"),
+    FACTORY_DATA_HOME: join(temporary, "data"),
+    FACTORY_SKIP_BUILD: "1",
+    FACTORY_TEST_HEALTHY_WORKER: "1",
+    FACTORY_TEST_SERVER_PID_FILE: serverPidFile,
+    FACTORY_TEST_WORKER_MARKER: marker,
+    FACTORY_TEST_WORKER_PID_FILE: workerPidFile,
+    FACTORY_WORKER_READY_SECONDS: "2"
+  };
+  delete environment.FACTORY_LISTEN;
+  delete environment.FACTORY_V2_LISTEN;
+  environment[listenVariable] = `127.0.0.1:${port}`;
+  if (listenVariable === "FACTORY_LISTEN") {
+    environment.FACTORY_V2_LISTEN = "127.0.0.1:1";
+  }
+
   const launcher = spawn(join(root, "scripts/run-local.sh"), [config], {
-    env: {
-      ...process.env,
-      FACTORY_BUILD_DIR: join(temporary, "bin"),
-      FACTORY_DATA_HOME: join(temporary, "data"),
-      FACTORY_LISTEN: `127.0.0.1:${port}`,
-      FACTORY_SKIP_BUILD: "1",
-      FACTORY_TEST_HEALTHY_WORKER: "1",
-      FACTORY_TEST_SERVER_PID_FILE: serverPidFile,
-      FACTORY_TEST_WORKER_MARKER: marker,
-      FACTORY_TEST_WORKER_PID_FILE: workerPidFile,
-      FACTORY_WORKER_READY_SECONDS: "2"
-    },
+    env: environment,
     stdio: ["ignore", "pipe", "pipe"]
   });
 
@@ -259,6 +266,9 @@ async function verifySignal(signal, suffix) {
 
   if (timedOut) throw new Error(`${signal} shutdown exceeded 5 seconds\n${output}`);
   if (!signalled) throw new Error(`launcher never became ready for ${signal}\n${output}`);
+  if (!output.includes(`Factory is ready at http://127.0.0.1:${port}/`)) {
+    throw new Error(`${listenVariable} did not select port ${port}\n${output}`);
+  }
   if (result.code !== 0 || result.exitSignal !== null) {
     throw new Error(`${signal} shutdown returned code=${result.code} signal=${result.exitSignal}\n${output}`);
   }
@@ -271,8 +281,8 @@ async function verifySignal(signal, suffix) {
 }
 
 (async () => {
-  await verifySignal("SIGTERM", "term");
-  await verifySignal("SIGINT", "int");
+  await verifySignal("SIGTERM", "term", "FACTORY_LISTEN");
+  await verifySignal("SIGINT", "int", "FACTORY_V2_LISTEN");
 })().catch((error) => {
   console.error(error.message);
   process.exitCode = 1;

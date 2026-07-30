@@ -3,7 +3,7 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-listen=${FACTORY_LISTEN:-127.0.0.1:7337}
+listen=${FACTORY_LISTEN:-${FACTORY_V2_LISTEN:-127.0.0.1:7337}}
 data_home=${FACTORY_DATA_HOME:-${FACTORY_V2_DATA_HOME:-}}
 if [ -z "$data_home" ]; then
   if [ -z "${HOME:-}" ]; then
