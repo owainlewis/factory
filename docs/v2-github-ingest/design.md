@@ -11,9 +11,9 @@
 
 Factory V2 can run manually delegated tasks, but it cannot watch GitHub for
 work. Operators must copy each issue into the control-plane UI. This design
-adds a small Go process, `factory-ingest`, that polls one GitHub repository,
-turns each matching issue into the existing task shape, and assigns it to one
-configured worker.
+adds the Go process role `factory ingest github`. It polls one GitHub
+repository, turns each matching issue into the existing task shape, and
+assigns it to one configured worker.
 
 The process uses the authenticated `gh` CLI and the control-plane HTTP API. It
 keeps its own small SQLite database so restarts and repeated polls do not
@@ -45,7 +45,7 @@ matching GitHub issue -> V2 task -> selected worker -> agent-managed issue and P
 
 ```mermaid
 flowchart LR
-    GH["GitHub Issues"] -->|"gh issue list"| I["factory-ingest"]
+    GH["GitHub Issues"] -->|"gh issue list"| I["factory ingest github"]
     F["Pinned workflow revision"] --> CP
     I -->|"POST /api/v1/tasks"| CP["Factory control plane"]
     CP -->|"HTTP claim polling"| W["Configured worker"]
@@ -53,8 +53,9 @@ flowchart LR
     A -->|"gh and git"| GH
 ```
 
-`factory-ingest` owns polling, trigger-episode identity, and task submission. It
-does not execute agents, open pull requests, or encode a GitHub workflow.
+`factory ingest github` owns polling, trigger-episode identity, and task
+submission. It does not execute agents, open pull requests, or encode a GitHub
+workflow.
 
 The control plane owns task idempotency, assignment, execution history, and the
 UI. It does not store GitHub credentials or poll GitHub.
@@ -69,8 +70,8 @@ process. The pinned workflow revision owns the engineering and GitHub process.
 The operator configures one GitHub repository, one required label, one worker
 ID, one repository key advertised by that worker, and one workflow ID. At
 startup ingest fetches and validates the workflow's current enabled revision.
-The operator starts `factory-ingest` continuously or runs
-`factory-ingest --once` for a bounded test.
+The operator starts `factory ingest github` continuously or runs
+`factory ingest github --once` for a bounded test.
 
 On each successful poll, ingest asks `gh issue list` for up to 100 open issues
 with the configured label. It validates the result and compares it with its
@@ -108,9 +109,9 @@ while the issue remains continuously matched do not create another task.
 
 ### Components and responsibilities
 
-`cmd/factory-ingest` owns command parsing, startup, shutdown, `--once`, and
-operator output. It depends on the ingest package and does not import worker or
-control-plane storage.
+The `factory ingest github` command owns parsing, startup, shutdown, `--once`,
+and operator output. It ships in the shared `factory` binary, depends on the
+ingest package, and does not import worker or control-plane storage.
 
 `internal/ingest` owns config validation, GitHub polling, issue-context
 normalization, episode reconciliation, API submission, retry decisions, and
@@ -157,7 +158,7 @@ the MVP larger.
 
 ### Requirements
 
-- `factory-ingest --once` performs one poll and submission pass, prints a
+- `factory ingest github --once` performs one poll and submission pass, prints a
   summary, and exits.
 - Continuous mode polls at the configured interval, which must be between 10
   seconds and 24 hours.
