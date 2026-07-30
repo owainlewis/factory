@@ -226,6 +226,8 @@ framework solely for command parsing.
 - Before starting any child, `factory start` verifies that each selected worker
   config's normalized `server` URL equals the HTTP endpoint derived from
   `--listen`. A mismatch names the config and both endpoints and exits 2.
+- `factory start` rejects listen port `0` before starting any child because the
+  selected ephemeral port cannot be known by the configured workers.
 - If any child of `factory start` exits unexpectedly, all remaining children
   are stopped and `start` exits nonzero.
 - `factory server` preserves the current loopback-only listen rule and SQLite
@@ -336,6 +338,10 @@ Only finite API client commands read this file. Server and worker runtime
 settings stay in their explicit flags and worker TOML files. Client
 configuration precedence is command flag, `FACTORY_SERVER`, this config file,
 then the built-in default. `FACTORY_CONFIG` selects another client config file.
+Before any request, finite commands require the resolved server URL to use
+plain HTTP, a loopback host, an explicit nonzero port, and the root path. URLs
+with credentials, query strings, or fragments are rejected. This matches the
+worker's trusted-local validation.
 The server database defaults to
 `$FACTORY_HOME/server/factory.sqlite3`; `--database` overrides it. Worker config
 path precedence is `--worker-config` or `worker --config`,
@@ -441,10 +447,12 @@ once and recovers without restart. The task's own timeout remains owned by the
 control plane and worker.
 
 `factory start` validates every worker configuration before starting a child.
-If all validation succeeds, it starts the server and selected workers in order.
-On SIGINT or SIGTERM it asks workers to stop first, then the server, and allows
-10 seconds for each phase. A second signal exits immediately. If server startup
-fails, no worker starts. If one worker fails during startup, all processes stop.
+It also rejects listen port `0`, then compares each worker endpoint with the
+resolved listen endpoint. If all validation succeeds, it starts the server and
+selected workers in order. On SIGINT or SIGTERM it asks workers to stop first,
+then the server, and allows 10 seconds for each phase. A second signal exits
+immediately. If server startup fails, no worker starts. If one worker fails
+during startup, all processes stop.
 
 Server and worker commands retain their existing durable recovery rules. A CLI
 process crash cannot corrupt task state because the CLI does not own the
@@ -463,8 +471,9 @@ instant. Existing queued and running tasks are unchanged.
 The MVP keeps the existing trusted-local boundary. The server accepts plain
 HTTP only on loopback, has no OIDC, and trusts local callers. This release
 therefore supports same-host workers and ingest. Remote control-plane access
-requires a later authentication and TLS design. The CLI rejects server URLs
-with credentials, query strings, or fragments.
+requires a later authentication and TLS design. The CLI accepts only plain
+HTTP server URLs with a loopback host, explicit nonzero port, and root path; it
+also rejects credentials, query strings, and fragments.
 
 Prompts, ticket URLs, repository identities, results, and event payloads may be
 sensitive. The CLI does not log request or response bodies. Human `show`
@@ -488,6 +497,10 @@ rebuilding requires Node.
   command tree.
 - `factory start` can run the embedded UI plus both a Codex worker and a Claude
   Code worker from two configuration files.
+- Finite commands reject non-loopback, HTTPS, path-bearing, credential-bearing,
+  query-bearing, fragment-bearing, missing-port, and zero-port server URLs
+  before sending a request.
+- `factory start --listen 127.0.0.1:0` exits 2 before starting any child.
 - A manual blank task and a workflow-backed task can be submitted from text, a
   file, and stdin.
 - An ambiguous worker or repository name makes no mutation and prints the
