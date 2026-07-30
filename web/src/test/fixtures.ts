@@ -139,7 +139,10 @@ export function mockControlPlane(
       return Response.json({ tasks: tasks.slice(1, 2), next_cursor: null });
     }
     if (path === "/api/v1/tasks?limit=50&cursor=new-boundary") {
-      return Response.json({ tasks: [tasks[2], tasks[1]], next_cursor: null });
+      return Response.json({
+        tasks: [tasks[2], { ...tasks[1], state: "succeeded" }],
+        next_cursor: null,
+      });
     }
     if (path === "/api/v1/tasks/created-task") {
       return Response.json({

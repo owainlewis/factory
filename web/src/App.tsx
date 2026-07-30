@@ -62,7 +62,7 @@ export function App() {
   const loadTaskHistory = useMutation({
     mutationFn: ({ cursor }: { cursor: string; headCursor: string | null }) => api.tasks(cursor),
     onSuccess: (page, request) => {
-      setTaskHistory((current) => mergeTasks(current, page.tasks));
+      setTaskHistory((current) => mergeTasks(page.tasks, current));
       if (previousTaskHeadCursor.current === request.headCursor) {
         setTaskHistoryCursor(page.next_cursor);
       }
