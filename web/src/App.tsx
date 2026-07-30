@@ -1,4 +1,4 @@
-import { ListChecks, Menu, Plus, Users, X } from "lucide-react";
+import { Bot, ListChecks, Menu, Plus, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
@@ -32,7 +32,7 @@ function routePath(route: Route): string {
 
 export function App() {
   const [route, setRoute] = useState<Route>(readRoute);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [delegateRequest, setDelegateRequest] = useState<{ workerID?: string } | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [taskHistory, setTaskHistory] = useState<Task[]>([]);
   const [taskHistoryCursor, setTaskHistoryCursor] = useState<string | null>();
@@ -40,6 +40,7 @@ export function App() {
   const deletedTaskIDs = useRef(new Set<string>());
   const workInterval = useVisibleInterval(5_000);
   const workerInterval = useVisibleInterval(10_000);
+  const delegateTrigger = useRef<HTMLElement | null>(null);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -53,6 +54,16 @@ export function App() {
     setRoute(next);
     setMobileNavOpen(false);
     window.scrollTo({ top: 0, behavior: "instant" });
+  };
+  const openDelegate = (workerID?: string) => {
+    delegateTrigger.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setDelegateRequest({ workerID });
+  };
+  const closeDelegate = () => {
+    const trigger = delegateTrigger.current;
+    setDelegateRequest(null);
+    window.setTimeout(() => trigger?.focus(), 0);
   };
 
   const tasks = useQuery({
@@ -111,6 +122,7 @@ export function App() {
             <span className="brand-subtitle">Control plane</span>
           </div>
         </div>
+        <span className="nav-section-label">Workspace</span>
         <nav aria-label="Primary navigation">
           <button
             className={`nav-item ${route.page === "work" || route.page === "task" ? "active" : ""}`}
@@ -122,7 +134,7 @@ export function App() {
             className={`nav-item ${route.page === "workers" || route.page === "worker" ? "active" : ""}`}
             onClick={() => navigate({ page: "workers" })}
           >
-            <Users size={17} /> Workers
+            <Bot size={17} /> Workers
           </button>
         </nav>
         <div className="sidebar-foot">
@@ -147,7 +159,7 @@ export function App() {
             {route.page === "task" && "Task detail"}
             {route.page === "worker" && "Worker detail"}
           </div>
-          <button className="button button-primary" onClick={() => setDrawerOpen(true)}>
+          <button className="button button-primary" onClick={() => openDelegate()}>
             <Plus size={16} /> Delegate task
           </button>
         </header>
@@ -162,7 +174,7 @@ export function App() {
               fetching={tasks.isFetching}
               updatedAt={tasks.dataUpdatedAt}
               onTask={(id) => navigate({ page: "task", id })}
-              onDelegate={() => setDrawerOpen(true)}
+              onDelegate={() => openDelegate()}
               onRefresh={() => void tasks.refetch()}
               hasMore={Boolean(taskHistoryCursor)}
               loadingMore={loadTaskHistory.isPending}
@@ -205,7 +217,11 @@ export function App() {
             />
           )}
           {route.page === "worker" && (
-            <WorkerDetail id={route.id} onBack={() => navigate({ page: "workers" })} />
+            <WorkerDetail
+              id={route.id}
+              onBack={() => navigate({ page: "workers" })}
+              onDelegate={() => openDelegate(route.id)}
+            />
           )}
         </main>
       </div>
@@ -217,13 +233,14 @@ export function App() {
           onClick={() => setMobileNavOpen(false)}
         />
       )}
-      {drawerOpen && (
+      {delegateRequest && (
         <DelegateDrawer
           workers={workers.data ?? []}
           workersPending={workers.isPending}
-          onClose={() => setDrawerOpen(false)}
+          initialWorkerID={delegateRequest.workerID}
+          onClose={closeDelegate}
           onCreated={(id) => {
-            setDrawerOpen(false);
+            setDelegateRequest(null);
             navigate({ page: "task", id });
           }}
         />

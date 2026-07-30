@@ -31,6 +31,16 @@ describe("App", () => {
     }
   });
 
+  it("counts available capacity only from online healthy workers", async () => {
+    mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: /^Workers$/ }));
+    const summary = screen.getByLabelText("Fleet summary");
+    expect(within(summary).getByText("Available slots").closest("div")).toHaveTextContent("1");
+  });
+
   it("loads another bounded task page without duplicating existing work", async () => {
     mockControlPlane({ paginatedTasks: true });
     const user = userEvent.setup();
@@ -256,7 +266,8 @@ describe("App", () => {
     mockControlPlane();
     const user = userEvent.setup();
     renderApp();
-    await user.click(await screen.findByRole("button", { name: "Delegate task" }));
+    const trigger = await screen.findByRole("button", { name: "Delegate task" });
+    await user.click(trigger);
     expect(screen.getByRole("dialog")).toBeVisible();
     expect(screen.getByLabelText("Title")).toHaveFocus();
     await user.tab({ shift: true });
@@ -265,6 +276,43 @@ describe("App", () => {
     expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Delegate task" })).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await vi.waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("preselects the worker when assigning from worker detail", async () => {
+    window.history.replaceState({}, "", "/workers/worker-online");
+    mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Assign work" }));
+
+    expect(screen.getByRole("dialog", { name: "Delegate task" })).toBeVisible();
+    expect(screen.getByLabelText("Worker")).toHaveValue("worker-online");
+    expect(screen.getByLabelText("Repository")).toBeEnabled();
+  });
+
+  it("keeps the active delegate field focused while worker data refreshes", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockControlPlane();
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderApp();
+
+      await user.click(await screen.findByRole("button", { name: "Delegate task" }));
+      const description = screen.getByLabelText("Description");
+      await user.type(description, "Keep typing here.");
+      expect(description).toHaveFocus();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+
+      expect(description).toHaveFocus();
+      expect(description).toHaveValue("Keep typing here.");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reuses the request key after an ambiguous create failure and accepts 200 Unicode characters", async () => {

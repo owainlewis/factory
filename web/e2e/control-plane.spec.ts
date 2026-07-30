@@ -426,6 +426,11 @@ test("shows worker capacity, current work, retained cleanup, and saves Workers",
   await page.getByRole("button", { name: /Build Mac/ }).click();
   await expect(page.getByRole("heading", { name: "Build Mac" })).toBeVisible();
   await expect(page.getByText("factory-worker cleanup attempt-retained-001 --confirm")).toBeVisible();
+  const assign = page.getByRole("button", { name: "Assign work" });
+  await assign.click();
+  await expect(page.getByRole("dialog").getByLabel("Worker")).toHaveValue(workerOnline);
+  await page.keyboard.press("Escape");
+  await expect(assign).toBeFocused();
   browser.assertClean();
 });
 
@@ -488,6 +493,15 @@ test("shows ordered progress and long task detail", async ({ page }) => {
 
 test("supports narrow grouped layouts and saves narrow screenshots", async ({ page }) => {
   const browser = observeBrowser(page);
+  await page.setViewportSize({ width: 800, height: 900 });
+  await page.goto("/workers");
+  const workerList = page.locator(".workers-list");
+  const tabletListBounds = await workerList.boundingBox();
+  const tabletRowBounds = await page.locator(".worker-row").first().boundingBox();
+  expect(tabletRowBounds?.width ?? Infinity).toBeLessThanOrEqual(
+    tabletListBounds?.width ?? 0,
+  );
+
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
   const columns = page.locator(".work-column");
@@ -528,5 +542,6 @@ test("opens and closes delegation from the keyboard", async ({ page }) => {
   await expect(page.getByLabel("Title")).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(delegate).toBeFocused();
   browser.assertClean();
 });

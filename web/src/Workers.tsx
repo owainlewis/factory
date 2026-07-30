@@ -1,18 +1,18 @@
 import {
   ArrowLeft,
+  Bot,
   Check,
   ChevronRight,
-  CircleDot,
-  Clock3,
   Copy,
   GitBranch,
   HardDrive,
   LoaderCircle,
   Play,
+  Plus,
   Server,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { api } from "./api";
 import { runtimeLabel, stateLabel, timeAgo } from "./format";
 import { useVisibleInterval } from "./polling";
@@ -43,6 +43,15 @@ export function WorkersView({
 }) {
   if (pending) return <LoadingState label="Loading workers" />;
   if (error && !workers) return <ErrorState error={error} onRetry={onRefresh} />;
+  const registered = workers ?? [];
+  const online = registered.filter((worker) => worker.online).length;
+  const availableSlots = registered.reduce(
+    (total, worker) =>
+      worker.online && worker.health === "healthy"
+        ? total + Math.max(worker.capacity - worker.active_count, 0)
+        : total,
+    0,
+  );
 
   return (
     <div className="page">
@@ -55,59 +64,77 @@ export function WorkersView({
         onRefresh={onRefresh}
       />
       {error && <StaleBanner error={error} />}
-      {(workers ?? []).length === 0 ? (
+      {registered.length === 0 ? (
         <EmptyState
           icon={<Server size={22} />}
           title="No workers registered"
           description="Start a Factory worker and its registration will appear here automatically."
         />
       ) : (
-        <div className="workers-list">
-          <div className="worker-table-head" aria-hidden="true">
-            <span>Worker</span><span>Capacity</span><span>Repositories</span><span>Versions</span><span>Last seen</span><span />
+        <>
+          <div className="fleet-summary" aria-label="Fleet summary">
+            <div><span>Registered</span><strong>{registered.length}</strong></div>
+            <div><span>Online</span><strong>{online}</strong></div>
+            <div><span>Available slots</span><strong>{availableSlots}</strong></div>
           </div>
-          {(workers ?? []).map((worker) => (
-            <button className="worker-row" key={worker.id} onClick={() => onWorker(worker.id)}>
-              <span className="worker-identity">
-                <span className={`presence ${worker.online ? "online" : "offline"}`} aria-hidden="true" />
-                <span>
-                  <strong>{worker.name}</strong>
-                  <span className={`runtime-badge runtime-${worker.runtime}`}>
-                    <Play size={10} /> {runtimeLabel(worker.runtime)}
-                  </span>
-                  <small>
-                    {worker.online ? "Online" : "Offline"} ·{" "}
-                    <span className={worker.health === "healthy" ? "healthy-text" : "danger-text"}>
-                      {stateLabel(worker.health)}
+          <div className="workers-list">
+            <div className="worker-table-head" aria-hidden="true">
+              <span>Worker</span><span>Capacity</span><span>Repositories</span><span>Versions</span><span>Last seen</span><span />
+            </div>
+            {registered.map((worker) => (
+              <button className="worker-row" key={worker.id} onClick={() => onWorker(worker.id)}>
+                <span className="worker-identity">
+                  <span className="worker-avatar"><Bot size={17} /></span>
+                  <span>
+                    <span className="worker-name-line">
+                      <strong>{worker.name}</strong>
+                      <span className={`presence ${worker.online ? "online" : "offline"}`} aria-hidden="true" />
                     </span>
-                  </small>
-                  {worker.current_task_title && <em>{worker.current_task_title}</em>}
+                    <span className={`runtime-badge runtime-${worker.runtime}`}>
+                      <Play size={10} /> {runtimeLabel(worker.runtime)}
+                    </span>
+                    <small>
+                      {worker.online ? "Online" : "Offline"} ·{" "}
+                      <span className={worker.health === "healthy" ? "healthy-text" : "danger-text"}>
+                        {stateLabel(worker.health)}
+                      </span>
+                    </small>
+                    {worker.current_task_title && <em>{worker.current_task_title}</em>}
+                  </span>
                 </span>
-              </span>
-              <span className="capacity-cell">
-                <strong>{worker.active_count}/{worker.capacity}</strong>
-                <span className="capacity-bar" aria-label={`${worker.active_count} of ${worker.capacity} slots active`}>
-                  <span style={{ width: `${(worker.active_count / worker.capacity) * 100}%` }} />
+                <span className="capacity-cell">
+                  <strong>{worker.active_count}/{worker.capacity}</strong>
+                  <span className="capacity-bar" aria-label={`${worker.active_count} of ${worker.capacity} slots active`}>
+                    <span style={{ width: `${(worker.active_count / worker.capacity) * 100}%` }} />
+                  </span>
                 </span>
-              </span>
-              <span className="repo-list">
-                {worker.repositories.map((repo) => <span className="tag" key={repo.id}>{repo.key}</span>)}
-              </span>
-              <span className="versions">
-                <small>{runtimeLabel(worker.runtime)} {worker.runtime_version || "unknown"}</small>
-                <small>Worker {worker.worker_version || "unknown"}</small>
-              </span>
-              <span className="last-seen">{timeAgo(worker.last_heartbeat)}</span>
-              <ChevronRight size={16} className="row-chevron" aria-hidden="true" />
-            </button>
-          ))}
-        </div>
+                <span className="repo-list">
+                  {worker.repositories.map((repo) => <span className="tag" key={repo.id}>{repo.key}</span>)}
+                </span>
+                <span className="versions">
+                  <small>{runtimeLabel(worker.runtime)} {worker.runtime_version || "unknown"}</small>
+                  <small>Worker {worker.worker_version || "unknown"}</small>
+                </span>
+                <span className="last-seen">{timeAgo(worker.last_heartbeat)}</span>
+                <ChevronRight size={16} className="row-chevron" aria-hidden="true" />
+              </button>
+            ))}
+          </div>
+        </>
       )}
     </div>
   );
 }
 
-export function WorkerDetail({ id, onBack }: { id: string; onBack: () => void }) {
+export function WorkerDetail({
+  id,
+  onBack,
+  onDelegate,
+}: {
+  id: string;
+  onBack: () => void;
+  onDelegate: () => void;
+}) {
   const interval = useVisibleInterval(10_000);
   const worker = useQuery({
     queryKey: ["worker", id],
@@ -136,7 +163,9 @@ export function WorkerDetail({ id, onBack }: { id: string; onBack: () => void })
     <div className="page detail-page">
       <button className="back-button" onClick={onBack}><ArrowLeft size={16} /> All workers</button>
       <div className="detail-heading worker-detail-heading">
-        <div>
+        <div className="worker-detail-identity">
+          <span className="worker-avatar worker-avatar-large"><Bot size={25} /></span>
+          <div>
           <div className="worker-state-line">
             <span className={`presence ${data.online ? "online" : "offline"}`} aria-hidden="true" />
             <span>{data.online ? "Online" : "Offline"}</span>
@@ -148,72 +177,87 @@ export function WorkerDetail({ id, onBack }: { id: string; onBack: () => void })
             <Play size={10} /> {runtimeLabel(data.runtime)}
           </span>
           <p>Registered {new Date(data.registered_at).toLocaleString()}</p>
+          </div>
         </div>
-        <span className="worker-id" title={data.id}>{data.id}</span>
+        <div className="detail-actions">
+          <button className="button button-primary" onClick={onDelegate}>
+            <Plus size={15} /> Assign work
+          </button>
+        </div>
       </div>
       {worker.error && <StaleBanner error={worker.error} />}
 
-      <div className="worker-summary">
-        <SummaryItem label="Active capacity" value={`${data.active_count} / ${data.capacity}`} icon={<CircleDot size={17} />} />
-        <SummaryItem label={`${runtimeLabel(data.runtime)} version`} value={data.runtime_version || "Unknown"} icon={<Play size={17} />} />
-        <SummaryItem label="Worker version" value={data.worker_version || "Unknown"} icon={<Server size={17} />} />
-        <SummaryItem label="Last seen" value={timeAgo(data.last_heartbeat)} icon={<Clock3 size={17} />} />
-      </div>
+      <div className="worker-detail-layout">
+        <div>
+          <section className="panel">
+            <PanelHeading title="Now" aside={data.current_task_title ? "1 active task" : "No active work"} />
+            {data.current_task_title ? (
+              <div className="current-work"><LoaderCircle size={17} className="spin" /> {data.current_task_title}</div>
+            ) : (
+              <div className="quiet-empty">This worker is ready for its next task.</div>
+            )}
+          </section>
 
-      {data.current_task_title && (
-        <section className="panel">
-          <PanelHeading title="Current work" />
-          <div className="current-work"><LoaderCircle size={17} className="spin" /> {data.current_task_title}</div>
-        </section>
-      )}
-
-      <section className="panel">
-        <PanelHeading title="Repositories" aside={`${data.repositories.length} advertised`} />
-        <div className="repository-rows">
-          {data.repositories.map((repo) => (
-            <div className="repository-row" key={repo.id}>
-              <GitBranch size={17} />
-              <span><strong>{repo.key}</strong><small>{repo.remote_identity}</small></span>
-              <span className="retained-count">{repo.retained_count} retained</span>
+          <section className="panel">
+            <PanelHeading title="Repositories" aside={`${data.repositories.length} advertised`} />
+            <div className="repository-rows">
+              {data.repositories.map((repo) => (
+                <div className="repository-row" key={repo.id}>
+                  <GitBranch size={17} />
+                  <span><strong>{repo.key}</strong><small>{repo.remote_identity}</small></span>
+                  <span className="retained-count">{repo.retained_count} retained</span>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      </section>
+          </section>
 
-      <section className="panel">
-        <PanelHeading title="Retained worktrees" aside={`${data.retained_worktrees?.length ?? 0} retained`} />
-        {(data.retained_worktrees ?? []).length === 0 ? (
-          <div className="quiet-empty">No worktrees need local inspection or cleanup.</div>
-        ) : (
-          [...grouped.entries()].map(([repositoryID, worktrees]) => {
-            const repo = data.repositories.find((candidate) => candidate.id === repositoryID);
-            return (
-              <div className="worktree-group" key={repositoryID}>
-                <h3>{repo?.key ?? `Repository ${repositoryID}`}</h3>
-                {worktrees.map((worktree) => (
-                  <div className="worktree-card" key={worktree.attempt_id}>
-                    <div className="worktree-title">
-                      <HardDrive size={16} />
-                      <span><strong>Attempt {worktree.attempt_id}</strong><small>{worktree.reason}</small></span>
-                    </div>
-                    <div className="worktree-path">{worktree.path}</div>
-                    <div className="command-row">
-                      <code>{worktree.cleanup_command}</code>
-                      <button className="icon-button" aria-label={`Copy cleanup command for ${worktree.attempt_id}`} onClick={() => void copy(worktree.attempt_id, worktree.cleanup_command)}>
-                        {copied === worktree.attempt_id ? <Check size={16} /> : <Copy size={16} />}
-                      </button>
-                    </div>
+          <section className="panel">
+            <PanelHeading title="Retained worktrees" aside={`${data.retained_worktrees?.length ?? 0} retained`} />
+            {(data.retained_worktrees ?? []).length === 0 ? (
+              <div className="quiet-empty">No worktrees need local inspection or cleanup.</div>
+            ) : (
+              [...grouped.entries()].map(([repositoryID, worktrees]) => {
+                const repo = data.repositories.find((candidate) => candidate.id === repositoryID);
+                return (
+                  <div className="worktree-group" key={repositoryID}>
+                    <h3>{repo?.key ?? `Repository ${repositoryID}`}</h3>
+                    {worktrees.map((worktree) => (
+                      <div className="worktree-card" key={worktree.attempt_id}>
+                        <div className="worktree-title">
+                          <HardDrive size={16} />
+                          <span><strong>Attempt {worktree.attempt_id}</strong><small>{worktree.reason}</small></span>
+                        </div>
+                        <div className="worktree-path">{worktree.path}</div>
+                        <div className="command-row">
+                          <code>{worktree.cleanup_command}</code>
+                          <button className="icon-button" aria-label={`Copy cleanup command for ${worktree.attempt_id}`} onClick={() => void copy(worktree.attempt_id, worktree.cleanup_command)}>
+                            {copied === worktree.attempt_id ? <Check size={16} /> : <Copy size={16} />}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            );
-          })
-        )}
-      </section>
+                );
+              })
+            )}
+          </section>
+        </div>
+
+        <aside className="panel worker-profile-panel">
+          <PanelHeading title="Worker" />
+          <dl className="metadata">
+            <div><dt>Status</dt><dd>{data.online ? "Online" : "Offline"} · {stateLabel(data.health)}</dd></div>
+            <div><dt>Runtime</dt><dd>{runtimeLabel(data.runtime)}</dd></div>
+            <div><dt>Capacity</dt><dd>{data.active_count} / {data.capacity}</dd></div>
+            <div><dt>Last seen</dt><dd>{timeAgo(data.last_heartbeat)}</dd></div>
+            <div><dt>Runtime version</dt><dd>{data.runtime_version || "Unknown"}</dd></div>
+            <div><dt>Worker version</dt><dd>{data.worker_version || "Unknown"}</dd></div>
+          </dl>
+          <div className="profile-divider" />
+          <span className="profile-label">Worker ID</span>
+          <span className="worker-id" title={data.id}>{data.id}</span>
+        </aside>
+      </div>
     </div>
   );
-}
-
-function SummaryItem({ label, value, icon }: { label: string; value: string; icon: ReactNode }) {
-  return <div className="summary-item"><span className="summary-icon">{icon}</span><span><small>{label}</small><strong>{value}</strong></span></div>;
 }

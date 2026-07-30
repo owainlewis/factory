@@ -1,5 +1,5 @@
 import { ChevronRight, ListChecks, Plus } from "lucide-react";
-import { stateLabel, taskStates, timeAgo } from "./format";
+import { runtimeLabel, stateLabel, taskStates, timeAgo } from "./format";
 import type { Task, TaskState, Worker } from "./types";
 import {
   EmptyState,
@@ -111,9 +111,16 @@ function TaskCard({ task, worker, onClick }: { task: Task; worker?: Worker; onCl
         <ChevronRight size={15} aria-hidden="true" />
       </div>
       <span className="task-title">{task.title}</span>
+      {task.description && <span className="task-description">{task.description}</span>}
       <div className="task-meta">
         <span>{worker?.name ?? "Unknown worker"}</span>
         <span aria-hidden="true">·</span>
+        {worker && (
+          <>
+            <span>{runtimeLabel(worker.runtime)}</span>
+            <span aria-hidden="true">·</span>
+          </>
+        )}
         <span>{timeAgo(task.created_at)}</span>
       </div>
     </button>

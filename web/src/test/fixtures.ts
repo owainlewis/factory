@@ -356,6 +356,7 @@ export function mockControlPlane(
       });
     }
     if (path === "/api/v1/workers") return Response.json({ workers: [worker, offlineWorker] });
+    if (path === `/api/v1/workers/${worker.id}`) return Response.json(worker);
     throw new Error(`Unhandled request: ${path}`);
   });
 }

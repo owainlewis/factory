@@ -17,11 +17,13 @@ import { InlineError } from "./ui";
 export function DelegateDrawer({
   workers,
   workersPending,
+  initialWorkerID,
   onClose,
   onCreated,
 }: {
   workers: Worker[];
   workersPending: boolean;
+  initialWorkerID?: string;
   onClose: () => void;
   onCreated: (id: string) => void;
 }) {
@@ -31,7 +33,7 @@ export function DelegateDrawer({
   const titleRef = useRef<HTMLInputElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
   const requestRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
-  const [workerID, setWorkerID] = useState("");
+  const [workerID, setWorkerID] = useState(initialWorkerID ?? "");
   const [repositoryID, setRepositoryID] = useState("");
   const [timeout, setTimeout] = useState("7200");
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -40,6 +42,9 @@ export function DelegateDrawer({
 
   useEffect(() => {
     titleRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
       if (event.key !== "Tab") return;
