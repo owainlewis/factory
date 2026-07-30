@@ -442,36 +442,54 @@ func jsonEqual(a, b []byte) bool {
 	return bytes.Equal(a, b)
 }
 
-func (s *Store) Events(ctx context.Context, attemptID string, after int64) ([]protocol.AttemptEvent, error) {
+func (s *Store) Events(ctx context.Context, attemptID string, after int64, limit int) (protocol.AttemptEventPage, error) {
+	if after < -1 {
+		return protocol.AttemptEventPage{}, invalid("invalid_after", "after must be an integer of at least -1")
+	}
+	if limit < 1 || limit > protocol.MaxEventPageSize {
+		return protocol.AttemptEventPage{}, invalid("invalid_limit", "limit must be between 1 and 500")
+	}
 	var exists int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM attempts WHERE id = ?`, attemptID).Scan(&exists); err != nil {
-		return nil, unavailable(err)
+		return protocol.AttemptEventPage{}, unavailable(err)
 	}
 	if exists == 0 {
-		return nil, ErrNotFound
+		return protocol.AttemptEventPage{}, ErrNotFound
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT sequence, kind, payload, server_time
 		FROM attempt_events WHERE attempt_id = ? AND sequence > ?
-		ORDER BY sequence
-	`, attemptID, after)
+		ORDER BY sequence ASC
+		LIMIT ?
+	`, attemptID, after, limit+1)
 	if err != nil {
-		return nil, unavailable(err)
+		return protocol.AttemptEventPage{}, unavailable(err)
 	}
 	defer rows.Close()
-	var events []protocol.AttemptEvent
+	events := make([]protocol.AttemptEvent, 0, limit+1)
 	for rows.Next() {
 		var event protocol.AttemptEvent
 		var payload []byte
 		var serverTime int64
 		if err := rows.Scan(&event.Sequence, &event.Kind, &payload, &serverTime); err != nil {
-			return nil, unavailable(err)
+			return protocol.AttemptEventPage{}, unavailable(err)
 		}
 		event.Payload = append(event.Payload[:0], payload...)
 		event.ServerTime = fromMillis(serverTime)
 		events = append(events, event)
 	}
-	return events, rows.Err()
+	if err := rows.Err(); err != nil {
+		return protocol.AttemptEventPage{}, unavailable(err)
+	}
+	page := protocol.AttemptEventPage{Events: events, NextAfter: after}
+	if len(events) > limit {
+		page.Events = events[:limit]
+		page.HasMore = true
+	}
+	if len(page.Events) > 0 {
+		page.NextAfter = page.Events[len(page.Events)-1].Sequence
+	}
+	return page, nil
 }
 
 func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input protocol.CompleteAttemptRequest) (protocol.Attempt, error) {

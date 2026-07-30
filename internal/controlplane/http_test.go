@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -231,6 +234,123 @@ func TestHTTPContractLifecycleAndIdempotency(t *testing.T) {
 	} {
 		if !strings.Contains(logText, field) {
 			t.Fatalf("structured state log is missing %s", field)
+		}
+	}
+}
+
+func TestHTTPTaskPaginationKeepsEqualTimestampOrdering(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	fixture.store.now = func() time.Time {
+		return time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	}
+	worker := registerHTTPWorker(t, fixture, workerA, "factory", "github.com/owainlewis/factory", 1)
+	var expected []string
+	for index := 0; index < 3; index++ {
+		task := createTestTask(t, fixture.store, "http-page-"+strconv.Itoa(index), workerA, worker.Repositories[0].ID)
+		expected = append(expected, task.Task.ID)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(expected)))
+
+	type taskPage struct {
+		Tasks      []protocol.Task `json:"tasks"`
+		NextCursor *string         `json:"next_cursor"`
+	}
+	response := fixture.request(http.MethodGet, "/api/v1/tasks?limit=2", "", "", nil)
+	requireStatus(t, response, http.StatusOK)
+	first := decodeResponse[taskPage](t, response)
+	if len(first.Tasks) != 2 || first.NextCursor == nil {
+		t.Fatalf("first task page = %#v", first)
+	}
+	response = fixture.request(http.MethodGet, "/api/v1/tasks?limit=2&cursor="+*first.NextCursor, "", "", nil)
+	requireStatus(t, response, http.StatusOK)
+	second := decodeResponse[taskPage](t, response)
+	if len(second.Tasks) != 1 || second.NextCursor != nil {
+		t.Fatalf("second task page = %#v", second)
+	}
+	actual := []string{first.Tasks[0].ID, first.Tasks[1].ID, second.Tasks[0].ID}
+	if fmt.Sprint(actual) != fmt.Sprint(expected) {
+		t.Fatalf("paged task IDs = %v; want %v", actual, expected)
+	}
+}
+
+func TestHTTPTaskPaginationUsesABoundedDefault(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	worker := registerHTTPWorker(t, fixture, workerA, "factory", "github.com/owainlewis/factory", 1)
+	for index := 0; index < protocol.DefaultTaskPageSize+1; index++ {
+		createTestTask(t, fixture.store, "default-page-"+strconv.Itoa(index), workerA, worker.Repositories[0].ID)
+	}
+	response := fixture.request(http.MethodGet, "/api/v1/tasks", "", "", nil)
+	requireStatus(t, response, http.StatusOK)
+	page := decodeResponse[struct {
+		Tasks      []protocol.Task `json:"tasks"`
+		NextCursor *string         `json:"next_cursor"`
+	}](t, response)
+	if len(page.Tasks) != protocol.DefaultTaskPageSize || page.NextCursor == nil {
+		t.Fatalf("default task page = %#v", page)
+	}
+}
+
+func TestHTTPEventPaginationReturnsBoundedMetadata(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	worker := registerHTTPWorker(t, fixture, workerA, "factory", "github.com/owainlewis/factory", 1)
+	createTestTask(t, fixture.store, "http-event-page", workerA, worker.Repositories[0].ID)
+	claim := claimTestTask(t, fixture.store, workerA, "http-event-page-claim", tokenA)
+	if err := fixture.store.AppendEvents(context.Background(), claim.Attempt.ID, protocol.EventBatchRequest{
+		LeaseToken: tokenA,
+		Events: []protocol.AttemptEvent{
+			{Sequence: 0, Kind: "progress", Payload: json.RawMessage(`{"step":0}`)},
+			{Sequence: 1, Kind: "progress", Payload: json.RawMessage(`{"step":1}`)},
+			{Sequence: 2, Kind: "progress", Payload: json.RawMessage(`{"step":2}`)},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	type eventPage struct {
+		Events    []protocol.AttemptEvent `json:"events"`
+		NextAfter int64                   `json:"next_after"`
+		HasMore   bool                    `json:"has_more"`
+	}
+	response := fixture.request(http.MethodGet, "/api/v1/attempts/"+claim.Attempt.ID+"/events?after=-1&limit=2", "", "", nil)
+	requireStatus(t, response, http.StatusOK)
+	first := decodeResponse[eventPage](t, response)
+	if len(first.Events) != 2 || first.NextAfter != 1 || !first.HasMore {
+		t.Fatalf("first event page = %#v", first)
+	}
+	response = fixture.request(http.MethodGet, "/api/v1/attempts/"+claim.Attempt.ID+"/events?after=1&limit=2", "", "", nil)
+	requireStatus(t, response, http.StatusOK)
+	second := decodeResponse[eventPage](t, response)
+	if len(second.Events) != 1 || second.Events[0].Sequence != 2 ||
+		second.NextAfter != 2 || second.HasMore {
+		t.Fatalf("second event page = %#v", second)
+	}
+	response = fixture.request(http.MethodGet, "/api/v1/attempts/"+claim.Attempt.ID+"/events", "", "", nil)
+	requireStatus(t, response, http.StatusOK)
+	defaults := decodeResponse[eventPage](t, response)
+	if len(defaults.Events) != 3 || defaults.NextAfter != 2 || defaults.HasMore {
+		t.Fatalf("default event page = %#v", defaults)
+	}
+}
+
+func TestHTTPPaginationRejectsInvalidParameters(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	for _, test := range []struct {
+		path string
+		code string
+	}{
+		{path: "/api/v1/tasks?limit=0", code: "invalid_limit"},
+		{path: "/api/v1/tasks?limit=201", code: "invalid_limit"},
+		{path: "/api/v1/tasks?limit=many", code: "invalid_limit"},
+		{path: "/api/v1/tasks?cursor=not-a-cursor", code: "invalid_cursor"},
+		{path: "/api/v1/attempts/missing/events?after=-2", code: "invalid_after"},
+		{path: "/api/v1/attempts/missing/events?after=-1&limit=0", code: "invalid_limit"},
+		{path: "/api/v1/attempts/missing/events?after=-1&limit=501", code: "invalid_limit"},
+		{path: "/api/v1/attempts/missing/events?after=-1&limit=many", code: "invalid_limit"},
+	} {
+		response := fixture.request(http.MethodGet, test.path, "", "", nil)
+		requireStatus(t, response, http.StatusBadRequest)
+		body := decodeResponse[protocol.ErrorBody](t, response)
+		if body.Error.Code != test.code {
+			t.Fatalf("%s error code = %q; want %q", test.path, body.Error.Code, test.code)
 		}
 	}
 }

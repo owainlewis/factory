@@ -262,6 +262,7 @@ test.beforeAll(async () => {
     },
   });
   identifiers.runningTask = running.task.id;
+  identifiers.runningAttempt = active.attempt.id;
 
   await registerWorker(api, workerOnline, "Build Mac", onlineRepositories, 1);
   await api.dispose();
@@ -413,11 +414,20 @@ test("confirms queued cancellation and explicitly retries a failure", async ({ p
 
 test("shows ordered progress and long task detail", async ({ page }) => {
   const browser = observeBrowser(page);
+  const eventAfters: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === `/api/v1/attempts/${identifiers.runningAttempt}/events`) {
+      eventAfters.push(url.searchParams.get("after") ?? "");
+    }
+  });
   await page.goto(`/tasks/${identifiers.runningTask}`);
   const events = page.locator(".event-list li");
   await expect(events).toHaveCount(3);
   await expect(events.nth(0)).toContainText("Inspected the control-plane contract.");
   await expect(events.nth(2)).toContainText("Running browser verification.");
+  await expect.poll(() => eventAfters).toContain("-1");
+  await expect.poll(() => eventAfters, { timeout: 8_000 }).toContain("2");
 
   await page.goto(`/tasks/${identifiers.longTask}`);
   await expect(page.getByText("End of description.")).toBeVisible();

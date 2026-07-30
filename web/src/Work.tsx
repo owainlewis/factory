@@ -21,6 +21,9 @@ export function WorkView({
   onTask,
   onDelegate,
   onRefresh,
+  hasMore,
+  loadingMore,
+  onLoadMore,
 }: ViewStateProps & {
   tasks?: Task[];
   workers?: Worker[];
@@ -28,6 +31,9 @@ export function WorkView({
   error: Error | null;
   onTask: (id: string) => void;
   onDelegate: () => void;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
 }) {
   if (pending) return <LoadingState label="Loading work" />;
   if (error && !tasks) return <ErrorState error={error} onRetry={onRefresh} />;
@@ -80,6 +86,17 @@ export function WorkView({
               </div>
             </section>
           ))}
+        </div>
+      )}
+      {hasMore && (
+        <div className="load-more">
+          <button
+            className="button button-secondary"
+            onClick={onLoadMore}
+            disabled={loadingMore}
+          >
+            {loadingMore ? "Loading more…" : "Load more work"}
+          </button>
         </div>
       )}
     </div>

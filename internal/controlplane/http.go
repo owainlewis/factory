@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -163,12 +164,31 @@ func (a *API) getWorker(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) listTasks(w http.ResponseWriter, r *http.Request) {
-	tasks, err := a.store.Tasks(r.Context())
+	limit, err := pageLimit(r, protocol.DefaultTaskPageSize, protocol.MaxTaskPageSize)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
+	cursor, err := decodeTaskCursor(r.URL.Query().Get("cursor"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	page, err := a.store.Tasks(r.Context(), protocol.TaskPageRequest{Limit: limit, Cursor: cursor})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var nextCursor *string
+	if page.NextCursor != nil {
+		encoded, err := encodeTaskCursor(*page.NextCursor)
+		if err != nil {
+			writeError(w, unavailable(err))
+			return
+		}
+		nextCursor = &encoded
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": page.Tasks, "next_cursor": nextCursor})
 }
 
 func (a *API) createTask(w http.ResponseWriter, r *http.Request) {
@@ -310,12 +330,65 @@ func (a *API) getEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		after = value
 	}
-	events, err := a.store.Events(r.Context(), r.PathValue("attempt_id"), after)
+	limit, err := pageLimit(r, protocol.DefaultEventPageSize, protocol.MaxEventPageSize)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+	page, err := a.store.Events(r.Context(), r.PathValue("attempt_id"), after, limit)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"events": page.Events, "next_after": page.NextAfter, "has_more": page.HasMore,
+	})
+}
+
+func pageLimit(r *http.Request, defaultLimit, maxLimit int) (int, error) {
+	raw := r.URL.Query().Get("limit")
+	if raw == "" {
+		return defaultLimit, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > maxLimit {
+		return 0, invalid("invalid_limit", fmt.Sprintf("limit must be an integer between 1 and %d", maxLimit))
+	}
+	return limit, nil
+}
+
+func decodeTaskCursor(raw string) (*protocol.TaskCursor, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	encoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, invalid("invalid_cursor", "cursor is invalid")
+	}
+	var value struct {
+		CreatedAtMillis int64  `json:"created_at"`
+		ID              string `json:"id"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil || value.CreatedAtMillis < 0 || value.ID == "" || len(value.ID) > 200 {
+		return nil, invalid("invalid_cursor", "cursor is invalid")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, invalid("invalid_cursor", "cursor is invalid")
+	}
+	return &protocol.TaskCursor{CreatedAtMillis: value.CreatedAtMillis, ID: value.ID}, nil
+}
+
+func encodeTaskCursor(cursor protocol.TaskCursor) (string, error) {
+	value, err := json.Marshal(struct {
+		CreatedAtMillis int64  `json:"created_at"`
+		ID              string `json:"id"`
+	}{CreatedAtMillis: cursor.CreatedAtMillis, ID: cursor.ID})
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(value), nil
 }
 
 func (a *API) completeAttempt(w http.ResponseWriter, r *http.Request) {

@@ -43,6 +43,11 @@ export interface Task {
   created_at: string;
 }
 
+export interface TaskPage {
+  tasks: Task[];
+  next_cursor: string | null;
+}
+
 export interface Execution {
   id: string;
   task_id: string;
@@ -81,6 +86,12 @@ export interface AttemptEvent {
   kind: string;
   payload: unknown;
   server_time: string;
+}
+
+export interface AttemptEventPage {
+  events: AttemptEvent[];
+  next_after: number;
+  has_more: boolean;
 }
 
 export interface APIErrorBody {

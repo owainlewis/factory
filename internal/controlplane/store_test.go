@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -36,6 +37,37 @@ func newTestStore(t *testing.T) *Store {
 		}
 	})
 	return store
+}
+
+func TestTaskPaginationMigrationProvidesTheOrderingIndex(t *testing.T) {
+	store := newTestStore(t)
+	rows, err := store.db.Query(`
+		EXPLAIN QUERY PLAN
+		SELECT t.id, t.request_key, t.title, t.repository_id, t.timeout_seconds,
+		       e.assigned_worker_id, e.state, t.created_at
+		FROM tasks t JOIN executions e ON e.task_id = t.id
+		ORDER BY t.created_at DESC, t.id DESC
+		LIMIT 51
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(plan, "\n"), "tasks_created_at_id_desc") {
+		t.Fatalf("task pagination query plan does not use ordering index: %v", plan)
+	}
 }
 
 func TestCapacityMigrationDerivesOnlyAttributableLegacyRetainedCounts(t *testing.T) {
@@ -395,6 +427,44 @@ func TestTaskCreationIsNormalizedAndIdempotent(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected one task, got %d", count)
+	}
+}
+
+func TestTasksPagesEqualTimestampsByIDWithoutDuplicates(t *testing.T) {
+	store := newTestStore(t)
+	store.now = func() time.Time {
+		return time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	}
+	worker := registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	var expected []string
+	for index := 0; index < 5; index++ {
+		task := createTestTask(t, store, fmt.Sprintf("page-task-%d", index), workerA, worker.Repositories[0].ID)
+		expected = append(expected, task.Task.ID)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(expected)))
+
+	var actual []string
+	request := protocol.TaskPageRequest{Limit: 2}
+	for {
+		page, err := store.Tasks(context.Background(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Tasks) > request.Limit {
+			t.Fatalf("page returned %d tasks with limit %d", len(page.Tasks), request.Limit)
+		}
+		for _, task := range page.Tasks {
+			actual = append(actual, task.ID)
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		request.Cursor = page.NextCursor
+	}
+	if fmt.Sprint(actual) != fmt.Sprint(expected) {
+		t.Fatalf("paged task IDs = %v; want %v", actual, expected)
 	}
 }
 
@@ -1312,10 +1382,11 @@ func TestAttemptLifecycleEventsCancellationRetryAndMonotonicity(t *testing.T) {
 	} else {
 		assertErrorCode(t, err, "event_conflict")
 	}
-	events, err := store.Events(context.Background(), claim.Attempt.ID, 0)
+	eventPage, err := store.Events(context.Background(), claim.Attempt.ID, 0, protocol.DefaultEventPageSize)
 	if err != nil {
 		t.Fatal(err)
 	}
+	events := eventPage.Events
 	if len(events) != 2 || events[0].Sequence != 1 || events[1].Sequence != 2 {
 		t.Fatalf("event polling returned %#v", events)
 	}
@@ -1524,6 +1595,50 @@ func TestDocumentedTaskEventAndResultLimits(t *testing.T) {
 	}
 	if detail.Execution.State != "preparing" {
 		t.Fatalf("rejected limits changed execution state to %s", detail.Execution.State)
+	}
+}
+
+func TestEventsPagesAreBoundedAndAdvanceDeterministically(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	createTestTask(t, store, "paged-events", workerA, worker.Repositories[0].ID)
+	claim := claimTestTask(t, store, workerA, "paged-events-claim", tokenA)
+	events := []protocol.AttemptEvent{
+		{Sequence: 0, Kind: "progress", Payload: json.RawMessage(`{"step":0}`)},
+		{Sequence: 1, Kind: "progress", Payload: json.RawMessage(`{"step":1}`)},
+		{Sequence: 2, Kind: "progress", Payload: json.RawMessage(`{"step":2}`)},
+	}
+	if err := store.AppendEvents(context.Background(), claim.Attempt.ID, protocol.EventBatchRequest{
+		LeaseToken: tokenA,
+		Events:     events,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := store.Events(context.Background(), claim.Attempt.ID, -1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Events) != 2 || first.Events[0].Sequence != 0 || first.Events[1].Sequence != 1 ||
+		first.NextAfter != 1 || !first.HasMore {
+		t.Fatalf("first event page = %#v", first)
+	}
+	second, err := store.Events(context.Background(), claim.Attempt.ID, first.NextAfter, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Events) != 1 || second.Events[0].Sequence != 2 ||
+		second.NextAfter != 2 || second.HasMore {
+		t.Fatalf("second event page = %#v", second)
+	}
+	empty, err := store.Events(context.Background(), claim.Attempt.ID, second.NextAfter, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty.Events) != 0 || empty.NextAfter != 2 || empty.HasMore {
+		t.Fatalf("empty event page = %#v", empty)
 	}
 }
 

@@ -1,8 +1,8 @@
 import type {
   APIErrorBody,
-  AttemptEvent,
+  AttemptEventPage,
   CreateTaskInput,
-  Task,
+  TaskPage,
   TaskDetail,
   Worker,
 } from "./types";
@@ -45,17 +45,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  tasks: async () => (await request<{ tasks: Task[] | null }>("/api/v1/tasks")).tasks ?? [],
+  tasks: async (cursor = "") => {
+    const query = new URLSearchParams({ limit: "50" });
+    if (cursor) query.set("cursor", cursor);
+    const page = await request<{ tasks: TaskPage["tasks"] | null; next_cursor: string | null }>(
+      `/api/v1/tasks?${query}`,
+    );
+    return { tasks: page.tasks ?? [], next_cursor: page.next_cursor };
+  },
   task: (id: string) => request<TaskDetail>(`/api/v1/tasks/${encodeURIComponent(id)}`),
   workers: async () =>
     (await request<{ workers: Worker[] | null }>("/api/v1/workers")).workers ?? [],
   worker: (id: string) => request<Worker>(`/api/v1/workers/${encodeURIComponent(id)}`),
-  events: async (attemptID: string) =>
-    (
-      await request<{ events: AttemptEvent[] | null }>(
-        `/api/v1/attempts/${encodeURIComponent(attemptID)}/events?after=-1`,
-      )
-    ).events ?? [],
+  events: async (attemptID: string, after: number): Promise<AttemptEventPage> => {
+    const query = new URLSearchParams({ after: String(after), limit: "100" });
+    const page = await request<{
+      events: AttemptEventPage["events"] | null;
+      next_after: number;
+      has_more: boolean;
+    }>(`/api/v1/attempts/${encodeURIComponent(attemptID)}/events?${query}`);
+    return { ...page, events: page.events ?? [] };
+  },
   createTask: (input: CreateTaskInput) =>
     request<TaskDetail>("/api/v1/tasks", { method: "POST", body: JSON.stringify(input) }),
   cancelTask: (id: string) =>

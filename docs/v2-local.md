@@ -112,12 +112,16 @@ state and ordered progress. It shows the assigned worker and repository,
 attempt history, terminal result or error, and cancellation state. Refreshing
 or reopening the browser reads the same durable SQLite state.
 
+Task list reads default to 50 items and accept at most 200. Attempt event reads
+default to 100 items and accept at most 500. Use the returned `next_cursor` and
+`next_after` values to request older tasks and later events.
+
 The equivalent read-only API checks are:
 
 ```sh
 curl --fail http://127.0.0.1:7337/healthz
 curl --fail http://127.0.0.1:7337/api/v1/workers
-curl --fail http://127.0.0.1:7337/api/v1/tasks
+curl --fail 'http://127.0.0.1:7337/api/v1/tasks?limit=50'
 ```
 
 Use the UI to cancel queued or active work. Failed and cancelled tasks expose

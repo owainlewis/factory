@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { mockControlPlane } from "./test/fixtures";
 
@@ -28,6 +28,115 @@ describe("App", () => {
       const column = await screen.findByRole("region", { name: new RegExp(`^${state}`) });
       expect(within(column).getByText(`${state.toLowerCase()} task`)).toBeVisible();
       expect(within(column).getByText(state, { selector: ".status-badge" })).toBeVisible();
+    }
+  });
+
+  it("loads another bounded task page without duplicating existing work", async () => {
+    mockControlPlane({ paginatedTasks: true });
+    const user = userEvent.setup();
+    renderApp();
+
+    expect(await screen.findByText("queued task")).toBeVisible();
+    expect(screen.queryByText("running task")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Load more work" }));
+
+    expect(await screen.findByText("running task")).toBeVisible();
+    expect(screen.getAllByText("queued task")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Load more work" })).not.toBeInTheDocument();
+  });
+
+  it("polls only the live head page after older work is loaded", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const fetch = mockControlPlane({ paginatedTasks: true });
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderApp();
+      await user.click(await screen.findByRole("button", { name: "Load more work" }));
+      expect(await screen.findByText("running task")).toBeVisible();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+
+      const taskPaths = fetch.mock.calls
+        .map(([input]) => typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url)
+        .filter((path) => path.startsWith("/api/v1/tasks?"));
+      expect(taskPaths.filter((path) => path === "/api/v1/tasks?limit=50")).toHaveLength(2);
+      expect(
+        taskPaths.filter((path) => path === "/api/v1/tasks?limit=50&cursor=next-page"),
+      ).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retain tasks shifted out of the live head without loading history", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockControlPlane({ boundedLiveHead: true });
+      renderApp();
+      expect(await screen.findByText("queued task")).toBeVisible();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+
+      expect(screen.getByText("new head task")).toBeVisible();
+      expect(screen.queryByText("queued task")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("exposes a new history cursor when the live head grows beyond one page", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockControlPlane({ growingTaskHistory: true });
+      renderApp();
+      expect(await screen.findByText("queued task")).toBeVisible();
+      expect(screen.queryByRole("button", { name: "Load more work" })).not.toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+
+      expect(screen.getByRole("button", { name: "Load more work" })).toBeVisible();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reopens exhausted history from a changed live-head boundary without duplicates", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const fetch = mockControlPlane({ shiftingTaskBoundary: true });
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderApp();
+
+      await user.click(await screen.findByRole("button", { name: "Load more work" }));
+      expect(await screen.findByText("running task")).toBeVisible();
+      expect(screen.queryByText("succeeded task")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Load more work" })).not.toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(screen.getByText("new head task")).toBeVisible();
+      await user.click(screen.getByRole("button", { name: "Load more work" }));
+
+      expect(await screen.findByText("succeeded task")).toBeVisible();
+      expect(screen.getAllByText("running task")).toHaveLength(1);
+      const taskPaths = fetch.mock.calls
+        .map(([input]) => typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url)
+        .filter((path) => path.startsWith("/api/v1/tasks?"));
+      expect(taskPaths).toEqual([
+        "/api/v1/tasks?limit=50",
+        "/api/v1/tasks?limit=50&cursor=old-boundary",
+        "/api/v1/tasks?limit=50",
+        "/api/v1/tasks?limit=50&cursor=new-boundary",
+      ]);
+    } finally {
+      vi.useRealTimers();
     }
   });
 
@@ -157,5 +266,111 @@ describe("App", () => {
 
     expect(screen.getByText("Cached ordered progress")).toBeVisible();
     expect(await screen.findByText(/progress refresh failed/)).toBeVisible();
+  });
+
+  it("drains bounded event pages and later polls after the last cached sequence", async () => {
+    window.history.replaceState({}, "", "/tasks/task-running");
+    const fetch = mockControlPlane({ incrementalEvents: true });
+    const { client } = renderApp();
+
+    expect(await screen.findByText("Incremental event 0")).toBeVisible();
+    expect(await screen.findByText("Incremental event 1")).toBeVisible();
+    await client.refetchQueries({ queryKey: ["events", "attempt-running"] });
+    expect(await screen.findByText("Incremental event 2")).toBeVisible();
+
+    const eventPaths = fetch.mock.calls
+      .map(([input]) => typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url)
+      .filter((path) => path.includes("/events?"));
+    expect(eventPaths).toEqual([
+      "/api/v1/attempts/attempt-running/events?after=-1&limit=100",
+      "/api/v1/attempts/attempt-running/events?after=0&limit=100",
+      "/api/v1/attempts/attempt-running/events?after=1&limit=100",
+    ]);
+    expect(screen.getAllByText(/Incremental event/)).toHaveLength(3);
+  });
+
+  it("starts a distinct empty event cache when the latest attempt changes", async () => {
+    window.history.replaceState({}, "", "/tasks/task-running");
+    const fetch = mockControlPlane({ switchAttemptAfter: 1 });
+    const { client } = renderApp();
+    expect(await screen.findByText("Cached ordered progress")).toBeVisible();
+
+    await client.refetchQueries({ queryKey: ["task", "task-running"] });
+
+    expect(await screen.findByText("New attempt starts with an empty event cache")).toBeVisible();
+    expect(screen.queryByText("Cached ordered progress")).not.toBeInTheDocument();
+    expect(fetch.mock.calls.some(([input]) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return path === "/api/v1/attempts/attempt-next/events?after=-1&limit=100";
+    })).toBe(true);
+  });
+
+  it("performs one final incremental event fetch when active work becomes terminal", async () => {
+    window.history.replaceState({}, "", "/tasks/task-running");
+    const fetch = mockControlPlane({ terminalTaskAfter: 1 });
+    const { client } = renderApp();
+    expect(await screen.findByText("Progress before completion")).toBeVisible();
+
+    await client.refetchQueries({ queryKey: ["task", "task-running"] });
+
+    expect(await screen.findByText("Final terminal progress")).toBeVisible();
+    const eventPaths = fetch.mock.calls
+      .map(([input]) => typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url)
+      .filter((path) => path.includes("/events?"));
+    expect(eventPaths).toEqual([
+      "/api/v1/attempts/attempt-running/events?after=-1&limit=100",
+      "/api/v1/attempts/attempt-running/events?after=0&limit=100",
+    ]);
+  });
+
+  it("does not add a catch-up request when task detail is initially terminal", async () => {
+    window.history.replaceState({}, "", "/tasks/task-running");
+    const fetch = mockControlPlane({ terminalTaskAfter: 0 });
+    renderApp();
+    expect(await screen.findByText("Progress before completion")).toBeVisible();
+
+    const eventPaths = fetch.mock.calls
+      .map(([input]) => typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url)
+      .filter((path) => path.includes("/events?"));
+    expect(eventPaths).toEqual([
+      "/api/v1/attempts/attempt-running/events?after=-1&limit=100",
+    ]);
+  });
+
+  it("retries a failed terminal catch-up until one read succeeds, then stops", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      window.history.replaceState({}, "", "/tasks/task-running");
+      const fetch = mockControlPlane({ terminalTaskAfter: 1, terminalEventFailures: 1 });
+      const { client } = renderApp();
+      expect(await screen.findByText("Progress before completion")).toBeVisible();
+
+      await client.refetchQueries({ queryKey: ["task", "task-running"] });
+      await vi.waitFor(() => {
+        const eventCalls = fetch.mock.calls.filter(([input]) => {
+          const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+          return path.includes("/events?");
+        });
+        expect(eventCalls).toHaveLength(2);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(screen.getByText("Final terminal progress")).toBeVisible();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(6_000);
+      });
+      const eventPaths = fetch.mock.calls
+        .map(([input]) => typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url)
+        .filter((path) => path.includes("/events?"));
+      expect(eventPaths).toEqual([
+        "/api/v1/attempts/attempt-running/events?after=-1&limit=100",
+        "/api/v1/attempts/attempt-running/events?after=0&limit=100",
+        "/api/v1/attempts/attempt-running/events?after=0&limit=100",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

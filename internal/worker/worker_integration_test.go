@@ -439,10 +439,11 @@ func TestMultiRepositorySuccessAndBoundedOutput(t *testing.T) {
 	if len(long.Attempts[0].Result) != protocol.MaxResultBytes {
 		t.Fatalf("bounded result length = %d", len(long.Attempts[0].Result))
 	}
-	events, err := fixture.store.Events(context.Background(), long.Attempts[0].ID, -1)
+	eventPage, err := fixture.store.Events(context.Background(), long.Attempts[0].ID, -1, protocol.DefaultEventPageSize)
 	if err != nil {
 		t.Fatal(err)
 	}
+	events := eventPage.Events
 	if len(events) == 0 {
 		t.Fatal("long Codex output produced no stored events")
 	}
@@ -495,10 +496,11 @@ func TestLargeCodexJSONLineIsPreserved(t *testing.T) {
 	})
 	task := createTask(t, fixture.store, worker, "large-json", "large-json", 60)
 	task = waitForTaskState(t, fixture.store, task.Task.ID, "succeeded")
-	events, err := fixture.store.Events(context.Background(), task.Attempts[0].ID, -1)
+	eventPage, err := fixture.store.Events(context.Background(), task.Attempts[0].ID, -1, protocol.DefaultEventPageSize)
 	if err != nil {
 		t.Fatal(err)
 	}
+	events := eventPage.Events
 	for _, event := range events {
 		var payload struct {
 			Type string `json:"type"`

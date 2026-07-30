@@ -48,12 +48,22 @@ export const tasks: Task[] = ["queued", "running", "succeeded", "failed", "cance
 export function mockControlPlane(
   options: {
     createFailures?: number;
+    boundedLiveHead?: boolean;
     eventFailuresAfter?: number;
+    growingTaskHistory?: boolean;
+    incrementalEvents?: boolean;
+    paginatedTasks?: boolean;
+    shiftingTaskBoundary?: boolean;
+    switchAttemptAfter?: number;
     taskDetailFailuresAfter?: number;
+    terminalEventFailures?: number;
+    terminalTaskAfter?: number;
   } = {},
 ) {
   let createFailures = options.createFailures ?? 0;
   let eventRequests = 0;
+  let taskHeadRequests = 0;
+  let terminalEventFailures = options.terminalEventFailures ?? 0;
   let taskDetailRequests = 0;
   let createdTask: { title: string; description: string } = {
     title: "Ship the UI",
@@ -85,7 +95,51 @@ export function mockControlPlane(
           attempts: [],
         }, { status: 201 });
       }
-      return Response.json({ tasks });
+    }
+    if (path === "/api/v1/tasks?limit=50") {
+      taskHeadRequests += 1;
+      if (options.boundedLiveHead) {
+        const newHead = {
+          ...tasks[0],
+          id: "task-new-head",
+          request_key: "request-new-head",
+          title: "new head task",
+          created_at: new Date(Date.now() + 60_000).toISOString(),
+        };
+        return Response.json({
+          tasks: taskHeadRequests === 1 ? tasks.slice(0, 1) : [newHead],
+          next_cursor: null,
+        });
+      }
+      if (options.shiftingTaskBoundary) {
+        const newHead = {
+          ...tasks[0],
+          id: "task-new-head",
+          request_key: "request-new-head",
+          title: "new head task",
+          created_at: new Date(Date.now() + 60_000).toISOString(),
+        };
+        return Response.json(
+          taskHeadRequests === 1
+            ? { tasks: tasks.slice(0, 1), next_cursor: "old-boundary" }
+            : { tasks: [newHead, tasks[0]], next_cursor: "new-boundary" },
+        );
+      }
+      const growingPage =
+        options.growingTaskHistory && taskHeadRequests > 1;
+      return Response.json({
+        tasks: options.paginatedTasks || options.growingTaskHistory ? tasks.slice(0, 1) : tasks,
+        next_cursor: options.paginatedTasks || growingPage ? "next-page" : null,
+      });
+    }
+    if (path === "/api/v1/tasks?limit=50&cursor=next-page") {
+      return Response.json({ tasks: tasks.slice(1), next_cursor: null });
+    }
+    if (path === "/api/v1/tasks?limit=50&cursor=old-boundary") {
+      return Response.json({ tasks: tasks.slice(1, 2), next_cursor: null });
+    }
+    if (path === "/api/v1/tasks?limit=50&cursor=new-boundary") {
+      return Response.json({ tasks: [tasks[2], tasks[1]], next_cursor: null });
     }
     if (path === "/api/v1/tasks/created-task") {
       return Response.json({
@@ -121,14 +175,26 @@ export function mockControlPlane(
           { status: 503 },
         );
       }
+      const attemptID =
+        options.switchAttemptAfter !== undefined &&
+        taskDetailRequests > options.switchAttemptAfter
+          ? "attempt-next"
+          : "attempt-running";
+      const terminal =
+        options.terminalTaskAfter !== undefined &&
+        taskDetailRequests > options.terminalTaskAfter;
       return Response.json({
-        task: { ...tasks[1], description: "Cached task detail remains available." },
+        task: {
+          ...tasks[1],
+          state: terminal ? "succeeded" : "running",
+          description: "Cached task detail remains available.",
+        },
         execution: {
           id: "execution-running",
           task_id: "task-running",
           assigned_worker_id: worker.id,
           required_runtime: "codex",
-          state: "running",
+          state: terminal ? "succeeded" : "running",
           cancellation_requested: false,
           created_at: tasks[1].created_at,
           updated_at: tasks[1].created_at,
@@ -137,11 +203,11 @@ export function mockControlPlane(
         repository_available: true,
         attempts: [
           {
-            id: "attempt-running",
+            id: attemptID,
             execution_id: "execution-running",
             worker_id: worker.id,
             attempt_number: 1,
-            state: "running",
+            state: terminal ? "succeeded" : "running",
             lease_expires_at: new Date(Date.now() + 30_000).toISOString(),
             started_at: tasks[1].created_at,
             created_at: tasks[1].created_at,
@@ -149,7 +215,19 @@ export function mockControlPlane(
         ],
       });
     }
-    if (path === "/api/v1/attempts/attempt-running/events?after=-1") {
+    if (path.startsWith("/api/v1/attempts/attempt-next/events?")) {
+      return Response.json({
+        events: [{
+          sequence: 0,
+          kind: "progress",
+          payload: { text: "New attempt starts with an empty event cache" },
+          server_time: new Date().toISOString(),
+        }],
+        next_after: 0,
+        has_more: false,
+      });
+    }
+    if (path.startsWith("/api/v1/attempts/attempt-running/events?")) {
       eventRequests += 1;
       if (
         options.eventFailuresAfter !== undefined &&
@@ -160,6 +238,46 @@ export function mockControlPlane(
           { status: 503 },
         );
       }
+      const after = Number(new URLSearchParams(path.split("?")[1]).get("after"));
+      if (options.terminalTaskAfter !== undefined) {
+        if (after >= 0 && terminalEventFailures > 0) {
+          terminalEventFailures -= 1;
+          return Response.json(
+            { error: { code: "storage_unavailable", message: "terminal catch-up failed" } },
+            { status: 503 },
+          );
+        }
+        const sequence = after + 1;
+        return Response.json({
+          events: sequence <= 1
+            ? [{
+                sequence,
+                kind: "progress",
+                payload: {
+                  text: sequence === 0 ? "Progress before completion" : "Final terminal progress",
+                },
+                server_time: new Date().toISOString(),
+              }]
+            : [],
+          next_after: sequence <= 1 ? sequence : after,
+          has_more: false,
+        });
+      }
+      if (options.incrementalEvents) {
+        const sequence = after + 1;
+        return Response.json({
+          events: sequence <= 2
+            ? [{
+                sequence,
+                kind: "progress",
+                payload: { text: `Incremental event ${sequence}` },
+                server_time: new Date().toISOString(),
+              }]
+            : [],
+          next_after: sequence <= 2 ? sequence : after,
+          has_more: sequence === 0,
+        });
+      }
       return Response.json({
         events: [
           {
@@ -169,6 +287,8 @@ export function mockControlPlane(
             server_time: new Date().toISOString(),
           },
         ],
+        next_after: 0,
+        has_more: false,
       });
     }
     if (path === "/api/v1/workers") return Response.json({ workers: [worker, offlineWorker] });

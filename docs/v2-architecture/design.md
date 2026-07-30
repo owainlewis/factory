@@ -384,9 +384,14 @@ The first API surface is:
 - `GET /api/v1/attempts/{id}` returns state for worker startup reconciliation.
 - `GET /api/v1/workers` returns current worker health.
 - `GET /api/v1/workers/{id}` returns worker detail and advertised repositories.
-- `GET` and `POST /api/v1/tasks` list and create tasks.
+- `GET /api/v1/tasks?limit=N&cursor=C` returns a bounded page ordered by
+  creation time and task ID. `cursor` is the opaque `next_cursor` from the
+  previous response. The default is 50 tasks and the maximum is 200.
+  `POST /api/v1/tasks` creates a task.
 - `GET /api/v1/tasks/{id}` returns task, execution, attempt, and result detail.
-- `GET /api/v1/attempts/{id}/events?after=N` returns later events.
+- `GET /api/v1/attempts/{id}/events?after=N&limit=M` returns a bounded,
+  ascending page with `next_after` and `has_more` for incremental polling.
+  The default is 100 events and the maximum is 500.
 - `POST /api/v1/tasks/{id}/cancel` cancels a queued execution immediately or
   records desired cancellation for its active attempt.
 - `POST /api/v1/executions/{id}/retry` requeues a failed or cancelled

@@ -1,11 +1,12 @@
 import { ListChecks, Menu, Plus, Users, X } from "lucide-react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { invalidateControlPlane } from "./controlPlaneQueries";
 import { DelegateDrawer } from "./DelegateDrawer";
 import { TaskDetail } from "./TaskDetail";
 import { useVisibleInterval } from "./polling";
+import type { Task } from "./types";
 import { WorkersView, WorkerDetail } from "./Workers";
 import { WorkView } from "./Work";
 
@@ -33,6 +34,9 @@ export function App() {
   const [route, setRoute] = useState<Route>(readRoute);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [taskHistory, setTaskHistory] = useState<Task[]>([]);
+  const [taskHistoryCursor, setTaskHistoryCursor] = useState<string | null>();
+  const previousTaskHeadCursor = useRef<string | null | undefined>(undefined);
   const workInterval = useVisibleInterval(5_000);
   const workerInterval = useVisibleInterval(10_000);
   const queryClient = useQueryClient();
@@ -51,9 +55,18 @@ export function App() {
   };
 
   const tasks = useQuery({
-    queryKey: ["tasks"],
-    queryFn: api.tasks,
+    queryKey: ["tasks", "head"],
+    queryFn: () => api.tasks(),
     refetchInterval: workInterval,
+  });
+  const loadTaskHistory = useMutation({
+    mutationFn: ({ cursor }: { cursor: string; headCursor: string | null }) => api.tasks(cursor),
+    onSuccess: (page, request) => {
+      setTaskHistory((current) => mergeTasks(current, page.tasks));
+      if (previousTaskHeadCursor.current === request.headCursor) {
+        setTaskHistoryCursor(page.next_cursor);
+      }
+    },
   });
   const workers = useQuery({
     queryKey: ["workers"],
@@ -70,6 +83,19 @@ export function App() {
     document.addEventListener("visibilitychange", refresh);
     return () => document.removeEventListener("visibilitychange", refresh);
   }, [queryClient]);
+
+  useEffect(() => {
+    if (!tasks.data) return;
+    const boundaryChanged = previousTaskHeadCursor.current !== tasks.data.next_cursor;
+    setTaskHistoryCursor((current) => boundaryChanged ? tasks.data.next_cursor : current);
+    previousTaskHeadCursor.current = tasks.data.next_cursor;
+  }, [tasks.data]);
+
+  const taskItems = tasks.data
+    ? mergeTasks(tasks.data.tasks, taskHistory)
+    : taskHistory.length > 0
+      ? taskHistory
+      : undefined;
 
   return (
     <div className="app-shell">
@@ -127,15 +153,25 @@ export function App() {
         <main>
           {route.page === "work" && (
             <WorkView
-              tasks={tasks.data}
+              tasks={taskItems}
               workers={workers.data}
               pending={tasks.isPending}
-              error={tasks.error}
+              error={tasks.error ?? loadTaskHistory.error}
               fetching={tasks.isFetching}
               updatedAt={tasks.dataUpdatedAt}
               onTask={(id) => navigate({ page: "task", id })}
               onDelegate={() => setDrawerOpen(true)}
               onRefresh={() => void tasks.refetch()}
+              hasMore={Boolean(taskHistoryCursor)}
+              loadingMore={loadTaskHistory.isPending}
+              onLoadMore={() => {
+                if (taskHistoryCursor) {
+                  loadTaskHistory.mutate({
+                    cursor: taskHistoryCursor,
+                    headCursor: previousTaskHeadCursor.current ?? null,
+                  });
+                }
+              }}
             />
           )}
           {route.page === "workers" && (
@@ -182,4 +218,19 @@ export function App() {
       )}
     </div>
   );
+}
+
+function mergeTasks(...groups: Task[][]): Task[] {
+  const unique = new Map<string, Task>();
+  for (const group of groups) {
+    for (const task of group) {
+      if (!unique.has(task.id)) unique.set(task.id, task);
+    }
+  }
+  return [...unique.values()].sort((left, right) => {
+    const created = Date.parse(right.created_at) - Date.parse(left.created_at);
+    if (created !== 0) return created;
+    if (left.id === right.id) return 0;
+    return left.id < right.id ? 1 : -1;
+  });
 }

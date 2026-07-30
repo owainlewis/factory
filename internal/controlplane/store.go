@@ -711,26 +711,48 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	return detail, true, err
 }
 
-func (s *Store) Tasks(ctx context.Context) ([]protocol.Task, error) {
-	rows, err := s.db.QueryContext(ctx, `
+func (s *Store) Tasks(ctx context.Context, request protocol.TaskPageRequest) (protocol.TaskPage, error) {
+	if request.Limit < 1 || request.Limit > protocol.MaxTaskPageSize {
+		return protocol.TaskPage{}, invalid("invalid_limit", "limit must be between 1 and 200")
+	}
+	query := `
 		SELECT t.id, t.request_key, t.title, t.repository_id, t.timeout_seconds,
 		       e.assigned_worker_id, e.state, t.created_at
 		FROM tasks t JOIN executions e ON e.task_id = t.id
-		ORDER BY t.created_at DESC, t.id DESC
-	`)
+	`
+	args := make([]any, 0, 3)
+	if request.Cursor != nil {
+		query += ` WHERE (t.created_at < ? OR (t.created_at = ? AND t.id < ?))`
+		args = append(args, request.Cursor.CreatedAtMillis, request.Cursor.CreatedAtMillis, request.Cursor.ID)
+	}
+	query += ` ORDER BY t.created_at DESC, t.id DESC LIMIT ?`
+	args = append(args, request.Limit+1)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, unavailable(err)
+		return protocol.TaskPage{}, unavailable(err)
 	}
 	defer rows.Close()
-	var tasks []protocol.Task
+	tasks := make([]protocol.Task, 0, request.Limit+1)
 	for rows.Next() {
 		task, err := scanTask(rows, false)
 		if err != nil {
-			return nil, unavailable(err)
+			return protocol.TaskPage{}, unavailable(err)
 		}
 		tasks = append(tasks, task)
 	}
-	return tasks, rows.Err()
+	if err := rows.Err(); err != nil {
+		return protocol.TaskPage{}, unavailable(err)
+	}
+	page := protocol.TaskPage{Tasks: tasks}
+	if len(tasks) > request.Limit {
+		page.Tasks = tasks[:request.Limit]
+		last := page.Tasks[len(page.Tasks)-1]
+		page.NextCursor = &protocol.TaskCursor{
+			CreatedAtMillis: last.CreatedAt.UnixMilli(),
+			ID:              last.ID,
+		}
+	}
+	return page, nil
 }
 
 func scanTask(row scanner, detail bool) (protocol.Task, error) {

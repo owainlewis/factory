@@ -20,6 +20,10 @@ const (
 	EmptyClaimTTL        = 5 * time.Minute
 	WorkerOnlineWindow   = 30 * time.Second
 	MaxRetainedPerRepo   = 10
+	DefaultTaskPageSize  = 50
+	MaxTaskPageSize      = 200
+	DefaultEventPageSize = 100
+	MaxEventPageSize     = 500
 )
 
 type RepositoryRegistration struct {
@@ -93,6 +97,21 @@ type Task struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+type TaskCursor struct {
+	CreatedAtMillis int64
+	ID              string
+}
+
+type TaskPageRequest struct {
+	Limit  int
+	Cursor *TaskCursor
+}
+
+type TaskPage struct {
+	Tasks      []Task
+	NextCursor *TaskCursor
+}
+
 type Execution struct {
 	ID                    string    `json:"id"`
 	TaskID                string    `json:"task_id"`
@@ -162,6 +181,12 @@ type AttemptEvent struct {
 	Kind       string          `json:"kind"`
 	Payload    json.RawMessage `json:"payload"`
 	ServerTime time.Time       `json:"server_time,omitempty"`
+}
+
+type AttemptEventPage struct {
+	Events    []AttemptEvent
+	NextAfter int64
+	HasMore   bool
 }
 
 type EventBatchRequest struct {
