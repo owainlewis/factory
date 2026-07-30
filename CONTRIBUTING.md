@@ -28,10 +28,8 @@ git clone https://github.com/owainlewis/factory.git
 cd factory
 cargo build --locked
 go build ./...
-cd web
-npm ci
-npm run build
-cd ..
+./scripts/build-v2-ui.sh
+./scripts/build-v2.sh
 ```
 
 To exercise Factory against GitHub, install and authenticate the GitHub CLI.
@@ -68,7 +66,8 @@ screenshots under `web/test-results/screenshots/`. Install its Chromium runtime
 once with `cd web && npx playwright install chromium`.
 
 Run `./scripts/test-run-v2-local.sh` to check that the combined launcher refuses
-to report an unhealthy worker as ready.
+to report an unhealthy worker as ready. Run `./scripts/test-build-v2.sh` to
+prove the normal operator build does not invoke Node or npm.
 
 ## Pull requests
 

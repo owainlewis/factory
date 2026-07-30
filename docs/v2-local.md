@@ -9,10 +9,12 @@ repositories. V1 remains separate and unchanged.
 Install:
 
 - Go 1.24 or newer;
-- Node.js 22 and npm;
 - Git;
 - curl;
 - the Codex CLI.
+
+Node.js 22 and npm are needed only when changing the web UI. Normal builds use
+the reviewed `web/dist` assets committed to the repository.
 
 Authenticate Codex before starting the worker:
 
@@ -58,10 +60,17 @@ process.
 
 ## Build and start
 
-One command installs pinned UI dependencies, builds the production UI, and
-builds both Go binaries:
+One command builds both Go binaries from the committed embedded UI assets:
 
 ```sh
+./scripts/build-v2.sh
+```
+
+When changing the web UI, rebuild the committed assets explicitly before
+building the Go binaries:
+
+```sh
+./scripts/build-v2-ui.sh
 ./scripts/build-v2.sh
 ```
 
@@ -84,8 +93,8 @@ fails with a direct error when the config is missing, a repository is invalid,
 the port is already in use, the server cannot become healthy, or either process
 exits early.
 
-The production process model has no Node server. Node is used only to compile
-the UI that `factory-server` embeds.
+The production process model and normal local build do not need Node. Node is
+used only by contributors to rebuild the UI that `factory-server` embeds.
 
 ## Delegate and inspect work
 

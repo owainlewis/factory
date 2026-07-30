@@ -124,8 +124,8 @@ recovery, and cleanup.
 ## V2 control plane and local worker
 
 The local V2 server includes its web interface in the Go binary, and the Unix
-worker runs assigned Codex tasks in separate managed Git worktrees. Production
-does not need Node.js or cross-origin configuration:
+worker runs assigned Codex tasks in separate managed Git worktrees. Normal
+builds use the committed embedded UI and do not need Node.js:
 
 ```sh
 ./scripts/build-v2.sh
