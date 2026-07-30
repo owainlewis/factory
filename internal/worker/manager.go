@@ -352,7 +352,7 @@ func (manager *Manager) registerLocked(ctx context.Context) {
 		manager.logger.Warn("worker_registration_failed", "error_class", apiErrorClass(err))
 		return
 	}
-	if err := manager.manifests.markDisposalsAcknowledged(registration.DisposedAttemptIDs); err != nil {
+	if err := manager.manifests.removeDisposedManifests(registration.DisposedAttemptIDs); err != nil {
 		manager.markUnhealthy("attempt_manifest", err)
 		return
 	}

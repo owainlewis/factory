@@ -178,8 +178,8 @@ proof before an expired attempt is swept to `lost`; active-attempt capacity
 continues to apply until that state transition. A failed journal write makes the
 worker unhealthy and prevents terminal completion; the in-memory exact
 registration remains a recovery path while the process is running. Successful
-handoffs mark absent manifests as acknowledged, so later restarts do not rebuild
-or resend historical IDs.
+handoffs durably remove absent manifests before clearing the disposal journal,
+so later restarts do not scan or resend historical IDs.
 
 Historical attempts are acknowledged once by the schema migration because
 pre-manifest workers could not publish exact disposition evidence. The

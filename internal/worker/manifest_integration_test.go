@@ -829,7 +829,7 @@ func TestDisposalJournalFailureDoesNotCompleteAttempt(t *testing.T) {
 	}
 }
 
-func TestAcknowledgedDisposedManifestIsNotRepublishedOnSecondRestart(t *testing.T) {
+func TestAcknowledgedDisposedManifestIsPrunedBeforeSecondRestart(t *testing.T) {
 	fixture := newServerFixture(t, nil)
 	repository := createRepository(t, "disposed-compaction")
 	dataDirectory := filepath.Join(t.TempDir(), "worker")
@@ -867,12 +867,8 @@ func TestAcknowledgedDisposedManifestIsNotRepublishedOnSecondRestart(t *testing.
 		t.Fatalf("first restart disposals = %#v", got)
 	}
 	firstRestart.register(context.Background())
-	manifest, err = firstRestart.manifests.load(claim.Attempt.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !manifest.CapacityAcknowledged {
-		t.Fatal("successful registration did not compact the disposed manifest")
+	if _, err := firstRestart.manifests.load(claim.Attempt.ID); err == nil {
+		t.Fatal("successful registration left the disposed manifest on disk")
 	}
 	if err := firstRestart.Close(); err != nil {
 		t.Fatal(err)

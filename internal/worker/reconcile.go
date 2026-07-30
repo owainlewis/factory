@@ -133,7 +133,7 @@ func (manager *Manager) reconcileManifest(ctx context.Context, manifest attemptM
 			value.RetentionReason = ""
 			return nil
 		})
-		if err == nil && !manifest.CapacityAcknowledged {
+		if err == nil {
 			err = manager.recordDisposed(manifest.AttemptID)
 		}
 		return retryReconciliation(err)
@@ -182,7 +182,7 @@ func (manager *Manager) reconcileManifest(ctx context.Context, manifest attemptM
 			value.RetentionReason = ""
 			return nil
 		})
-		if err == nil && !manifest.CapacityAcknowledged {
+		if err == nil {
 			err = manager.recordDisposed(manifest.AttemptID)
 		}
 		return retryReconciliation(err)
@@ -212,7 +212,7 @@ func (manager *Manager) reconcileManifest(ctx context.Context, manifest attemptM
 			value.RetentionReason = reason
 			return nil
 		})
-		if err == nil && !manifest.CapacityAcknowledged {
+		if err == nil {
 			err = manager.recordDisposed(manifest.AttemptID)
 		}
 		return retryReconciliation(err)

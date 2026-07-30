@@ -59,14 +59,13 @@ type attemptManifest struct {
 	ProcessActive        bool      `json:"process_active"`
 	LeaseDeadline        time.Time `json:"lease_deadline,omitempty"`
 
-	Lifecycle            string    `json:"lifecycle"`
-	TerminalState        string    `json:"terminal_state,omitempty"`
-	CapacityAcknowledged bool      `json:"capacity_acknowledged,omitempty"`
-	RetentionReason      string    `json:"retention_reason,omitempty"`
-	CleanupIntent        string    `json:"cleanup_intent,omitempty"`
-	CleanupResult        string    `json:"cleanup_result,omitempty"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	Lifecycle       string    `json:"lifecycle"`
+	TerminalState   string    `json:"terminal_state,omitempty"`
+	RetentionReason string    `json:"retention_reason,omitempty"`
+	CleanupIntent   string    `json:"cleanup_intent,omitempty"`
+	CleanupResult   string    `json:"cleanup_result,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type disposalJournal struct {
@@ -281,12 +280,13 @@ func (store *manifestStore) clearDisposals(attemptIDs []string) error {
 	return store.writeDisposalsLocked(journal)
 }
 
-func (store *manifestStore) markDisposalsAcknowledged(attemptIDs []string) error {
+func (store *manifestStore) removeDisposedManifests(attemptIDs []string) error {
 	if len(attemptIDs) == 0 {
 		return nil
 	}
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
+	removed := false
 	for _, attemptID := range attemptIDs {
 		path, err := store.path(attemptID)
 		if err != nil {
@@ -301,16 +301,20 @@ func (store *manifestStore) markDisposalsAcknowledged(attemptIDs []string) error
 		if err != nil {
 			return err
 		}
-		if manifest.CapacityAcknowledged {
-			continue
+		switch manifest.Lifecycle {
+		case manifestCleaned, manifestNotCreated, manifestMissing:
+		default:
+			return fmt.Errorf(
+				"refusing to remove disposal manifest in lifecycle %q", manifest.Lifecycle)
 		}
-		manifest.CapacityAcknowledged = true
-		manifest.UpdatedAt = store.now().UTC()
-		if err := store.validate(manifest); err != nil {
-			return err
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove acknowledged disposal manifest: %w", err)
 		}
-		if err := store.writeLocked(path, manifest); err != nil {
-			return err
+		removed = true
+	}
+	if removed {
+		if err := syncDirectory(store.attemptsDirectory()); err != nil {
+			return fmt.Errorf("sync acknowledged disposal manifest removal: %w", err)
 		}
 	}
 	return nil
