@@ -320,10 +320,10 @@ func (manager *Manager) jitteredPollInterval() time.Duration {
 }
 
 func DefaultConfigPath() (string, error) {
-	if value := os.Getenv("FACTORY_V2_WORKER_CONFIG"); value != "" {
+	if value := workerConfigEnvironment(); value != "" {
 		return value, nil
 	}
-	root := os.Getenv("FACTORY_V2_DATA_HOME")
+	root := dataHomeEnvironment()
 	if root == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -335,21 +335,27 @@ func DefaultConfigPath() (string, error) {
 }
 
 func ValidateNoLegacyDefaultConfig() error {
-	if os.Getenv("FACTORY_V2_WORKER_CONFIG") != "" || os.Getenv("FACTORY_V2_DATA_HOME") != "" {
+	if workerConfigEnvironment() != "" || dataHomeEnvironment() != "" {
 		return nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("resolve home directory: %w", err)
 	}
+	currentRoot := filepath.Join(home, ".factory")
+	if _, found, err := findPreviewWorkerState(currentRoot); err != nil {
+		return err
+	} else if found {
+		return nil
+	}
 	legacyRoot := filepath.Join(home, ".factory-v2")
-	legacyState, found, err := findLegacyWorkerState(legacyRoot)
+	legacyState, found, err := findPreviewWorkerState(legacyRoot)
 	if err != nil {
 		return err
 	}
 	if found {
 		return fmt.Errorf(
-			"found legacy V2 worker state at %s; refusing to create a new worker identity by default; set FACTORY_V2_DATA_HOME=%s to keep using it, or archive the old state after resolving its work",
+			"found preview worker state at %s; refusing to create a new worker identity by default; set FACTORY_DATA_HOME=%s to keep using it, or archive the old state after resolving its work",
 			legacyState,
 			legacyRoot,
 		)
@@ -357,7 +363,7 @@ func ValidateNoLegacyDefaultConfig() error {
 	return nil
 }
 
-func findLegacyWorkerState(root string) (string, bool, error) {
+func findPreviewWorkerState(root string) (string, bool, error) {
 	for _, candidate := range []string{
 		filepath.Join(root, "worker.toml"),
 		filepath.Join(root, "workers"),
@@ -365,8 +371,22 @@ func findLegacyWorkerState(root string) (string, bool, error) {
 		if _, err := os.Lstat(candidate); err == nil {
 			return candidate, true, nil
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return "", false, fmt.Errorf("inspect legacy V2 worker state %s: %w", candidate, err)
+			return "", false, fmt.Errorf("inspect preview worker state %s: %w", candidate, err)
 		}
 	}
 	return "", false, nil
+}
+
+func dataHomeEnvironment() string {
+	if value := os.Getenv("FACTORY_DATA_HOME"); value != "" {
+		return value
+	}
+	return os.Getenv("FACTORY_V2_DATA_HOME")
+}
+
+func workerConfigEnvironment() string {
+	if value := os.Getenv("FACTORY_WORKER_CONFIG"); value != "" {
+		return value
+	}
+	return os.Getenv("FACTORY_V2_WORKER_CONFIG")
 }

@@ -1,186 +1,140 @@
 # Factory
 
-[![CI](https://github.com/owainlewis/factory/actions/workflows/ci.yml/badge.svg)](https://github.com/owainlewis/factory/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-2f6feb.svg)](LICENSE)
+Factory is infrastructure for running coding agents across Git repositories.
+Its Go control plane stores work, shows the worker fleet, and delegates tasks.
+Each Go worker owns one agent runtime, currently Codex or Claude Code.
 
-Factory keeps coding agents working on a repository without making a human
-orchestrate every step from a terminal.
+The browser UI provides:
 
-It watches a trusted ticket queue. When a configured condition matches, Factory
-creates a durable task, prepares an isolated workspace, and gives one Markdown
-workflow to an agent. The agent uses normal tools such as `gh` and `git` to do
-the work. When nothing matches, Factory does nothing and spends no model tokens.
+- an overview of execution throughput, reliability, cycle time, queue depth, and
+  worker health;
+- a work queue and task details;
+- registered worker and repository status;
+- task delegation using a title, prompt, repository, and worker.
 
-![Human intent enters a trusted ticket queue; Factory runs isolated work and produces evidence; human review gates the team's merge; shipped changes return signals to the queue](docs/assets/readme/factory-loop.svg)
+Factory is local-first today. The server only accepts loopback connections and
+does not include user authentication.
 
-## Why Factory exists
+## Quick start
 
-Coding agents can implement increasingly substantial changes, but most teams
-still operate them as one-off terminal sessions. Every developer uses different
-prompts, skills, checks, and handoff conventions. Humans remain responsible for
-noticing ready work, starting an agent, waiting for CI, forwarding review
-feedback, and remembering to try again.
+Requirements:
 
-Factory makes this process repeatable. It plays a similar role to CI/CD: work
-enters a consistent system, receives the same checks and feedback loops, and
-keeps moving until it reaches a human decision.
+- Go 1.25 or newer
+- Git
+- `curl`
+- Codex CLI or Claude Code CLI, authenticated on the worker host
 
-The goal is not to replace developers. Humans decide what matters, supply
-product context, review the result, and remain accountable for what ships.
-Factory removes the manual coordination between those decisions.
-
-## The ticket is the control plane
-
-The issue tracker is where humans and agents coordinate. A ticket records the
-problem, scope, acceptance criteria, decisions, status, and evidence. Moving a
-ticket into a configured state is an explicit request for an agent pass.
-
-This makes ticket quality load-bearing. A vague ticket is not ready for either a
-human or an agent. A triage workflow can inspect the codebase, reproduce the
-problem, clarify scope, add testable acceptance criteria, and ask for the
-smallest missing human decision. Once the ticket is clear, it becomes the spec
-for implementation.
-
-![An example ticket moves through specification, human approval, implementation, and human review, with feedback requesting another implementation pass](docs/assets/readme/ticket-workflow.svg)
-
-The status names in this example are not built into Factory. They are ordinary
-issue labels and repository-owned prompts. You may also track them on a
-GitHub Project board for your own visualization; Factory does not read that
-board.
-
-## A deliberately small model
-
-Factory has four concepts:
-
-| Concept | Responsibility |
-| --- | --- |
-| Source | The ticket queue and control plane. GitHub in v1. |
-| Trigger | A status, label, or schedule condition. |
-| Workflow | A plain Markdown prompt describing the outcome and policy. |
-| Worker | The agent runtime, sandbox, timeout, and concurrency limit. |
-
-The boundary is intentional:
-
-- Factory owns polling, trust checks, deduplication, durable claims,
-  concurrency, timeouts, sandbox lifecycle, supervision, cancellation, history,
-  and recovery.
-- The workflow and agent own adaptive engineering work: reading the issue,
-  inspecting code, clarifying requirements, implementing changes, using `gh`
-  and `git`, opening a pull request, responding to CI and review, and updating
-  the ticket.
-
-Factory does not encode a fixed SDLC, a workflow graph, or deterministic GitHub
-effects. A trigger means only: **when this condition is true, run this prompt**.
-
-## Human review is the shipping boundary
-
-Factory revalidates live source state immediately before execution, but does
-not filter tickets by author. The trust boundary for a source trigger is
-whoever can satisfy its configured condition, such as applying a label or
-changing a Project status, not who opened the ticket. Do not use a source whose
-configured condition can be changed by untrusted people. Ticket bodies,
-comments, linked pull requests, and attachments remain untrusted input
-regardless. Use narrow credentials and protected branches that the worker
-cannot bypass.
-
-Factory-created software pull requests remain for human review. Factory and its
-default workflows never merge them or enable automatic merge. The human who
-merges remains accountable for what ships.
-
-For the complete trust and isolation model, read the
-[operations guide](docs/operations.md) and [security policy](SECURITY.md).
-
-## Get started
-
-Install Rust, Git, the GitHub CLI, and the Codex CLI, then authenticate the host
-tools and install Factory:
+Node.js is only needed when changing the UI. Normal builds use the committed,
+embedded UI assets.
 
 ```sh
-gh auth login
-codex login
-cargo install --path . --locked
-```
-
-From the repository Factory will manage:
-
-```sh
-factory init
-```
-
-Edit the generated configuration and workflows for your repository, then
-validate them and start Factory:
-
-```sh
-factory validate
-factory run --once
-factory run
-```
-
-The [runnable guide](docs/local-v1.md) covers the complete configuration, source
-contract, first demonstration, two-repository fleet setup, and sandbox setup. The
-[operations guide](docs/operations.md) covers inspection, cancellation,
-recovery, and cleanup.
-
-## V2 control plane and local worker
-
-The local V2 server includes its web interface in the Go binary, and the Unix
-worker runs assigned Codex or Claude Code tasks in separate managed Git worktrees. Normal
-builds use the committed embedded UI and do not need Node.js:
-
-```sh
-./scripts/build-v2.sh
-```
-
-Create the local configuration from the two-repository sample, edit its
-repository paths, then start the complete local control plane:
-
-```sh
+./scripts/build.sh
 mkdir -p ~/.factory
-cp examples/v2-worker.toml ~/.factory/worker.toml
-$EDITOR ~/.factory/worker.toml
-./scripts/run-v2-local.sh
+cp examples/worker.toml ~/.factory/worker.toml
 ```
 
-Open `http://127.0.0.1:7337/` to inspect the registered worker, delegate work,
-and follow durable task state. The server remains loopback-only. All local
-Factory data lives below `~/.factory`, with separate V1, server, and worker
-subdirectories. The
-[complete local V2 guide](docs/v2-local.md) covers fresh-checkout setup,
-delegation, polling, results, cancellation, retry, restart, cleanup, automated
-browser proof, and a bounded authenticated Codex smoke test. The
-[V2 worker guide](docs/v2-worker.md) covers lower-level execution and retained
-worktrees. See the [V2 MVP architecture](docs/v2-architecture/design.md) for
-the API, trust boundary, and unimplemented later ingest model.
+Edit `~/.factory/worker.toml` to select `codex` or `claude-code` and add absolute
+paths to the repositories this worker may use. Then start the server and worker:
 
-## V1 scope
+```sh
+./scripts/run-local.sh
+```
 
-V1 intentionally supports:
+Open [http://127.0.0.1:7337](http://127.0.0.1:7337).
 
-- one repository or an explicit fleet of repository-owned configurations;
-- status, label, and schedule triggers;
-- Codex and Claude Code workers in managed worktrees;
-- explicit Markdown workflows;
-- durable queueing, supervision, history, cancellation, and recovery.
+One worker has one stable identity and one runtime. Run another worker with a
+different config and data directory when you want both Codex and Claude Code:
 
-Jira, Linear, cross-repository workflows, additional agent runtimes, hosted workers,
-and webhook wake-ups can fit behind the same source, trigger, workflow, and
-worker boundaries later. This repository includes a
-[Jira source adapter](docs/jira.md) as an example of that extension point, but
-Jira is not part of the supported V1 scope.
+```sh
+FACTORY_WORKER_CONFIG=~/.factory/claude-worker.toml \
+  ~/.factory/bin/factory-worker
+```
 
-## Learn more
+See the [local guide](docs/local.md) for a complete setup and the
+[worker guide](docs/worker.md) for runtime and worktree behavior.
 
-- [Vision and technical design](docs/design.md)
-- [Labels and ticket status](docs/labels.md)
-- [Setup, configuration, and first run](docs/local-v1.md)
-- [Operations and recovery](docs/operations.md)
-- [V2 local worker](docs/v2-worker.md)
-- [V2 complete local workflow](docs/v2-local.md)
-- [Jira source adapter](docs/jira.md)
-- [Docker Sandbox development environment](docs/docker-sandbox-template.md)
-- [Contributing](CONTRIBUTING.md)
-- [Security](SECURITY.md)
+## Architecture
 
-## License
+```text
+Browser
+   |
+   | HTTP + JSON
+   v
+Go control plane
+  SQLite, scheduler, embedded UI
+   |
+   | registration, claim, heartbeat, events, completion
+   v
+Go workers
+  one identity + one runtime + allowed repositories
+   |
+   +-- Codex CLI
+   `-- Claude Code CLI
+```
 
-Factory is available under the [MIT License](LICENSE).
+The control plane owns durable coordination. Workers own execution and Git
+worktrees. Workers poll the API, so the system does not require WebSockets or
+inbound connections to worker hosts.
+
+All default state is below `~/.factory`:
+
+```text
+~/.factory/
+  bin/
+  server/factory.sqlite3
+  worker.toml
+  workers/
+```
+
+Read the [architecture](docs/architecture/design.md) for the contracts and
+security boundaries.
+
+## Current scope
+
+Implemented:
+
+- Go control-plane API and embedded React UI;
+- durable tasks, executions, attempts, leases, events, and cancellation;
+- Codex and Claude Code workers;
+- repository allowlists and isolated Git worktrees;
+- bounded list APIs and retained-data metrics;
+- automatic cleanup of published clean work and preservation of unpublished
+  branches.
+
+Designed but not implemented:
+
+- reusable workflows;
+- scheduled automations;
+- GitHub issue ingest;
+- a unified `factory` CLI.
+
+Those designs live in [workflows](docs/workflows/design.md),
+[GitHub ingest](docs/github-ingest/design.md), and the
+[CLI design](docs/cli/design.md).
+
+## Development
+
+Backend:
+
+```sh
+go test ./...
+go vet ./...
+```
+
+UI:
+
+```sh
+cd web
+npm ci
+npm run typecheck
+npm run lint
+npm test
+```
+
+After changing the UI, rebuild the committed assets:
+
+```sh
+FACTORY_SKIP_INSTALL=1 ./scripts/build-ui.sh
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full check set.

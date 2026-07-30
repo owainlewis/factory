@@ -32,17 +32,18 @@ func CanonicalProspective(path string) (string, error) {
 	}
 }
 
-// FindV1DatabaseMarker finds a Factory V1 database at or above path.
-func FindV1DatabaseMarker(path string) (string, bool, error) {
+// FindRetiredDatabaseMarker finds a database from the retired local
+// implementation at or above path.
+func FindRetiredDatabaseMarker(path string) (string, bool, error) {
 	for {
 		marker := filepath.Join(path, "factory.sqlite3")
 		if info, err := os.Lstat(marker); err == nil {
 			if info.Mode().IsRegular() {
 				return marker, true, nil
 			}
-			return "", false, fmt.Errorf("inspect possible V1 database marker %s: not a regular file", marker)
+			return "", false, fmt.Errorf("inspect possible retired database marker %s: not a regular file", marker)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return "", false, fmt.Errorf("inspect possible V1 database marker: %w", err)
+			return "", false, fmt.Errorf("inspect possible retired database marker: %w", err)
 		}
 		parent := filepath.Dir(path)
 		if parent == path {

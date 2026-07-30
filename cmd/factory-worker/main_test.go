@@ -11,6 +11,8 @@ import (
 func TestExplicitConfigSelectionBypassesLegacyDefault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("FACTORY_DATA_HOME", "")
+	t.Setenv("FACTORY_WORKER_CONFIG", "")
 	t.Setenv("FACTORY_V2_DATA_HOME", "")
 	t.Setenv("FACTORY_V2_WORKER_CONFIG", "")
 	legacyRoot := filepath.Join(home, ".factory-v2")
@@ -25,7 +27,7 @@ func TestExplicitConfigSelectionBypassesLegacyDefault(t *testing.T) {
 		t.Fatalf("explicit config selection was blocked: %v", err)
 	}
 	if err := validateDefaultConfigSelection(false); err == nil ||
-		!strings.Contains(err.Error(), "legacy V2 worker state") {
+		!strings.Contains(err.Error(), "preview worker state") {
 		t.Fatalf("implicit config selection error = %v", err)
 	}
 }

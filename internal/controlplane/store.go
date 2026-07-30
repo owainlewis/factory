@@ -130,26 +130,26 @@ func createDatabaseMarker(marker string) error {
 func createDatabaseMarkerWith(marker string, open func(string) (databaseMarkerFile, error)) error {
 	file, err := open(marker)
 	if err != nil {
-		return fmt.Errorf("create Factory V2 database marker: %w", err)
+		return fmt.Errorf("create Factory database marker: %w", err)
 	}
 	if _, err := file.WriteString("factory-v2-control-plane\n"); err != nil {
 		return cleanFailedDatabaseMarker(
 			file,
 			marker,
-			fmt.Errorf("write Factory V2 database marker: %w", err),
+			fmt.Errorf("write Factory database marker: %w", err),
 		)
 	}
 	if err := file.Sync(); err != nil {
 		return cleanFailedDatabaseMarker(
 			file,
 			marker,
-			fmt.Errorf("sync Factory V2 database marker: %w", err),
+			fmt.Errorf("sync Factory database marker: %w", err),
 		)
 	}
 	if err := file.Close(); err != nil {
-		closeErr := fmt.Errorf("close Factory V2 database marker: %w", err)
+		closeErr := fmt.Errorf("close Factory database marker: %w", err)
 		if removeErr := os.Remove(marker); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			return errors.Join(closeErr, fmt.Errorf("remove failed Factory V2 database marker: %w", removeErr))
+			return errors.Join(closeErr, fmt.Errorf("remove failed Factory database marker: %w", removeErr))
 		}
 		return closeErr
 	}
@@ -159,10 +159,10 @@ func createDatabaseMarkerWith(marker string, open func(string) (databaseMarkerFi
 func cleanFailedDatabaseMarker(file databaseMarkerFile, marker string, cause error) error {
 	errs := []error{cause}
 	if err := file.Close(); err != nil {
-		errs = append(errs, fmt.Errorf("close failed Factory V2 database marker: %w", err))
+		errs = append(errs, fmt.Errorf("close failed Factory database marker: %w", err))
 	}
 	if err := os.Remove(marker); err != nil && !errors.Is(err, os.ErrNotExist) {
-		errs = append(errs, fmt.Errorf("remove failed Factory V2 database marker: %w", err))
+		errs = append(errs, fmt.Errorf("remove failed Factory database marker: %w", err))
 	}
 	return errors.Join(errs...)
 }
@@ -170,13 +170,13 @@ func cleanFailedDatabaseMarker(file databaseMarkerFile, marker string, cause err
 func validateDatabaseMarker(marker string) error {
 	body, err := os.ReadFile(marker)
 	if errors.Is(err, os.ErrNotExist) {
-		return errors.New("refusing an existing database without the Factory V2 control-plane marker")
+		return errors.New("refusing an existing database without the Factory control-plane marker")
 	}
 	if err != nil {
-		return fmt.Errorf("read Factory V2 database marker: %w", err)
+		return fmt.Errorf("read Factory database marker: %w", err)
 	}
 	if string(body) != "factory-v2-control-plane\n" {
-		return errors.New("refusing an existing database with an invalid Factory V2 control-plane marker")
+		return errors.New("refusing an existing database with an invalid Factory control-plane marker")
 	}
 	return nil
 }

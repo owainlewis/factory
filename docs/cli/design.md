@@ -1,285 +1,22 @@
 # Factory command-line interface
 
-> **Status:** Proposed for review
+Status: proposed
 
-## 1. Executive summary
+## Goal
 
-Factory currently has two Go operator binaries, a shell launcher, and a Rust
-`factory` command with different behavior. This makes the product hard to
-explain and blocks a clean move from the Rust prototype. Factory will ship one
-Go binary named `factory`. It will start the control plane, run a worker, submit
-manual work, inspect resources, manage workflows, and manage schedules.
-`factory run` will submit a normal control-plane task rather than launching an
-agent inside the CLI process. The main downside is that even a one-off run
-requires a running control plane and worker.
+Factory will ship one Go binary named `factory`. It will preserve the current
+control-plane and worker process boundary while giving operators one command
+surface.
 
-## 2. Context and scope
+The key rule is:
 
-The implemented Go system has a control-plane binary named `factory-server`, a
-data-plane binary named `factory-worker`, and `scripts/run-v2-local.sh` to run
-one of each. The UI and API own task creation and history. The worker owns one
-runtime identity and executes claimed tasks. These boundaries are defined in
-the [V2 architecture](../v2-architecture/design.md).
+> `factory run` submits a durable task. It never starts an agent inside the CLI
+> process.
 
-The Rust prototype already owns the public name `factory`. Its `run` command
-starts a polling daemon, evaluates schedules, or runs one configured workflow.
-Its inspection commands read repository-local state directly. Those meanings do
-not fit the Go control-plane and worker architecture.
+A one-off run therefore uses the same history, assignment, retry, and metrics as
+work created by the UI, a schedule, or source ingest.
 
-This design defines the final Go command surface, input and output rules,
-configuration, local process supervision, schedule-facing commands, the
-GitHub-ingest process role, and the CLI part of the Rust retirement. It does not
-implement the scheduler, workflow library, source ingest, or Rust archive.
-Their APIs must exist before their CLI commands can ship.
-
-## 3. System context
-
-```mermaid
-flowchart LR
-    O["Operator or script"] --> C["factory CLI"]
-    C -->|HTTP| CP["Control plane API"]
-    CP --> DB["SQLite"]
-    CP --> UI["Embedded UI"]
-    W["factory worker"] -->|polling HTTP| CP
-    W --> A["Codex or Claude Code"]
-    S["Control-plane scheduler"] --> CP
-    I["factory ingest github"] -->|HTTP| CP
-    I --> GH["GitHub Issues via gh"]
-    C -->|factory start| CP
-    C -->|factory start| W
-```
-
-Finite commands such as `run`, `tasks list`, and `workflows apply` are API
-clients. `server`, `worker`, and `ingest github` are long-running process roles.
-`start` is a local foreground supervisor for server and local worker roles. The
-CLI does not read the control-plane database and does not execute an agent for
-a submitted task.
-
-## 4. Proposed design
-
-### How it works
-
-An operator has a local Codex worker and Claude Code worker registered with the
-control plane. They run:
-
-```sh
-factory run \
-  --workflow code-review \
-  --worker local-claude \
-  --repository factory \
-  "Review this merge request: https://git.example.com/team/factory/-/merge_requests/42"
-```
-
-The CLI checks the server, resolves the unique worker name and that worker's
-repository key, resolves `code-review` to its current immutable revision, and
-submits one task with a random request key. It prints the task ID, state, and UI
-URL, then exits. The task appears in the UI and the assigned worker claims it.
-Adding `--wait` makes the CLI poll the task until it reaches a terminal state.
-Pressing Ctrl-C while waiting stops only the CLI wait. It does not cancel the
-task.
-
-The same job can be made repeatable by writing a schedule file and running:
-
-```sh
-factory schedules apply weekly-docs.toml
-factory schedules run weekly-docs
-```
-
-The first command creates or updates a named schedule. The second asks the
-control plane to create one task immediately using that schedule's current
-settings. Normal due runs are created by the scheduler inside the control
-plane, not by a permanent CLI process.
-
-### Components and responsibilities
-
-#### Root command
-
-The root command owns parsing, help, version output, configuration precedence,
-HTTP error presentation, and stable machine-readable output. It depends on
-small command packages and the shared protocol types. It does not own database
-queries, task scheduling, workflow composition, or agent execution.
-
-#### API client commands
-
-`run`, `status`, and resource commands own input loading, friendly-name
-resolution, API calls, and display. They depend only on the HTTP API. They do
-not open SQLite or inspect worker directories.
-
-#### Server role
-
-`factory server` owns the existing control-plane lifecycle and embedded UI.
-The scheduler will run in this process so one SQLite owner creates due tasks.
-The command does not start local workers.
-
-#### Worker role
-
-`factory worker` owns one existing worker identity, one runtime, its advertised
-repositories, attempt supervision, and retained-worktree cleanup. It does not
-schedule or route work. Five runtimes require five worker processes and five
-worker configurations.
-
-#### GitHub ingest role
-
-`factory ingest github` owns the polling and durable episode behavior defined
-in the [GitHub ingest design](../v2-github-ingest/design.md). It submits normal
-tasks through the API and may run continuously or once. It does not execute an
-agent, evaluate cron schedules, or run inside `factory start`.
-
-#### Local supervisor
-
-`factory start` owns foreground startup and shutdown of one server and one or
-more selected local workers. It starts child copies of the current executable
-as `factory server` and `factory worker`, preserving separate process
-lifecycles. It does not daemonize, install a service, rebuild the UI, or run
-`npm`.
-
-### Decisions
-
-#### One binary with explicit process roles
-
-Factory will build one `factory` binary. `server` and `worker` remain separate
-commands and processes. A single combined runtime was rejected because it would
-blur the control-plane and data-plane failure boundaries. Keeping
-`factory-server`, `factory-worker`, or `factory-ingest` as public binaries was
-rejected because operators should learn one command. The trusted-local MVP
-supports same-host server and workers. Remote VM and Kubernetes workers need a
-later authenticated transport design.
-
-#### `factory run` always submits a task
-
-`factory run` is the command-line equivalent of Delegate task in the UI. It
-always calls the control-plane API. Directly spawning Codex or Claude Code was
-rejected because it would bypass durable history, assignment, workflows,
-cancellation, and future schedules.
-
-#### Context remains free text
-
-Run input is free text supplied as one quoted argument, a file, or piped stdin.
-There are no ticket, merge-request, or branch flags. Those references belong in
-context and the selected workflow tells the agent how to handle them. This
-matches the reusable-workflow design and avoids provider-specific CLI schemas.
-It is the same context model defined in
-[Reusable workflows for Factory V2](../v2-workflows/design.md).
-
-#### Friendly names resolve before mutation
-
-Commands accept stable IDs or friendly names. A name must resolve to exactly one
-resource in the relevant scope. The CLI fails and prints candidates when a name
-is missing or ambiguous. Guessing was rejected because assigning code work to
-the wrong worker or repository is costly.
-
-#### Schedules are control-plane resources
-
-Schedules live in the control plane and are evaluated by its server process.
-Each schedule refers to a worker and repository, plus an optional stable
-workflow. At task creation time the control plane pins the workflow's current
-immutable revision. A schedule without a workflow creates a blank task from its
-context. A separate scheduler process was rejected for the SQLite MVP because
-it adds another deployment and leader-election problem.
-
-#### Resource files are the automation interface
-
-`workflows apply` and `schedules apply` read files and create or update resources
-by name. Large prompt text and cron settings do not need to be escaped into
-shell flags. Interactive editing inside the CLI was rejected because the UI and
-ordinary text editors already solve it.
-
-#### Standard library parsing first
-
-The Go implementation will use a small root dispatcher and `flag.FlagSet` for
-each command. A CLI framework is not needed for this command tree yet. This
-costs some hand-written help and validation but avoids adopting a runtime
-framework solely for command parsing.
-
-## 5. Invariants and requirements
-
-### Invariants
-
-1. Every manual, scheduled, UI, and ingested task uses the same task-creation
-   service.
-2. `factory run` never starts an agent process.
-3. One worker process has one worker identity and one runtime.
-4. Finite client commands never read or write the control-plane SQLite file.
-5. A mutating command that targets an existing resource resolves every
-   friendly name to exactly one stable ID before it sends the mutation.
-6. A scheduled task records the exact workflow revision used for that task.
-7. Retrying a task keeps its original context and workflow revision.
-8. Ctrl-C during `run --wait` does not cancel remote work.
-9. Human output and machine output never share stdout.
-10. Normal binary startup never requires Node or rebuilds the embedded UI.
-11. Windows is not a supported Factory platform.
-12. The final release builds no public `factory-v2`, `factory-server`,
-    `factory-worker`, or `factory-ingest` binary.
-
-### Requirements
-
-- `factory --help` lists local process, ingest, task, worker, workflow, and
-  schedule commands with one-line examples.
-- `factory version` prints the semantic version, Git commit, Go version, and
-  target platform.
-- `factory start` runs in the foreground, starts the server first, waits up to
-  10 seconds for health, then starts every selected worker and waits up to 40
-  seconds for each worker to register as online and healthy. A worker record
-  left by an earlier process does not satisfy readiness; its `last_heartbeat`
-  must be at or after the child process was started.
-- `factory start` accepts repeated `--worker-config` flags. With none, it uses
-  `FACTORY_WORKER_CONFIG` when set, its deprecated
-  `FACTORY_V2_WORKER_CONFIG` alias, then `$FACTORY_HOME/worker.toml`.
-  `FACTORY_HOME` defaults to `~/.factory`, subject to the migration alias below.
-- Before starting any child, `factory start` verifies that each selected worker
-  config's normalized `server` URL equals the HTTP endpoint derived from
-  `--listen`. A mismatch names the config and both endpoints and exits 2.
-- `factory start` rejects listen port `0` before starting any child because the
-  selected ephemeral port cannot be known by the configured workers.
-- If any child of `factory start` exits unexpectedly, all remaining children
-  are stopped and `start` exits nonzero.
-- `factory server` preserves the current loopback-only listen rule and SQLite
-  marker checks.
-- `factory worker` preserves the current runtime checks, claim loop, attempt
-  supervisor, shutdown, and retained-worktree policy.
-- `factory run` accepts exactly one context source: positional text,
-  `--file PATH`, or non-terminal stdin. Implicit stdin is considered only when
-  neither positional text nor `--file` is supplied, and empty stdin is a usage
-  error.
-- `factory run --title` is optional. Without it, the CLI uses the first
-  non-empty context line, shortened to 80 Unicode characters for display. The
-  stored context is never shortened.
-- `factory run` accepts `--workflow`, `--worker`, `--repository`,
-  `--timeout`, `--request-key`, and `--wait`.
-- Worker and repository selection uses an explicit flag, then the configured
-  default, then the server's only valid choice. A missing or ambiguous
-  configured default fails closed and prints candidates. Workflow omission
-  means Blank task.
-- A generated request key is a random UUID. An explicit request key enables
-  safe replay by scripts.
-- Before resolving mutable worker, repository, workflow, or schedule names, a
-  command with an explicit request key looks up an existing task by that key.
-  If found, it returns or waits for that task without sending a mutation.
-- The CLI retries an uncertain task submission three times with delays of one,
-  two, and four seconds, always using the same request key. If the outcome
-  remains unknown, it prints that key so the operator can replay the command.
-- Default `run` output contains the task ID, the current state returned by the
-  API, assigned worker, repository, and absolute UI URL.
-- `run --wait` polls at two-second intervals and exits 0 only when the task
-  succeeds. Failed, lost, or cancelled work exits 1. Ctrl-C exits 130 without
-  cancelling the task.
-- `status` checks server health and reports aggregate registered, online,
-  healthy, capacity, and active worker counts.
-- List commands default to 50 rows, accept `--limit` up to the API maximum, and
-  expose the next cursor without automatically reading unbounded history.
-- Applying the same unchanged workflow or schedule file is a no-op.
-- Workflow and schedule apply files reject unknown fields.
-- A schedule uses a five-field cron expression and an IANA timezone.
-- A schedule may be disabled without changing queued or running tasks.
-- `schedules run NAME` creates a new manual occurrence and prints its task ID.
-- `schedules run` uses the same generated or explicit request-key and uncertain
-  submission rules as `run`.
-- No CLI command automatically opens a browser, prompts for login, or asks an
-  interactive confirmation. Destructive commands require `--confirm`.
-
-## 6. Interfaces and data
-
-The final command tree is:
+## Command tree
 
 ```text
 factory start [--listen ADDRESS] [--database PATH]
@@ -322,22 +59,104 @@ factory schedules delete [--confirm] NAME_OR_ID
 factory version
 ```
 
-Global `--server URL` and `--json` flags apply to finite API client commands.
-They must appear before the command. `--json` is rejected for long-running
-process commands. Human data goes to stdout and diagnostics go to stderr. With
-`--json`, stdout contains one JSON value and no headings or log lines. With
-`--json --wait`, stdout contains only the final task detail.
+Commands for workflows, schedules, and ingest ship only after their APIs exist.
+The first CLI slice can cover `start`, `server`, `worker`, `run`, `status`,
+`tasks`, `workers`, and `version`.
 
-Command flags precede positional arguments. `--` may separate flags from
-context that starts with `-`. Context with spaces should normally be quoted.
-`--file -` explicitly selects stdin. Non-terminal stdin is selected implicitly
-only when neither positional context nor `--file` is present. This prevents an
-empty pipe or `/dev/null` from conflicting with explicit context. Supplying
-positional context and `--file` together, or selecting an empty input stream,
-is a usage error.
+## Process roles
 
-`FACTORY_HOME` is the one Factory root and defaults to `~/.factory`. The client
-configuration file defaults to `$FACTORY_HOME/config.toml`:
+`factory server` runs the current control plane and embedded UI.
+
+`factory worker` runs one current worker identity and agent runtime.
+
+`factory start` is a foreground Unix supervisor. It starts the server, waits for
+health, starts one or more selected workers, waits for fresh healthy
+registrations, and stops all children when one fails or the operator sends a
+signal.
+
+`factory ingest github` is a separate long-running role because provider polling
+has different credentials, failure modes, and restart behavior. It submits
+normal tasks through the API.
+
+Finite commands are HTTP clients. They never open SQLite, inspect worker data,
+or execute agents.
+
+## Manual runs
+
+Example:
+
+```sh
+factory run \
+  --workflow code-review \
+  --worker local-claude \
+  --repository factory \
+  "Review this merge request: https://example.test/team/factory/pull/42"
+```
+
+Context stays free text. It may be:
+
+- a ticket such as `PROJ-123`;
+- a merge request or pull request URL;
+- a repository and branch instruction;
+- an ordinary prompt.
+
+The workflow supplies repeatable instructions. The context supplies the subject:
+
+```text
+context + workflow revision -> final agent prompt
+```
+
+Without `--workflow`, Factory uses a blank workflow and sends the context as the
+task description.
+
+The CLI accepts exactly one context source:
+
+- positional text;
+- `--file PATH`;
+- non-terminal stdin when neither of the above is present.
+
+Empty input or more than one source is a usage error. `--title` is optional. By
+default, the first non-empty context line is shortened to 80 Unicode characters
+for display without changing the stored context.
+
+## Resolution and idempotency
+
+Workers, repositories, workflows, and schedules accept a stable ID or a unique
+friendly name. Ambiguity fails before mutation and prints candidates.
+
+Selection order is:
+
+1. explicit flag;
+2. configured default;
+3. the server's only valid choice;
+4. otherwise fail closed.
+
+Every task submission has a request key. The CLI generates a UUID unless the
+operator supplies `--request-key`. Retries after uncertain network failures use
+the same key. An explicit key is looked up before resolving mutable names, so
+replaying an old command returns the original task.
+
+## Waiting and output
+
+Default `factory run` prints the task ID, state, worker, repository, and UI URL,
+then exits.
+
+`factory run --wait` polls every two seconds until terminal:
+
+- success exits 0;
+- failed, lost, or cancelled work exits 1;
+- usage errors exit 2;
+- Ctrl+C exits 130 and does not cancel the task.
+
+Global `--json` makes stdout one JSON value. Diagnostics remain on stderr. List
+commands are paginated and print the next cursor rather than reading unbounded
+history.
+
+Destructive commands are non-interactive and require `--confirm`.
+
+## Configuration
+
+Factory keeps one home at `~/.factory`. Proposed client config:
 
 ```toml
 server = "http://127.0.0.1:7337"
@@ -345,35 +164,23 @@ default_worker = "local-codex"
 default_repository = "factory"
 ```
 
-Only finite API client commands read this file. Server and worker runtime
-settings stay in their explicit flags and worker TOML files. Client
-configuration precedence is command flag, `FACTORY_SERVER`, this config file,
-then the built-in default. `FACTORY_CONFIG` selects another client config file.
-Before any request, finite commands require the resolved server URL to use
-plain HTTP, a loopback host, an explicit nonzero port, and the root path. URLs
-with credentials, query strings, or fragments are rejected. This matches the
-worker's trusted-local validation.
+`FACTORY_HOME` may select another root when the unified CLI ships.
+`FACTORY_CONFIG` selects another client config. `FACTORY_SERVER` overrides the
+client endpoint.
 
-During the Go V2 migration, `FACTORY_V2_DATA_HOME` is a deprecated alias for
-`FACTORY_HOME`, and `FACTORY_V2_WORKER_CONFIG` is a deprecated alias for
-`FACTORY_WORKER_CONFIG`. Factory honors a legacy variable and prints a
-deprecation warning whenever it is set. When both forms are set, their
-normalized paths must match or Factory exits 2 before opening state or starting
-a worker. The aliases remain until the Rust archive gate and Go migration
-checklist have passed; their later removal is a separately documented breaking
-change.
+Current server and worker compatibility remains:
 
-The server database defaults to
-`$FACTORY_HOME/server/factory.sqlite3`; `--database` overrides it. Worker config
-path precedence is `--worker-config` or `worker --config`,
-`FACTORY_WORKER_CONFIG`, its legacy alias, then
-`$FACTORY_HOME/worker.toml`. GitHub ingest config defaults to
-`$FACTORY_HOME/ingest.toml` and its state defaults below
-`$FACTORY_HOME/ingest/github`; `ingest github --config` overrides its config.
-Unknown config fields are errors.
+- `FACTORY_DATA_HOME` selects the state root;
+- `FACTORY_WORKER_CONFIG` selects a worker config.
 
-A workflow apply file contains a stable name, optional summary, instructions,
-and enabled state:
+The unified CLI must open current databases and reuse current worker identities
+without copying or resetting them.
+
+Finite commands accept only plain HTTP loopback URLs with an explicit nonzero
+port and root path. Credentials, query strings, fragments, HTTPS, and
+non-loopback hosts are rejected.
+
+## Workflow files
 
 ```toml
 name = "code-review"
@@ -382,286 +189,81 @@ instructions_file = "./prompts/code-review.md"
 enabled = true
 ```
 
-Relative file paths are resolved from the apply file's directory. The CLI sends
-the resolved instructions to the API. The control plane stores immutable
-workflow revisions as defined in the reusable-workflow design.
+Applying unchanged content is a no-op. Changed instructions create an immutable
+revision. Every task pins the exact revision used.
 
-A schedule apply file contains:
+## Schedule files
 
 ```toml
 name = "weekly-docs"
 enabled = true
 cron = "0 9 * * 1"
 timezone = "Europe/London"
+workflow = "docs-review"
 worker = "local-codex"
 repository = "factory"
-workflow = "docs-review"
-title = "Weekly documentation review"
-context = "Review the documentation for errors and open a pull request."
-timeout = "2h"
+context = "Review the documentation for errors and open a pull request with fixes."
 ```
 
-The API stores resolved worker and repository IDs and, when supplied, a
-workflow ID. Future task creation uses those IDs even if a display name
-changes. A schedule update resolves names again and is rejected if a target is
-missing or ambiguous.
+Schedules are control-plane resources. The scheduler runs beside SQLite inside
+the server so one durable owner decides which occurrences are due.
+`factory schedules run NAME` creates an immediate occurrence through the same
+task service.
 
-The schedule API must expose bounded list and detail endpoints, create or
-replace by client mutation key, enable or disable, delete, run now, and a
-bounded occurrence history. Its internal schema and due-run recovery rules
-require a scheduler design before implementation.
+## Invariants
 
-The existing worker-list API becomes cursor-paginated with the same default and
-maximum page sizes as tasks. It also accepts an exact `name` filter and returns
-at most two matches for CLI name resolution. This lets the CLI distinguish
-missing, unique, and ambiguous names without downloading the fleet. Existing
-clients may ignore the additive `next_cursor` field.
+1. All work creation uses one control-plane task service.
+2. One worker process has one identity and one runtime.
+3. Finite commands never access SQLite or worker directories.
+4. `run` never starts an agent process.
+5. Every task pins its workflow revision.
+6. Retrying preserves the original context and workflow revision.
+7. Normal startup never invokes Node or rebuilds UI assets.
+8. Human output and JSON output never share stdout.
+9. Windows is unsupported.
+10. The final release publishes one `factory` operator binary.
 
-The task-list API accepts an exact `state` query parameter. The server applies
-that filter before cursor pagination, so each page contains up to the requested
-number of matching tasks and its next cursor continues the same filtered query.
+## Implementation
 
-`GET /api/v1/tasks/by-request-key?key=REQUEST_KEY` returns the one task created
-by that globally unique key, `410 request_key_deleted` for a retained deletion
-tombstone, or not found. The key is query-encoded because the existing
-request-key contract permits characters that are unsafe in a path segment.
-The server applies the task contract's `strings.TrimSpace` normalization before
-lookup, storage, comparison, or hashing, so preflight and creation use one
-canonical key.
-This is an indexed exact lookup, not a list scan. `factory run` and
-`factory schedules run` call it before resolving mutable friendly names when
-the operator supplies `--request-key`. A found task is the replay result even
-if its worker, repository advertisement, workflow, or schedule has since
-changed. A tombstone prevents a duplicate but cannot recover deliberately
-deleted history, so the CLI reports that fact and exits 1 without mutation. A
-not-found result proceeds through normal resolution and task creation; the
-create transaction still checks the task and tombstone keys before validating
-current target state, closing the lookup-to-create race.
+Use a small root dispatcher and `flag.FlagSet` for each command. A CLI framework
+is not needed yet.
 
-Deleting task history writes a tombstone containing only the SHA-256 digest of
-its request key and the deletion time in the same transaction that removes the
-task. Both lookup and task creation check the digest. The server deletes
-tombstones after 30 days during its existing periodic and startup maintenance
-sweeps. Therefore safe replay is permanent while task history exists and
-duplicate-blocking lasts 30 days after explicit deletion; after that documented
-window the key may be reused. Tombstones retain no prompt, result, event, worker,
-repository, workflow, or schedule data.
+Suggested order:
 
-The workflow-list and schedule-list APIs accept an exact Boolean `enabled`
-query parameter and an exact `name` query parameter. The server applies filters
-before cursor pagination and each next cursor continues the same filtered
-query. Names are unique, so exact-name lookup returns at most one match.
+1. extract current server and worker `run` functions into command packages;
+2. build the root parser, configuration, output, and HTTP client;
+3. add `server`, `worker`, `start`, `version`, and `status`;
+4. add `run`, task inspection, and worker inspection;
+5. switch scripts and releases to the unified binary;
+6. add workflow, schedule, and ingest commands with their features.
 
-`GET /api/v1/status` returns server health and aggregate worker counts. It
-returns no task, prompt, event, or result rows. Task state inspection stays in
-the bounded `tasks list --state` command.
+During the transition, the internal `factory-server` and `factory-worker`
+packages can remain testable build targets. Releases should publish only
+`factory`.
 
-### Naming and identity
+## Acceptance
 
-Worker IDs remain derived from the worker's persisted identity and worker names
-remain display names. Worker names are not assumed unique. Repository keys are
-unique only within a worker. Workflow and schedule names are ASCII
-case-insensitively unique in one control plane.
+- one Go build produces the documented operator binary;
+- `factory start` runs the UI plus Codex and Claude workers from separate
+  configs;
+- current state and worker identities open without migration;
+- startup detects unhealthy or stale workers and stops all children on failure;
+- manual tasks work from text, a file, and stdin;
+- ambiguous names cause no mutation;
+- request-key replay is idempotent across uncertain submission;
+- `run --wait` returns documented exit codes;
+- task and worker commands show the same durable state as the UI;
+- startup and operator builds require no Node installation;
+- workflows, schedules, and ingest extend the command tree without changing the
+  task contract.
 
-For a manual run, worker resolution happens first. An explicit value takes
-precedence over `default_worker`; if neither exists, the server must return one
-worker. Repository resolution then uses only repositories advertised by that
-worker and follows the same explicit, configured, then unique-choice order. A
-UUID always selects the exact resource. A friendly worker name must have one
-match. A repository key must have one match within the selected worker. A
-workflow or schedule name must have one enabled match where the action requires
-enabled state.
+## Out of scope
 
-Renaming a worker or workflow does not change stored task or schedule IDs.
-Renaming a schedule changes its display name but not its stable random UUID.
-If an apply file uses a new name, it creates a new resource. Renames therefore
-use the UI or a later explicit rename command, not `apply`. Each manual
-schedule occurrence has a client request key. The server returns the first task
-when that key is replayed.
-
-## 7. Failure behavior and lifecycle
-
-Usage and configuration errors exit 2 without making an API request. Runtime,
-network, API, and terminal task failures exit 1. Success exits 0. Interrupting
-`run --wait` exits 130 after stopping only the local wait. API errors include
-the server's stable error code and plain message. Transport errors name the
-server URL and suggest `factory start` or `factory status`.
-
-Finite API calls have a 10-second request timeout, except `run --wait`.
-Submission retries reuse the same request key and never create a second task.
-An explicit-key recovery lookup uses the same finite retry policy as a task
-submission. If its outcome remains unknown, the command exits 1 without
-resolving names or sending a mutation.
-`run --wait` gives each poll a 10-second timeout and retries connection failures
-up to five times, with delays of 1, 2, 4, 8, then 10 seconds before each retry.
-It reports the loss of connection once and recovers without restart when a
-retry succeeds. A successful poll resets the retry budget. If the fifth retry
-fails, the command prints the task ID and exits 1 without cancelling it. The
-task's own timeout remains owned by the control plane and worker.
-
-`factory start` validates every worker configuration before starting a child.
-It also rejects listen port `0`, then compares each worker endpoint with the
-resolved listen endpoint. If all validation succeeds, it starts the server and
-selected workers in order. Startup succeeds only after every selected worker
-is online and healthy with `last_heartbeat` at or after that child was started.
-On SIGINT or SIGTERM it asks workers to stop first, then the server, and allows
-35 seconds for workers and then 10 seconds for the server. This keeps the
-control plane available through the worker's existing 30-second shutdown
-protocol and gives it time to report a terminal attempt state. A second signal
-exits immediately. If server startup fails, no worker starts. If one worker
-fails or remains unhealthy during startup, all processes stop.
-
-Server and worker commands retain their existing durable recovery rules. A CLI
-process crash cannot corrupt task state because the CLI does not own the
-database. Task submission and schedule run-now requests are idempotent by
-request key. Enable and disable are idempotent by target state.
-
-Disabling a workflow prevents new manual or scheduled tasks that use it. A due
-schedule whose worker record is missing, repository is no longer advertised,
-or configured workflow is disabled records a failed occurrence and does not
-create a task. An offline or unhealthy registered worker still receives a
-queued task. A failed occurrence is evaluated again only at its next cron
-instant. Existing queued and running tasks are unchanged.
-
-## 8. Security, privacy, and operations
-
-The MVP keeps the existing trusted-local boundary. The server accepts plain
-HTTP only on loopback, has no OIDC, and trusts local callers. This release
-therefore supports same-host workers and ingest. Remote control-plane access
-requires a later authentication and TLS design. The CLI accepts only plain
-HTTP server URLs with a loopback host, explicit nonzero port, and root path; it
-also rejects credentials, query strings, and fragments.
-
-Prompts, ticket URLs, repository identities, results, and event payloads may be
-sensitive. The CLI does not log request or response bodies. Human `show`
-commands print sensitive fields only when explicitly requested. JSON output is
-the operator's responsibility to protect.
-
-`~/.factory` remains the one Factory root and is created with user-only
-permissions. Config files must not contain runtime tokens. Codex, Claude Code,
-Git, and provider credentials remain in their normal external stores and
-process environments.
-
-Client list commands preserve server pagination bounds. `run --wait` makes at
-most one task-detail request every two seconds while connected. `factory start`
-does not rebuild binaries or UI assets. Building the operator binary requires
-Go; running it requires Git and the selected agent runtime. Contributor-only UI
-rebuilding requires Node.
-
-## 9. Acceptance criteria
-
-- One Go build produces one operator binary named `factory` with the documented
-  command tree.
-- `factory start` can run the embedded UI plus both a Codex worker and a Claude
-  Code worker from two configuration files.
-- Finite commands reject non-loopback, HTTPS, path-bearing, credential-bearing,
-  query-bearing, fragment-bearing, missing-port, and zero-port server URLs
-  before sending a request.
-- `factory start --listen 127.0.0.1:0` exits 2 before starting any child.
-- A manual blank task and a workflow-backed task can be submitted from text, a
-  file, and stdin.
-- Explicit positional or file context works when inherited stdin is
-  non-terminal but empty.
-- An ambiguous worker or repository name makes no mutation and prints the
-  matching choices.
-- `run --wait` returns the documented exit status for success, failure, loss,
-  cancellation, recovered transient disconnection, exhausted reconnection, and
-  Ctrl-C.
-- Task, worker, and workflow commands show the same durable state as the UI.
-- Workflow apply creates revision 1, repeats unchanged as a no-op, and creates
-  a new revision after instructions change.
-- Schedule apply, disable, enable, run-now, and delete work without a permanent
-  CLI process.
-- GitHub ingest runs continuously and once through `factory ingest github`
-  without publishing another binary.
-- One due schedule instant creates at most one task across control-plane
-  restarts.
-- Server, worker, and local startup need no Node installation.
-- Existing Go V2 state below `~/.factory` opens without copying or resetting the
-  database or worker identity.
-- Existing Go V2 state selected by `FACTORY_V2_DATA_HOME` or
-  `FACTORY_V2_WORKER_CONFIG` remains selected with a deprecation warning, while
-  conflicting new and legacy variables fail before opening state.
-- Deleting task history prevents the same request key from creating duplicate
-  work for 30 days without retaining the task prompt or result.
-- The Rust archive gate is documented and blocks removal until manual run,
-  workflows, schedules, one ingest path, Codex, Claude Code, migration, and
-  rollback have passed end-to-end tests.
-- The final main branch contains no Rust runtime code and publishes no second
-  Factory CLI.
-
-## 10. Test approach
-
-Parser table tests will cover every command, flag, context source, precedence
-rule, usage failure, exit code, and help example. Golden tests will cover human
-and JSON output with stdout and stderr captured separately.
-
-HTTP client tests will use a local test server to prove name resolution,
-pagination, request-key replay before mutable-name resolution, lookup-to-create
-races, deleted-key errors, API error display, wait polling, disconnect backoff
-and exhaustion, and Ctrl-C behavior. They will assert that ambiguous input
-causes no mutating request and that explicit context ignores inherited empty
-non-terminal stdin. Request-key cases include surrounding Unicode whitespace
-and query-unsafe characters.
-
-Process tests will start the real server with temporary state and fake worker
-entry points. They will cover readiness bounds, multiple workers, child
-failure, stale and unhealthy registration, listen and worker-server mismatch,
-signal order, an active worker using its full shutdown grace period, timeout,
-legacy environment aliases and conflicts, and no Node invocation. Existing
-server and worker integration tests remain the proof for leases, attempts,
-cleanup, and state recovery.
-
-End-to-end tests will submit one blank task and one workflow task to disposable
-Codex and Claude Code test repositories. Scheduler tests will control the clock,
-cross due instants and restarts, and assert one task per schedule instant.
-Migration tests will start from a copy of existing Go V2 state and verify task,
-worker, attempt, and retained-worktree visibility. Retention tests will verify
-that deletion writes a digest-only request-key tombstone, blocks lookup and
-creation for 30 days, and permits reuse only after expiry.
-
-Before Rust removal, a manual release checklist will run `factory start`,
-`factory run`, `factory schedules run`, and one ingest episode against a
-disposable repository, then stop and restart the system and inspect the same
-history.
-
-## 11. Risks and tradeoffs
-
-- Reusing `factory run` with a new meaning can surprise Rust V1 users. The
-  migration guide will show the exact command mapping and the Rust archive tag.
-- A single binary contains code for both trust zones. Explicit commands and
-  package boundaries keep the runtime processes separate, but the artifact is
-  larger.
-- Friendly names are convenient but may be ambiguous. Resolution fails closed
-  and stable IDs remain accepted everywhere.
-- A scheduler inside one SQLite control plane does not support active-active
-  servers. The MVP supports one server process and defers distributed
-  scheduling until the storage architecture changes.
-- TOML apply files can drift from edits made in the UI. Apply reports whether
-  it created, changed, or left the resource unchanged, and task history always
-  records the pinned workflow revision.
-- Polling for `run --wait` adds API traffic. The fixed two-second interval is
-  bounded and avoids adding WebSockets or server-sent events.
-
-## 12. Open questions
-
-- The scheduler's missed-run and recovery policy needs its own design before
-  schedule implementation. This does not block the root CLI, manual run, or
-  inspection commands, but it blocks declaring schedule parity.
-- The exact Rust archive date depends on the end-to-end gate, not a calendar
-  date. This does not block implementation.
-
-## 13. Out of scope
-
-- OIDC, user accounts, roles, TLS termination, and a hosted multi-tenant
-  control plane.
-- Windows support.
-- WebSockets, server-sent events, or streaming raw agent output through the
-  CLI.
-- A prompt template language, step graph, runtime plugin API, or client-side
-  workflow composition.
-- Creating or editing worker configuration interactively.
-- Installing Codex, Claude Code, Git, or provider credentials.
-- Daemon installation, launchd units, systemd units, and Kubernetes manifests.
-- Remote workers and ingest processes outside the trusted control-plane host.
-- Distributed scheduling or multiple active control-plane servers.
+- OIDC, user accounts, roles, and hosted multi-tenancy;
+- Windows;
+- WebSockets or server-sent events;
+- a prompt template language or workflow step graph;
+- runtime plugin interfaces;
+- interactive config editing;
+- installing agent runtimes or credentials;
+- distributed scheduling or active-active control planes.

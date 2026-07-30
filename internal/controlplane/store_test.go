@@ -644,14 +644,14 @@ func TestDatabaseUsesWALAndRefusesAnUnmarkedExistingDatabase(t *testing.T) {
 	}
 	reopened, err := Open(context.Background(), path)
 	if err != nil {
-		t.Fatalf("reopen marked V2 database: %v", err)
+		t.Fatalf("reopen marked database: %v", err)
 	}
 	if err := reopened.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	unknown := root + "/v1.sqlite3"
-	original := []byte("existing V1 bytes must stay untouched")
+	unknown := root + "/unknown.sqlite3"
+	original := []byte("existing unknown bytes must stay untouched")
 	if err := os.WriteFile(unknown, original, 0o600); err != nil {
 		t.Fatal(err)
 	}

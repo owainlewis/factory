@@ -1,4 +1,4 @@
-import type { Task, Worker } from "../types";
+import type { MetricsSummary, Task, Worker } from "../types";
 import { vi } from "vitest";
 
 export const worker: Worker = {
@@ -46,6 +46,23 @@ export const tasks: Task[] = ["queued", "running", "succeeded", "failed", "cance
   }),
 );
 
+export const metrics: MetricsSummary = {
+  window: "7d",
+  generated_at: new Date().toISOString(),
+  executions_created: 53,
+  executions_completed: 41,
+  succeeded: 34,
+  failed: 6,
+  cancelled: 1,
+  queued: 6,
+  running: 4,
+  success_rate: 0.85,
+  retry_rate: 0.09,
+  median_cycle_time_seconds: 14 * 60,
+  workers_online: 3,
+  workers_total: 4,
+};
+
 export function mockControlPlane(
   options: {
     createFailures?: number;
@@ -80,6 +97,10 @@ export function mockControlPlane(
         : input instanceof URL
           ? input.toString()
           : input.url;
+    if (path.startsWith("/api/v1/metrics/summary?window=")) {
+      const window = new URL(path, "http://factory.test").searchParams.get("window");
+      return Response.json({ ...metrics, window });
+    }
     if (path === "/api/v1/tasks") {
       if (init?.method === "POST") {
         if (createFailures > 0) {

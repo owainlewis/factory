@@ -101,7 +101,7 @@ case "$prompt" in
     ;;
 esac
 
-printf '%s\\n' "Created by the Factory V2 browser proof." > factory-v2-proof.txt
+printf '%s\\n' "Created by the Factory browser proof." > factory-proof.txt
 printf '%s\\n' '{"type":"progress","message":"Created deterministic worktree evidence."}'
 {
   printf '%s\\n' "Completed by deterministic fake Codex."

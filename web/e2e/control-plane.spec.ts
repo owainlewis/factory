@@ -272,7 +272,7 @@ test.beforeAll(async () => {
     "Implement the modern control-plane UI",
     workerOnline,
     identifiers.factoryRepository,
-    "Build the complete browser interface, verify it against the real server, and preserve V1.",
+    "Build the complete browser interface, verify it against the real server, and preserve unrelated state.",
   );
   const active = await claimAndStart(api, "claim-running");
   await api.post(`/api/v1/attempts/${active.attempt.id}/events`, {
@@ -299,6 +299,37 @@ test.beforeAll(async () => {
   await api.dispose();
 });
 
+test("shows retained Factory metrics and saves the overview", async ({ page }) => {
+  const browser = observeBrowser(page);
+  const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
+  const summary = await json<{
+    executions_created: number;
+    executions_completed: number;
+    queued: number;
+    running: number;
+  }>(await api.get("/api/v1/metrics/summary?window=7d"));
+  await api.dispose();
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Factory overview" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Overview", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await expect(
+    page.locator(".metric-card").filter({ hasText: "Executions created" }).locator("strong"),
+  ).toHaveText(String(summary.executions_created));
+  await expect(
+    page.locator(".metric-card").filter({ hasText: "Executions completed" }).locator("strong"),
+  ).toHaveText(String(summary.executions_completed));
+  await expect(page.locator(".health-metrics").getByText(String(summary.queued), { exact: true })).toBeVisible();
+  await expect(page.locator(".health-metrics").getByText(String(summary.running), { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "30 days" }).click();
+  await expect(page.getByRole("button", { name: "30 days" })).toHaveAttribute("aria-pressed", "true");
+  await page.screenshot({ path: "test-results/screenshots/overview-desktop.png", fullPage: true });
+  browser.assertClean();
+});
+
 test("runs the complete UI to real-worker and Git-worktree workflow", async ({ page }) => {
   const browser = observeBrowser(page);
   await page.goto("/");
@@ -311,7 +342,7 @@ test("runs the complete UI to real-worker and Git-worktree workflow", async ({ p
   await expect(
     dialog.getByLabel("Repository").getByRole("option", { name: /handbook-demo/ }),
   ).toHaveCount(1);
-  await dialog.getByLabel("Title").fill("Prove the complete local V2 workflow");
+  await dialog.getByLabel("Title").fill("Prove the complete local workflow");
   await dialog
     .getByLabel("Description")
     .fill("Create deterministic evidence in the assigned real Git worktree.");
@@ -322,13 +353,13 @@ test("runs the complete UI to real-worker and Git-worktree workflow", async ({ p
   });
   await dialog.getByRole("button", { name: "Delegate task" }).click();
 
-  await expect(page.getByRole("heading", { name: "Prove the complete local V2 workflow" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Prove the complete local workflow" })).toBeVisible();
   await expect(page.getByText("Succeeded", { exact: true }).first()).toBeVisible({
     timeout: 30_000,
   });
   await expect(page.getByText("Created deterministic worktree evidence.")).toBeVisible();
   await expect(page.getByText("Completed by deterministic fake Codex.", { exact: false })).toBeVisible();
-  await expect(page.getByText(/Branch: factory-v2\//)).toBeVisible();
+  await expect(page.getByText(/Branch: factory\//)).toBeVisible();
   await expect(page.getByText(/Worktree: .*factory-ui-e2e-.*\/worker\/worktrees\//)).toBeVisible();
   await page.screenshot({
     path: "test-results/screenshots/task-detail-desktop.png",
@@ -337,13 +368,13 @@ test("runs the complete UI to real-worker and Git-worktree workflow", async ({ p
 
   const taskID = new URL(page.url()).pathname.split("/").at(-1)!;
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Prove the complete local V2 workflow" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Prove the complete local workflow" })).toBeVisible();
 
   const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
   const detail = await json<TaskDetail>(await api.get(`/api/v1/tasks/${taskID}`));
   expect(detail.task.state).toBe("succeeded");
   expect(detail.attempts).toHaveLength(1);
-  expect(detail.attempts[0].result).toContain("Branch: factory-v2/");
+  expect(detail.attempts[0].result).toContain("Branch: factory/");
   const worker = await json<{
     retained_worktrees: Array<{ attempt_id: string; path: string; cleanup_command: string }>;
   }>(await api.get(`/api/v1/workers/${realWorker}`));
@@ -384,7 +415,7 @@ test("cancels active work running in the real worker", async ({ page }) => {
 
 test("renders every state and saves the desktop Work view", async ({ page }) => {
   const browser = observeBrowser(page);
-  await page.goto("/");
+  await page.goto("/work");
   await expect(page.getByRole("heading", { name: "Agent work" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Work", exact: true })).toHaveAttribute(
     "aria-current",
@@ -406,7 +437,7 @@ test("confirms and deletes terminal task history", async ({ page }) => {
   await page.getByRole("button", { name: "Delete history" }).click();
   await expect(page.getByText(/Permanently delete this task, prompt, attempts, and events/)).toBeVisible();
   await page.getByRole("button", { name: "Confirm delete" }).click();
-  await expect(page).toHaveURL("/");
+  await expect(page).toHaveURL("/work");
   await expect(page.getByText("Ship the stable API client")).toHaveCount(0);
   browser.assertClean();
 
@@ -515,6 +546,10 @@ test("supports narrow grouped layouts and saves narrow screenshots", async ({ pa
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Factory overview" })).toBeVisible();
+  await page.screenshot({ path: "test-results/screenshots/overview-narrow.png", fullPage: true });
+
+  await page.goto("/work");
   const columns = page.locator(".work-column");
   await expect(columns).toHaveCount(5);
   const first = await columns.nth(0).boundingBox();

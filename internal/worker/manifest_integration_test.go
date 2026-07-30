@@ -63,7 +63,7 @@ func fixtureManifest(dataDirectory, workerID string, value int) attemptManifest 
 		RemoteIdentity: "example.invalid/factory",
 		BaseCommit:     strings.Repeat("a", 40),
 		WorktreePath:   filepath.Join(dataDirectory, "worktrees", attemptID),
-		Branch:         "factory-v2/" + taskID[:12] + "-" + attemptID[:12],
+		Branch:         "factory/" + taskID[:12] + "-" + attemptID[:12],
 		Lifecycle:      manifestPreparing,
 		CreatedAt:      time.Unix(100, 0).UTC(),
 		UpdatedAt:      time.Unix(100, 0).UTC(),
@@ -185,6 +185,7 @@ func TestStartupReconciliationClassifiesManifestAndFilesystemState(t *testing.T)
 		removeBefore  bool
 		makeDirty     bool
 		createPartial bool
+		previewBranch bool
 		want          string
 		wantError     bool
 	}{
@@ -192,6 +193,10 @@ func TestStartupReconciliationClassifiesManifestAndFilesystemState(t *testing.T)
 		{name: "missing", initial: manifestWorktreeCreated, want: manifestMissing},
 		{name: "cleaned", initial: manifestCleaned, want: manifestCleaned},
 		{name: "retained", initial: manifestWorktreeCreated, createGit: true, want: manifestRetained},
+		{
+			name: "preview branch retained", initial: manifestWorktreeCreated,
+			createGit: true, previewBranch: true, want: manifestRetained,
+		},
 		{
 			name: "automatic cleanup already absent", initial: manifestCleanupStarted,
 			cleanupIntent: cleanupIntentAutomatic, createGit: true, removeBefore: true,
@@ -250,6 +255,9 @@ func TestStartupReconciliationClassifiesManifestAndFilesystemState(t *testing.T)
 				filepath.Join(dataDirectory, "worktrees"), manager.repositories[0], task.Task.ID, claim.Attempt.ID)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.previewBranch {
+				value.Branch = strings.Replace(value.Branch, "factory/", "factory-v2/", 1)
 			}
 			manifest := attemptManifest{
 				TaskID: task.Task.ID, ExecutionID: claim.Execution.ID, AttemptID: claim.Attempt.ID,

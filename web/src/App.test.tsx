@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { mockControlPlane } from "./test/fixtures";
 
@@ -20,6 +20,36 @@ function renderApp() {
 }
 
 describe("App", () => {
+  beforeEach(() => {
+    window.history.replaceState({}, "", "/work");
+  });
+
+  it("renders truthful retained metrics on the default overview", async () => {
+    window.history.replaceState({}, "", "/");
+    const fetch = mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: "Factory overview" })).toBeVisible();
+    expect(screen.getByText("53")).toBeVisible();
+    expect(screen.getByText("41", { selector: ".metric-card strong" })).toBeVisible();
+    expect(screen.getByText("85%")).toBeVisible();
+    expect(screen.getByText("14m 0s")).toBeVisible();
+    expect(screen.getByText("Rates exclude cancellations.", { exact: false })).toBeVisible();
+    expect(screen.getByRole("button", { name: /^Overview$/ })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+
+    await user.click(screen.getByRole("button", { name: "30 days" }));
+    await vi.waitFor(() => {
+      expect(fetch.mock.calls.some(([input]) => {
+        const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        return path === "/api/v1/metrics/summary?window=30d";
+      })).toBe(true);
+    });
+  });
+
   it("marks only exact navigation destinations as the current page", async () => {
     mockControlPlane();
     const user = userEvent.setup();
@@ -27,6 +57,7 @@ describe("App", () => {
 
     const work = await screen.findByRole("button", { name: /^Work$/ });
     const workers = screen.getByRole("button", { name: /^Workers$/ });
+    expect(screen.getByRole("button", { name: /^Overview$/ })).not.toHaveAttribute("aria-current");
     expect(work).toHaveAttribute("aria-current", "page");
     expect(workers).not.toHaveAttribute("aria-current");
 

@@ -5,5 +5,5 @@ import { writeFile } from "node:fs/promises";
 // focused on Factory packages after npm install.
 await writeFile(
   new URL("../node_modules/go.mod", import.meta.url),
-  "module github.com/owainlewis/factory/web/node_modules\n\ngo 1.24\n",
+  "module github.com/owainlewis/factory/web/node_modules\n\ngo 1.25\n",
 );

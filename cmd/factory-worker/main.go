@@ -51,7 +51,7 @@ func run() error {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "identity" {
 		flags := flag.NewFlagSet("factory-worker identity", flag.ContinueOnError)
-		configPath := flags.String("config", defaultConfig, "Factory V2 worker TOML configuration path")
+		configPath := flags.String("config", defaultConfig, "Factory worker TOML configuration path")
 		if err := flags.Parse(os.Args[2:]); err != nil {
 			return err
 		}
@@ -73,7 +73,7 @@ func run() error {
 		return nil
 	}
 	flags := flag.NewFlagSet("factory-worker", flag.ContinueOnError)
-	configPath := flags.String("config", defaultConfig, "Factory V2 worker TOML configuration path")
+	configPath := flags.String("config", defaultConfig, "Factory worker TOML configuration path")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
 	}

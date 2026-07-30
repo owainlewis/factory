@@ -594,10 +594,11 @@ func (store *manifestStore) validate(manifest attemptManifest) error {
 	}
 	expectedPath := filepath.Join(store.dataDirectory, "worktrees", manifest.AttemptID)
 	if manifest.WorktreePath != expectedPath {
-		return errors.New("attempt manifest worktree path is not the owned V2 path")
+		return errors.New("attempt manifest worktree path is not the owned Factory path")
 	}
-	expectedBranch := "factory-v2/" + manifest.TaskID[:12] + "-" + manifest.AttemptID[:12]
-	if manifest.Branch != expectedBranch {
+	expectedBranch := "factory/" + manifest.TaskID[:12] + "-" + manifest.AttemptID[:12]
+	previewBranch := "factory-v2/" + manifest.TaskID[:12] + "-" + manifest.AttemptID[:12]
+	if manifest.Branch != expectedBranch && manifest.Branch != previewBranch {
 		return errors.New("attempt manifest branch does not match its task and attempt")
 	}
 	allowedLifecycle := map[string]bool{

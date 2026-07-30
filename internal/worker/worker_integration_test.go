@@ -612,7 +612,7 @@ func TestMultiRepositorySuccessAndBoundedOutput(t *testing.T) {
 			_, err := os.Stat(path)
 			return errors.Is(err, os.ErrNotExist)
 		})
-		branch := "factory-v2/" + map[string]string{
+		branch := "factory/" + map[string]string{
 			success.Attempts[0].ID: success.Task.ID,
 			long.Attempts[0].ID:    long.Task.ID,
 		}[attempt.ID][:12] + "-" + attempt.ID[:12]
@@ -631,7 +631,7 @@ func TestMultiRepositorySuccessAndBoundedOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{
-		"Factory V2 managed Git worktree",
+		"Factory managed Git worktree",
 		"Task title: Task success",
 		"Repository: " + repositoryIdentity(t, first.path),
 		"FAKE_MODE=success",
@@ -959,7 +959,7 @@ func TestFailureRetainsWorktree(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(manager.dataDirectory, "worktrees", detail.Attempts[0].ID)); err != nil {
 		t.Fatalf("failed worktree was not retained: %v", err)
 	}
-	branch := "factory-v2/" + detail.Task.ID[:12] + "-" + detail.Attempts[0].ID[:12]
+	branch := "factory/" + detail.Task.ID[:12] + "-" + detail.Attempts[0].ID[:12]
 	runGitTest(t, repository.path, "show-ref", "--verify", "refs/heads/"+branch)
 }
 
@@ -991,7 +991,7 @@ func TestDirtyAndUnpublishedSuccessesAreRetained(t *testing.T) {
 		if attempt.ID == unpublished.Attempts[0].ID {
 			taskID = unpublished.Task.ID
 		}
-		branch := "factory-v2/" + taskID[:12] + "-" + attempt.ID[:12]
+		branch := "factory/" + taskID[:12] + "-" + attempt.ID[:12]
 		runGitTest(t, repository.path, "show-ref", "--verify", "refs/heads/"+branch)
 	}
 }
@@ -1026,7 +1026,7 @@ func TestCancellationStopsCompleteProcessGroup(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(manager.dataDirectory, "worktrees", detail.Attempts[0].ID)); err != nil {
 		t.Fatalf("cancelled worktree was not retained: %v", err)
 	}
-	branch := "factory-v2/" + detail.Task.ID[:12] + "-" + detail.Attempts[0].ID[:12]
+	branch := "factory/" + detail.Task.ID[:12] + "-" + detail.Attempts[0].ID[:12]
 	runGitTest(t, repository.path, "show-ref", "--verify", "refs/heads/"+branch)
 }
 
@@ -1268,7 +1268,7 @@ func TestParentPipeLossStopsCodexGroup(t *testing.T) {
 	}
 }
 
-func TestV1WorktreeAndStateIsolation(t *testing.T) {
+func TestRetiredWorktreeAndStateIsolation(t *testing.T) {
 	repository := createRepository(t, "isolation")
 	v1Root := filepath.Join(t.TempDir(), ".factory", "v1-owned")
 	runGitTest(t, repository.path, "worktree", "add", "-b", "codex/v1-owned", v1Root, "HEAD")
@@ -1279,7 +1279,7 @@ func TestV1WorktreeAndStateIsolation(t *testing.T) {
 	fixture := newServerFixture(t, nil)
 	codexPath := filepath.Join(t.TempDir(), "codex")
 	writeFakeCodex(t, codexPath)
-	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), ".factory-v2", "worker"),
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), ".factory", "worker"),
 		map[string]repositoryFixture{"isolation": repository}, 1)
 	startManager(t, manager)
 	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool { return worker.Health == "healthy" })
@@ -1287,11 +1287,11 @@ func TestV1WorktreeAndStateIsolation(t *testing.T) {
 	waitForTaskState(t, fixture.store, task.Task.ID, "succeeded")
 	body, err := os.ReadFile(marker)
 	if err != nil || string(body) != "v1-state" {
-		t.Fatalf("V1 state changed: %q, %v", body, err)
+		t.Fatalf("retired state changed: %q, %v", body, err)
 	}
 	entries := runGitTest(t, repository.path, "worktree", "list", "--porcelain")
 	if !strings.Contains(entries, v1Root) || !strings.Contains(entries, "refs/heads/codex/v1-owned") {
-		t.Fatalf("V1 worktree registration changed:\n%s", entries)
+		t.Fatalf("retired worktree registration changed:\n%s", entries)
 	}
 }
 
@@ -1353,8 +1353,8 @@ path = %q
 func TestDefaultConfigPathUsesFactoryHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("FACTORY_V2_DATA_HOME", "")
-	t.Setenv("FACTORY_V2_WORKER_CONFIG", "")
+	t.Setenv("FACTORY_DATA_HOME", "")
+	t.Setenv("FACTORY_WORKER_CONFIG", "")
 
 	path, err := DefaultConfigPath()
 	if err != nil {
@@ -1367,6 +1367,33 @@ func TestDefaultConfigPathUsesFactoryHome(t *testing.T) {
 
 func TestDefaultConfigPathHonorsOverrides(t *testing.T) {
 	root := t.TempDir()
+	t.Setenv("FACTORY_DATA_HOME", root)
+	t.Setenv("FACTORY_WORKER_CONFIG", "")
+
+	path, err := DefaultConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root, "worker.toml"); path != want {
+		t.Fatalf("config path = %q, want %q", path, want)
+	}
+
+	explicit := filepath.Join(t.TempDir(), "custom.toml")
+	t.Setenv("FACTORY_WORKER_CONFIG", explicit)
+	path, err = DefaultConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != explicit {
+		t.Fatalf("config path = %q, want %q", path, explicit)
+	}
+}
+
+func TestDefaultConfigPathHonorsPreviewAliases(t *testing.T) {
+	root := t.TempDir()
+	explicit := filepath.Join(t.TempDir(), "preview.toml")
+	t.Setenv("FACTORY_DATA_HOME", "")
+	t.Setenv("FACTORY_WORKER_CONFIG", "")
 	t.Setenv("FACTORY_V2_DATA_HOME", root)
 	t.Setenv("FACTORY_V2_WORKER_CONFIG", "")
 
@@ -1378,7 +1405,6 @@ func TestDefaultConfigPathHonorsOverrides(t *testing.T) {
 		t.Fatalf("config path = %q, want %q", path, want)
 	}
 
-	explicit := filepath.Join(t.TempDir(), "custom.toml")
 	t.Setenv("FACTORY_V2_WORKER_CONFIG", explicit)
 	path, err = DefaultConfigPath()
 	if err != nil {
@@ -1392,8 +1418,8 @@ func TestDefaultConfigPathHonorsOverrides(t *testing.T) {
 func TestValidateNoLegacyDefaultConfigRefusesLegacyState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("FACTORY_V2_DATA_HOME", "")
-	t.Setenv("FACTORY_V2_WORKER_CONFIG", "")
+	t.Setenv("FACTORY_DATA_HOME", "")
+	t.Setenv("FACTORY_WORKER_CONFIG", "")
 	legacyRoot := filepath.Join(home, ".factory-v2")
 	legacyConfig := filepath.Join(legacyRoot, "worker.toml")
 	if err := os.MkdirAll(legacyRoot, 0o700); err != nil {
@@ -1405,15 +1431,15 @@ func TestValidateNoLegacyDefaultConfigRefusesLegacyState(t *testing.T) {
 
 	err := ValidateNoLegacyDefaultConfig()
 	if err == nil {
-		t.Fatal("legacy V2 worker state was accepted")
+		t.Fatal("preview worker state was accepted")
 	}
-	for _, want := range []string{legacyConfig, "FACTORY_V2_DATA_HOME=" + legacyRoot} {
+	for _, want := range []string{legacyConfig, "FACTORY_DATA_HOME=" + legacyRoot} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q does not contain %q", err, want)
 		}
 	}
 
-	t.Setenv("FACTORY_V2_DATA_HOME", legacyRoot)
+	t.Setenv("FACTORY_DATA_HOME", legacyRoot)
 	if err := ValidateNoLegacyDefaultConfig(); err != nil {
 		t.Fatalf("explicit legacy root validation: %v", err)
 	}
@@ -1423,6 +1449,18 @@ func TestValidateNoLegacyDefaultConfigRefusesLegacyState(t *testing.T) {
 	}
 	if path != legacyConfig {
 		t.Fatalf("explicit legacy config = %q, want %q", path, legacyConfig)
+	}
+
+	t.Setenv("FACTORY_DATA_HOME", "")
+	currentConfig := filepath.Join(home, ".factory", "worker.toml")
+	if err := os.MkdirAll(filepath.Dir(currentConfig), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(currentConfig, []byte("current"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateNoLegacyDefaultConfig(); err != nil {
+		t.Fatalf("preview state overrode current default: %v", err)
 	}
 }
 
@@ -1441,14 +1479,14 @@ func TestServerURLRejectsNonLoopback(t *testing.T) {
 	}
 }
 
-func TestWorkerRefusesV1DataRoot(t *testing.T) {
+func TestWorkerRefusesRetiredDataRoot(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "factory.sqlite3"), []byte("v1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := resolveDataDirectory(filepath.Join(root, "workers", "local")); err == nil ||
-		!strings.Contains(err.Error(), "V1 state") {
-		t.Fatalf("V1 data-root error = %v", err)
+		!strings.Contains(err.Error(), "retired local state") {
+		t.Fatalf("retired data-root error = %v", err)
 	}
 
 	linkRoot := t.TempDir()
@@ -1457,11 +1495,11 @@ func TestWorkerRefusesV1DataRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := resolveDataDirectory(filepath.Join(link, "workers", "linked")); err == nil ||
-		!strings.Contains(err.Error(), "V1 state") {
-		t.Fatalf("symlinked V1 data-root error = %v", err)
+		!strings.Contains(err.Error(), "retired local state") {
+		t.Fatalf("symlinked retired data-root error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "workers")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("V1 directory was mutated before refusal: %v", err)
+		t.Fatalf("retired directory was mutated before refusal: %v", err)
 	}
 
 	cleanTarget := t.TempDir()

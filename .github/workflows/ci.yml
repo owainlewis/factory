@@ -24,8 +24,6 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Install Rust components
-        run: rustup component add rustfmt clippy
       - name: Install UI dependencies
         working-directory: web
         run: npm ci
@@ -40,18 +38,18 @@ jobs:
         run: npm test
       - name: Build embedded UI
         env:
-          FACTORY_V2_SKIP_INSTALL: "1"
-        run: ./scripts/build-v2-ui.sh
+          FACTORY_SKIP_INSTALL: "1"
+        run: ./scripts/build-ui.sh
       - name: Check embedded UI is current
         run: |
           git diff --exit-code -- web/dist
           test -z "$(git status --porcelain --untracked-files=all -- web/dist)"
       - name: Test Node-free operator build
-        run: ./scripts/test-build-v2.sh
-      - name: Build V2 Go binaries
-        run: ./scripts/build-v2.sh
+        run: ./scripts/test-build.sh
+      - name: Build Go binaries
+        run: ./scripts/build.sh
       - name: Test local startup workflow
-        run: ./scripts/test-run-v2-local.sh
+        run: ./scripts/test-run-local.sh
       - name: Check Go formatting
         run: test -z "$(gofmt -l cmd internal migrations web/*.go)"
       - name: Run Go vet
@@ -78,9 +76,3 @@ jobs:
             web/playwright-report/
           if-no-files-found: ignore
           retention-days: 14
-      - name: Check Rust formatting
-        run: cargo fmt --all --check
-      - name: Run Rust Clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
-      - name: Run Rust tests
-        run: cargo test --locked --all-targets

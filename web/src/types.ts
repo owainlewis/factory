@@ -83,6 +83,25 @@ export interface TaskDetail {
   attempts: Attempt[] | null;
 }
 
+export type MetricsWindow = "24h" | "7d" | "30d" | "all";
+
+export interface MetricsSummary {
+  window: MetricsWindow;
+  generated_at: string;
+  executions_created: number;
+  executions_completed: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  queued: number;
+  running: number;
+  success_rate: number | null;
+  retry_rate: number | null;
+  median_cycle_time_seconds: number | null;
+  workers_online: number;
+  workers_total: number;
+}
+
 export interface AttemptEvent {
   sequence: number;
   kind: string;

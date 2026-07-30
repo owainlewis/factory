@@ -157,10 +157,10 @@ func resolveDataDirectory(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve data directory: %w", err)
 	}
-	if marker, found, err := statepath.FindV1DatabaseMarker(absolute); err != nil {
+	if marker, found, err := statepath.FindRetiredDatabaseMarker(absolute); err != nil {
 		return "", err
 	} else if found {
-		return "", fmt.Errorf("refusing a worker data directory below V1 state at %s", marker)
+		return "", fmt.Errorf("refusing a worker data directory below retired local state at %s", marker)
 	}
 	if info, err := os.Lstat(absolute); err == nil {
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
@@ -173,10 +173,10 @@ func resolveDataDirectory(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("canonicalize data directory: %w", err)
 	}
-	if marker, found, err := statepath.FindV1DatabaseMarker(canonical); err != nil {
+	if marker, found, err := statepath.FindRetiredDatabaseMarker(canonical); err != nil {
 		return "", err
 	} else if found {
-		return "", fmt.Errorf("refusing a worker data directory below V1 state at %s", marker)
+		return "", fmt.Errorf("refusing a worker data directory below retired local state at %s", marker)
 	}
 	if err := os.MkdirAll(canonical, 0o700); err != nil {
 		return "", fmt.Errorf("create data directory: %w", err)

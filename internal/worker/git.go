@@ -257,7 +257,7 @@ func prepareWorktree(ctx context.Context, gitExecutable, root string, repository
 	if !commitPattern.MatchString(base) {
 		return worktree{}, errors.New("repository HEAD is not a full commit ID")
 	}
-	branch := "factory-v2/" + taskID[:12] + "-" + attemptID[:12]
+	branch := "factory/" + taskID[:12] + "-" + attemptID[:12]
 	value := worktree{Path: path, Branch: branch, BaseCommit: base, HeadCommit: base}
 	return value, nil
 }
@@ -324,10 +324,10 @@ func cleanupSuccessfulWorktree(ctx context.Context, gitExecutable, root string, 
 	relative, err := filepath.Rel(root, path)
 	if err != nil || relative == "." || relative == ".." ||
 		strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
-		return errors.New("worktree is outside the V2 worktree root")
+		return errors.New("worktree is outside the Factory worktree root")
 	}
 	if strings.Contains(relative, string(filepath.Separator)) {
-		return errors.New("worktree is not a direct child of the V2 worktree root")
+		return errors.New("worktree is not a direct child of the Factory worktree root")
 	}
 	stdout, stderr, err := runGitCommand(ctx, gitExecutable, path, 1<<20, "status", "--porcelain=v1", "-z")
 	if err != nil {

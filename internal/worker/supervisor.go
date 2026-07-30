@@ -99,7 +99,7 @@ func RunSupervisor(control *os.File, input io.Reader, output, errorOutput io.Wri
 	if err != nil {
 		return fmt.Errorf("create process-group token: %w", err)
 	}
-	anchor := exec.Command("/bin/sh", "-c", "trap '' TERM; while :; do sleep 3600; done", "factory-v2-anchor-"+anchorToken)
+	anchor := exec.Command("/bin/sh", "-c", "trap '' TERM; while :; do sleep 3600; done", "factory-anchor-"+anchorToken)
 	anchor.Stdin = nil
 	anchor.Stdout = nil
 	anchor.Stderr = errorOutput

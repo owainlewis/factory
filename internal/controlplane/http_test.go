@@ -98,6 +98,28 @@ func registerHTTPWorker(t *testing.T, fixture *httpFixture, id, key, remote stri
 	return decodeResponse[protocol.Worker](t, response)
 }
 
+func TestHTTPMetricsUseABoundedWindowContract(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	response := fixture.request(http.MethodGet, "/api/v1/metrics/summary", "", "", nil)
+	requireStatus(t, response, http.StatusOK)
+	summary := decodeResponse[protocol.MetricsSummary](t, response)
+	if summary.Window != metricsWindow7Days || summary.ExecutionsCreated != 0 {
+		t.Fatalf("default metrics = %#v", summary)
+	}
+
+	for _, path := range []string{
+		"/api/v1/metrics/summary?window=quarter",
+		"/api/v1/metrics/summary?window=7d&window=30d",
+	} {
+		response = fixture.request(http.MethodGet, path, "", "", nil)
+		requireStatus(t, response, http.StatusBadRequest)
+		body := decodeResponse[protocol.ErrorBody](t, response)
+		if body.Error.Code != "invalid_window" {
+			t.Fatalf("%s error = %#v", path, body)
+		}
+	}
+}
+
 func TestHTTPWorkerRegistrationSupportsLegacyAndRuntimeAwareContracts(t *testing.T) {
 	fixture := newHTTPFixture(t)
 	type legacyWorker struct {

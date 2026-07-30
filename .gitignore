@@ -1,5 +1,6 @@
+# Legacy local build artifacts.
 /target/
-# Legacy V2 preview state. Current defaults use ~/.factory.
+# Legacy preview state. Current defaults use ~/.factory.
 .factory-v2/
 *.db
 *.db-shm

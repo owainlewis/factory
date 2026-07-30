@@ -314,7 +314,7 @@ func inspectManifestWorktree(
 ) (worktreeInspection, error) {
 	expectedPath := filepath.Join(dataDirectory, "worktrees", manifest.AttemptID)
 	if manifest.WorktreePath != expectedPath {
-		return worktreeInspection{}, worktreeMismatch("manifest worktree path escapes the V2 worktree root")
+		return worktreeInspection{}, worktreeMismatch("manifest worktree path escapes the Factory worktree root")
 	}
 	repository, err := resolveRepository(manifest.RepositoryKey, manifest.RepositoryPath, gitExecutable)
 	if err != nil {

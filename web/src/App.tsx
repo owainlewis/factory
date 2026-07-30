@@ -1,9 +1,10 @@
-import { Bot, Boxes, ListChecks, Menu, Plus, X } from "lucide-react";
+import { Bot, Boxes, Gauge, ListChecks, Menu, Plus, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { invalidateControlPlane } from "./controlPlaneQueries";
 import { DelegateDrawer } from "./DelegateDrawer";
+import { Overview } from "./Overview";
 import { TaskDetail } from "./TaskDetail";
 import { useVisibleInterval } from "./polling";
 import type { Task, TaskPage } from "./types";
@@ -11,6 +12,7 @@ import { WorkersView, WorkerDetail } from "./Workers";
 import { WorkView } from "./Work";
 
 type Route =
+  | { page: "overview" }
   | { page: "work" }
   | { page: "workers" }
   | { page: "task"; id: string }
@@ -21,13 +23,15 @@ function readRoute(): Route {
   if (parts[0] === "tasks" && parts[1]) return { page: "task", id: parts[1] };
   if (parts[0] === "workers" && parts[1]) return { page: "worker", id: parts[1] };
   if (parts[0] === "workers") return { page: "workers" };
-  return { page: "work" };
+  if (parts[0] === "work") return { page: "work" };
+  return { page: "overview" };
 }
 
 function routePath(route: Route): string {
   if (route.page === "task") return `/tasks/${route.id}`;
   if (route.page === "worker") return `/workers/${route.id}`;
-  return route.page === "workers" ? "/workers" : "/";
+  if (route.page === "workers") return "/workers";
+  return route.page === "work" ? "/work" : "/";
 }
 
 export function App() {
@@ -125,6 +129,13 @@ export function App() {
         <span className="nav-section-label">Workspace</span>
         <nav aria-label="Primary navigation">
           <button
+            className={`nav-item ${route.page === "overview" ? "active" : ""}`}
+            aria-current={route.page === "overview" ? "page" : undefined}
+            onClick={() => navigate({ page: "overview" })}
+          >
+            <Gauge size={17} /> Overview
+          </button>
+          <button
             className={`nav-item ${route.page === "work" || route.page === "task" ? "active" : ""}`}
             aria-current={route.page === "work" ? "page" : undefined}
             onClick={() => navigate({ page: "work" })}
@@ -156,6 +167,7 @@ export function App() {
             {mobileNavOpen ? <X size={19} /> : <Menu size={19} />}
           </button>
           <div className="topbar-title">
+            {route.page === "overview" && "Overview"}
             {route.page === "work" && "Work"}
             {route.page === "workers" && "Workers"}
             {route.page === "task" && "Task detail"}
@@ -167,6 +179,7 @@ export function App() {
         </header>
 
         <main>
+          {route.page === "overview" && <Overview />}
           {route.page === "work" && (
             <WorkView
               tasks={taskItems}

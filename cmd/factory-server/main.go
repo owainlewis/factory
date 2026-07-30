@@ -32,7 +32,7 @@ func run() (returnErr error) {
 		return err
 	}
 	listen := flag.String("listen", "127.0.0.1:7337", "loopback HTTP listen address")
-	database := flag.String("database", defaultDatabase, "Factory V2 SQLite database path")
+	database := flag.String("database", defaultDatabase, "Factory SQLite database path")
 	flag.Parse()
 
 	listenAddress, err := controlplane.ResolveListenAddress(*listen)
@@ -46,14 +46,14 @@ func run() (returnErr error) {
 		}
 	})
 	if err := validateLegacyServerSelection(
-		os.Getenv("FACTORY_V2_DATA_HOME"),
+		factoryDataHome(),
 		databaseExplicit,
 		dataRoot,
 	); err != nil {
 		return err
 	}
 	if *database == defaultDatabase {
-		if err := validateV2DataRoot(dataRoot); err != nil {
+		if err := validateDataRoot(dataRoot); err != nil {
 			return err
 		}
 	}
@@ -138,7 +138,7 @@ func run() (returnErr error) {
 }
 
 func defaultDatabasePath() (database string, root string, err error) {
-	root = os.Getenv("FACTORY_V2_DATA_HOME")
+	root = factoryDataHome()
 	if root == "" {
 		home, homeErr := os.UserHomeDir()
 		if homeErr != nil {
@@ -150,14 +150,19 @@ func defaultDatabasePath() (database string, root string, err error) {
 }
 
 func validateNoLegacyServerDefault(newRoot string) error {
+	if _, found, err := findPreviewServerState(newRoot); err != nil {
+		return err
+	} else if found {
+		return nil
+	}
 	legacyRoot := filepath.Join(filepath.Dir(newRoot), ".factory-v2")
-	legacyState, found, err := findLegacyServerState(legacyRoot)
+	legacyState, found, err := findPreviewServerState(legacyRoot)
 	if err != nil {
 		return err
 	}
 	if found {
 		return fmt.Errorf(
-			"found legacy V2 control-plane state at %s; refusing to abandon durable tasks for the new default; set FACTORY_V2_DATA_HOME=%s to keep using it, or archive the old state after resolving its work",
+			"found preview control-plane state at %s; refusing to abandon durable tasks for the new default; set FACTORY_DATA_HOME=%s to keep using it, or archive the old state after resolving its work",
 			legacyState,
 			legacyRoot,
 		)
@@ -172,36 +177,43 @@ func validateLegacyServerSelection(dataHome string, databaseExplicit bool, newRo
 	return validateNoLegacyServerDefault(newRoot)
 }
 
-func findLegacyServerState(root string) (string, bool, error) {
+func findPreviewServerState(root string) (string, bool, error) {
 	database := filepath.Join(root, "server", "factory.sqlite3")
 	for _, candidate := range []string{database, database + ".v2-control-plane"} {
 		if _, err := os.Lstat(candidate); err == nil {
 			return candidate, true, nil
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return "", false, fmt.Errorf("inspect legacy V2 control-plane state %s: %w", candidate, err)
+			return "", false, fmt.Errorf("inspect preview control-plane state %s: %w", candidate, err)
 		}
 	}
 	return "", false, nil
 }
 
-func validateV2DataRoot(root string) error {
+func validateDataRoot(root string) error {
 	absolute, err := filepath.Abs(root)
 	if err != nil {
-		return fmt.Errorf("resolve V2 data root: %w", err)
+		return fmt.Errorf("resolve Factory data root: %w", err)
 	}
-	if marker, found, err := statepath.FindV1DatabaseMarker(absolute); err != nil {
+	if marker, found, err := statepath.FindRetiredDatabaseMarker(absolute); err != nil {
 		return err
 	} else if found {
-		return fmt.Errorf("refusing a V2 data root below V1 state at %s", marker)
+		return fmt.Errorf("refusing a Factory data root below retired local state at %s", marker)
 	}
 	canonical, err := statepath.CanonicalProspective(absolute)
 	if err != nil {
-		return fmt.Errorf("canonicalize V2 data root: %w", err)
+		return fmt.Errorf("canonicalize Factory data root: %w", err)
 	}
-	if marker, found, err := statepath.FindV1DatabaseMarker(canonical); err != nil {
+	if marker, found, err := statepath.FindRetiredDatabaseMarker(canonical); err != nil {
 		return err
 	} else if found {
-		return fmt.Errorf("refusing a V2 data root below V1 state at %s", marker)
+		return fmt.Errorf("refusing a Factory data root below retired local state at %s", marker)
 	}
 	return nil
+}
+
+func factoryDataHome() string {
+	if value := os.Getenv("FACTORY_DATA_HOME"); value != "" {
+		return value
+	}
+	return os.Getenv("FACTORY_V2_DATA_HOME")
 }

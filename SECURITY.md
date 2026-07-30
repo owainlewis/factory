@@ -1,38 +1,52 @@
-# Security Policy
+# Security
 
-Factory launches coding agents with access to repositories, developer tools,
-and credentials. Treat its trust and isolation boundaries as security-sensitive.
+## Reporting
+
+Do not open a public issue for an unpatched vulnerability. Email
+[owain@owainlewis.com](mailto:owain@owainlewis.com) with the affected revision,
+impact, reproduction steps, and any suggested mitigation. Do not include real
+credentials or private repository data.
+
+You should receive an acknowledgement within seven days. The maintainer will
+coordinate remediation and disclosure after the report is understood.
 
 ## Supported versions
 
-Factory is under active development and has not reached a stable release. Only
-the latest commit on `main` receives security fixes.
+Factory is under active development. Only the latest commit on `main` receives
+security fixes.
 
-## Reporting a vulnerability
+## Current trust model
 
-Do not open a public issue for a suspected vulnerability. Email
-[owain@owainlewis.com](mailto:owain@owainlewis.com) with:
+Factory is a local control plane. It binds to loopback, has no authentication,
+and must not be exposed directly to a network.
 
-- a clear description of the issue and its impact;
-- the affected revision and configuration;
-- reproduction steps or a proof of concept; and
-- any suggested mitigation, if known.
+A worker can:
 
-Do not include real credentials or private repository data. You should receive
-an acknowledgement within seven days. Once the report is understood, the
-maintainer will coordinate remediation and disclosure with you. Please allow a
-reasonable period for a fix before publishing details.
+- run Codex or Claude Code with the worker host user's permissions;
+- read and change its configured repositories;
+- create Git branches and worktrees;
+- call tools available to the selected agent runtime.
 
-## Security model
+Treat worker hosts and repository allowlists as trusted infrastructure. Do not
+register a repository that the runtime should not be able to modify.
 
-A managed worktree protects the canonical checkout, but it is not a security
-boundary. The worker still shares the host, network, processes, and credentials.
-Use Docker Sandbox execution for a microVM boundary, narrow proxy-managed
-credentials, and protected branches. The configured source command is trusted
-repository code that runs on the daemon host. Review changes to
-`.factory/config.toml` and `.factory/sources/` as carefully as build scripts.
-Source adapters should only return work that passed an explicit authorization
-gate. They may match a label, Project status, or another trusted condition
-without filtering by issue author. Treat permission to change the configured
-source condition as permission to request a worker run. See the
-[operations guide](docs/operations.md) for deployment guidance.
+The control plane validates loopback addresses, worker leases, repository
+assignments, event sizes, and state transitions. Workers validate owned
+worktrees before cleanup and preserve branches that may contain unpublished
+work.
+
+## Local data
+
+Factory state defaults to `~/.factory`. Protect this directory because it may
+contain:
+
+- task prompts and execution events;
+- worker identity and disposal records;
+- repository paths and branch names;
+- retained worktrees with unpublished changes.
+
+Worker configuration should use mode `0600`. Data directories should not be
+shared between worker identities.
+
+See the [architecture](docs/architecture/design.md) and
+[worker guide](docs/worker.md) for the complete boundary.

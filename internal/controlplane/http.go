@@ -71,6 +71,7 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /api/v1/workers/{worker_id}/claims", api.claim)
 	mux.HandleFunc("GET /api/v1/workers", api.listWorkers)
 	mux.HandleFunc("GET /api/v1/workers/{worker_id}", api.getWorker)
+	mux.HandleFunc("GET /api/v1/metrics/summary", api.getMetrics)
 	mux.HandleFunc("GET /api/v1/tasks", api.listTasks)
 	mux.HandleFunc("POST /api/v1/tasks", api.createTask)
 	mux.HandleFunc("GET /api/v1/tasks/{task_id}", api.getTask)
@@ -84,6 +85,19 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/events", api.appendEvents)
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/complete", api.completeAttempt)
 	return api.requestLog(mux)
+}
+
+func (a *API) getMetrics(w http.ResponseWriter, r *http.Request) {
+	if len(r.URL.Query()["window"]) > 1 {
+		writeError(w, invalid("invalid_window", "window may be provided once"))
+		return
+	}
+	summary, err := a.store.Metrics(r.Context(), r.URL.Query().Get("window"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
 }
 
 type responseRecorder struct {
