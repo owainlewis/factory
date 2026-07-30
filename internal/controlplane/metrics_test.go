@@ -33,7 +33,7 @@ func TestMetricsSummarizesBoundedExecutionFacts(t *testing.T) {
 	seedMetricsExecution(t, store, metricsExecution{
 		id: "succeeded-retried", state: "succeeded",
 		createdAt: now.Add(-5 * time.Hour), updatedAt: now.Add(-3 * time.Hour),
-		attempts: 2,
+		attempts: 2, retries: 1,
 	})
 	seedMetricsExecution(t, store, metricsExecution{
 		id: "failed", state: "failed",
@@ -114,6 +114,39 @@ func TestMetricsHaveUndefinedRatesWithoutCompletedAgentOutcomes(t *testing.T) {
 	}
 }
 
+func TestMetricsCountExplicitRetryBeforeFirstClaim(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, time.July, 30, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	seedMetricsWorker(t, store, "worker-online", now.Add(-5*time.Second))
+	seedMetricsExecution(t, store, metricsExecution{
+		id:        "cancelled-before-claim",
+		state:     "cancelled",
+		createdAt: now.Add(-time.Hour),
+		updatedAt: now.Add(-30 * time.Minute),
+	})
+
+	if _, err := store.RetryExecution(
+		context.Background(),
+		"execution-cancelled-before-claim",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`
+		UPDATE executions
+		SET state = 'succeeded', updated_at = ?
+		WHERE id = 'execution-cancelled-before-claim'
+	`, now.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := store.Metrics(context.Background(), metricsWindow7Days)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireMetricRate(t, "retry", summary.RetryRate, 1)
+}
+
 func TestMetricsColumnsAreIndexed(t *testing.T) {
 	store := newTestStore(t)
 	for _, name := range []string{
@@ -146,6 +179,7 @@ type metricsExecution struct {
 	createdAt time.Time
 	updatedAt time.Time
 	attempts  int
+	retries   int
 }
 
 func seedMetricsWorker(t *testing.T, store *Store, id string, lastHeartbeat time.Time) {
@@ -177,6 +211,13 @@ func seedMetricsExecution(t *testing.T, store *Store, value metricsExecution) {
 		t.Fatal(err)
 	}
 	if _, err := store.db.Exec(`
+		INSERT INTO worker_repositories(
+			worker_id, display_key, repository_id, retained_count, advertised, updated_at
+		) VALUES ('worker-online', ?, ?, 0, 1, ?)
+	`, value.id, repositoryID, value.createdAt.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`
 		INSERT INTO tasks(
 			id, request_key, title, description, repository_id, timeout_seconds, created_at
 		) VALUES (?, ?, ?, 'metrics fixture', ?, 3600, ?)
@@ -186,9 +227,16 @@ func seedMetricsExecution(t *testing.T, store *Store, value metricsExecution) {
 	if _, err := store.db.Exec(`
 		INSERT INTO executions(
 			id, task_id, assigned_worker_id, required_runtime, state,
-			cancellation_requested, created_at, updated_at
-		) VALUES (?, ?, 'worker-online', 'codex', ?, 0, ?, ?)
-	`, executionID, taskID, value.state, value.createdAt.UnixMilli(), value.updatedAt.UnixMilli()); err != nil {
+			cancellation_requested, retry_count, created_at, updated_at
+		) VALUES (?, ?, 'worker-online', 'codex', ?, 0, ?, ?, ?)
+	`,
+		executionID,
+		taskID,
+		value.state,
+		value.retries,
+		value.createdAt.UnixMilli(),
+		value.updatedAt.UnixMilli(),
+	); err != nil {
 		t.Fatal(err)
 	}
 	for index := 1; index <= value.attempts; index++ {

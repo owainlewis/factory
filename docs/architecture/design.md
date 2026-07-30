@@ -165,9 +165,10 @@ The overview reports only facts held by the control plane:
 - online and registered workers.
 
 Windows are `24h`, `7d`, `30d`, or all retained history. Success rate excludes
-cancellations. Factory does not infer merged pull requests or triaged tickets
-from an agent's text output. Those metrics require provider-confirmed source
-events in a future ingest integration.
+cancellations. Retry rate is the share of succeeded or failed executions that
+had at least one explicit retry. Factory does not infer merged pull requests or
+triaged tickets from an agent's text output. Those metrics require
+provider-confirmed source events in a future ingest integration.
 
 ## Storage
 

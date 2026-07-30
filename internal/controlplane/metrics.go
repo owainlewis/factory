@@ -16,6 +16,11 @@ const (
 	metricsWindowAll     = "all"
 )
 
+type metricsQuerier interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 func parseMetricsWindow(value string) (string, time.Duration, error) {
 	switch value {
 	case "", metricsWindow7Days:
@@ -39,6 +44,15 @@ func (s *Store) Metrics(ctx context.Context, window string) (protocol.MetricsSum
 	if err != nil {
 		return protocol.MetricsSummary{}, err
 	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return protocol.MetricsSummary{}, unavailable(err)
+	}
+	defer tx.Rollback()
+	var migrationCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
+		return protocol.MetricsSummary{}, unavailable(err)
+	}
 	now := s.now().UTC()
 	var start *time.Time
 	if duration > 0 {
@@ -47,19 +61,22 @@ func (s *Store) Metrics(ctx context.Context, window string) (protocol.MetricsSum
 	}
 	summary := protocol.MetricsSummary{Window: window, GeneratedAt: now}
 
-	if err := s.countCreatedExecutions(ctx, start, now, &summary.ExecutionsCreated); err != nil {
+	if err := s.countCreatedExecutions(ctx, tx, start, now, &summary.ExecutionsCreated); err != nil {
 		return protocol.MetricsSummary{}, unavailable(err)
 	}
-	if err := s.countExecutionOutcomes(ctx, start, now, &summary); err != nil {
+	if err := s.countExecutionOutcomes(ctx, tx, start, now, &summary); err != nil {
 		return protocol.MetricsSummary{}, unavailable(err)
 	}
-	if err := s.countCurrentExecutions(ctx, &summary); err != nil {
+	if err := s.countCurrentExecutions(ctx, tx, &summary); err != nil {
 		return protocol.MetricsSummary{}, unavailable(err)
 	}
-	if err := s.calculateOutcomeRates(ctx, start, now, &summary); err != nil {
+	if err := s.calculateOutcomeRates(ctx, tx, start, now, &summary); err != nil {
 		return protocol.MetricsSummary{}, unavailable(err)
 	}
-	if err := s.countWorkers(ctx, now, &summary); err != nil {
+	if err := s.countWorkers(ctx, tx, now, &summary); err != nil {
+		return protocol.MetricsSummary{}, unavailable(err)
+	}
+	if err := tx.Commit(); err != nil {
 		return protocol.MetricsSummary{}, unavailable(err)
 	}
 	return summary, nil
@@ -75,12 +92,13 @@ func metricsTimeFilter(column string, start *time.Time, end time.Time) (string, 
 
 func (s *Store) countCreatedExecutions(
 	ctx context.Context,
+	query metricsQuerier,
 	start *time.Time,
 	end time.Time,
 	count *int64,
 ) error {
 	filter, args := metricsTimeFilter("created_at", start, end)
-	return s.db.QueryRowContext(
+	return query.QueryRowContext(
 		ctx,
 		`SELECT COUNT(*) FROM executions WHERE `+filter,
 		args...,
@@ -89,12 +107,13 @@ func (s *Store) countCreatedExecutions(
 
 func (s *Store) countExecutionOutcomes(
 	ctx context.Context,
+	query metricsQuerier,
 	start *time.Time,
 	end time.Time,
 	summary *protocol.MetricsSummary,
 ) error {
 	filter, args := metricsTimeFilter("updated_at", start, end)
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := query.QueryContext(ctx, `
 		SELECT state, COUNT(*)
 		FROM executions
 		WHERE state IN ('succeeded', 'failed', 'cancelled') AND `+filter+`
@@ -128,9 +147,10 @@ func (s *Store) countExecutionOutcomes(
 
 func (s *Store) countCurrentExecutions(
 	ctx context.Context,
+	query metricsQuerier,
 	summary *protocol.MetricsSummary,
 ) error {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := query.QueryContext(ctx, `
 		SELECT state, COUNT(*)
 		FROM executions
 		WHERE state IN ('queued', 'preparing', 'running')
@@ -157,6 +177,7 @@ func (s *Store) countCurrentExecutions(
 
 func (s *Store) calculateOutcomeRates(
 	ctx context.Context,
+	query metricsQuerier,
 	start *time.Time,
 	end time.Time,
 	summary *protocol.MetricsSummary,
@@ -170,16 +191,12 @@ func (s *Store) calculateOutcomeRates(
 
 	filter, args := metricsTimeFilter("e.updated_at", start, end)
 	var retried int64
-	err := s.db.QueryRowContext(ctx, `
+	err := query.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM (
-			SELECT e.id
-			FROM executions e
-			JOIN attempts a ON a.execution_id = e.id
-			WHERE e.state IN ('succeeded', 'failed') AND `+filter+`
-			GROUP BY e.id
-			HAVING COUNT(a.id) > 1
-		)
+		FROM executions e
+		WHERE e.state IN ('succeeded', 'failed')
+		  AND e.retry_count > 0
+		  AND `+filter+`
 	`, args...).Scan(&retried)
 	if err != nil {
 		return err
@@ -194,7 +211,7 @@ func (s *Store) calculateOutcomeRates(
 	}
 	var medianMillis sql.NullFloat64
 	medianArgs := append(append([]any{}, args...), limit, offset)
-	err = s.db.QueryRowContext(ctx, `
+	err = query.QueryRowContext(ctx, `
 		SELECT AVG(duration_millis)
 		FROM (
 			SELECT MAX(0, e.updated_at - e.created_at) AS duration_millis
@@ -216,11 +233,12 @@ func (s *Store) calculateOutcomeRates(
 
 func (s *Store) countWorkers(
 	ctx context.Context,
+	query metricsQuerier,
 	now time.Time,
 	summary *protocol.MetricsSummary,
 ) error {
 	cutoff := now.Add(-protocol.WorkerOnlineWindow).UnixMilli()
-	return s.db.QueryRowContext(ctx, `
+	return query.QueryRowContext(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(
 			CASE WHEN last_heartbeat >= ? AND last_heartbeat <= ? THEN 1 ELSE 0 END
 		), 0)

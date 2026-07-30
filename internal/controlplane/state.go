@@ -613,7 +613,9 @@ func (s *Store) RetryExecution(ctx context.Context, executionID string) (protoco
 		return protocol.TaskDetail{}, conflict("retry_not_allowed", "only a failed or cancelled execution can be retried")
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE executions SET state = 'queued', cancellation_requested = 0, updated_at = ? WHERE id = ?
+		UPDATE executions
+		SET state = 'queued', cancellation_requested = 0, retry_count = retry_count + 1, updated_at = ?
+		WHERE id = ?
 	`, now, executionID); err != nil {
 		return protocol.TaskDetail{}, unavailable(err)
 	}

@@ -70,6 +70,66 @@ func TestTaskPaginationMigrationProvidesTheOrderingIndex(t *testing.T) {
 	}
 }
 
+func TestRetryCountMigrationBackfillsHistoricalAttempts(t *testing.T) {
+	database, err := sql.Open("sqlite", t.TempDir()+"/retry-migration.sqlite3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := database.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	schema, err := migrations.Files.ReadFile("001_controlplane.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(string(schema)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO workers(
+			id, name, worker_version, codex_version, capacity, active_count, health,
+			retained_worktrees_json, registered_at, last_heartbeat
+		) VALUES ('worker', 'worker', 'test', 'test', 1, 0, 'healthy', '[]', 1, 1);
+		INSERT INTO repositories(id, remote_identity, created_at)
+		VALUES ('repository', 'github.com/example/repository', 1);
+		INSERT INTO tasks(
+			id, request_key, title, description, repository_id, timeout_seconds, created_at
+		) VALUES ('task', 'task', 'task', 'task', 'repository', 60, 1);
+		INSERT INTO executions(
+			id, task_id, assigned_worker_id, required_runtime, state,
+			cancellation_requested, created_at, updated_at
+		) VALUES ('execution', 'task', 'worker', 'codex', 'succeeded', 0, 1, 3);
+		INSERT INTO attempts(
+			id, execution_id, worker_id, attempt_number, state, lease_digest,
+			lease_expires_at, completed_at, created_at
+		) VALUES ('attempt-1', 'execution', 'worker', 1, 'failed', X'00', 2, 2, 1);
+		INSERT INTO attempts(
+			id, execution_id, worker_id, attempt_number, state, lease_digest,
+			lease_expires_at, completed_at, created_at
+		) VALUES ('attempt-2', 'execution', 'worker', 2, 'succeeded', X'00', 3, 3, 2);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := migrations.Files.ReadFile("006_execution_retries.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(string(migration)); err != nil {
+		t.Fatal(err)
+	}
+	var retryCount int
+	if err := database.QueryRow(`
+		SELECT retry_count FROM executions WHERE id = 'execution'
+	`).Scan(&retryCount); err != nil {
+		t.Fatal(err)
+	}
+	if retryCount != 1 {
+		t.Fatalf("backfilled retry count = %d; want 1", retryCount)
+	}
+}
+
 func TestCapacityMigrationDerivesOnlyAttributableLegacyRetainedCounts(t *testing.T) {
 	database, err := sql.Open("sqlite", t.TempDir()+"/migration.sqlite3")
 	if err != nil {
