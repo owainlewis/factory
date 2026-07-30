@@ -252,8 +252,8 @@ framework solely for command parsing.
 - `run --wait` polls at two-second intervals and exits 0 only when the task
   succeeds. Failed, lost, or cancelled work exits 1. Ctrl-C exits 130 without
   cancelling the task.
-- `status` checks server health and reports worker online, health, capacity,
-  active task count, and the latest task counts by state.
+- `status` checks server health and reports aggregate registered, online,
+  healthy, capacity, and active worker counts.
 - List commands default to 50 rows, accept `--limit` up to the API maximum, and
   expose the next cursor without automatically reading unbounded history.
 - Applying the same unchanged workflow or schedule file is a no-op.
@@ -387,8 +387,13 @@ that filter before cursor pagination, so each page contains up to the requested
 number of matching tasks and its next cursor continues the same filtered query.
 
 The workflow-list and schedule-list APIs accept an exact Boolean `enabled`
-query parameter. The server applies it before cursor pagination and each next
-cursor continues the same filtered query.
+query parameter and an exact `name` query parameter. The server applies filters
+before cursor pagination and each next cursor continues the same filtered
+query. Names are unique, so exact-name lookup returns at most one match.
+
+`GET /api/v1/status` returns server health and aggregate worker counts. It
+returns no task, prompt, event, or result rows. Task state inspection stays in
+the bounded `tasks list --state` command.
 
 ### Naming and identity
 

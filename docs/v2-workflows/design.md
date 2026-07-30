@@ -205,8 +205,9 @@ small runtime-specific data plane.
 
 The API adds:
 
-- `GET /api/v1/workflows?enabled=BOOL&limit=N&cursor=C` lists bounded workflow
-  summaries. The optional enabled filter is applied before cursor pagination.
+- `GET /api/v1/workflows?name=NAME&enabled=BOOL&limit=N&cursor=C` lists bounded
+  workflow summaries. Optional exact-name and enabled filters are applied
+  before cursor pagination.
 - `POST /api/v1/workflows` creates a workflow and revision 1. Its body includes
   a client mutation key.
 - `GET /api/v1/workflows/{id}` returns metadata and the current revision.
