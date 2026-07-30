@@ -242,8 +242,10 @@ exists because its destination is frozen. Otherwise, submitted episodes keep
 their current identity and do not refire while still matched.
 
 The workflow revision ID is a per-request snapshot, not a configured delivery
-setting. If the workflow receives a new current revision, pending episodes
-replay their stored old revision while new episodes use the new revision. A
+setting. Ingest resolves it once at startup. If the workflow receives a new
+current revision, pending episodes replay their stored revision and newly
+observed episodes in the running process continue using the startup revision.
+Episodes observed after the next restart use the new current revision. A
 workflow revision change does not refire a continuously matching submitted
 issue.
 
@@ -362,7 +364,8 @@ on-disk event history.
 - Changing delivery settings does not refire a continuously matching submitted
   issue and is rejected while a pending request exists.
 - A newer current workflow revision does not block pending recovery, change its
-  pinned request, or refire a continuously matching submitted issue.
+  pinned request, or refire a continuously matching submitted issue. It applies
+  to new episodes only after ingest restarts.
 - The existing UI shows the source-created task without UI changes.
 - A real smoke test can create a dedicated labeled issue, run `--once`, observe
   the configured local worker complete it, and verify the selected workflow
@@ -377,11 +380,12 @@ validation, authentication failure, workflow resolution, issue-context
 normalization and limits, control-plane worker and repository validation,
 trigger reconciliation, request-key idempotency, the lost-response plus label
 rearm crash window, replay after issue and workflow changes, trigger versus
-delivery configuration changes, lost-response recovery after workflow
-disablement, pre-creation failure followed by disablement and abandonment,
-permanent prompt-size abandonment, local oversized-context abandonment,
-submitted and abandoned absence transitions, malformed issue identities,
-truncation, the hard row limit, pruning, and clean shutdown.
+delivery configuration changes, workflow revision adoption only after restart,
+lost-response recovery after workflow disablement, pre-creation failure
+followed by disablement and abandonment, permanent prompt-size abandonment,
+local oversized-context abandonment, submitted and abandoned absence
+transitions, malformed issue identities, truncation, the hard row limit,
+pruning, and clean shutdown.
 
 An integration test runs a real control-plane store and API with a registered
 fake worker. It polls a fake issue, submits one task, repeats the poll, restarts

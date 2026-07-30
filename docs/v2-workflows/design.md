@@ -181,7 +181,8 @@ small runtime-specific data plane.
 - Workflow name is required, ASCII case-insensitively unique, and limited to
   100 Unicode characters. Non-ASCII bytes are compared exactly.
 - Workflow summary is optional and limited to 500 Unicode characters.
-- Workflow instructions are required and limited to 64 KiB.
+- Workflow instructions are required and limited to 48 KiB. This reserves at
+  least 16 KiB for composition labels and useful task context.
 - Manual context is required and remains limited to 64 KiB.
 - The complete resolved prompt is limited to 64 KiB after UTF-8 composition.
 - The final agent input, including the safety preamble, title, repository
@@ -347,9 +348,10 @@ and separate editor or runner roles must be designed before hosted access.
 Prompts may contain private engineering policy and ticket context. They remain
 in the control-plane SQLite database and task detail API, must not enter normal
 server logs, and follow the existing task retention or deletion policy.
-Workflow revision text is bounded to 64 KiB, resolved prompts are bounded to 64
-KiB, server-validated final agent input is bounded to 72 KiB, workflow listing
-is paginated, and revision history is capped at 100 records per workflow.
+Workflow revision instructions are bounded to 48 KiB, resolved prompts are
+bounded to 64 KiB, server-validated final agent input is bounded to 72 KiB,
+workflow listing is paginated, and revision history is capped at 100 records
+per workflow.
 
 Workflows standardize instructions, not machines. Operators remain responsible
 for installing any tool and credential that a workflow expects. The first
