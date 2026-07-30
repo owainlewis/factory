@@ -15,7 +15,8 @@ require_command() {
 require_command node
 require_command npm
 
-if [ "${FACTORY_SKIP_INSTALL:-0}" != "1" ]; then
+skip_install=${FACTORY_SKIP_INSTALL:-${FACTORY_V2_SKIP_INSTALL:-0}}
+if [ "$skip_install" != "1" ]; then
   echo "Installing pinned UI dependencies..."
   (cd "$web_directory" && npm ci)
 fi

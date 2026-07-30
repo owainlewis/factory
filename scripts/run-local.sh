@@ -46,9 +46,9 @@ if [ -z "$data_home" ]; then
     data_home="$HOME/.factory"
   fi
 fi
-build_directory=${FACTORY_BUILD_DIR:-"$data_home/bin"}
+build_directory=${FACTORY_BUILD_DIR:-${FACTORY_V2_BUILD_DIR:-"$data_home/bin"}}
 config=${1:-${FACTORY_WORKER_CONFIG:-${FACTORY_V2_WORKER_CONFIG:-"$data_home/worker.toml"}}}
-worker_ready_seconds=${FACTORY_WORKER_READY_SECONDS:-40}
+worker_ready_seconds=${FACTORY_WORKER_READY_SECONDS:-${FACTORY_V2_WORKER_READY_SECONDS:-40}}
 skip_build=${FACTORY_SKIP_BUILD:-${FACTORY_V2_SKIP_BUILD:-0}}
 
 case "$(uname -s)" in

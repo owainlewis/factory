@@ -162,7 +162,7 @@ if [ "$status" -ne 1 ] ||
   exit 1
 fi
 
-FACTORY_BUILD_DIR="$temporary/output" \
+FACTORY_V2_BUILD_DIR="$temporary/output" \
 FACTORY_TEST_GO_LOG="$temporary/go.log" \
 PATH="$temporary/bin:/usr/bin:/bin" \
   "$root/scripts/build.sh"
@@ -179,7 +179,7 @@ rm -rf "$temporary/output"
 
 set +e
 output=$(
-  FACTORY_BUILD_DIR="$temporary/output" \
+  FACTORY_V2_BUILD_DIR="$temporary/output" \
     FACTORY_DATA_HOME="$temporary/data" \
     FACTORY_LISTEN="127.0.0.1:1" \
     FACTORY_TEST_GO_LOG="$temporary/go.log" \
@@ -201,5 +201,24 @@ if ! printf '%s\n' "$output" |
   exit 1
 fi
 test "$(wc -l <"$temporary/go.log" | tr -d ' ')" = "2"
+
+mkdir -p "$temporary/ui-bin"
+cat >"$temporary/ui-bin/node" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+cat >"$temporary/ui-bin/npm" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$FACTORY_TEST_NPM_LOG"
+EOF
+chmod +x "$temporary/ui-bin/node" "$temporary/ui-bin/npm"
+
+FACTORY_V2_SKIP_INSTALL=1 \
+FACTORY_TEST_NPM_LOG="$temporary/npm.log" \
+PATH="$temporary/ui-bin:/usr/bin:/bin" \
+  "$root/scripts/build-ui.sh"
+
+test "$(wc -l <"$temporary/npm.log" | tr -d ' ')" = "1"
+grep -qx 'run build' "$temporary/npm.log"
 
 echo "Factory operator build and default launcher route require only Go."

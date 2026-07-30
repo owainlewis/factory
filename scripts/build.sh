@@ -11,7 +11,7 @@ if [ -z "$data_home" ]; then
   fi
   data_home="$HOME/.factory"
 fi
-build_directory=${FACTORY_BUILD_DIR:-"$data_home/bin"}
+build_directory=${FACTORY_BUILD_DIR:-${FACTORY_V2_BUILD_DIR:-"$data_home/bin"}}
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then

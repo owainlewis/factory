@@ -76,7 +76,7 @@ output=$(
     FACTORY_LISTEN="127.0.0.1:$port" \
     FACTORY_SKIP_BUILD=1 \
     FACTORY_TEST_WORKER_MARKER="$temporary/worker-started" \
-    FACTORY_WORKER_READY_SECONDS=1 \
+    FACTORY_V2_WORKER_READY_SECONDS=1 \
     "$root/scripts/run-local.sh" "$temporary/worker.toml" 2>&1
 )
 status=$?
