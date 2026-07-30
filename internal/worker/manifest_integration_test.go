@@ -667,6 +667,228 @@ func TestRepositoryRetainedCapacityDoesNotBlockAnotherRepository(t *testing.T) {
 	}
 }
 
+func TestDisposedAttemptHandoffDoesNotWaitForIdleWorker(t *testing.T) {
+	repository := createRepository(t, "disposed-handoff")
+	fixture := newServerFixture(t, nil)
+	manager := newTestManager(t, fixture, filepath.Join(t.TempDir(), "codex"),
+		filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"factory": repository}, 2)
+	t.Cleanup(func() { _ = manager.Close() })
+	manager.setHealth(health{State: "healthy", GitVersion: "test", CodexVersion: "test"})
+	manager.stateMutex.Lock()
+	manager.retainedCounts[manager.repositories[0].RemoteIdentity] = protocol.MaxRetainedPerRepo - 1
+	manager.stateMutex.Unlock()
+	manager.register(context.Background())
+	workerValue := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy" &&
+			worker.Repositories[0].RetainedCount == protocol.MaxRetainedPerRepo-1
+	})
+	first := createTask(t, fixture.store, workerValue, "factory", "fail", 60)
+	claim, err := fixture.store.Claim(context.Background(), manager.ID(), protocol.ClaimRequest{
+		RequestID: "disposed-handoff-first", LeaseToken: strings.Repeat("j", 43),
+	})
+	if err != nil || claim == nil || claim.Task.ID != first.Task.ID {
+		t.Fatalf("claim = %#v, %v", claim, err)
+	}
+
+	manager.slots <- struct{}{}
+	manager.finishWithoutWorktree(*claim, strings.Repeat("j", 43), &attemptHandle{
+		expiry: claim.Attempt.LeaseExpiresAt,
+	}, "failed", errors.New("failed before worktree creation"))
+	if len(manager.disposed) != 0 {
+		t.Fatalf("successful registration left disposed attempts pending: %#v", manager.disposed)
+	}
+	second := createTask(t, fixture.store, workerValue, "factory", "success", 60)
+	next, err := fixture.store.Claim(context.Background(), manager.ID(), protocol.ClaimRequest{
+		RequestID: "disposed-handoff-second", LeaseToken: strings.Repeat("k", 43),
+	})
+	if err != nil || next == nil || next.Task.ID != second.Task.ID {
+		t.Fatalf("claim after disposal = %#v, %v", next, err)
+	}
+	<-manager.slots
+}
+
+func TestDisposedAttemptHandoffSurvivesFailedRegistrationAndRestart(t *testing.T) {
+	var failNextRegistration atomic.Bool
+	fixture := newServerFixture(t, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			if request.Method == http.MethodPut &&
+				strings.HasPrefix(request.URL.Path, "/api/v1/workers/") &&
+				failNextRegistration.CompareAndSwap(true, false) {
+				http.Error(writer, "control plane interrupted", http.StatusServiceUnavailable)
+				return
+			}
+			next.ServeHTTP(writer, request)
+		})
+	})
+	repository := createRepository(t, "durable-disposed-handoff")
+	dataDirectory := filepath.Join(t.TempDir(), "worker")
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	firstManager := newTestManager(t, fixture, codexPath, dataDirectory,
+		map[string]repositoryFixture{"factory": repository}, 2)
+	firstManager.setHealth(health{State: "healthy", GitVersion: "test", CodexVersion: "test"})
+	firstManager.stateMutex.Lock()
+	firstManager.retainedCounts[firstManager.repositories[0].RemoteIdentity] = protocol.MaxRetainedPerRepo - 1
+	firstManager.stateMutex.Unlock()
+	firstManager.register(context.Background())
+	workerValue := waitForWorker(t, fixture.store, firstManager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy" &&
+			worker.Repositories[0].RetainedCount == protocol.MaxRetainedPerRepo-1
+	})
+	createTask(t, fixture.store, workerValue, "factory", "fail", 60)
+	claim, err := fixture.store.Claim(context.Background(), firstManager.ID(), protocol.ClaimRequest{
+		RequestID: "durable-disposed-first", LeaseToken: strings.Repeat("m", 43),
+	})
+	if err != nil || claim == nil {
+		t.Fatalf("claim = %#v, %v", claim, err)
+	}
+
+	firstManager.slots <- struct{}{}
+	failNextRegistration.Store(true)
+	firstManager.finishWithoutWorktree(*claim, strings.Repeat("m", 43), &attemptHandle{
+		expiry: claim.Attempt.LeaseExpiresAt,
+	}, "failed", errors.New("failed before manifest creation"))
+	<-firstManager.slots
+	pending, err := firstManager.manifests.loadDisposals()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0] != claim.Attempt.ID {
+		t.Fatalf("durable pending disposals = %#v", pending)
+	}
+	if err := firstManager.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	secondManager := newTestManager(t, fixture, codexPath, dataDirectory,
+		map[string]repositoryFixture{"factory": repository}, 2)
+	t.Cleanup(func() { _ = secondManager.Close() })
+	secondManager.setHealth(health{State: "healthy", GitVersion: "test", CodexVersion: "test"})
+	secondManager.stateMutex.Lock()
+	secondManager.retainedCounts[secondManager.repositories[0].RemoteIdentity] = protocol.MaxRetainedPerRepo - 1
+	secondManager.stateMutex.Unlock()
+	if err := secondManager.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	secondManager.register(context.Background())
+	pending, err = secondManager.manifests.loadDisposals()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("successful restart registration left pending disposals: %#v", pending)
+	}
+	second := createTask(t, fixture.store, workerValue, "factory", "success", 60)
+	next, err := fixture.store.Claim(context.Background(), secondManager.ID(), protocol.ClaimRequest{
+		RequestID: "durable-disposed-second", LeaseToken: strings.Repeat("n", 43),
+	})
+	if err != nil || next == nil || next.Task.ID != second.Task.ID {
+		t.Fatalf("claim after restart handoff = %#v, %v", next, err)
+	}
+}
+
+func TestDisposalJournalFailureDoesNotCompleteAttempt(t *testing.T) {
+	repository := createRepository(t, "disposal-journal-failure")
+	fixture := newServerFixture(t, nil)
+	manager := newTestManager(t, fixture, filepath.Join(t.TempDir(), "codex"),
+		filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"factory": repository}, 1)
+	t.Cleanup(func() { _ = manager.Close() })
+	manager.setHealth(health{State: "healthy", GitVersion: "test", CodexVersion: "test"})
+	manager.register(context.Background())
+	workerValue := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy"
+	})
+	createTask(t, fixture.store, workerValue, "factory", "fail", 60)
+	claim, err := fixture.store.Claim(context.Background(), manager.ID(), protocol.ClaimRequest{
+		RequestID: "disposal-journal-failure", LeaseToken: strings.Repeat("o", 43),
+	})
+	if err != nil || claim == nil {
+		t.Fatalf("claim = %#v, %v", claim, err)
+	}
+	manager.manifests.disposalHook = func(string) error {
+		return errors.New("simulated disposal journal failure")
+	}
+	manager.slots <- struct{}{}
+	manager.finishWithoutWorktree(*claim, strings.Repeat("o", 43), &attemptHandle{
+		expiry: claim.Attempt.LeaseExpiresAt,
+	}, "failed", errors.New("failed before manifest creation"))
+	<-manager.slots
+	attempt, err := fixture.store.Attempt(context.Background(), claim.Attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.State != "preparing" {
+		t.Fatalf("journal failure completed attempt as %s", attempt.State)
+	}
+	manager.stateMutex.Lock()
+	pending := len(manager.disposed)
+	manager.stateMutex.Unlock()
+	if pending != 0 {
+		t.Fatalf("successful in-memory fallback left %d disposal acknowledgments pending", pending)
+	}
+}
+
+func TestAcknowledgedDisposedManifestIsNotRepublishedOnSecondRestart(t *testing.T) {
+	fixture := newServerFixture(t, nil)
+	repository := createRepository(t, "disposed-compaction")
+	dataDirectory := filepath.Join(t.TempDir(), "worker")
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	seedManager := newTestManager(t, fixture, codexPath, dataDirectory,
+		map[string]repositoryFixture{"factory": repository}, 1)
+	claim := seedReconciliationManifest(t, fixture, seedManager, manifestCleanupStarted)
+	if _, err := fixture.store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: strings.Repeat("r", 43), State: "failed", Error: "disposed during restart",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := seedManager.manifests.load(claim.Attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := inspectManifestWorktree(context.Background(), "git", seedManager.dataDirectory, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := removeInspectedWorktree(context.Background(), "git", inspection, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedManager.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	firstRestart := newTestManager(t, fixture, codexPath, dataDirectory,
+		map[string]repositoryFixture{"factory": repository}, 1)
+	firstRestart.setHealth(health{State: "healthy", GitVersion: "test", CodexVersion: "test"})
+	if err := firstRestart.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := firstRestart.registration().DisposedAttemptIDs; len(got) != 1 || got[0] != claim.Attempt.ID {
+		t.Fatalf("first restart disposals = %#v", got)
+	}
+	firstRestart.register(context.Background())
+	manifest, err = firstRestart.manifests.load(claim.Attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manifest.CapacityAcknowledged {
+		t.Fatal("successful registration did not compact the disposed manifest")
+	}
+	if err := firstRestart.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	secondRestart := newTestManager(t, fixture, codexPath, dataDirectory,
+		map[string]repositoryFixture{"factory": repository}, 1)
+	t.Cleanup(func() { _ = secondRestart.Close() })
+	if err := secondRestart.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := secondRestart.registration().DisposedAttemptIDs; len(got) != 0 {
+		t.Fatalf("second restart republished acknowledged disposals: %#v", got)
+	}
+}
+
 func TestPeriodicRegistrationCannotOvertakeRetainedCapacityHandoff(t *testing.T) {
 	var blockNextRegistration atomic.Bool
 	registrationReached := make(chan struct{}, 1)

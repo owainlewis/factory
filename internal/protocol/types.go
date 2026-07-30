@@ -37,14 +37,16 @@ type RetainedWorktree struct {
 }
 
 type WorkerRegistration struct {
-	Name              string                   `json:"name"`
-	WorkerVersion     string                   `json:"worker_version"`
-	CodexVersion      string                   `json:"codex_version"`
-	Capacity          int                      `json:"capacity"`
-	ActiveCount       int                      `json:"active_count"`
-	Health            string                   `json:"health"`
-	Repositories      []RepositoryRegistration `json:"repositories"`
-	RetainedWorktrees []RetainedWorktree       `json:"retained_worktrees"`
+	Name                   string                   `json:"name"`
+	WorkerVersion          string                   `json:"worker_version"`
+	CodexVersion           string                   `json:"codex_version"`
+	Capacity               int                      `json:"capacity"`
+	ActiveCount            int                      `json:"active_count"`
+	Health                 string                   `json:"health"`
+	Repositories           []RepositoryRegistration `json:"repositories"`
+	RetainedWorktrees      []RetainedWorktree       `json:"retained_worktrees"`
+	CapacityHandoffVersion int                      `json:"capacity_handoff_version,omitempty"`
+	DisposedAttemptIDs     []string                 `json:"disposed_attempt_ids,omitempty"`
 }
 
 type Repository struct {

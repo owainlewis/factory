@@ -653,9 +653,14 @@ Successful clean worktrees are removed after completion. Failed, cancelled,
 dirty, or unpublished worktrees are retained. The worker retains at most ten
 per repository. At a repository's limit it continues heartbeats and may claim
 work for other advertised repositories, but it does not claim more work for
-that repository. The Workers page groups retained attempt IDs and their cleanup
-commands by repository. The operator previews and confirms cleanup through
-`factory-worker cleanup`.
+that repository. Registration publishes both the retained snapshot and exact
+attempt IDs whose local processes have stopped and worktrees are durably
+absent. The control plane releases those attempt reservations without waiting
+for unrelated active work to finish. Disposed IDs use a durable worker-level
+journal until registration succeeds, then the corresponding manifests are
+marked acknowledged to bound later startup work. The Workers page groups
+retained attempt IDs and their cleanup commands by repository. The operator
+previews and confirms cleanup through `factory-worker cleanup`.
 
 ## 8. Security, privacy, and operations
 

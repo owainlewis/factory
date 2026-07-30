@@ -64,6 +64,7 @@ type Manager struct {
 	seen           map[string]bool
 	retained       map[string]protocol.RetainedWorktree
 	retainedCounts map[string]int
+	disposed       map[string]bool
 	pending        map[string]context.CancelFunc
 	fatalHealth    error
 	registered     bool
@@ -146,6 +147,7 @@ func New(config Config, options Options, logger *slog.Logger) (*Manager, error) 
 		seen:              make(map[string]bool),
 		retained:          make(map[string]protocol.RetainedWorktree),
 		retainedCounts:    make(map[string]int),
+		disposed:          make(map[string]bool),
 		pending:           make(map[string]context.CancelFunc),
 	}, nil
 }
@@ -301,8 +303,12 @@ func (manager *Manager) registration() protocol.WorkerRegistration {
 	defer manager.stateMutex.Unlock()
 	repositories := make([]protocol.RepositoryRegistration, 0, len(manager.repositories))
 	retained := make([]protocol.RetainedWorktree, 0, len(manager.retained))
+	disposedAttemptIDs := make([]string, 0, len(manager.disposed))
 	for _, value := range manager.retained {
 		retained = append(retained, value)
+	}
+	for attemptID := range manager.disposed {
+		disposedAttemptIDs = append(disposedAttemptIDs, attemptID)
 	}
 	for _, repository := range manager.repositories {
 		repositories = append(repositories, protocol.RepositoryRegistration{
@@ -311,14 +317,16 @@ func (manager *Manager) registration() protocol.WorkerRegistration {
 		})
 	}
 	return protocol.WorkerRegistration{
-		Name:              strings.TrimSpace(manager.config.Name),
-		WorkerVersion:     manager.options.WorkerVersion,
-		CodexVersion:      manager.health.CodexVersion,
-		Capacity:          manager.config.MaxConcurrent,
-		ActiveCount:       len(manager.slots),
-		Health:            manager.health.State,
-		Repositories:      repositories,
-		RetainedWorktrees: retained,
+		Name:                   strings.TrimSpace(manager.config.Name),
+		WorkerVersion:          manager.options.WorkerVersion,
+		CodexVersion:           manager.health.CodexVersion,
+		Capacity:               manager.config.MaxConcurrent,
+		ActiveCount:            len(manager.slots),
+		Health:                 manager.health.State,
+		Repositories:           repositories,
+		RetainedWorktrees:      retained,
+		CapacityHandoffVersion: 1,
+		DisposedAttemptIDs:     disposedAttemptIDs,
 	}
 }
 
@@ -331,7 +339,8 @@ func (manager *Manager) register(ctx context.Context) {
 func (manager *Manager) registerLocked(ctx context.Context) {
 	requestContext, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	if _, err := manager.client.register(requestContext, manager.id, manager.registration()); err != nil {
+	registration := manager.registration()
+	if _, err := manager.client.register(requestContext, manager.id, registration); err != nil {
 		manager.stateMutex.Lock()
 		manager.registered = false
 		manager.cancelPendingClaimsLocked()
@@ -343,7 +352,18 @@ func (manager *Manager) registerLocked(ctx context.Context) {
 		manager.logger.Warn("worker_registration_failed", "error_class", apiErrorClass(err))
 		return
 	}
+	if err := manager.manifests.markDisposalsAcknowledged(registration.DisposedAttemptIDs); err != nil {
+		manager.markUnhealthy("attempt_manifest", err)
+		return
+	}
+	if err := manager.manifests.clearDisposals(registration.DisposedAttemptIDs); err != nil {
+		manager.markUnhealthy("disposal_journal", err)
+		return
+	}
 	manager.stateMutex.Lock()
+	for _, attemptID := range registration.DisposedAttemptIDs {
+		delete(manager.disposed, attemptID)
+	}
 	manager.registered = true
 	manager.stateMutex.Unlock()
 }
@@ -399,8 +419,8 @@ func (manager *Manager) claimOnce(ctx context.Context) {
 	}
 	if !eligible {
 		handle := &attemptHandle{expiry: claim.Attempt.LeaseExpiresAt}
-		manager.complete(claim.Attempt.ID, token, "failed", "",
-			"worker became ineligible before attempt start", handle)
+		manager.finishWithoutWorktree(*claim, token, handle, "failed",
+			errors.New("worker became ineligible before attempt start"))
 		return
 	}
 	manager.stateMutex.Lock()
@@ -820,9 +840,21 @@ func (manager *Manager) finishWithoutWorktree(
 	state string,
 	cause error,
 ) {
+	manager.registrationMutex.Lock()
+	defer manager.registrationMutex.Unlock()
+	defer func() {
+		registerContext, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+		manager.registerLocked(registerContext)
+	}()
+
 	errorText := ""
 	if cause != nil {
 		errorText = boundedText(cause.Error(), protocol.MaxErrorBytes)
+	}
+	if err := manager.recordDisposed(claim.Attempt.ID); err != nil {
+		manager.markUnhealthy("disposal_journal", err)
+		return
 	}
 	if _, err := manager.manifests.load(claim.Attempt.ID); err == nil {
 		if persistErr := manager.persistLifecycle(claim.Attempt.ID, manifestNotCreated, func(manifest *attemptManifest) {
@@ -867,6 +899,9 @@ func (manager *Manager) finishWithWorktree(
 	if completed && state == "succeeded" {
 		err := manager.cleanCompletedWorktree(claim.Attempt.ID)
 		if err == nil {
+			if err := manager.recordDisposed(claim.Attempt.ID); err != nil {
+				manager.markUnhealthy("disposal_journal", err)
+			}
 			manager.logger.Info("attempt_worktree_cleaned", "attempt_id", claim.Attempt.ID, "repository", repository.Key)
 			return
 		}

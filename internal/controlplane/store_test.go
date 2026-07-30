@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/factory/internal/protocol"
+	"github.com/owainlewis/factory/migrations"
 )
 
 const (
@@ -34,6 +36,268 @@ func newTestStore(t *testing.T) *Store {
 		}
 	})
 	return store
+}
+
+func TestCapacityMigrationDerivesOnlyAttributableLegacyRetainedCounts(t *testing.T) {
+	database, err := sql.Open("sqlite", t.TempDir()+"/migration.sqlite3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := database.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	schema, err := migrations.Files.ReadFile("001_controlplane.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(string(schema)); err != nil {
+		t.Fatal(err)
+	}
+	retained := make([]protocol.RetainedWorktree, protocol.MaxRetainedPerRepo-1)
+	for index := range retained {
+		retained[index] = protocol.RetainedWorktree{
+			AttemptID:    fmt.Sprintf("00000000-0000-4000-8000-%012d", index),
+			RepositoryID: "legacy-repository",
+			Path:         fmt.Sprintf("/tmp/legacy-%d", index),
+			Reason:       "legacy retained worktree",
+		}
+	}
+	retainedJSON, err := json.Marshal(retained)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO workers(
+			id, name, worker_version, codex_version, capacity, active_count, health,
+			retained_worktrees_json, registered_at, last_heartbeat
+		) VALUES ('worker-a', 'legacy', 'legacy', 'legacy', 2, 0, 'healthy', ?, 100, 100)
+	`, retainedJSON); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO workers(
+			id, name, worker_version, codex_version, capacity, active_count, health,
+			retained_worktrees_json, registered_at, last_heartbeat
+		) VALUES (
+			'worker-b', 'legacy-invalid', 'legacy', 'legacy', 1, 0, 'healthy',
+			'[{"attempt_id":"stale-attempt","repository_id":"stale-repository"}]',
+			100, 100
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO workers(
+			id, name, worker_version, codex_version, capacity, active_count, health,
+			retained_worktrees_json, registered_at, last_heartbeat
+		) VALUES (
+			'worker-c', 'legacy-malformed', 'legacy', 'legacy', 1, 0, 'healthy',
+			'not-json', 100, 100
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO schema_migrations(version, applied_at) VALUES (1, 1);
+		INSERT INTO repositories(id, remote_identity, created_at)
+		VALUES ('legacy-repository', 'github.com/example/migration', 1);
+		INSERT INTO repositories(id, remote_identity, created_at)
+		VALUES ('invalid-repository', 'github.com/example/invalid-migration', 1);
+		INSERT INTO repositories(id, remote_identity, created_at)
+		VALUES ('malformed-repository', 'github.com/example/malformed-migration', 1);
+		INSERT INTO worker_repositories(
+			worker_id, display_key, repository_id, retained_count, advertised, updated_at
+		) VALUES ('worker-a', 'factory', 'legacy-repository', 0, 1, 1);
+		INSERT INTO worker_repositories(
+			worker_id, display_key, repository_id, retained_count, advertised, updated_at
+		) VALUES ('worker-b', 'invalid', 'invalid-repository', 0, 1, 1);
+		INSERT INTO worker_repositories(
+			worker_id, display_key, repository_id, retained_count, advertised, updated_at
+		) VALUES ('worker-c', 'malformed', 'malformed-repository', 0, 1, 1);
+		INSERT INTO tasks(
+			id, request_key, title, description, repository_id, timeout_seconds, created_at
+		) VALUES ('historical-task', 'historical-task', 'historical', '', 'legacy-repository', 60, 1);
+		INSERT INTO tasks(
+			id, request_key, title, description, repository_id, timeout_seconds, created_at
+		) VALUES (
+			'invalid-task', 'invalid-task', 'invalid', '', 'invalid-repository', 60, 3
+		);
+		INSERT INTO tasks(
+			id, request_key, title, description, repository_id, timeout_seconds, created_at
+		) VALUES (
+			'malformed-task', 'malformed-task', 'malformed', '', 'malformed-repository', 60, 4
+		);
+		INSERT INTO executions(
+			id, task_id, assigned_worker_id, required_runtime, state,
+			cancellation_requested, created_at, updated_at
+		) VALUES ('historical-execution', 'historical-task', 'worker-a', 'codex', 'failed', 0, 1, 1);
+		INSERT INTO executions(
+			id, task_id, assigned_worker_id, required_runtime, state,
+			cancellation_requested, created_at, updated_at
+		) VALUES (
+			'invalid-execution', 'invalid-task', 'worker-b', 'codex', 'failed', 0, 3, 3
+		);
+		INSERT INTO executions(
+			id, task_id, assigned_worker_id, required_runtime, state,
+			cancellation_requested, created_at, updated_at
+		) VALUES (
+			'malformed-execution', 'malformed-task', 'worker-c', 'codex', 'failed', 0, 4, 4
+		);
+		INSERT INTO attempts(
+			id, execution_id, worker_id, attempt_number, state, lease_digest,
+			lease_expires_at, error, completed_at, created_at
+		) VALUES (
+			'historical-attempt', 'historical-execution', 'worker-a', 1, 'failed',
+			X'00', 1, 'legacy failure', 1, 1
+		);
+		INSERT INTO attempts(
+			id, execution_id, worker_id, attempt_number, state, lease_digest,
+			lease_expires_at, error, completed_at, created_at
+		) VALUES (
+			'invalid-attempt', 'invalid-execution', 'worker-b', 1, 'failed',
+			X'00', 1, 'legacy invalid snapshot', 3, 3
+		);
+		INSERT INTO attempts(
+			id, execution_id, worker_id, attempt_number, state, lease_digest,
+			lease_expires_at, error, completed_at, created_at
+		) VALUES (
+			'malformed-attempt', 'malformed-execution', 'worker-c', 1, 'failed',
+			X'00', 1, 'legacy malformed snapshot', 4, 4
+		);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.UnixMilli(100)
+	store := &Store{db: database, now: func() time.Time { return now }, sweepEvery: 5 * time.Second}
+	if err := store.migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var retainedCount, acknowledged int
+	if err := database.QueryRow(`
+		SELECT retained_count FROM worker_repositories
+		WHERE worker_id = 'worker-a' AND repository_id = 'legacy-repository'
+	`).Scan(&retainedCount); err != nil {
+		t.Fatal(err)
+	}
+	if retainedCount != protocol.MaxRetainedPerRepo-1 {
+		t.Fatalf("migrated retained count = %d", retainedCount)
+	}
+	if err := database.QueryRow(`
+		SELECT COUNT(*) FROM attempts WHERE capacity_acknowledged = 1
+	`).Scan(&acknowledged); err != nil {
+		t.Fatal(err)
+	}
+	if acknowledged != 1 {
+		t.Fatalf("migrated acknowledged attempts = %d; want 1", acknowledged)
+	}
+	createTestTask(t, store, "post-migration-task", workerA, "legacy-repository")
+	claim := claimTestTask(t, store, workerA, "post-migration-claim", tokenA)
+	if claim.Task.RequestKey != "post-migration-task" {
+		t.Fatalf("post-migration claim selected %q", claim.Task.RequestKey)
+	}
+}
+
+func TestCapacityMigrationRequiresDrainedLegacyWorkers(t *testing.T) {
+	database, err := sql.Open("sqlite", t.TempDir()+"/active-migration.sqlite3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := database.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	schema, err := migrations.Files.ReadFile("001_controlplane.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(string(schema)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO schema_migrations(version, applied_at) VALUES (1, 1);
+		INSERT INTO workers(
+			id, name, worker_version, codex_version, capacity, active_count, health,
+			retained_worktrees_json, registered_at, last_heartbeat
+		) VALUES ('worker-a', 'legacy', 'legacy', 'legacy', 1, 1, 'healthy', '[]', 1, 1);
+		INSERT INTO repositories(id, remote_identity, created_at)
+		VALUES ('legacy-repository', 'github.com/example/active-migration', 1);
+		INSERT INTO tasks(
+			id, request_key, title, description, repository_id, timeout_seconds, created_at
+		) VALUES ('active-task', 'active-task', 'active', '', 'legacy-repository', 60, 1);
+		INSERT INTO executions(
+			id, task_id, assigned_worker_id, required_runtime, state,
+			cancellation_requested, created_at, updated_at
+		) VALUES ('active-execution', 'active-task', 'worker-a', 'codex', 'running', 0, 1, 1);
+		INSERT INTO attempts(
+			id, execution_id, worker_id, attempt_number, state, lease_digest,
+			lease_expires_at, started_at, created_at
+		) VALUES (
+			'active-attempt', 'active-execution', 'worker-a', 1, 'running',
+			X'00', 100, 1, 1
+		);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{db: database, now: time.Now, sweepEvery: 5 * time.Second}
+	err = store.migrate(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "drain_active_v2_attempts_before_upgrade") {
+		t.Fatalf("active migration error = %v", err)
+	}
+	var capacityColumn int
+	rows, err := database.Query(`PRAGMA table_info(attempts)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		if name == "capacity_acknowledged" {
+			capacityColumn++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if capacityColumn != 0 {
+		t.Fatal("failed drain guard left a partial capacity migration")
+	}
+	if _, err := database.Exec(`
+		UPDATE attempts
+		SET state = 'failed', error = 'legacy terminal result', completed_at = 2
+		WHERE id = 'active-attempt';
+		UPDATE executions
+		SET state = 'failed', updated_at = 2
+		WHERE id = 'active-execution';
+	`); err != nil {
+		t.Fatal(err)
+	}
+	err = store.migrate(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "drain_active_v2_attempts_before_upgrade") {
+		t.Fatalf("stale active-count migration error = %v", err)
+	}
+	if _, err := database.Exec(`UPDATE workers SET active_count = 0 WHERE id = 'worker-a'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`
+		SELECT COUNT(*) FROM pragma_table_info('attempts')
+		WHERE name = 'capacity_acknowledged'
+	`).Scan(&capacityColumn); err != nil {
+		t.Fatal(err)
+	}
+	if capacityColumn != 1 {
+		t.Fatalf("drained retry capacity columns = %d; want 1", capacityColumn)
+	}
 }
 
 func registerTestWorker(t *testing.T, store *Store, id string, capacity int, repositories ...protocol.RepositoryRegistration) protocol.Worker {
@@ -742,6 +1006,219 @@ func TestActiveLegacyRegistrationCannotAcknowledgeUnlistedHandoff(t *testing.T) 
 	}
 	if detail.Execution.State != "queued" || len(detail.Attempts) != 0 {
 		t.Fatalf("legacy overlap task did not remain queued: %#v", detail)
+	}
+}
+
+func TestActiveRegistrationAcknowledgesExplicitDisposedAttempt(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 2, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/example/explicit-disposal",
+	})
+	first := createTestTask(t, store, "explicit-disposal-first", workerA, worker.Repositories[0].ID)
+	claim := claimTestTask(t, store, workerA, "explicit-disposal-first", tokenA)
+	if claim.Task.ID != first.Task.ID {
+		t.Fatalf("first claim = %s; want %s", claim.Task.ID, first.Task.ID)
+	}
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Error: "disposed without a worktree",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second := createTestTask(t, store, "explicit-disposal-second", workerA, worker.Repositories[0].ID)
+
+	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: "modern-worker", WorkerVersion: "test", CodexVersion: "test",
+		Capacity: 2, ActiveCount: 1, Health: "healthy",
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "factory", RemoteIdentity: "github.com/example/explicit-disposal",
+			RetainedCount: protocol.MaxRetainedPerRepo - 1,
+		}},
+		DisposedAttemptIDs: []string{claim.Attempt.ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	next := claimTestTask(t, store, workerA, "explicit-disposal-second", tokenB)
+	if next.Task.ID != second.Task.ID {
+		t.Fatalf("claim after disposal = %s; want %s", next.Task.ID, second.Task.ID)
+	}
+}
+
+func TestVersionedRegistrationDoesNotBulkAcknowledgeUnlistedAttempt(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 2, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/example/versioned-handoff",
+	})
+	createTestTask(t, store, "versioned-handoff-first", workerA, worker.Repositories[0].ID)
+	claim := claimTestTask(t, store, workerA, "versioned-handoff-first", tokenA)
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Error: "disposition not published",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	createTestTask(t, store, "versioned-handoff-second", workerA, worker.Repositories[0].ID)
+
+	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: "modern-worker", WorkerVersion: "test", CodexVersion: "test",
+		Capacity: 2, ActiveCount: 0, Health: "healthy", CapacityHandoffVersion: 1,
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "factory", RemoteIdentity: "github.com/example/versioned-handoff",
+			RetainedCount: protocol.MaxRetainedPerRepo - 1,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := store.Claim(context.Background(), workerA, protocol.ClaimRequest{
+		RequestID: "versioned-handoff-blocked", LeaseToken: tokenB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked != nil {
+		t.Fatalf("versioned snapshot bulk-acknowledged an unlisted attempt: %#v", blocked)
+	}
+}
+
+func TestRegistrationCanPreAcknowledgeDisposedAttemptBeforeLeaseSweep(t *testing.T) {
+	store := newTestStore(t)
+	fixed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return fixed }
+	worker := registerTestWorker(t, store, workerA, 2, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/example/preacknowledged-disposal",
+	})
+	createTestTask(t, store, "preacknowledged-first", workerA, worker.Repositories[0].ID)
+	claim := claimTestTask(t, store, workerA, "preacknowledged-first", tokenA)
+	second := createTestTask(t, store, "preacknowledged-second", workerA, worker.Repositories[0].ID)
+
+	registration := protocol.WorkerRegistration{
+		Name: "modern-worker", WorkerVersion: "test", CodexVersion: "test",
+		Capacity: 2, ActiveCount: 1, Health: "healthy", CapacityHandoffVersion: 1,
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "factory", RemoteIdentity: "github.com/example/preacknowledged-disposal",
+			RetainedCount: protocol.MaxRetainedPerRepo - 1,
+		}},
+		DisposedAttemptIDs: []string{claim.Attempt.ID},
+	}
+	if _, err := store.RegisterWorker(context.Background(), workerA, registration); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := store.Claim(context.Background(), workerA, protocol.ClaimRequest{
+		RequestID: "preacknowledged-active-blocked", LeaseToken: tokenB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked != nil {
+		t.Fatalf("disposed active attempt stopped reserving active capacity: %#v", blocked)
+	}
+
+	fixed = fixed.Add(protocol.LeaseDuration + time.Millisecond)
+	blocked, err = store.Claim(context.Background(), workerA, protocol.ClaimRequest{
+		RequestID: "preacknowledged-expired-blocked", LeaseToken: tokenB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked != nil {
+		t.Fatalf("expired attempt stopped reserving capacity before sweep: %#v", blocked)
+	}
+	if _, err := store.SweepExpired(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	registration.ActiveCount = 0
+	registration.DisposedAttemptIDs = nil
+	if _, err := store.RegisterWorker(context.Background(), workerA, registration); err != nil {
+		t.Fatal(err)
+	}
+	next := claimTestTask(t, store, workerA, "preacknowledged-after-sweep", tokenB)
+	if next.Task.ID != second.Task.ID {
+		t.Fatalf("claim after sweep = %s; want %s", next.Task.ID, second.Task.ID)
+	}
+}
+
+func TestRegistrationRejectsUnknownDisposedAttempt(t *testing.T) {
+	store := newTestStore(t)
+	registerTestWorker(t, store, workerA, 2, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/example/unproven-disposal",
+	})
+
+	_, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: "modern-worker", WorkerVersion: "test", CodexVersion: "test",
+		Capacity: 2, ActiveCount: 1, Health: "healthy",
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "factory", RemoteIdentity: "github.com/example/unproven-disposal",
+		}},
+		DisposedAttemptIDs: []string{"missing-attempt"},
+	})
+	assertErrorCode(t, err, "invalid_disposed_attempts")
+}
+
+func TestUnattributedRetainedSummaryPreservesRegistrationContractWithoutAcknowledgingHandoff(t *testing.T) {
+	testCases := []struct {
+		name         string
+		repositoryID string
+	}{
+		{name: "display-only"},
+		{name: "unadvertised-repository", repositoryID: "stale-repository-id"},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			store := newTestStore(t)
+			remote := "github.com/example/" + testCase.name
+			worker := registerTestWorker(t, store, workerA, 2, protocol.RepositoryRegistration{
+				Key: "factory", RemoteIdentity: remote,
+			})
+			first := createTestTask(t, store, testCase.name+"-first", workerA, worker.Repositories[0].ID)
+			claim := claimTestTask(t, store, workerA, testCase.name+"-first", tokenA)
+			if claim.Task.ID != first.Task.ID {
+				t.Fatalf("first claim = %s; want %s", claim.Task.ID, first.Task.ID)
+			}
+			if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+				LeaseToken: tokenA, State: "failed", Error: "retained before repository attribution",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			second := createTestTask(t, store, testCase.name+"-second", workerA, worker.Repositories[0].ID)
+
+			registered, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+				Name: "legacy-display-client", WorkerVersion: "legacy", CodexVersion: "test",
+				Capacity: 2, ActiveCount: 0, Health: "healthy",
+				Repositories: []protocol.RepositoryRegistration{{
+					Key: "factory", RemoteIdentity: remote,
+					RetainedCount: protocol.MaxRetainedPerRepo - 1,
+				}},
+				RetainedWorktrees: []protocol.RetainedWorktree{{
+					AttemptID:    claim.Attempt.ID,
+					RepositoryID: testCase.repositoryID,
+					Path:         "/tmp/" + testCase.name,
+					Reason:       "repository ID is not attributable",
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(registered.RetainedWorktrees) != 1 {
+				t.Fatalf("unattributed summaries = %d; want 1", len(registered.RetainedWorktrees))
+			}
+			if registered.Repositories[0].RetainedCount != protocol.MaxRetainedPerRepo-1 {
+				t.Fatalf("unattributed summary changed retained count to %d", registered.Repositories[0].RetainedCount)
+			}
+			blocked, err := store.Claim(context.Background(), workerA, protocol.ClaimRequest{
+				RequestID: testCase.name + "-blocked", LeaseToken: tokenB,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if blocked != nil {
+				t.Fatalf("unattributed summary acknowledged the handoff: %#v", blocked)
+			}
+			detail, err := store.Task(context.Background(), second.Task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if detail.Execution.State != "queued" || len(detail.Attempts) != 0 {
+				t.Fatalf("unattributed summary did not keep task queued: %#v", detail)
+			}
+		})
 	}
 }
 

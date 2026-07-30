@@ -52,6 +52,13 @@ func isWorktreeMismatch(err error) bool {
 }
 
 func (manager *Manager) reconcile(ctx context.Context) error {
+	disposedAttemptIDs, err := manager.manifests.loadDisposals()
+	if err != nil {
+		return unsafeReconciliation(err)
+	}
+	for _, attemptID := range disposedAttemptIDs {
+		manager.rememberDisposed(attemptID)
+	}
 	manifests, err := manager.manifests.loadAll()
 	var reconciliationErrors []error
 	if err != nil {
@@ -126,6 +133,9 @@ func (manager *Manager) reconcileManifest(ctx context.Context, manifest attemptM
 			value.RetentionReason = ""
 			return nil
 		})
+		if err == nil && !manifest.CapacityAcknowledged {
+			err = manager.recordDisposed(manifest.AttemptID)
+		}
 		return retryReconciliation(err)
 	case manifest.Lifecycle == manifestCleanupStarted && inspection.PathExists && inspection.Registered:
 		force := false
@@ -172,6 +182,9 @@ func (manager *Manager) reconcileManifest(ctx context.Context, manifest attemptM
 			value.RetentionReason = ""
 			return nil
 		})
+		if err == nil && !manifest.CapacityAcknowledged {
+			err = manager.recordDisposed(manifest.AttemptID)
+		}
 		return retryReconciliation(err)
 	case inspection.PathExists != inspection.Registered:
 		reason := "worktree exists in only one of the filesystem and Git worktree registry"
@@ -199,6 +212,9 @@ func (manager *Manager) reconcileManifest(ctx context.Context, manifest attemptM
 			value.RetentionReason = reason
 			return nil
 		})
+		if err == nil && !manifest.CapacityAcknowledged {
+			err = manager.recordDisposed(manifest.AttemptID)
+		}
 		return retryReconciliation(err)
 	default:
 		if manifest.Lifecycle == manifestCleaned || manifest.Lifecycle == manifestNotCreated {
@@ -445,6 +461,21 @@ func (manager *Manager) recordRetained(manifest attemptManifest) {
 		Path: manifest.WorktreePath, Reason: boundedText(manifest.RetentionReason, 1000),
 		CleanupCommand: cleanupCommand,
 	}
+	manager.stateMutex.Unlock()
+}
+
+func (manager *Manager) recordDisposed(attemptID string) error {
+	if err := manager.manifests.addDisposal(attemptID); err != nil {
+		manager.rememberDisposed(attemptID)
+		return err
+	}
+	manager.rememberDisposed(attemptID)
+	return nil
+}
+
+func (manager *Manager) rememberDisposed(attemptID string) {
+	manager.stateMutex.Lock()
+	manager.disposed[attemptID] = true
 	manager.stateMutex.Unlock()
 }
 

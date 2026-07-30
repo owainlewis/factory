@@ -86,8 +86,8 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 	var active int
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM attempts
-		WHERE worker_id = ? AND state IN ('preparing', 'running') AND lease_expires_at > ?
-	`, workerID, nowMillis).Scan(&active); err != nil {
+		WHERE worker_id = ? AND state IN ('preparing', 'running')
+	`, workerID).Scan(&active); err != nil {
 		return nil, unavailable(err)
 	}
 	if healthy == 0 || now.Sub(fromMillis(lastHeartbeat)) > protocol.WorkerOnlineWindow || active >= capacity {
@@ -118,7 +118,6 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		      WHERE active_attempt.worker_id = e.assigned_worker_id
 		        AND active_task.repository_id = t.repository_id
 		        AND active_attempt.state IN ('preparing', 'running')
-		        AND active_attempt.lease_expires_at > ?
 		  ) + (
 		      SELECT COUNT(*)
 		      FROM attempts terminal_attempt
@@ -131,7 +130,7 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		  ) < ?
 		ORDER BY e.created_at, e.id
 		LIMIT 1
-	`, workerID, nowMillis, protocol.MaxRetainedPerRepo).Scan(&executionID)
+	`, workerID, protocol.MaxRetainedPerRepo).Scan(&executionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := insertEmptyClaim(ctx, tx, workerID, input.RequestID, digest, nowMillis); err != nil {
 			return nil, err

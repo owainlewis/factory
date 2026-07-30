@@ -305,6 +305,10 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	if input.Health != "healthy" && input.Health != "unhealthy" {
 		return protocol.Worker{}, invalid("invalid_health", "health must be healthy or unhealthy")
 	}
+	if input.CapacityHandoffVersion < 0 || input.CapacityHandoffVersion > 1 {
+		return protocol.Worker{}, invalid(
+			"invalid_capacity_handoff", "capacity_handoff_version must be 0 or 1")
+	}
 	if len(input.Repositories) == 0 {
 		return protocol.Worker{}, invalid("invalid_repositories", "at least one repository is required")
 	}
@@ -327,23 +331,42 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	}
 	retainedCounts := make(map[string]int)
 	retainedAttemptIDs := make(map[string][]string)
-	seenRetainedAttempts := make(map[string]bool)
+	seenRetainedAttempts := make(map[string]string)
+	hasUnattributedRetainedSummary := false
 	for index := range input.RetainedWorktrees {
 		worktree := &input.RetainedWorktrees[index]
 		worktree.AttemptID = strings.TrimSpace(worktree.AttemptID)
 		worktree.RepositoryID = strings.TrimSpace(worktree.RepositoryID)
+		// Older API clients may send display-only summaries before they know the
+		// control-plane repository ID. Preserve those summaries, but do not use
+		// incomplete or duplicate entries as capacity-handoff evidence.
 		if worktree.AttemptID == "" || worktree.RepositoryID == "" {
-			return protocol.Worker{}, invalid(
-				"invalid_retained_worktrees", "retained worktree attempt_id and repository_id are required")
+			hasUnattributedRetainedSummary = true
+			continue
 		}
-		if seenRetainedAttempts[worktree.AttemptID] {
-			return protocol.Worker{}, invalid(
-				"invalid_retained_worktrees", "retained worktree attempt_id values must be unique")
+		if repositoryID, seen := seenRetainedAttempts[worktree.AttemptID]; seen {
+			if repositoryID != worktree.RepositoryID {
+				hasUnattributedRetainedSummary = true
+			}
+			continue
 		}
-		seenRetainedAttempts[worktree.AttemptID] = true
+		seenRetainedAttempts[worktree.AttemptID] = worktree.RepositoryID
 		retainedCounts[worktree.RepositoryID]++
 		retainedAttemptIDs[worktree.RepositoryID] = append(
 			retainedAttemptIDs[worktree.RepositoryID], worktree.AttemptID)
+	}
+	disposedAttemptIDs := make([]string, 0, len(input.DisposedAttemptIDs))
+	seenDisposedAttempts := make(map[string]bool, len(input.DisposedAttemptIDs))
+	for _, value := range input.DisposedAttemptIDs {
+		attemptID := strings.TrimSpace(value)
+		if attemptID == "" || len(attemptID) > 200 {
+			return protocol.Worker{}, invalid(
+				"invalid_disposed_attempts", "disposed attempt IDs must be non-empty and at most 200 bytes")
+		}
+		if !seenDisposedAttempts[attemptID] {
+			seenDisposedAttempts[attemptID] = true
+			disposedAttemptIDs = append(disposedAttemptIDs, attemptID)
+		}
 	}
 	retained, err := json.Marshal(input.RetainedWorktrees)
 	if err != nil || len(retained) > protocol.MaxBodyBytes {
@@ -435,6 +458,36 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 		if err != nil {
 			return protocol.Worker{}, unavailable(err)
 		}
+	}
+	canBulkAcknowledge := input.CapacityHandoffVersion == 0 && !hasUnattributedRetainedSummary
+	for repositoryID := range retainedCounts {
+		if !advertisedRepositoryIDs[repositoryID] {
+			canBulkAcknowledge = false
+		}
+	}
+	for _, attemptID := range disposedAttemptIDs {
+		var ownerID string
+		err := tx.QueryRowContext(ctx, `
+			SELECT worker_id
+			FROM attempts
+			WHERE id = ?
+		`, attemptID).Scan(&ownerID)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && ownerID != workerID) {
+			return protocol.Worker{}, invalid(
+				"invalid_disposed_attempts", "disposed attempts must exist and be owned by this worker")
+		}
+		if err != nil {
+			return protocol.Worker{}, unavailable(err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE attempts
+			SET capacity_acknowledged = 1
+			WHERE id = ?
+		`, attemptID); err != nil {
+			return protocol.Worker{}, unavailable(err)
+		}
+	}
+	for repositoryID := range advertisedRepositoryIDs {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE attempts
 			SET capacity_acknowledged = 1
@@ -442,13 +495,14 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 			  AND capacity_acknowledged = 0
 			  AND state IN ('succeeded', 'failed', 'cancelled', 'lost')
 			  AND ? = 0
+			  AND ?
 			  AND execution_id IN (
 			      SELECT e.id
 			      FROM executions e
 			      JOIN tasks t ON t.id = e.task_id
 			      WHERE t.repository_id = ?
 			  )
-		`, workerID, input.ActiveCount, repositoryID); err != nil {
+		`, workerID, input.ActiveCount, canBulkAcknowledge, repositoryID); err != nil {
 			return protocol.Worker{}, unavailable(err)
 		}
 		for _, attemptID := range retainedAttemptIDs[repositoryID] {
@@ -467,12 +521,6 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 			`, attemptID, workerID, repositoryID); err != nil {
 				return protocol.Worker{}, unavailable(err)
 			}
-		}
-	}
-	for repositoryID := range retainedCounts {
-		if !advertisedRepositoryIDs[repositoryID] {
-			return protocol.Worker{}, invalid(
-				"invalid_retained_worktrees", "retained worktree repository_id must be advertised by this worker")
 		}
 	}
 	if err := tx.Commit(); err != nil {

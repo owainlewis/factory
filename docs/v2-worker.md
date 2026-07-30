@@ -81,6 +81,18 @@ Healthy workers heartbeat their capacity and repositories, reserve a local
 slot, and poll for assigned work. Claim retries reuse the same request ID and
 lease secret, so a lost response cannot start a duplicate attempt.
 
+## Upgrade from the schema 1 V2 preview
+
+Drain all `preparing` and `running` attempts before starting the upgraded
+control plane. Schema 1 had no durable local evidence for active worktree
+disposition, so migration 002 fails transactionally with
+`drain_active_v2_attempts_before_upgrade` if active attempts remain. Restart the
+old control plane and workers, let or cancel those attempts to a terminal state,
+and wait for every worker to publish an idle registration with
+`active_count: 0` and its final retained snapshot. Then retry the upgrade.
+Terminal history and attributable retained summaries are migrated
+automatically.
+
 ## Execution and failure behavior
 
 Each claim is matched back to the configured repository key and normalized
@@ -152,10 +164,36 @@ Only verified retained worktrees count toward the limit of ten per repository.
 A claimed attempt reserves one possible retained slot. After completion, the
 control plane keeps that reservation until a worker registration atomically
 publishes the repository's retained count and acknowledges the handoff.
+The worker names attempts whose local process has stopped and whose worktree is
+durably absent in
+`disposed_attempt_ids`. It keeps those acknowledgments pending until the
+registration succeeds, including after startup reconciliation, so unrelated
+active work cannot delay capacity release. Pending IDs are stored atomically in
+`disposed-attempts.json` before completion is reported and are removed from the
+journal only after the server commits a registration.
+`capacity_handoff_version: 1`
+disables the legacy idle-worker bulk acknowledgment path; current workers use
+only exact retained or disposed attempt IDs. The server can record this local
+proof before an expired attempt is swept to `lost`; active-attempt capacity
+continues to apply until that state transition. A failed journal write makes the
+worker unhealthy and prevents terminal completion; the in-memory exact
+registration remains a recovery path while the process is running. Successful
+handoffs mark absent manifests as acknowledged, so later restarts do not rebuild
+or resend historical IDs.
+
+Historical attempts are acknowledged once by the schema migration because
+pre-manifest workers could not publish exact disposition evidence. The
+migration first derives their retained counts from complete legacy summaries.
+Active historical attempts are not pre-acknowledged: they reserve capacity by
+state before sweep and as unclassified terminal attempts afterward, until an
+exact retained or disposed handoff proves their local outcome.
 For upgrade compatibility, the control plane never trusts a reported count
-below the retained-worktree summaries in the same registration. An active
-legacy registration can acknowledge only terminal attempts named by those
-summaries; unlisted attempts remain reserved until an idle registration.
+below complete, uniquely attributable retained-worktree summaries in the same
+registration. Display-only summaries without an attempt or repository ID remain
+valid API input, but disable bulk idle-worker acknowledgment and do not
+acknowledge a capacity handoff themselves. An active legacy registration can
+acknowledge only terminal attempts named by complete summaries; unlisted
+attempts remain reserved until an idle registration.
 A full repository remains queued while the worker continues heartbeats and may
 claim work for another repository. Transient control-plane or Git failures
 during reconciliation are retried before the worker first registers; they are
