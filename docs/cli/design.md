@@ -222,6 +222,9 @@ framework solely for command parsing.
   seconds for registration.
 - `factory start` accepts repeated `--worker-config` flags. With none, it uses
   `~/.factory/worker.toml`.
+- Before starting any child, `factory start` verifies that each selected worker
+  config's normalized `server` URL equals the HTTP endpoint derived from
+  `--listen`. A mismatch names the config and both endpoints and exits 2.
 - If any child of `factory start` exits unexpectedly, all remaining children
   are stopped and `start` exits nonzero.
 - `factory server` preserves the current loopback-only listen rule and SQLite
@@ -287,7 +290,7 @@ factory tasks cancel [--confirm] TASK_ID
 factory tasks retry TASK_ID
 factory tasks delete [--confirm] TASK_ID
 
-factory workers list
+factory workers list [--limit N] [--cursor CURSOR]
 factory workers show NAME_OR_ID
 
 factory workflows list [--enabled BOOL] [--limit N] [--cursor CURSOR]
@@ -371,6 +374,12 @@ The schedule API must expose bounded list and detail endpoints, create or
 replace by client mutation key, enable or disable, delete, run now, and a
 bounded occurrence history. Its internal schema and due-run recovery rules
 require a scheduler design before implementation.
+
+The existing worker-list API becomes cursor-paginated with the same default and
+maximum page sizes as tasks. It also accepts an exact `name` filter and returns
+at most two matches for CLI name resolution. This lets the CLI distinguish
+missing, unique, and ambiguous names without downloading the fleet. Existing
+clients may ignore the additive `next_cursor` field.
 
 ### Naming and identity
 
@@ -494,9 +503,9 @@ mutating request.
 
 Process tests will start the real server with temporary state and fake worker
 entry points. They will cover readiness bounds, multiple workers, child
-failure, signal order, timeout, and no Node invocation. Existing server and
-worker integration tests remain the proof for leases, attempts, cleanup, and
-state recovery.
+failure, listen and worker-server mismatch, signal order, timeout, and no Node
+invocation. Existing server and worker integration tests remain the proof for
+leases, attempts, cleanup, and state recovery.
 
 End-to-end tests will submit one blank task and one workflow task to disposable
 Codex and Claude Code test repositories. Scheduler tests will control the clock,
