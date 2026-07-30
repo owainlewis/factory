@@ -473,9 +473,11 @@ resolved listen endpoint. If all validation succeeds, it starts the server and
 selected workers in order. Startup succeeds only after every selected worker
 is online and healthy with `last_heartbeat` at or after that child was started.
 On SIGINT or SIGTERM it asks workers to stop first, then the server, and allows
-10 seconds for each phase. A second signal exits immediately. If server startup
-fails, no worker starts. If one worker fails or remains unhealthy during
-startup, all processes stop.
+35 seconds for workers and then 10 seconds for the server. This keeps the
+control plane available through the worker's existing 30-second shutdown
+protocol and gives it time to report a terminal attempt state. A second signal
+exits immediately. If server startup fails, no worker starts. If one worker
+fails or remains unhealthy during startup, all processes stop.
 
 Server and worker commands retain their existing durable recovery rules. A CLI
 process crash cannot corrupt task state because the CLI does not own the
@@ -569,9 +571,10 @@ empty non-terminal stdin.
 Process tests will start the real server with temporary state and fake worker
 entry points. They will cover readiness bounds, multiple workers, child
 failure, stale and unhealthy registration, listen and worker-server mismatch,
-signal order, timeout, legacy environment aliases and conflicts, and no Node
-invocation. Existing server and worker integration tests remain the proof for
-leases, attempts, cleanup, and state recovery.
+signal order, an active worker using its full shutdown grace period, timeout,
+legacy environment aliases and conflicts, and no Node invocation. Existing
+server and worker integration tests remain the proof for leases, attempts,
+cleanup, and state recovery.
 
 End-to-end tests will submit one blank task and one workflow task to disposable
 Codex and Claude Code test repositories. Scheduler tests will control the clock,
