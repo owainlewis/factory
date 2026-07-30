@@ -1,0 +1,367 @@
+# GitHub issue ingest for Factory V2
+
+> **Status:** Proposed for review
+
+## 1. Executive summary
+
+Factory V2 can run manually delegated tasks, but it cannot watch GitHub for
+work. Operators must copy each issue into the control-plane UI. This design
+adds a small Go process, `factory-ingest`, that polls one GitHub repository,
+turns each matching issue into the existing task shape, and assigns it to one
+configured worker.
+
+The process uses the authenticated `gh` CLI and the existing control-plane HTTP
+API. It keeps its own small SQLite database so restarts and repeated polls do
+not create duplicate tasks. A repository-owned prompt remains responsible for
+live issue checks, issue comments, branches, pull requests, and status changes.
+The main downside is that the first version has file-based configuration and
+supports one repository and one trigger.
+
+## 2. Context and scope
+
+The Go control plane currently accepts `{title, description, worker_id,
+repository_id}` from the UI or API. Go workers claim those tasks and run Codex
+or Claude Code. They do not know whether a task came from a human, GitHub, or a
+future scheduler.
+
+The Rust application already polls command-backed sources, deduplicates trigger
+episodes, revalidates work, and evaluates schedules. None of that behavior is
+implemented by the Go V2 binaries. Manual delegation therefore does not justify
+removing Rust.
+
+This design adds only the first GitHub issue path needed to test:
+
+```text
+matching GitHub issue -> V2 task -> selected worker -> agent-managed issue and PR
+```
+
+## 3. System context
+
+```mermaid
+flowchart LR
+    GH["GitHub Issues"] -->|"gh issue list"| I["factory-ingest"]
+    P["Repository prompt"] --> I
+    I -->|"POST /api/v1/tasks"| CP["Factory control plane"]
+    CP -->|"HTTP claim polling"| W["Configured worker"]
+    W -->|"Codex or Claude Code"| A["Coding agent"]
+    A -->|"gh and git"| GH
+```
+
+`factory-ingest` owns polling, trigger-episode identity, and task submission. It
+does not execute agents, open pull requests, or encode a GitHub workflow.
+
+The control plane owns task idempotency, assignment, execution history, and the
+UI. It does not store GitHub credentials or poll GitHub.
+
+The selected worker owns the runtime, local repository, worktree, and agent
+process. The repository prompt owns the engineering and GitHub workflow.
+
+## 4. Proposed design
+
+### How it works
+
+The operator configures one GitHub repository, one required label, one worker
+ID, one repository key advertised by that worker, and one prompt file. The
+operator starts `factory-ingest` continuously or runs `factory-ingest --once`
+for a bounded test.
+
+On each successful poll, ingest asks `gh issue list` for up to 100 open issues
+with the configured label. It validates the result and compares it with its
+local trigger state.
+
+The first time an issue appears in a continuous matching period, ingest creates
+a random episode ID and a stable request key. It stores that pending episode
+and the exact normalized `CreateTaskRequest` JSON before submitting the task.
+The task title is the trusted static text `GitHub issue #<number>`. The
+description contains the trusted repository prompt first, then a delimiter and
+the untrusted issue number, URL, title, and body.
+
+Ingest posts the task through `POST /api/v1/tasks`. A lost response is safe:
+the next attempt uses the same request key, and the control plane returns the
+task it already created. A pending episode cannot be rearmed. Ingest must replay
+its request key until a `200` or `201` response supplies the task ID, even when
+the issue has stopped matching. The agent may receive a stale task in that
+crash window, so the trusted prompt must revalidate the live label and stop
+without mutation when it is absent. The task appears in the existing UI and is
+claimed by the configured worker.
+
+The repository prompt tells the agent to reread the live issue and confirm that
+the trigger label is still present before making changes. The prompt also owns
+removing the trigger label, commenting on the issue, pushing a branch, opening
+or updating a pull request, and reporting blockers. Ingest does not duplicate
+those actions.
+
+Only a submitted issue may become absent. When it is absent from a complete
+successful poll, its episode is rearmed. If the label is applied again later,
+ingest creates a new episode and task. Edits and agent comments while the issue
+remains continuously matched do not create another task.
+
+### Components and responsibilities
+
+`cmd/factory-ingest` owns command parsing, startup, shutdown, `--once`, and
+operator output. It depends on the ingest package and does not import worker or
+control-plane storage.
+
+`internal/ingest` owns config validation, GitHub polling, prompt composition,
+episode reconciliation, API submission, retry decisions, and SQLite state. It
+depends on `gh`, the control-plane HTTP API, and a local data directory. It does
+not own worker execution or GitHub mutations after submission.
+
+The existing control plane and worker keep their current contracts. No new
+control-plane table, endpoint, runtime interface, or UI framework is added.
+
+### Decisions
+
+The first version uses `gh` instead of a GitHub App, OAuth flow, or embedded API
+client. This reuses local authentication and keeps credentials out of Factory.
+It also means the ingest process is intended for a trusted Unix host.
+
+The first version supports one repository and one trigger. The config shape
+leaves room for a later list, but this slice does not add cross-repository
+fairness, concurrency, or rate-limit coordination.
+
+Ingest uses a separate SQLite database rather than the control-plane database.
+This preserves the control-plane API boundary and allows ingest to be replaced
+or run on another host later. It costs one more small state file.
+
+Issue and pull-request updates remain prompt-driven. Adding deterministic
+GitHub mutations to ingest would duplicate repository workflow policy and make
+the MVP larger.
+
+## 5. Invariants and requirements
+
+### Invariants
+
+1. One continuous matching period creates at most one control-plane task.
+2. A crash before, during, or after task submission cannot create a duplicate.
+3. An incomplete or failed GitHub poll never rearms an issue.
+4. GitHub issue content, including its title, is marked untrusted and cannot
+   precede the trusted repository prompt.
+5. Ingest never opens, edits, labels, comments on, or closes a GitHub issue.
+6. Ingest never opens the control-plane SQLite database.
+7. A task is submitted only to the configured worker and the advertised
+   repository whose remote identity matches the polled GitHub repository.
+8. A pending episode cannot become absent or create a second request key.
+
+### Requirements
+
+- `factory-ingest --once` performs one poll and submission pass, prints a
+  summary, and exits.
+- Continuous mode polls at the configured interval, which must be between 10
+  seconds and 24 hours.
+- Startup validates the config, prompt, `gh` availability and authentication,
+  control-plane health, worker registration, and advertised repository.
+- The advertised repository remote must equal
+  `github.com/<owner>/<repository>` using an ASCII case-insensitive comparison.
+- A worker may be offline when ingest starts. Its registration and repository
+  must exist, and submitted work remains queued until it returns.
+- Each successful poll reads at most 100 matching issues.
+- If 100 issues are returned, missing issues are not rearmed because the result
+  may be truncated.
+- An invalid issue with a valid number is reported, skipped, and still counted
+  as seen for rearming. If an entry has no valid number, no missing issue is
+  rearmed during that poll.
+- A composed title or description that exceeds the existing task API limits is
+  rejected rather than silently truncated.
+- Pending task submissions are retried on the next poll.
+- Ingest stores at most 1,000 issue rows. At the limit it continues pending
+  recovery and existing reconciliation, rejects new episodes, and reports an
+  operator error.
+- Shutdown stops after the current bounded `gh` or HTTP operation and does not
+  start another poll.
+
+## 6. Interfaces and data
+
+The default config path is `~/.factory/ingest.toml`. An explicit `--config`
+overrides it.
+
+```toml
+server = "http://127.0.0.1:7337"
+poll_every = "30s"
+data_directory = "/Users/example/.factory/ingest/github"
+
+[github]
+repository = "owner/repository"
+label = "factory:ready-to-implement"
+worker_id = "61b30338-95dc-4704-80bd-8a4c63aa3037"
+repository_key = "repository"
+prompt = "/absolute/path/to/repository/.factory/workflows/implement.md"
+```
+
+Unknown fields are errors. The first slice always polls open issues. The server
+must be plain HTTP on loopback, matching the local worker trust model. The
+repository must be a normalized GitHub `owner/name`.
+
+The default state path is `~/.factory/ingest/github/ingest.sqlite3`. The database
+stores one current episode per repository, trigger, and issue:
+
+- issue number and URL;
+- random episode ID and derived request key;
+- state: `pending`, `submitted`, or `absent`;
+- exact normalized `CreateTaskRequest` JSON used for every pending replay;
+- control-plane task ID when submitted;
+- first-seen, last-seen, submitted, and absent timestamps.
+
+Absent rows are deleted after 30 days. At most 1,000 issue rows may exist,
+including rows that cannot become absent while a source result is truncated.
+The stored request is bounded by the existing task API limits. Request keys
+include the random episode ID, so a later reappearance cannot collide with a
+pruned episode.
+
+### Naming and identity
+
+The source identity is `github:<owner>/<repository>:issue:<number>`. The trigger
+identity is the repository plus configured label. An episode ID is a random
+UUID created only when an armed issue first matches. The bounded request key
+is:
+
+```text
+github:<uuid>
+```
+
+The ingest database stores the human-readable repository, trigger, and issue
+identity. Changing the repository or label creates a new trigger identity.
+
+The server, worker ID, repository key, prompt path, and prompt content digest
+are delivery settings, not trigger identity. Their stored fingerprint detects a
+change at startup. A delivery change is rejected while any pending episode
+exists because its exact request and destination are frozen. Otherwise,
+submitted episodes keep their current identity and do not refire while still
+matched. Only episodes created after the change use the new delivery settings.
+
+## 7. Failure behavior and lifecycle
+
+Config, authentication, database, prompt, or control-plane validation failures
+stop startup with a direct error. No task is submitted.
+
+A `gh` timeout, nonzero exit, or malformed JSON response records the source poll
+failure and leaves all existing episode states unchanged. Continuous mode tries
+again at the next configured poll. `--once` exits nonzero.
+
+The `gh` command and each HTTP request have a 30-second timeout. Task submission
+is sequential. A failed control-plane submission leaves the episode pending
+and does not stop later valid issues from being considered.
+
+The episode is written and synced before the POST. The submitted task ID is
+written after a successful `200` or `201` response. If the process crashes
+between those writes, the same POST is repeated and control-plane request-key
+idempotency returns the original task. Pending recovery happens before absence
+reconciliation. A pending episode never becomes absent, even if the issue no
+longer appears in the source result. Recovery sends the exact stored request
+bytes; later edits to the issue or prompt cannot change a pending request.
+
+Absence reconciliation requires a successful result with fewer than 100 issues
+and a valid issue number for every entry. Other invalid fields suppress the
+entry's submission but preserve its number as seen. An entry without a usable
+number suppresses all absence transitions for that poll.
+
+The config and prompt are read at startup. Changes require a restart. In-flight
+control-plane tasks continue independently when ingest stops or its config
+changes.
+
+## 8. Security, privacy, and operations
+
+`gh` owns GitHub credentials. Ingest never requests, stores, prints, or forwards
+the token. The pending request and control-plane task description store the
+issue body and trusted prompt, so operators must treat both databases as
+sensitive. Existing task deletion and retention policy apply. The ingest
+database removes absent rows after 30 days and has the 1,000-row hard limit.
+
+Issue content is untrusted input. Ingest validates JSON types and sizes, places
+the trusted workflow before issue content, and labels the issue section as
+untrusted context. The worker safety preamble remains the highest Factory-owned
+instruction.
+
+The control-plane URL is restricted to loopback HTTP. The SQLite directory and
+files are owner-only. Ingest takes an exclusive process lock so two processes
+cannot poll with the same state directory.
+
+One poll returns at most 100 issues, uses one `gh` process, and submits tasks
+sequentially. The ingest database has a hard limit of 1,000 issue rows. At that
+limit, the process keeps existing state safe but refuses new episodes until the
+operator resolves the source size or old absent rows reach retention cleanup.
+The design adds no background goroutine per issue and no unbounded in-memory or
+on-disk event history.
+
+## 9. Acceptance criteria
+
+- A configured matching issue creates one task assigned to the configured
+  worker and repository.
+- Repeating `--once` with the same matching issue returns the same submitted
+  episode and creates no second task.
+- Restarting after a simulated lost POST response returns the original task by
+  request key and records it as submitted.
+- Losing a successful POST response, removing and reapplying the label, and
+  restarting still creates only the original task until pending recovery
+  records its task ID.
+- Pending recovery replays the exact stored request after the issue disappears,
+  its content changes, or the prompt file changes.
+- Removing the label rearms the issue only after a complete successful poll;
+  applying it again creates exactly one new task.
+- Failed, malformed, timed-out, or truncated GitHub polls do not rearm missing
+  issues.
+- A malformed entry with a valid issue number does not rearm that issue; an
+  entry without a valid number suppresses all rearming for that poll.
+- A worker repository whose remote identity differs from the configured GitHub
+  repository is rejected before submission.
+- Request keys remain below the control-plane 200-byte limit for every valid
+  GitHub repository and issue.
+- The static task title contains no GitHub-controlled text. The task description
+  contains the exact trusted prompt before a clearly delimited untrusted issue
+  section.
+- The 1,000-row hard limit rejects new episodes without losing or rewriting
+  existing state.
+- Changing delivery settings does not refire a continuously matching submitted
+  issue and is rejected while a pending request exists.
+- The existing UI shows the source-created task without UI changes.
+- A real smoke test can create a dedicated labeled issue, run `--once`, observe
+  the configured local worker complete it, and verify the repository prompt
+  updates the issue and opens or updates a pull request.
+- Normal Go binary builds continue to use committed UI assets and do not
+  require Node.
+
+## 10. Test approach
+
+Focused tests use fake `gh` and HTTP executables or servers. They cover config
+validation, authentication failure, issue normalization, prompt ordering and
+limits, control-plane worker and repository validation, trigger reconciliation,
+request-key idempotency, the lost-response plus label rearm crash window,
+replay after issue and prompt changes, trigger versus delivery configuration
+changes, malformed issue identities, truncation, the hard row limit, pruning,
+and clean shutdown.
+
+An integration test runs a real control-plane store and API with a registered
+fake worker. It polls a fake issue, submits one task, repeats the poll, restarts
+ingest, rearms the issue, and proves the expected task counts and request keys.
+
+The release check uses a dedicated real GitHub issue and one local worker. It
+records the issue URL, control-plane task ID, terminal result, issue update, and
+pull-request URL. This external smoke test is manual because CI must not mutate
+GitHub.
+
+## 11. Risks and tradeoffs
+
+- A prompt may fail to update GitHub after the task succeeds. The task result
+  and issue remain available for operator diagnosis; ingest does not guess a
+  recovery mutation.
+- A label can be removed after polling but before execution. The trusted prompt
+  must revalidate live issue state before acting.
+- File-based worker IDs are not friendly. The first slice favors explicit,
+  stable assignment; UI-based ingest configuration can follow later.
+- The issue body is retained in task history. Existing deletion controls and a
+  future task retention job bound that exposure.
+
+## 12. Open questions
+
+None block task breakdown. The real smoke-test issue should be a small,
+meaningful repository change rather than a throwaway commit.
+
+## 13. Out of scope
+
+- More than one repository or trigger.
+- Jira, Linear, GitLab, pull requests, webhooks, or GitHub Projects.
+- Scheduler or `factory run` compatibility.
+- UI configuration or ingest status pages.
+- Automatic worker selection, load balancing, or failover.
+- Deterministic issue, branch, pull-request, merge, or review mutations.
+- Importing Rust state or sharing the Rust or control-plane database.
