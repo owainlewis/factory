@@ -219,10 +219,13 @@ framework solely for command parsing.
   target platform.
 - `factory start` runs in the foreground, starts the server first, waits up to
   10 seconds for health, then starts every selected worker and waits up to 40
-  seconds for registration.
+  seconds for each worker to register as online and healthy. A worker record
+  left by an earlier process does not satisfy readiness; its `last_heartbeat`
+  must be at or after the child process was started.
 - `factory start` accepts repeated `--worker-config` flags. With none, it uses
-  `FACTORY_WORKER_CONFIG` when set, then `$FACTORY_HOME/worker.toml`.
-  `FACTORY_HOME` defaults to `~/.factory`.
+  `FACTORY_WORKER_CONFIG` when set, its deprecated
+  `FACTORY_V2_WORKER_CONFIG` alias, then `$FACTORY_HOME/worker.toml`.
+  `FACTORY_HOME` defaults to `~/.factory`, subject to the migration alias below.
 - Before starting any child, `factory start` verifies that each selected worker
   config's normalized `server` URL equals the HTTP endpoint derived from
   `--listen`. A mismatch names the config and both endpoints and exits 2.
@@ -235,7 +238,9 @@ framework solely for command parsing.
 - `factory worker` preserves the current runtime checks, claim loop, attempt
   supervisor, shutdown, and retained-worktree policy.
 - `factory run` accepts exactly one context source: positional text,
-  `--file PATH`, or non-terminal stdin.
+  `--file PATH`, or non-terminal stdin. Implicit stdin is considered only when
+  neither positional text nor `--file` is supplied, and empty stdin is a usage
+  error.
 - `factory run --title` is optional. Without it, the CLI uses the first
   non-empty context line, shortened to 80 Unicode characters for display. The
   stored context is never shortened.
@@ -322,8 +327,11 @@ process commands. Human data goes to stdout and diagnostics go to stderr. With
 
 Command flags precede positional arguments. `--` may separate flags from
 context that starts with `-`. Context with spaces should normally be quoted.
-`--file -` explicitly selects stdin. Supplying more than one context source is
-a usage error.
+`--file -` explicitly selects stdin. Non-terminal stdin is selected implicitly
+only when neither positional context nor `--file` is present. This prevents an
+empty pipe or `/dev/null` from conflicting with explicit context. Supplying
+positional context and `--file` together, or selecting an empty input stream,
+is a usage error.
 
 `FACTORY_HOME` is the one Factory root and defaults to `~/.factory`. The client
 configuration file defaults to `$FACTORY_HOME/config.toml`:
@@ -342,11 +350,22 @@ Before any request, finite commands require the resolved server URL to use
 plain HTTP, a loopback host, an explicit nonzero port, and the root path. URLs
 with credentials, query strings, or fragments are rejected. This matches the
 worker's trusted-local validation.
+
+During the Go V2 migration, `FACTORY_V2_DATA_HOME` is a deprecated alias for
+`FACTORY_HOME`, and `FACTORY_V2_WORKER_CONFIG` is a deprecated alias for
+`FACTORY_WORKER_CONFIG`. Factory honors a legacy variable and prints a
+deprecation warning whenever it is set. When both forms are set, their
+normalized paths must match or Factory exits 2 before opening state or starting
+a worker. The aliases remain until the Rust archive gate and Go migration
+checklist have passed; their later removal is a separately documented breaking
+change.
+
 The server database defaults to
 `$FACTORY_HOME/server/factory.sqlite3`; `--database` overrides it. Worker config
 path precedence is `--worker-config` or `worker --config`,
-`FACTORY_WORKER_CONFIG`, then `$FACTORY_HOME/worker.toml`. GitHub ingest config
-defaults to `$FACTORY_HOME/ingest.toml` and its state defaults below
+`FACTORY_WORKER_CONFIG`, its legacy alias, then
+`$FACTORY_HOME/worker.toml`. GitHub ingest config defaults to
+`$FACTORY_HOME/ingest.toml` and its state defaults below
 `$FACTORY_HOME/ingest/github`; `ingest github --config` overrides its config.
 Unknown config fields are errors.
 
@@ -442,17 +461,21 @@ server URL and suggest `factory start` or `factory status`.
 Finite API calls have a 10-second request timeout, except `run --wait`.
 Submission retries reuse the same request key and never create a second task.
 `run --wait` gives each poll a 10-second timeout and retries connection failures
-with delays of 1, 2, 4, 8, then 10 seconds. It reports the loss of connection
-once and recovers without restart. The task's own timeout remains owned by the
-control plane and worker.
+up to five times, with delays of 1, 2, 4, 8, then 10 seconds before each retry.
+It reports the loss of connection once and recovers without restart when a
+retry succeeds. A successful poll resets the retry budget. If the fifth retry
+fails, the command prints the task ID and exits 1 without cancelling it. The
+task's own timeout remains owned by the control plane and worker.
 
 `factory start` validates every worker configuration before starting a child.
 It also rejects listen port `0`, then compares each worker endpoint with the
 resolved listen endpoint. If all validation succeeds, it starts the server and
-selected workers in order. On SIGINT or SIGTERM it asks workers to stop first,
-then the server, and allows 10 seconds for each phase. A second signal exits
-immediately. If server startup fails, no worker starts. If one worker fails
-during startup, all processes stop.
+selected workers in order. Startup succeeds only after every selected worker
+is online and healthy with `last_heartbeat` at or after that child was started.
+On SIGINT or SIGTERM it asks workers to stop first, then the server, and allows
+10 seconds for each phase. A second signal exits immediately. If server startup
+fails, no worker starts. If one worker fails or remains unhealthy during
+startup, all processes stop.
 
 Server and worker commands retain their existing durable recovery rules. A CLI
 process crash cannot corrupt task state because the CLI does not own the
@@ -503,10 +526,13 @@ rebuilding requires Node.
 - `factory start --listen 127.0.0.1:0` exits 2 before starting any child.
 - A manual blank task and a workflow-backed task can be submitted from text, a
   file, and stdin.
+- Explicit positional or file context works when inherited stdin is
+  non-terminal but empty.
 - An ambiguous worker or repository name makes no mutation and prints the
   matching choices.
 - `run --wait` returns the documented exit status for success, failure, loss,
-  cancellation, network interruption, and Ctrl-C.
+  cancellation, recovered transient disconnection, exhausted reconnection, and
+  Ctrl-C.
 - Task, worker, and workflow commands show the same durable state as the UI.
 - Workflow apply creates revision 1, repeats unchanged as a no-op, and creates
   a new revision after instructions change.
@@ -519,6 +545,9 @@ rebuilding requires Node.
 - Server, worker, and local startup need no Node installation.
 - Existing Go V2 state below `~/.factory` opens without copying or resetting the
   database or worker identity.
+- Existing Go V2 state selected by `FACTORY_V2_DATA_HOME` or
+  `FACTORY_V2_WORKER_CONFIG` remains selected with a deprecation warning, while
+  conflicting new and legacy variables fail before opening state.
 - The Rust archive gate is documented and blocks removal until manual run,
   workflows, schedules, one ingest path, Codex, Claude Code, migration, and
   rollback have passed end-to-end tests.
@@ -533,12 +562,14 @@ and JSON output with stdout and stderr captured separately.
 
 HTTP client tests will use a local test server to prove name resolution,
 pagination, request-key replay, API error display, wait polling, disconnect
-backoff, and Ctrl-C behavior. They will assert that ambiguous input causes no
-mutating request.
+backoff and exhaustion, and Ctrl-C behavior. They will assert that ambiguous
+input causes no mutating request and that explicit context ignores inherited
+empty non-terminal stdin.
 
 Process tests will start the real server with temporary state and fake worker
 entry points. They will cover readiness bounds, multiple workers, child
-failure, listen and worker-server mismatch, signal order, timeout, and no Node
+failure, stale and unhealthy registration, listen and worker-server mismatch,
+signal order, timeout, legacy environment aliases and conflicts, and no Node
 invocation. Existing server and worker integration tests remain the proof for
 leases, attempts, cleanup, and state recovery.
 
