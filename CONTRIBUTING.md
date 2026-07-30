@@ -62,9 +62,13 @@ cargo test --locked --all-targets
 ```
 
 The browser suite builds and starts a real `factory-server`, creates its
-workers and tasks through the HTTP API, and saves desktop and narrow screenshots
-under `web/test-results/screenshots/`. Install its Chromium runtime once with
-`cd web && npx playwright install chromium`.
+real `factory-worker`, creates two temporary Git repositories, executes work
+through a deterministic fake Codex command, and saves desktop and narrow
+screenshots under `web/test-results/screenshots/`. Install its Chromium runtime
+once with `cd web && npx playwright install chromium`.
+
+Run `./scripts/test-run-v2-local.sh` to check that the combined launcher refuses
+to report an unhealthy worker as ready.
 
 ## Pull requests
 

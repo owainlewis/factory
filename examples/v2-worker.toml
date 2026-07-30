@@ -1,0 +1,12 @@
+# Copy this file to the ignored .factory-v2 directory, then replace both paths
+# with absolute paths to local non-bare Git repositories that have an origin.
+server = "http://127.0.0.1:7337"
+name = "local"
+max_concurrent = 1
+data_directory = "data/workers/local"
+
+[repositories.factory]
+path = "/absolute/path/to/factory"
+
+[repositories.second-repository]
+path = "/absolute/path/to/another-repository"

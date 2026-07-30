@@ -1,4 +1,5 @@
 /target/
+.factory-v2/
 *.db
 *.db-shm
 *.db-wal

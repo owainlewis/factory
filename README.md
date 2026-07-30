@@ -128,37 +128,28 @@ worker runs assigned Codex tasks in separate managed Git worktrees. Production
 does not need Node.js or cross-origin configuration:
 
 ```sh
-cd web
-npm ci
-npm run build
-cd ..
-go build -o factory-server ./cmd/factory-server
-go build -o factory-worker ./cmd/factory-worker
-./factory-server
+./scripts/build-v2.sh
 ```
 
-In another terminal, create a worker configuration and start the worker:
-
-```toml
-server = "http://127.0.0.1:7337"
-name = "local"
-max_concurrent = 1
-data_directory = "/Users/me/.factory-v2/workers/local"
-
-[repositories.factory]
-path = "/Users/me/Code/factory"
-```
+Create an ignored local configuration from the two-repository sample, edit its
+repository paths, then start the complete local control plane:
 
 ```sh
-./factory-worker --config /path/to/worker.toml
+mkdir -p .factory-v2
+cp examples/v2-worker.toml .factory-v2/worker.toml
+$EDITOR .factory-v2/worker.toml
+./scripts/run-v2-local.sh .factory-v2/worker.toml
 ```
 
 Open `http://127.0.0.1:7337/` to inspect the registered worker, delegate work,
 and follow durable task state. The server remains loopback-only and V2 state and
-worktrees remain separate from V1. The [V2 worker guide](docs/v2-worker.md)
-covers configuration, health, execution, and retained worktrees. See the
-[V2 MVP architecture](docs/v2-architecture/design.md) for the API and trust
-boundary.
+worktrees remain separate from V1. The
+[complete local V2 guide](docs/v2-local.md) covers fresh-checkout setup,
+delegation, polling, results, cancellation, retry, restart, cleanup, automated
+browser proof, and a bounded authenticated Codex smoke test. The
+[V2 worker guide](docs/v2-worker.md) covers lower-level execution and retained
+worktrees. See the [V2 MVP architecture](docs/v2-architecture/design.md) for
+the API, trust boundary, and unimplemented later ingest model.
 
 ## V1 scope
 
@@ -183,6 +174,7 @@ Jira is not part of the supported V1 scope.
 - [Setup, configuration, and first run](docs/local-v1.md)
 - [Operations and recovery](docs/operations.md)
 - [V2 local worker](docs/v2-worker.md)
+- [V2 complete local workflow](docs/v2-local.md)
 - [Jira source adapter](docs/jira.md)
 - [Docker Sandbox development environment](docs/docker-sandbox-template.md)
 - [Contributing](CONTRIBUTING.md)

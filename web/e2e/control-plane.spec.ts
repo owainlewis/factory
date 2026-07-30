@@ -11,6 +11,7 @@ test.setTimeout(120_000);
 
 const workerOnline = "worker-online-e2e";
 const workerOffline = "worker-offline-e2e";
+const realWorker = "11111111-1111-4111-8111-111111111111";
 const onlineRepositories = [
   { key: "factory", remote_identity: "github.com/example/factory", retained_count: 1 },
   { key: "handbook", remote_identity: "github.com/example/handbook", retained_count: 0 },
@@ -21,10 +22,10 @@ const offlineRepositories = [
 const identifiers: Record<string, string> = {};
 
 interface TaskDetail {
-  task: { id: string; title: string };
+  task: { id: string; title: string; state?: string };
   execution: { id: string };
   repository: { id: string };
-  attempts: Array<{ id: string }>;
+  attempts: Array<{ id: string; state?: string; result?: string; error?: string }>;
 }
 
 async function json<T>(response: Awaited<ReturnType<APIRequestContext["get"]>>): Promise<T> {
@@ -130,6 +131,26 @@ async function complete(
   return claim;
 }
 
+async function waitForRealWorker(api: APIRequestContext) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const response = await api.get("/api/v1/workers");
+    if (response.ok()) {
+      const body = (await response.json()) as {
+        workers: Array<{
+          id: string;
+          health: string;
+          online: boolean;
+          repositories: Array<{ id: string; key: string }>;
+        }> | null;
+      };
+      const worker = body.workers?.find((candidate) => candidate.id === realWorker);
+      if (worker?.online && worker.health === "healthy") return worker;
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  }
+  throw new Error("real Factory worker did not register as healthy within 30 seconds");
+}
+
 function observeBrowser(page: Page) {
   const problems: string[] = [];
   const realtime: string[] = [];
@@ -155,6 +176,14 @@ function observeBrowser(page: Page) {
 
 test.beforeAll(async () => {
   const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
+  const real = await waitForRealWorker(api);
+  identifiers.realFactoryRepository = real.repositories.find(
+    (repository) => repository.key === "factory-demo",
+  )!.id;
+  identifiers.realHandbookRepository = real.repositories.find(
+    (repository) => repository.key === "handbook-demo",
+  )!.id;
+
   const offline = await registerWorker(api, workerOffline, "Archive Mac", offlineRepositories);
   identifiers.offlineRepository = offline.repositories[0].id;
 
@@ -236,6 +265,89 @@ test.beforeAll(async () => {
 
   await registerWorker(api, workerOnline, "Build Mac", onlineRepositories, 1);
   await api.dispose();
+});
+
+test("runs the complete UI to real-worker and Git-worktree workflow", async ({ page }) => {
+  const browser = observeBrowser(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Delegate task" }).first().click();
+  const dialog = page.getByRole("dialog", { name: "Delegate task" });
+  await dialog.getByLabel("Worker").selectOption(realWorker);
+  await expect(
+    dialog.getByLabel("Repository").getByRole("option", { name: /factory-demo/ }),
+  ).toHaveCount(1);
+  await expect(
+    dialog.getByLabel("Repository").getByRole("option", { name: /handbook-demo/ }),
+  ).toHaveCount(1);
+  await dialog.getByLabel("Title").fill("Prove the complete local V2 workflow");
+  await dialog
+    .getByLabel("Description")
+    .fill("Create deterministic evidence in the assigned real Git worktree.");
+  await dialog.getByLabel("Repository").selectOption(identifiers.realFactoryRepository);
+  await page.screenshot({
+    path: "test-results/screenshots/delegate-desktop.png",
+    fullPage: true,
+  });
+  await dialog.getByRole("button", { name: "Delegate task" }).click();
+
+  await expect(page.getByRole("heading", { name: "Prove the complete local V2 workflow" })).toBeVisible();
+  await expect(page.getByText("Succeeded", { exact: true }).first()).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByText("Created deterministic worktree evidence.")).toBeVisible();
+  await expect(page.getByText("Completed by deterministic fake Codex.", { exact: false })).toBeVisible();
+  await expect(page.getByText(/Branch: factory-v2\//)).toBeVisible();
+  await expect(page.getByText(/Worktree: .*factory-ui-e2e-.*\/worker\/worktrees\//)).toBeVisible();
+  await page.screenshot({
+    path: "test-results/screenshots/task-detail-desktop.png",
+    fullPage: true,
+  });
+
+  const taskID = new URL(page.url()).pathname.split("/").at(-1)!;
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Prove the complete local V2 workflow" })).toBeVisible();
+
+  const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
+  const detail = await json<TaskDetail>(await api.get(`/api/v1/tasks/${taskID}`));
+  expect(detail.task.state).toBe("succeeded");
+  expect(detail.attempts).toHaveLength(1);
+  expect(detail.attempts[0].result).toContain("Branch: factory-v2/");
+  const worker = await json<{
+    retained_worktrees: Array<{ attempt_id: string; path: string; cleanup_command: string }>;
+  }>(await api.get(`/api/v1/workers/${realWorker}`));
+  const retained = worker.retained_worktrees.find(
+    (worktree) => worktree.attempt_id === detail.attempts[0].id,
+  );
+  expect(retained?.path).toContain("/worker/worktrees/");
+  expect(retained?.cleanup_command).toContain(`factory-worker cleanup ${detail.attempts[0].id}`);
+  await api.dispose();
+  browser.assertClean();
+});
+
+test("cancels active work running in the real worker", async ({ page }) => {
+  const browser = observeBrowser(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Delegate task" }).first().click();
+  const dialog = page.getByRole("dialog", { name: "Delegate task" });
+  await dialog.getByLabel("Worker").selectOption(realWorker);
+  await dialog.getByLabel("Title").fill("Cancel a real active Codex process");
+  await dialog
+    .getByLabel("Description")
+    .fill("FACTORY_E2E_WAIT until the operator cancels this task.");
+  await dialog.getByLabel("Repository").selectOption(identifiers.realHandbookRepository);
+  await dialog.getByRole("button", { name: "Delegate task" }).click();
+
+  await expect(page.getByText("Running", { exact: true }).first()).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByText("Waiting for operator cancellation.")).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: "Confirm cancel" }).click();
+  await expect(page.getByText("Cancelled", { exact: true }).first()).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(page.getByText("attempt cancelled", { exact: false })).toBeVisible();
+  browser.assertClean();
 });
 
 test("renders every state and saves the desktop Work view", async ({ page }) => {
@@ -326,6 +438,22 @@ test("supports narrow grouped layouts and saves narrow screenshots", async ({ pa
   await page.goto("/workers");
   await expect(page.getByRole("heading", { name: "Execution capacity" })).toBeVisible();
   await page.screenshot({ path: "test-results/screenshots/workers-narrow.png", fullPage: true });
+
+  await page.getByRole("button", { name: "Delegate task" }).click();
+  const dialog = page.getByRole("dialog", { name: "Delegate task" });
+  await dialog.getByLabel("Worker").selectOption(realWorker);
+  await dialog.getByLabel("Title").fill("Narrow viewport delegation");
+  await dialog.getByLabel("Description").fill("Review the complete narrow task form.");
+  await dialog.getByLabel("Repository").selectOption(identifiers.realFactoryRepository);
+  await page.screenshot({ path: "test-results/screenshots/delegate-narrow.png", fullPage: true });
+  await page.keyboard.press("Escape");
+
+  await page.goto(`/tasks/${identifiers.runningTask}`);
+  await expect(page.getByRole("heading", { name: "Implement the modern control-plane UI" })).toBeVisible();
+  await page.screenshot({
+    path: "test-results/screenshots/task-detail-narrow.png",
+    fullPage: true,
+  });
   browser.assertClean();
 });
 

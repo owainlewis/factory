@@ -17,6 +17,29 @@ type dataLock struct {
 	file *os.File
 }
 
+func ResolveWorkerID(config Config) (id string, returnErr error) {
+	if err := ensureSupportedPlatform(); err != nil {
+		return "", err
+	}
+	if err := validateConfig(config); err != nil {
+		return "", err
+	}
+	dataDirectory, err := resolveDataDirectory(config.DataDirectory)
+	if err != nil {
+		return "", err
+	}
+	lock, err := lockDataDirectory(dataDirectory)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if err := lock.Close(); err != nil && returnErr == nil {
+			returnErr = fmt.Errorf("unlock data directory: %w", err)
+		}
+	}()
+	return loadOrCreateWorkerID(dataDirectory, nil)
+}
+
 func lockDataDirectory(directory string) (*dataLock, error) {
 	path := filepath.Join(directory, "worker.lock")
 	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {

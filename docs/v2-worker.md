@@ -7,6 +7,8 @@ V2-owned worktree.
 
 The worker is separate from Factory V1. It does not import the control-plane
 implementation, open SQLite, inspect V1 state, or use V1 worktree paths.
+For the fresh-checkout build, combined server-and-worker start command, UI
+walkthrough, and browser proof, use the [complete local V2 guide](v2-local.md).
 
 ## Prerequisites
 

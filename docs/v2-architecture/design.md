@@ -783,8 +783,12 @@ leases, and terminal retries.
 Browser tests cover the Multica-inspired Work and Workers views, task
 delegation, worker-specific repository choices, offline warnings, task
 progress, failure, cancellation, retry, long text, and narrow layouts against
-the real Go server and fake worker. Screenshot checks verify the semantic
-surface hierarchy and status treatment in light mode.
+the real Go server and a real Go worker process. The worker uses two real
+temporary Git repositories and a deterministic fake Codex executable, so the
+suite proves managed worktree creation, ordered worker events, terminal
+results, branch and worktree evidence, and active process cancellation without
+requiring credentials. Screenshot checks verify the semantic surface hierarchy
+and status treatment in light mode.
 
 The full repository check runs the existing Rust checks plus Go formatting,
 static analysis, Go tests, the UI build, and browser tests.

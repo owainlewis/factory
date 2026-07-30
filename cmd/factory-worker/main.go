@@ -44,6 +44,26 @@ func run() error {
 		}
 		return worker.Cleanup(config, options, os.Stdout)
 	}
+	if len(os.Args) > 1 && os.Args[1] == "identity" {
+		flags := flag.NewFlagSet("factory-worker identity", flag.ContinueOnError)
+		configPath := flags.String("config", defaultConfig, "Factory V2 worker TOML configuration path")
+		if err := flags.Parse(os.Args[2:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 {
+			return fmt.Errorf("unexpected identity arguments: %v", flags.Args())
+		}
+		config, err := worker.LoadConfig(*configPath)
+		if err != nil {
+			return err
+		}
+		id, err := worker.ResolveWorkerID(config)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stdout, id)
+		return nil
+	}
 	flags := flag.NewFlagSet("factory-worker", flag.ContinueOnError)
 	configPath := flags.String("config", defaultConfig, "Factory V2 worker TOML configuration path")
 	if err := flags.Parse(os.Args[1:]); err != nil {
@@ -63,7 +83,13 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), worker.ShutdownSignals()...)
 	defer stop()
-	logger.Info("worker_started", "worker_id", manager.ID(), "name", config.Name)
+	logger.Info("worker_started",
+		"worker_id", manager.ID(),
+		"name", config.Name,
+		"server", config.Server,
+		"data_directory", config.DataDirectory,
+		"repository_count", len(config.Repositories),
+	)
 	if err := manager.Run(ctx); err != nil {
 		return err
 	}
