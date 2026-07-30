@@ -1,7 +1,6 @@
 package controlplane
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -459,8 +458,4 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		fmt.Fprint(w, "\n")
 	}
-}
-
-func contextWithTimeout(parent context.Context, duration time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(parent, duration)
 }

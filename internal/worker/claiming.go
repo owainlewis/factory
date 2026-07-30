@@ -1,0 +1,104 @@
+package worker
+
+import (
+	"context"
+	"errors"
+
+	"github.com/owainlewis/factory/internal/protocol"
+)
+
+func (manager *Manager) reserveAndClaim(ctx context.Context) {
+	for {
+		select {
+		case manager.slots <- struct{}{}:
+			manager.waitGroup.Add(1)
+			go manager.claimOnce(ctx)
+		default:
+			return
+		}
+	}
+}
+
+func (manager *Manager) claimOnce(ctx context.Context) {
+	defer manager.waitGroup.Done()
+	release := true
+	defer func() {
+		if release {
+			<-manager.slots
+		}
+	}()
+	requestID, err := manager.randomUUID()
+	if err != nil {
+		manager.markUnhealthy("randomness", err)
+		return
+	}
+	token, err := manager.randomSecret()
+	if err != nil {
+		manager.markUnhealthy("randomness", err)
+		return
+	}
+	claimContext, cancelClaim, eligible := manager.beginClaim(ctx, requestID)
+	if !eligible {
+		cancelClaim()
+		return
+	}
+	claim, err := manager.client.claim(claimContext, manager.id, protocol.ClaimRequest{
+		RequestID: requestID, LeaseToken: token,
+	}, manager.options.TransportBackoffMin, manager.options.TransportBackoffMax)
+	eligible = manager.endClaim(requestID)
+	cancelClaim()
+	if err != nil {
+		if ctx.Err() == nil && !errors.Is(err, context.Canceled) {
+			manager.logger.Warn("worker_claim_failed", "error_class", apiErrorClass(err))
+		}
+		return
+	}
+	if claim == nil {
+		return
+	}
+	if !eligible {
+		handle := &attemptHandle{expiry: claim.Attempt.LeaseExpiresAt}
+		manager.finishWithoutWorktree(*claim, token, handle, "failed",
+			errors.New("worker became ineligible before attempt start"))
+		return
+	}
+	manager.stateMutex.Lock()
+	if manager.seen[claim.Attempt.ID] {
+		manager.stateMutex.Unlock()
+		manager.logger.Warn("duplicate_claim_ignored", "attempt_id", claim.Attempt.ID)
+		return
+	}
+	manager.seen[claim.Attempt.ID] = true
+	manager.stateMutex.Unlock()
+	release = false
+	manager.runAttempt(ctx, *claim, token)
+	<-manager.slots
+}
+
+func (manager *Manager) beginClaim(
+	parent context.Context,
+	requestID string,
+) (context.Context, context.CancelFunc, bool) {
+	ctx, cancel := context.WithCancel(parent)
+	manager.stateMutex.Lock()
+	defer manager.stateMutex.Unlock()
+	if manager.health.State != "healthy" || !manager.registered {
+		return ctx, cancel, false
+	}
+	manager.pending[requestID] = cancel
+	return ctx, cancel, true
+}
+
+func (manager *Manager) endClaim(requestID string) bool {
+	manager.stateMutex.Lock()
+	defer manager.stateMutex.Unlock()
+	delete(manager.pending, requestID)
+	return manager.health.State == "healthy" && manager.registered
+}
+
+func (manager *Manager) cancelPendingClaimsLocked() {
+	for requestID, cancel := range manager.pending {
+		cancel()
+		delete(manager.pending, requestID)
+	}
+}

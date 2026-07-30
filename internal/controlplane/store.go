@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -855,5 +854,3 @@ func unavailable(err error) error {
 }
 
 func equalDigest(a, b []byte) bool { return bytes.Equal(a, b) }
-
-func digestString(value []byte) string { return hex.EncodeToString(value) }

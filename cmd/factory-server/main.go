@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/owainlewis/factory/internal/controlplane"
+	"github.com/owainlewis/factory/internal/statepath"
 	factoryweb "github.com/owainlewis/factory/web"
 )
 
@@ -140,61 +141,19 @@ func validateV2DataRoot(root string) error {
 	if err != nil {
 		return fmt.Errorf("resolve V2 data root: %w", err)
 	}
-	if marker, found, err := findV1DatabaseMarker(absolute); err != nil {
+	if marker, found, err := statepath.FindV1DatabaseMarker(absolute); err != nil {
 		return err
 	} else if found {
 		return fmt.Errorf("refusing a V2 data root below V1 state at %s", marker)
 	}
-	canonical, err := canonicalProspectivePath(absolute)
+	canonical, err := statepath.CanonicalProspective(absolute)
 	if err != nil {
-		return err
+		return fmt.Errorf("canonicalize V2 data root: %w", err)
 	}
-	if marker, found, err := findV1DatabaseMarker(canonical); err != nil {
+	if marker, found, err := statepath.FindV1DatabaseMarker(canonical); err != nil {
 		return err
 	} else if found {
 		return fmt.Errorf("refusing a V2 data root below V1 state at %s", marker)
 	}
 	return nil
-}
-
-func canonicalProspectivePath(path string) (string, error) {
-	var missing []string
-	current := path
-	for {
-		canonical, err := filepath.EvalSymlinks(current)
-		if err == nil {
-			for index := len(missing) - 1; index >= 0; index-- {
-				canonical = filepath.Join(canonical, missing[index])
-			}
-			return canonical, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("canonicalize V2 data root: %w", err)
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", fmt.Errorf("canonicalize V2 data root: no existing ancestor for %s", path)
-		}
-		missing = append(missing, filepath.Base(current))
-		current = parent
-	}
-}
-
-func findV1DatabaseMarker(path string) (string, bool, error) {
-	for {
-		marker := filepath.Join(path, "factory.sqlite3")
-		if info, err := os.Lstat(marker); err == nil {
-			if info.Mode().IsRegular() {
-				return marker, true, nil
-			}
-			return "", false, fmt.Errorf("inspect possible V1 database marker %s: not a regular file", marker)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return "", false, fmt.Errorf("inspect possible V1 database marker: %w", err)
-		}
-		parent := filepath.Dir(path)
-		if parent == path {
-			return "", false, nil
-		}
-		path = parent
-	}
 }
