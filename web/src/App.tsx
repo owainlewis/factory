@@ -126,14 +126,14 @@ export function App() {
         <nav aria-label="Primary navigation">
           <button
             className={`nav-item ${route.page === "work" || route.page === "task" ? "active" : ""}`}
-            aria-current={route.page === "work" || route.page === "task" ? "page" : undefined}
+            aria-current={route.page === "work" ? "page" : undefined}
             onClick={() => navigate({ page: "work" })}
           >
             <ListChecks size={17} /> Work
           </button>
           <button
             className={`nav-item ${route.page === "workers" || route.page === "worker" ? "active" : ""}`}
-            aria-current={route.page === "workers" || route.page === "worker" ? "page" : undefined}
+            aria-current={route.page === "workers" ? "page" : undefined}
             onClick={() => navigate({ page: "workers" })}
           >
             <Bot size={17} /> Workers

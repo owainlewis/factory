@@ -386,6 +386,10 @@ test("renders every state and saves the desktop Work view", async ({ page }) => 
   const browser = observeBrowser(page);
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Agent work" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Work", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
   for (const state of ["Queued", "Running", "Succeeded", "Failed", "Cancelled"]) {
     await expect(page.getByRole("region", { name: new RegExp(`^${state}`) })).toBeVisible();
   }
@@ -416,6 +420,8 @@ test("shows worker capacity, current work, retained cleanup, and saves Workers",
   const browser = observeBrowser(page);
   await page.goto("/workers");
   await expect(page.getByRole("heading", { name: "Execution capacity" })).toBeVisible();
+  const workersNavigation = page.getByRole("button", { name: "Workers", exact: true });
+  await expect(workersNavigation).toHaveAttribute("aria-current", "page");
   await expect(page.getByText("Implement the modern control-plane UI")).toBeVisible();
   const offlineRow = page.getByRole("button", { name: /Archive Mac/ });
   await expect(offlineRow).toBeVisible();
@@ -425,6 +431,8 @@ test("shows worker capacity, current work, retained cleanup, and saves Workers",
 
   await page.getByRole("button", { name: /Build Mac/ }).click();
   await expect(page.getByRole("heading", { name: "Build Mac" })).toBeVisible();
+  await expect(workersNavigation).toHaveClass(/active/);
+  await expect(workersNavigation).not.toHaveAttribute("aria-current");
   await expect(page.getByText("factory-worker cleanup attempt-retained-001 --confirm")).toBeVisible();
   const assign = page.getByRole("button", { name: "Assign work" });
   await assign.click();
@@ -479,6 +487,9 @@ test("shows ordered progress and long task detail", async ({ page }) => {
     }
   });
   await page.goto(`/tasks/${identifiers.runningTask}`);
+  const workNavigation = page.getByRole("button", { name: "Work", exact: true });
+  await expect(workNavigation).toHaveClass(/active/);
+  await expect(workNavigation).not.toHaveAttribute("aria-current");
   const events = page.locator(".event-list li");
   await expect(events).toHaveCount(3);
   await expect(events.nth(0)).toContainText("Inspected the control-plane contract.");

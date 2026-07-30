@@ -20,6 +20,46 @@ function renderApp() {
 }
 
 describe("App", () => {
+  it("marks only exact navigation destinations as the current page", async () => {
+    mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    const work = await screen.findByRole("button", { name: /^Work$/ });
+    const workers = screen.getByRole("button", { name: /^Workers$/ });
+    expect(work).toHaveAttribute("aria-current", "page");
+    expect(workers).not.toHaveAttribute("aria-current");
+
+    await user.click(workers);
+
+    expect(work).not.toHaveAttribute("aria-current");
+    expect(workers).toHaveAttribute("aria-current", "page");
+  });
+
+  it("highlights the Work section without marking task detail as current", async () => {
+    window.history.replaceState({}, "", "/tasks/task-running");
+    mockControlPlane();
+    renderApp();
+
+    await screen.findByRole("heading", { name: "running task" });
+    const work = screen.getByRole("button", { name: /^Work$/ });
+    expect(work).toHaveClass("active");
+    expect(work).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("button", { name: /^Workers$/ })).not.toHaveAttribute("aria-current");
+  });
+
+  it("highlights the Workers section without marking worker detail as current", async () => {
+    window.history.replaceState({}, "", "/workers/worker-online");
+    mockControlPlane();
+    renderApp();
+
+    await screen.findByRole("heading", { name: "Build Mac" });
+    const workers = screen.getByRole("button", { name: /^Workers$/ });
+    expect(workers).toHaveClass("active");
+    expect(workers).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("button", { name: /^Work$/ })).not.toHaveAttribute("aria-current");
+  });
+
   it("renders every task status in the operational board", async () => {
     mockControlPlane();
     renderApp();
