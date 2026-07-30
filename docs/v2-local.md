@@ -128,6 +128,20 @@ Use the UI to cancel queued or active work. Failed and cancelled tasks expose
 an explicit **Retry task** action. Retry creates another attempt for the same
 task; Factory never retries automatically.
 
+Task prompts, terminal results, attempts, and events remain durable until an
+operator deletes them. A terminal task exposes **Delete history** on its detail
+page. The action requires confirmation and removes that task's execution,
+attempts, claim records, and events in one database transaction. Queued or
+active tasks cannot be deleted. After an attempt reaches a terminal state,
+deletion waits for the worker to report whether its worktree was cleaned or
+retained. A task whose attempt is still reported as a retained worktree must
+be cleaned first. The equivalent API call is:
+
+```sh
+curl --fail -X DELETE -H 'Content-Type: application/json' \
+  --data '{}' http://127.0.0.1:7337/api/v1/tasks/TASK_ID
+```
+
 ## Results, restarts, and cleanup
 
 Codex runs in:
@@ -142,10 +156,10 @@ Its branch is:
 factory-v2/<task-id-prefix>-<attempt-id-prefix>
 ```
 
-Successful clean worktrees are removed only when their commit is the original
-base or is reachable from a remote ref. Failed, cancelled, dirty, unpublished,
-or otherwise unproven worktrees are retained and shown on Worker detail with a
-cleanup command.
+Successful clean worktrees and their managed local branches are removed only
+when the branch commit is the original base or is reachable from a remote ref.
+Failed, cancelled, dirty, unpublished, or otherwise unproven worktrees and
+branches are retained and shown on Worker detail with a cleanup command.
 
 Stop the worker before cleanup. Preview first:
 
@@ -161,9 +175,9 @@ After inspecting or preserving local changes, confirm:
   --config .factory-v2/worker.toml
 ```
 
-Cleanup never deletes the branch. It only removes the manifest-owned V2
-worktree after rechecking its repository, path, branch, commit, and Git
-registration.
+Operator-confirmed cleanup preserves the branch. It removes only the
+manifest-owned V2 worktree after rechecking its repository, path, branch,
+commit, and Git registration.
 
 The server and worker may be restarted with the same start command. The server
 reopens durable task history. The worker reuses its ID, stops any verified

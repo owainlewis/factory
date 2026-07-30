@@ -6,6 +6,7 @@ import {
   LoaderCircle,
   RefreshCw,
   Square,
+  Trash2,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
@@ -28,10 +29,21 @@ import {
   StatusBadge,
 } from "./ui";
 
-export function TaskDetail({ id, workers, onBack }: { id: string; workers: Worker[]; onBack: () => void }) {
+export function TaskDetail({
+  id,
+  workers,
+  onBack,
+  onDeleted,
+}: {
+  id: string;
+  workers: Worker[];
+  onBack: () => void;
+  onDeleted: () => void;
+}) {
   const interval = useVisibleInterval(2_000);
   const queryClient = useQueryClient();
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [terminalCatchupAttemptID, setTerminalCatchupAttemptID] = useState<string | null>(null);
   const detail = useQuery({
     queryKey: ["task", id],
@@ -121,6 +133,24 @@ export function TaskDetail({ id, workers, onBack }: { id: string; workers: Worke
       await invalidateControlPlane(queryClient);
     },
   });
+  const deleteTask = useMutation({
+    mutationFn: () => api.deleteTask(id),
+    onSuccess: async () => {
+      const attemptIDs = detail.data?.attempts?.map((attempt) => attempt.id) ?? [];
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: ["task", id], exact: true }),
+        ...attemptIDs.map((attemptID) =>
+          queryClient.cancelQueries({ queryKey: ["events", attemptID], exact: true })
+        ),
+      ]);
+      queryClient.removeQueries({ queryKey: ["task", id], exact: true });
+      for (const attemptID of attemptIDs) {
+        queryClient.removeQueries({ queryKey: ["events", attemptID], exact: true });
+      }
+      onDeleted();
+      void invalidateControlPlane(queryClient);
+    },
+  });
 
   if (detail.isPending) return <LoadingState label="Loading task" />;
   if (!detail.data) return <ErrorState error={detail.error} onRetry={() => void detail.refetch()} />;
@@ -160,10 +190,32 @@ export function TaskDetail({ id, workers, onBack }: { id: string; workers: Worke
               {retry.isPending ? "Retrying…" : "Retry task"}
             </button>
           )}
+          {!active && !confirmDelete && (
+            <button className="button button-danger-secondary" onClick={() => setConfirmDelete(true)}>
+              <Trash2 size={14} /> Delete history
+            </button>
+          )}
+          {confirmDelete && (
+            <div className="confirm-action" role="alert">
+              <span>Permanently delete this task, prompt, attempts, and events?</span>
+              <button
+                className="button button-danger"
+                onClick={() => deleteTask.mutate()}
+                disabled={deleteTask.isPending}
+              >
+                {deleteTask.isPending ? "Deleting…" : "Confirm delete"}
+              </button>
+              <button className="button button-secondary" onClick={() => setConfirmDelete(false)}>
+                Keep history
+              </button>
+            </div>
+          )}
         </div>
       </div>
       {detail.error && <StaleBanner error={detail.error} />}
-      {(cancel.error || retry.error) && <InlineError error={cancel.error ?? retry.error} />}
+      {(cancel.error || retry.error || deleteTask.error) && (
+        <InlineError error={cancel.error ?? retry.error ?? deleteTask.error} />
+      )}
       {!data.repository_available && (
         <div className="warning-banner"><AlertCircle size={17} /> Repository unavailable on the assigned worker. Queued work will wait.</div>
       )}

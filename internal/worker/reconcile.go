@@ -56,7 +56,9 @@ func (manager *Manager) reconcile(ctx context.Context) error {
 	if err != nil {
 		return unsafeReconciliation(err)
 	}
+	disposed := make(map[string]bool, len(disposedAttemptIDs))
 	for _, attemptID := range disposedAttemptIDs {
+		disposed[attemptID] = true
 		manager.rememberDisposed(attemptID)
 	}
 	manifests, err := manager.manifests.loadAll()
@@ -65,6 +67,9 @@ func (manager *Manager) reconcile(ctx context.Context) error {
 		reconciliationErrors = append(reconciliationErrors, unsafeReconciliation(err))
 	}
 	for _, manifest := range manifests {
+		if disposed[manifest.AttemptID] {
+			continue
+		}
 		if err := manager.reconcileManifest(ctx, manifest); err != nil {
 			reconciliationErrors = append(reconciliationErrors,
 				fmt.Errorf("attempt %s: %w", manifest.AttemptID, err))
@@ -127,9 +132,23 @@ func (manager *Manager) reconcileManifest(ctx context.Context, manifest attemptM
 
 	switch {
 	case manifest.Lifecycle == manifestCleanupStarted && !inspection.PathExists && !inspection.Registered:
+		cleanupResult := "worktree was already absent during startup cleanup recovery"
+		if manifest.CleanupIntent == cleanupIntentAutomatic {
+			deleted, deleteErr := deleteSafeManagedBranch(
+				ctx, manager.options.GitExecutable, inspection.Repository.Path, manifest,
+			)
+			if deleteErr != nil {
+				return retryReconciliation(deleteErr)
+			}
+			if deleted {
+				cleanupResult += "; safe local branch deleted"
+			} else {
+				cleanupResult += "; local branch preserved"
+			}
+		}
 		_, err = manager.manifests.update(manifest.AttemptID, func(value *attemptManifest) error {
 			value.Lifecycle = manifestCleaned
-			value.CleanupResult = "worktree was already absent during startup cleanup recovery"
+			value.CleanupResult = cleanupResult
 			value.RetentionReason = ""
 			return nil
 		})
@@ -176,9 +195,21 @@ func (manager *Manager) reconcileManifest(ctx context.Context, manifest attemptM
 		if err := removeInspectedWorktree(ctx, manager.options.GitExecutable, inspection, force); err != nil {
 			return retryReconciliation(err)
 		}
+		cleanupResult := "startup finished interrupted cleanup; local branch preserved"
+		if manifest.CleanupIntent == cleanupIntentAutomatic {
+			deleted, deleteErr := deleteSafeManagedBranch(
+				ctx, manager.options.GitExecutable, inspection.Repository.Path, manifest,
+			)
+			if deleteErr != nil {
+				return retryReconciliation(deleteErr)
+			}
+			if deleted {
+				cleanupResult = "startup finished interrupted cleanup; safe local branch deleted"
+			}
+		}
 		_, err = manager.manifests.update(manifest.AttemptID, func(value *attemptManifest) error {
 			value.Lifecycle = manifestCleaned
-			value.CleanupResult = "startup finished interrupted cleanup"
+			value.CleanupResult = cleanupResult
 			value.RetentionReason = ""
 			return nil
 		})
@@ -407,6 +438,60 @@ func automaticCleanupEligible(
 	return nil
 }
 
+func deleteSafeManagedBranch(
+	ctx context.Context,
+	gitExecutable string,
+	repositoryPath string,
+	manifest attemptManifest,
+) (bool, error) {
+	ref := "refs/heads/" + manifest.Branch
+	stdout, stderr, err := runGitCommand(ctx, gitExecutable, repositoryPath, 64<<10,
+		"for-each-ref", "--format=%(objectname)", ref)
+	if err != nil {
+		return false, commandFailure("inspect managed local branch", stdout, stderr, err)
+	}
+	head := strings.TrimSpace(string(stdout))
+	if head == "" {
+		return false, nil
+	}
+	if !commitPattern.MatchString(head) {
+		return false, errors.New("managed local branch does not point to a full commit ID")
+	}
+	if head != manifest.BaseCommit {
+		stdout, stderr, err = runGitCommand(ctx, gitExecutable, repositoryPath, 256<<10,
+			"for-each-ref", "--format=%(refname)", "--contains", head, "refs/remotes")
+		if err != nil {
+			return false, commandFailure("inspect published refs before branch cleanup", stdout, stderr, err)
+		}
+		if strings.TrimSpace(string(stdout)) == "" {
+			return false, nil
+		}
+	}
+	worktrees, err := listGitWorktrees(ctx, gitExecutable, repositoryPath)
+	if err != nil {
+		return false, fmt.Errorf("inspect branch worktree ownership before cleanup: %w", err)
+	}
+	for _, worktree := range worktrees {
+		if worktree.Branch == manifest.Branch {
+			return false, nil
+		}
+	}
+	stdout, stderr, err = runGitCommand(ctx, gitExecutable, repositoryPath, 64<<10,
+		"update-ref", "-d", ref, head)
+	if err != nil {
+		return false, commandFailure("delete safe managed local branch", stdout, stderr, err)
+	}
+	stdout, stderr, err = runGitCommand(ctx, gitExecutable, repositoryPath, 64<<10,
+		"for-each-ref", "--format=%(objectname)", ref)
+	if err != nil {
+		return false, commandFailure("verify managed local branch deletion", stdout, stderr, err)
+	}
+	if strings.TrimSpace(string(stdout)) != "" {
+		return false, errors.New("Git reported branch cleanup success but the managed branch remains")
+	}
+	return true, nil
+}
+
 func (manager *Manager) cleanCompletedWorktree(attemptID string) error {
 	manifest, err := manager.manifests.load(attemptID)
 	if err != nil {
@@ -441,8 +526,17 @@ func (manager *Manager) cleanCompletedWorktree(attemptID string) error {
 	if err := removeInspectedWorktree(ctx, manager.options.GitExecutable, inspection, false); err != nil {
 		return err
 	}
+	deleted, err := deleteSafeManagedBranch(
+		ctx, manager.options.GitExecutable, inspection.Repository.Path, manifest,
+	)
+	if err != nil {
+		return err
+	}
 	return manager.persistLifecycle(attemptID, manifestCleaned, func(value *attemptManifest) {
-		value.CleanupResult = "automatic cleanup completed"
+		value.CleanupResult = "automatic cleanup completed; local branch preserved"
+		if deleted {
+			value.CleanupResult = "automatic cleanup completed; safe local branch deleted"
+		}
 		value.RetentionReason = ""
 	})
 }

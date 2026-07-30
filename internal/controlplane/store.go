@@ -471,7 +471,10 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 			FROM attempts
 			WHERE id = ?
 		`, attemptID).Scan(&ownerID)
-		if errors.Is(err, sql.ErrNoRows) || (err == nil && ownerID != workerID) {
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err == nil && ownerID != workerID {
 			return protocol.Worker{}, invalid(
 				"invalid_disposed_attempts", "disposed attempts must exist and be owned by this worker")
 		}
@@ -827,6 +830,112 @@ func (s *Store) Task(ctx context.Context, id string) (protocol.TaskDetail, error
 		detail.Attempts = append(detail.Attempts, attempt)
 	}
 	return detail, rows.Err()
+}
+
+func (s *Store) DeleteTask(ctx context.Context, taskID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return unavailable(err)
+	}
+	defer tx.Rollback()
+
+	var executionID, state string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, state FROM executions WHERE task_id = ?
+	`, taskID).Scan(&executionID, &state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return unavailable(err)
+	}
+	if state != "succeeded" && state != "failed" && state != "cancelled" {
+		return conflict("task_not_terminal", "only terminal task history can be deleted")
+	}
+
+	var pendingDisposition int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM attempts
+		WHERE execution_id = ? AND capacity_acknowledged = 0
+	`, executionID).Scan(&pendingDisposition); err != nil {
+		return unavailable(err)
+	}
+	if pendingDisposition != 0 {
+		return conflict(
+			"worktree_disposition_pending",
+			"wait for the worker to report whether terminal attempt worktrees were retained or cleaned",
+		)
+	}
+
+	attemptRows, err := tx.QueryContext(ctx, `SELECT id FROM attempts WHERE execution_id = ?`, executionID)
+	if err != nil {
+		return unavailable(err)
+	}
+	attemptIDs := make(map[string]struct{})
+	for attemptRows.Next() {
+		var attemptID string
+		if err := attemptRows.Scan(&attemptID); err != nil {
+			attemptRows.Close()
+			return unavailable(err)
+		}
+		attemptIDs[attemptID] = struct{}{}
+	}
+	if err := attemptRows.Close(); err != nil {
+		return unavailable(err)
+	}
+
+	workerRows, err := tx.QueryContext(ctx, `SELECT retained_worktrees_json FROM workers`)
+	if err != nil {
+		return unavailable(err)
+	}
+	for workerRows.Next() {
+		var encoded string
+		if err := workerRows.Scan(&encoded); err != nil {
+			workerRows.Close()
+			return unavailable(err)
+		}
+		var retained []protocol.RetainedWorktree
+		if err := json.Unmarshal([]byte(encoded), &retained); err != nil {
+			workerRows.Close()
+			return unavailable(fmt.Errorf("decode retained worktree report: %w", err))
+		}
+		for _, worktree := range retained {
+			if _, exists := attemptIDs[worktree.AttemptID]; exists {
+				workerRows.Close()
+				return conflict("retained_worktree", "clean retained worktrees before deleting task history")
+			}
+		}
+	}
+	if err := workerRows.Close(); err != nil {
+		return unavailable(err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM attempt_events
+		WHERE attempt_id IN (SELECT id FROM attempts WHERE execution_id = ?)
+	`, executionID); err != nil {
+		return unavailable(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM claim_requests
+		WHERE attempt_id IN (SELECT id FROM attempts WHERE execution_id = ?)
+	`, executionID); err != nil {
+		return unavailable(err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM attempts WHERE execution_id = ?`, executionID); err != nil {
+		return unavailable(err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM executions WHERE id = ?`, executionID); err != nil {
+		return unavailable(err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE id = ?`, taskID); err != nil {
+		return unavailable(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return unavailable(err)
+	}
+	return nil
 }
 
 func scanExecution(row scanner) (protocol.Execution, error) {

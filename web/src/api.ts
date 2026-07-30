@@ -73,6 +73,11 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
+  deleteTask: (id: string) =>
+    request<{ deleted: boolean }>(`/api/v1/tasks/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      body: "{}",
+    }),
   retryExecution: (id: string) =>
     request<TaskDetail>(`/api/v1/executions/${encodeURIComponent(id)}/retry`, {
       method: "POST",

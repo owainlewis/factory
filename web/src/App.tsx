@@ -6,7 +6,7 @@ import { invalidateControlPlane } from "./controlPlaneQueries";
 import { DelegateDrawer } from "./DelegateDrawer";
 import { TaskDetail } from "./TaskDetail";
 import { useVisibleInterval } from "./polling";
-import type { Task } from "./types";
+import type { Task, TaskPage } from "./types";
 import { WorkersView, WorkerDetail } from "./Workers";
 import { WorkView } from "./Work";
 
@@ -37,6 +37,7 @@ export function App() {
   const [taskHistory, setTaskHistory] = useState<Task[]>([]);
   const [taskHistoryCursor, setTaskHistoryCursor] = useState<string | null>();
   const previousTaskHeadCursor = useRef<string | null | undefined>(undefined);
+  const deletedTaskIDs = useRef(new Set<string>());
   const workInterval = useVisibleInterval(5_000);
   const workerInterval = useVisibleInterval(10_000);
   const queryClient = useQueryClient();
@@ -56,11 +57,12 @@ export function App() {
 
   const tasks = useQuery({
     queryKey: ["tasks", "head"],
-    queryFn: () => api.tasks(),
+    queryFn: async () => withoutDeletedTasks(await api.tasks(), deletedTaskIDs.current),
     refetchInterval: workInterval,
   });
   const loadTaskHistory = useMutation({
-    mutationFn: ({ cursor }: { cursor: string; headCursor: string | null }) => api.tasks(cursor),
+    mutationFn: async ({ cursor }: { cursor: string; headCursor: string | null }) =>
+      withoutDeletedTasks(await api.tasks(cursor), deletedTaskIDs.current),
     onSuccess: (page, request) => {
       setTaskHistory((current) => mergeTasks(page.tasks, current));
       if (previousTaskHeadCursor.current === request.headCursor) {
@@ -190,6 +192,16 @@ export function App() {
               id={route.id}
               workers={workers.data ?? []}
               onBack={() => navigate({ page: "work" })}
+              onDeleted={() => {
+                deletedTaskIDs.current.add(route.id);
+                queryClient.setQueryData<TaskPage>(["tasks", "head"], (current) =>
+                  current
+                    ? { ...current, tasks: current.tasks.filter((task) => task.id !== route.id) }
+                    : current
+                );
+                setTaskHistory((current) => current.filter((task) => task.id !== route.id));
+                navigate({ page: "work" });
+              }}
             />
           )}
           {route.page === "worker" && (
@@ -233,4 +245,11 @@ function mergeTasks(...groups: Task[][]): Task[] {
     if (left.id === right.id) return 0;
     return left.id < right.id ? 1 : -1;
   });
+}
+
+function withoutDeletedTasks(page: TaskPage, deletedTaskIDs: Set<string>): TaskPage {
+  return {
+    ...page,
+    tasks: page.tasks.filter((task) => !deletedTaskIDs.has(task.id)),
+  };
 }

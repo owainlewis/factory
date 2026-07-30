@@ -54,6 +54,7 @@ export function mockControlPlane(
     incrementalEvents?: boolean;
     paginatedTasks?: boolean;
     shiftingTaskBoundary?: boolean;
+    staleHistoryAfterDelete?: boolean;
     switchAttemptAfter?: number;
     taskDetailFailuresAfter?: number;
     terminalEventFailures?: number;
@@ -65,6 +66,8 @@ export function mockControlPlane(
   let taskHeadRequests = 0;
   let terminalEventFailures = options.terminalEventFailures ?? 0;
   let taskDetailRequests = 0;
+  const deletedTaskIDs = new Set<string>();
+  let resolveStaleHistory: (() => void) | undefined;
   let createdTask: { title: string; description: string } = {
     title: "Ship the UI",
     description: "Build and verify the real interface.",
@@ -128,9 +131,20 @@ export function mockControlPlane(
       const growingPage =
         options.growingTaskHistory && taskHeadRequests > 1;
       return Response.json({
-        tasks: options.paginatedTasks || options.growingTaskHistory ? tasks.slice(0, 1) : tasks,
-        next_cursor: options.paginatedTasks || growingPage ? "next-page" : null,
+        tasks: (options.paginatedTasks || options.growingTaskHistory ? tasks.slice(0, 1) : tasks)
+          .filter((task) => !deletedTaskIDs.has(task.id)),
+        next_cursor: options.staleHistoryAfterDelete
+          ? "stale-page"
+          : options.paginatedTasks || growingPage
+            ? "next-page"
+            : null,
       });
+    }
+    if (path === "/api/v1/tasks?limit=50&cursor=stale-page") {
+      await new Promise<void>((resolve) => {
+        resolveStaleHistory = resolve;
+      });
+      return Response.json({ tasks: [tasks[2]], next_cursor: null });
     }
     if (path === "/api/v1/tasks?limit=50&cursor=next-page") {
       return Response.json({ tasks: tasks.slice(1), next_cursor: null });
@@ -165,6 +179,52 @@ export function mockControlPlane(
         repository: worker.repositories[0],
         repository_available: true,
         attempts: [],
+      });
+    }
+    if (path.startsWith("/api/v1/attempts/attempt-succeeded/events?")) {
+      return Response.json({
+        events: [{
+          sequence: 0,
+          kind: "completed",
+          payload: { message: "Terminal event" },
+          server_time: tasks[2].created_at,
+        }],
+        next_after: 0,
+        has_more: false,
+      });
+    }
+    if (path === "/api/v1/tasks/task-succeeded") {
+      if (init?.method === "DELETE") {
+        deletedTaskIDs.add("task-succeeded");
+        window.setTimeout(() => resolveStaleHistory?.(), 0);
+        return Response.json({ deleted: true });
+      }
+      return Response.json({
+        task: { ...tasks[2], description: "Terminal history can be deleted explicitly." },
+        execution: {
+          id: "execution-succeeded",
+          task_id: "task-succeeded",
+          assigned_worker_id: worker.id,
+          required_runtime: "codex",
+          state: "succeeded",
+          cancellation_requested: false,
+          created_at: tasks[2].created_at,
+          updated_at: tasks[2].created_at,
+        },
+        repository: worker.repositories[0],
+        repository_available: true,
+        attempts: [{
+          id: "attempt-succeeded",
+          execution_id: "execution-succeeded",
+          worker_id: worker.id,
+          attempt_number: 1,
+          state: "succeeded",
+          lease_expires_at: tasks[2].created_at,
+          result: "Terminal result",
+          started_at: tasks[2].created_at,
+          completed_at: tasks[2].created_at,
+          created_at: tasks[2].created_at,
+        }],
       });
     }
     if (path === "/api/v1/tasks/task-running") {

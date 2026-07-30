@@ -182,6 +182,7 @@ func TestStartupReconciliationClassifiesManifestAndFilesystemState(t *testing.T)
 		initial       string
 		cleanupIntent string
 		createGit     bool
+		removeBefore  bool
 		makeDirty     bool
 		createPartial bool
 		want          string
@@ -191,7 +192,11 @@ func TestStartupReconciliationClassifiesManifestAndFilesystemState(t *testing.T)
 		{name: "missing", initial: manifestWorktreeCreated, want: manifestMissing},
 		{name: "cleaned", initial: manifestCleaned, want: manifestCleaned},
 		{name: "retained", initial: manifestWorktreeCreated, createGit: true, want: manifestRetained},
-		{name: "cleanup already absent", initial: manifestCleanupStarted, want: manifestCleaned},
+		{
+			name: "automatic cleanup already absent", initial: manifestCleanupStarted,
+			cleanupIntent: cleanupIntentAutomatic, createGit: true, removeBefore: true,
+			want: manifestCleaned,
+		},
 		{
 			name: "operator cleanup still present", initial: manifestCleanupStarted,
 			cleanupIntent: cleanupIntentOperator, createGit: true, want: manifestCleaned,
@@ -267,6 +272,17 @@ func TestStartupReconciliationClassifiesManifestAndFilesystemState(t *testing.T)
 					t.Fatal(err)
 				}
 			}
+			if test.removeBefore {
+				inspection, inspectErr := inspectManifestWorktree(
+					context.Background(), "git", manager.dataDirectory, manifest,
+				)
+				if inspectErr != nil {
+					t.Fatal(inspectErr)
+				}
+				if err := removeInspectedWorktree(context.Background(), "git", inspection, false); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.createPartial {
 				if err := os.MkdirAll(value.Path, 0o700); err != nil {
 					t.Fatal(err)
@@ -288,7 +304,7 @@ func TestStartupReconciliationClassifiesManifestAndFilesystemState(t *testing.T)
 			if retained != (test.want == manifestRetained) {
 				t.Fatalf("retained=%v for lifecycle %s", retained, persisted.Lifecycle)
 			}
-			if test.initial == manifestCleanupStarted && test.createGit {
+			if test.initial == manifestCleanupStarted && test.createGit && !test.removeBefore {
 				_, statErr := os.Stat(value.Path)
 				if test.want == manifestCleaned && !errors.Is(statErr, os.ErrNotExist) {
 					t.Fatalf("startup cleanup left worktree: %v", statErr)
@@ -296,10 +312,124 @@ func TestStartupReconciliationClassifiesManifestAndFilesystemState(t *testing.T)
 				if test.want == manifestRetained && statErr != nil {
 					t.Fatalf("startup cleanup removed retained worktree: %v", statErr)
 				}
-				runGitTest(t, repository.path, "show-ref", "--verify", "refs/heads/"+value.Branch)
+			}
+			if test.initial == manifestCleanupStarted && test.createGit {
+				command := exec.Command("git", "show-ref", "--verify", "refs/heads/"+value.Branch)
+				command.Dir = repository.path
+				err := command.Run()
+				branchShouldRemain := test.want == manifestRetained ||
+					test.cleanupIntent == cleanupIntentOperator
+				if branchShouldRemain != (err == nil) {
+					t.Fatalf("branch presence = %v; want %v", err == nil, branchShouldRemain)
+				}
 			}
 		})
 	}
+}
+
+func TestSafeManagedBranchDeletionRequiresBaseOrPublishedHead(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		published  bool
+		wantDelete bool
+	}{
+		{name: "base", wantDelete: true},
+		{name: "published commit", published: true, wantDelete: true},
+		{name: "unpublished commit"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := createRepository(t, "branch-"+strings.ReplaceAll(test.name, " ", "-"))
+			resolved, err := resolveRepository("factory", repository.path, "git")
+			if err != nil {
+				t.Fatal(err)
+			}
+			taskID, attemptID := fixtureUUID(300), fixtureUUID(301)
+			root := filepath.Join(t.TempDir(), "worktrees")
+			value, err := createWorktree(
+				context.Background(), "git", root, resolved, taskID, attemptID,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.name != "base" {
+				if err := os.WriteFile(filepath.Join(value.Path, "result.txt"), []byte(test.name+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGitTest(t, value.Path, "add", "result.txt")
+				runGitTest(t, value.Path, "commit", "-m", test.name)
+				if test.published {
+					runGitTest(t, value.Path, "push", "origin", "HEAD:refs/heads/published-result")
+					runGitTest(t, repository.path, "fetch", "origin")
+				}
+			}
+			manifest := attemptManifest{
+				TaskID: taskID, AttemptID: attemptID, BaseCommit: value.BaseCommit,
+				Branch: value.Branch,
+			}
+			inspection := worktreeInspection{
+				Repository: resolved, PathExists: true, Registered: true,
+				Entry: gitWorktreeEntry{Path: value.Path, Branch: value.Branch},
+			}
+			if err := removeInspectedWorktree(context.Background(), "git", inspection, false); err != nil {
+				t.Fatal(err)
+			}
+			deleted, err := deleteSafeManagedBranch(
+				context.Background(), "git", resolved.Path, manifest,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if deleted != test.wantDelete {
+				t.Fatalf("deleted = %v; want %v", deleted, test.wantDelete)
+			}
+			command := exec.Command("git", "show-ref", "--verify", "refs/heads/"+value.Branch)
+			command.Dir = repository.path
+			branchExists := command.Run() == nil
+			if branchExists == test.wantDelete {
+				t.Fatalf("branch exists = %v after deleted=%v", branchExists, deleted)
+			}
+		})
+	}
+}
+
+func TestSafeManagedBranchDeletionPreservesBranchCheckedOutElsewhere(t *testing.T) {
+	repository := createRepository(t, "branch-checked-out-elsewhere")
+	resolved, err := resolveRepository("factory", repository.path, "git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID, attemptID := fixtureUUID(302), fixtureUUID(303)
+	value, err := createWorktree(
+		context.Background(), "git", filepath.Join(t.TempDir(), "managed"), resolved, taskID, attemptID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection := worktreeInspection{
+		Repository: resolved, PathExists: true, Registered: true,
+		Entry: gitWorktreeEntry{Path: value.Path, Branch: value.Branch},
+	}
+	if err := removeInspectedWorktree(context.Background(), "git", inspection, false); err != nil {
+		t.Fatal(err)
+	}
+	operatorWorktree := filepath.Join(t.TempDir(), "operator")
+	runGitTest(t, repository.path, "worktree", "add", operatorWorktree, value.Branch)
+
+	deleted, err := deleteSafeManagedBranch(
+		context.Background(),
+		"git",
+		resolved.Path,
+		attemptManifest{
+			TaskID: taskID, AttemptID: attemptID, BaseCommit: value.BaseCommit, Branch: value.Branch,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted {
+		t.Fatal("deleted a managed branch checked out in another worktree")
+	}
+	runGitTest(t, repository.path, "show-ref", "--verify", "refs/heads/"+value.Branch)
 }
 
 func seedReconciliationManifest(
@@ -883,6 +1013,80 @@ func TestAcknowledgedDisposedManifestIsPrunedBeforeSecondRestart(t *testing.T) {
 	}
 	if got := secondRestart.registration().DisposedAttemptIDs; len(got) != 0 {
 		t.Fatalf("second restart republished acknowledged disposals: %#v", got)
+	}
+}
+
+func TestDeletedDisposedAttemptDoesNotPoisonStartupReconciliation(t *testing.T) {
+	fixture := newServerFixture(t, nil)
+	repository := createRepository(t, "deleted-disposed-attempt")
+	dataDirectory := filepath.Join(t.TempDir(), "worker")
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	seedManager := newTestManager(t, fixture, codexPath, dataDirectory,
+		map[string]repositoryFixture{"factory": repository}, 1)
+	claim := seedReconciliationManifest(t, fixture, seedManager, manifestCleanupStarted)
+	if _, err := fixture.store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: strings.Repeat("r", 43), State: "failed", Error: "disposed before deletion",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := seedManager.manifests.load(claim.Attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := inspectManifestWorktree(context.Background(), "git", seedManager.dataDirectory, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := removeInspectedWorktree(context.Background(), "git", inspection, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedManager.persistLifecycle(claim.Attempt.ID, manifestCleaned, func(value *attemptManifest) {
+		value.TerminalState = "failed"
+		value.ProcessActive = false
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedManager.recordDisposed(claim.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.RegisterWorker(
+		context.Background(), seedManager.ID(), seedManager.registration(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.DeleteTask(context.Background(), claim.Task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedManager.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restart := newTestManager(t, fixture, codexPath, dataDirectory,
+		map[string]repositoryFixture{"factory": repository}, 1)
+	t.Cleanup(func() { _ = restart.Close() })
+	restart.setHealth(health{State: "healthy", GitVersion: "test", CodexVersion: "test"})
+	if err := restart.reconcile(context.Background()); err != nil {
+		t.Fatalf("journaled deleted disposal caused reconciliation failure: %v", err)
+	}
+	restart.stateMutex.Lock()
+	currentHealth, fatal := restart.health, restart.fatalHealth
+	restart.stateMutex.Unlock()
+	if fatal != nil || currentHealth.State != "healthy" {
+		t.Fatalf("deleted disposal poisoned worker health: health=%#v fatal=%v", currentHealth, fatal)
+	}
+	if got := restart.registration().DisposedAttemptIDs; len(got) != 1 || got[0] != claim.Attempt.ID {
+		t.Fatalf("deleted disposal registration = %#v", got)
+	}
+	restart.register(context.Background())
+	if _, err := restart.manifests.load(claim.Attempt.ID); err == nil {
+		t.Fatal("acknowledged deleted disposal left its manifest on disk")
+	}
+	pending, err := restart.manifests.loadDisposals()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("acknowledged deleted disposal remained journaled: %#v", pending)
 	}
 }
 

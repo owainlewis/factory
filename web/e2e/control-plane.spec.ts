@@ -41,6 +41,7 @@ async function registerWorker(
   name: string,
   repositories: typeof onlineRepositories,
   activeCount = 0,
+  disposedAttemptIDs: string[] = [],
 ) {
   return json<{
     repositories: Array<{ id: string; key: string }>;
@@ -53,6 +54,8 @@ async function registerWorker(
         capacity: 2,
         active_count: activeCount,
         health: "healthy",
+        capacity_handoff_version: 1,
+        disposed_attempt_ids: disposedAttemptIDs,
         repositories,
         retained_worktrees:
           id === workerOnline
@@ -212,14 +215,20 @@ test.beforeAll(async () => {
   );
   await json(await api.post(`/api/v1/tasks/${cancelled.task.id}/cancel`, { data: {} }));
 
-  await createTask(
+  const succeeded = await createTask(
     api,
     "e2e-succeeded",
     "Ship the stable API client",
     workerOnline,
     identifiers.factoryRepository,
   );
-  await complete(api, "claim-succeeded", "succeeded", "API client shipped with all checks passing.");
+  const succeededAttempt = await complete(
+    api,
+    "claim-succeeded",
+    "succeeded",
+    "API client shipped with all checks passing.",
+  );
+  identifiers.succeededTask = succeeded.task.id;
 
   const failed = await createTask(
     api,
@@ -228,7 +237,12 @@ test.beforeAll(async () => {
     workerOnline,
     identifiers.factoryRepository,
   );
-  await complete(api, "claim-failed", "failed", "The release check found a deterministic failure.");
+  const failedAttempt = await complete(
+    api,
+    "claim-failed",
+    "failed",
+    "The release check found a deterministic failure.",
+  );
   identifiers.failedTask = failed.task.id;
 
   const longTitle = `Long operational title ${"with bounded content ".repeat(8)}`.slice(0, 200);
@@ -264,7 +278,14 @@ test.beforeAll(async () => {
   identifiers.runningTask = running.task.id;
   identifiers.runningAttempt = active.attempt.id;
 
-  await registerWorker(api, workerOnline, "Build Mac", onlineRepositories, 1);
+  await registerWorker(
+    api,
+    workerOnline,
+    "Build Mac",
+    onlineRepositories,
+    1,
+    [succeededAttempt.attempt.id, failedAttempt.attempt.id],
+  );
   await api.dispose();
 });
 
@@ -361,6 +382,24 @@ test("renders every state and saves the desktop Work view", async ({ page }) => 
   await expect(page.getByText("Long operational title", { exact: false })).toBeVisible();
   await page.screenshot({ path: "test-results/screenshots/work-desktop.png", fullPage: true });
   browser.assertClean();
+});
+
+test("confirms and deletes terminal task history", async ({ page }) => {
+  const browser = observeBrowser(page);
+  await page.goto(`/tasks/${identifiers.succeededTask}`);
+  await expect(page.getByRole("heading", { name: "Ship the stable API client" })).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("button", { name: "Delete history" }).click();
+  await expect(page.getByText(/Permanently delete this task, prompt, attempts, and events/)).toBeVisible();
+  await page.getByRole("button", { name: "Confirm delete" }).click();
+  await expect(page).toHaveURL("/");
+  await expect(page.getByText("Ship the stable API client")).toHaveCount(0);
+  browser.assertClean();
+
+  const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
+  const response = await api.get(`/api/v1/tasks/${identifiers.succeededTask}`);
+  expect(response.status()).toBe(404);
+  await api.dispose();
 });
 
 test("shows worker capacity, current work, retained cleanup, and saves Workers", async ({ page }) => {

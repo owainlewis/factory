@@ -106,8 +106,9 @@ the task detail endpoint every two seconds and shows new events.
 
 When Codex exits, the worker posts the result. The server accepts it only when
 the lease still owns the attempt. It records `succeeded`, `failed`, or
-`cancelled`. Successful clean worktrees are removed. Failed, cancelled, dirty,
-or unpublished worktrees are retained for inspection.
+`cancelled`. Successful clean worktrees and safe managed local branches are
+removed. Failed, cancelled, dirty, or unpublished worktrees and branches are
+retained for inspection.
 
 ### Components and responsibilities
 
@@ -150,7 +151,8 @@ The UI has four MVP surfaces:
 - Delegate task is a drawer containing title, description, worker, repository,
   and timeout.
 - Task detail shows the description, assigned worker, status, elapsed time,
-  progress, result, cancellation, and retry.
+  progress, result, cancellation, retry, and confirmed terminal-history
+  deletion.
 - Worker detail shows retained worktrees and the exact local cleanup command for
   each one.
 
@@ -548,8 +550,10 @@ worktree or branch.
 retention reason without changing anything. Adding `--confirm` first durably
 marks the verified manifest `cleanup_started`, then removes only that worktree,
 then durably marks the manifest cleaned. If the worker crashes after recording
-`cleanup_started`, startup may finish the recorded cleanup. It does not delete
-a pushed branch or pull request.
+`cleanup_started`, startup may finish the recorded cleanup. Operator-confirmed
+cleanup preserves the branch. Automatic successful cleanup deletes the exact
+managed local branch only when its head is the original base or is reachable
+from a remote ref. It never deletes a remote branch or pull request.
 
 ### Naming and identity
 
@@ -654,18 +658,30 @@ server stops new requests, waits up to ten seconds for active HTTP requests,
 flushes SQLite, and exits. The worker then reaches its lease deadline and stops
 Codex if the server does not return.
 
-Successful clean worktrees are removed after completion. Failed, cancelled,
-dirty, or unpublished worktrees are retained. The worker retains at most ten
-per repository. At a repository's limit it continues heartbeats and may claim
-work for other advertised repositories, but it does not claim more work for
-that repository. Registration publishes both the retained snapshot and exact
+Successful clean worktrees are removed after completion. Their exact managed
+local branch is also removed when its head is the original base or is
+reachable from a remote ref. Failed, cancelled, dirty, unpublished, and
+operator-cleaned work preserves its branch. The worker retains at most ten per
+repository. At a repository's limit it continues heartbeats and may claim work
+for other advertised repositories, but it does not claim more work for that
+repository. Registration publishes both the retained snapshot and exact
 attempt IDs whose local processes have stopped and worktrees are durably
 absent. The control plane releases those attempt reservations without waiting
 for unrelated active work to finish. Disposed IDs use a durable worker-level
 journal until registration succeeds, then absent manifests are durably pruned
-to bound later startup work. The Workers page groups
-retained attempt IDs and their cleanup commands by repository. The operator
-previews and confirms cleanup through `factory-worker cleanup`.
+to bound later startup work. The Workers page groups retained attempt IDs and
+their cleanup commands by repository. The operator previews and confirms
+cleanup through `factory-worker cleanup`.
+
+Task prompts, terminal results, attempts, claim records, and events remain in
+SQLite until an operator confirms **Delete history** or calls
+`DELETE /api/v1/tasks/{task_id}`. Only `succeeded`, `failed`, and `cancelled`
+tasks can be deleted. Deletion is refused while any attempt appears in a
+worker's retained-worktree report or while the worker has not yet acknowledged
+the terminal attempt's cleaned-or-retained disposition. An accepted deletion
+removes only that task's task, execution, attempt, claim, and event rows in one
+transaction. Workers, repositories, other tasks, V1 state, remote branches,
+and local worktrees are outside this operation.
 
 ## 8. Security, privacy, and operations
 

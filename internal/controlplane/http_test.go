@@ -98,6 +98,94 @@ func registerHTTPWorker(t *testing.T, fixture *httpFixture, id, key, remote stri
 	return decodeResponse[protocol.Worker](t, response)
 }
 
+func TestHTTPDeleteTaskHistory(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	worker := registerHTTPWorker(t, fixture, workerA, "factory", "github.com/owainlewis/factory", 1)
+	task := createTestTask(t, fixture.store, "http-delete", workerA, worker.Repositories[0].ID)
+
+	response := fixture.request(
+		http.MethodDelete, "/api/v1/tasks/"+task.Task.ID,
+		"application/json", fixture.server.URL, "{}",
+	)
+	requireStatus(t, response, http.StatusConflict)
+	errorBody := decodeResponse[struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}](t, response)
+	if errorBody.Error.Code != "task_not_terminal" {
+		t.Fatalf("error code = %q", errorBody.Error.Code)
+	}
+
+	if _, err := fixture.store.CancelTask(context.Background(), task.Task.ID); err != nil {
+		t.Fatal(err)
+	}
+	response = fixture.request(
+		http.MethodDelete, "/api/v1/tasks/"+task.Task.ID,
+		"application/json", "https://attacker.example", "{}",
+	)
+	requireStatus(t, response, http.StatusForbidden)
+	response.Body.Close()
+
+	response = fixture.request(
+		http.MethodDelete, "/api/v1/tasks/"+task.Task.ID,
+		"application/json", fixture.server.URL, "{}",
+	)
+	requireStatus(t, response, http.StatusOK)
+	deleted := decodeResponse[map[string]bool](t, response)
+	if !deleted["deleted"] {
+		t.Fatal("delete response did not confirm deletion")
+	}
+	response = fixture.request(http.MethodGet, "/api/v1/tasks/"+task.Task.ID, "", "", nil)
+	requireStatus(t, response, http.StatusNotFound)
+	response.Body.Close()
+
+	response = fixture.request(
+		http.MethodDelete, "/api/v1/tasks/"+task.Task.ID,
+		"application/json", fixture.server.URL, "{}",
+	)
+	requireStatus(t, response, http.StatusNotFound)
+	response.Body.Close()
+
+	retainedTask := createTestTask(t, fixture.store, "http-delete-retained", workerA, worker.Repositories[0].ID)
+	claim := claimTestTask(t, fixture.store, workerA, "http-delete-retained-claim", tokenA)
+	if _, err := fixture.store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Error: "retained",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: workerA, WorkerVersion: "test", CodexVersion: "codex-test",
+		Capacity: 1, Health: "healthy",
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "factory", RemoteIdentity: "github.com/owainlewis/factory", RetainedCount: 1,
+		}},
+		RetainedWorktrees: []protocol.RetainedWorktree{{
+			AttemptID: claim.Attempt.ID, RepositoryID: worker.Repositories[0].ID,
+			Path: "/tmp/http-retained", Reason: "failed",
+			CleanupCommand: "factory-worker cleanup " + claim.Attempt.ID,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response = fixture.request(
+		http.MethodDelete, "/api/v1/tasks/"+retainedTask.Task.ID,
+		"application/json", fixture.server.URL, "{}",
+	)
+	requireStatus(t, response, http.StatusConflict)
+	errorBody = decodeResponse[struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}](t, response)
+	if errorBody.Error.Code != "retained_worktree" {
+		t.Fatalf("retained error code = %q", errorBody.Error.Code)
+	}
+	if !strings.Contains(fixture.logs.String(), `"msg":"task_history_deleted"`) {
+		t.Fatal("successful history deletion was not logged")
+	}
+}
+
 func TestHTTPContractLifecycleAndIdempotency(t *testing.T) {
 	fixture := newHTTPFixture(t)
 	a := registerHTTPWorker(t, fixture, workerA, "factory", "github.com/owainlewis/factory", 1)

@@ -394,6 +394,110 @@ func assertErrorCode(t *testing.T, err error, code string) {
 	}
 }
 
+func TestDeleteTaskRequiresTerminalUnretainedHistoryAndPreservesUnrelatedData(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 2, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	target := createTestTask(t, store, "delete-target", workerA, worker.Repositories[0].ID)
+
+	assertErrorCode(t, store.DeleteTask(context.Background(), target.Task.ID), "task_not_terminal")
+	claim := claimTestTask(t, store, workerA, "delete-claim", tokenA)
+	if claim.Task.ID != target.Task.ID {
+		t.Fatalf("claimed task = %s, want %s", claim.Task.ID, target.Task.ID)
+	}
+	unrelated := createTestTask(t, store, "delete-unrelated", workerA, worker.Repositories[0].ID)
+	assertErrorCode(t, store.DeleteTask(context.Background(), target.Task.ID), "task_not_terminal")
+	if err := store.AppendEvents(context.Background(), claim.Attempt.ID, protocol.EventBatchRequest{
+		LeaseToken: tokenA,
+		Events: []protocol.AttemptEvent{{
+			Sequence: 0, Kind: "progress", Payload: json.RawMessage(`{"text":"durable event"}`),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Error: "retain for inspection",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertErrorCode(
+		t,
+		store.DeleteTask(context.Background(), target.Task.ID),
+		"worktree_disposition_pending",
+	)
+	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: "worker-a", WorkerVersion: "test", CodexVersion: "codex-test",
+		Capacity: 2, Health: "healthy",
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "factory", RemoteIdentity: "github.com/owainlewis/factory", RetainedCount: 1,
+		}},
+		RetainedWorktrees: []protocol.RetainedWorktree{{
+			AttemptID: claim.Attempt.ID, RepositoryID: worker.Repositories[0].ID,
+			Path: "/tmp/factory-retained", Reason: "failed",
+			CleanupCommand: "factory-worker cleanup " + claim.Attempt.ID,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertErrorCode(t, store.DeleteTask(context.Background(), target.Task.ID), "retained_worktree")
+
+	disposedRegistration := protocol.WorkerRegistration{
+		Name: "worker-a", WorkerVersion: "test", CodexVersion: "codex-test",
+		Capacity: 2, Health: "healthy", CapacityHandoffVersion: 1,
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+		}},
+		DisposedAttemptIDs: []string{claim.Attempt.ID},
+	}
+	if _, err := store.RegisterWorker(context.Background(), workerA, disposedRegistration); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteTask(context.Background(), target.Task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterWorker(context.Background(), workerA, disposedRegistration); err != nil {
+		t.Fatalf("replaying disposed registration after history deletion: %v", err)
+	}
+	if _, err := store.Task(context.Background(), target.Task.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted task read returned %v", err)
+	}
+	if _, err := store.Task(context.Background(), unrelated.Task.ID); err != nil {
+		t.Fatalf("unrelated task was affected: %v", err)
+	}
+	for table, query := range map[string]string{
+		"tasks":          `SELECT COUNT(*) FROM tasks WHERE id = ?`,
+		"executions":     `SELECT COUNT(*) FROM executions WHERE id = ?`,
+		"attempts":       `SELECT COUNT(*) FROM attempts WHERE id = ?`,
+		"claim_requests": `SELECT COUNT(*) FROM claim_requests WHERE attempt_id = ?`,
+		"attempt_events": `SELECT COUNT(*) FROM attempt_events WHERE attempt_id = ?`,
+	} {
+		argument := target.Task.ID
+		if table == "executions" {
+			argument = target.Execution.ID
+		} else if table == "attempts" || table == "claim_requests" || table == "attempt_events" {
+			argument = claim.Attempt.ID
+		}
+		var count int
+		if err := store.db.QueryRow(query, argument).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("%s retained %d deleted records", table, count)
+		}
+	}
+	var workerCount, repositoryCount int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM workers WHERE id = ?`, workerA).Scan(&workerCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM repositories WHERE id = ?`, worker.Repositories[0].ID).Scan(&repositoryCount); err != nil {
+		t.Fatal(err)
+	}
+	if workerCount != 1 || repositoryCount != 1 {
+		t.Fatalf("shared data changed: workers=%d repositories=%d", workerCount, repositoryCount)
+	}
+}
+
 func TestTaskCreationIsNormalizedAndIdempotent(t *testing.T) {
 	store := newTestStore(t)
 	worker := registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{
@@ -1205,21 +1309,22 @@ func TestRegistrationCanPreAcknowledgeDisposedAttemptBeforeLeaseSweep(t *testing
 	}
 }
 
-func TestRegistrationRejectsUnknownDisposedAttempt(t *testing.T) {
+func TestRegistrationAcceptsMissingDisposedAttemptForIdempotentHistoryDeletion(t *testing.T) {
 	store := newTestStore(t)
 	registerTestWorker(t, store, workerA, 2, protocol.RepositoryRegistration{
 		Key: "factory", RemoteIdentity: "github.com/example/unproven-disposal",
 	})
 
-	_, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
 		Name: "modern-worker", WorkerVersion: "test", CodexVersion: "test",
 		Capacity: 2, ActiveCount: 1, Health: "healthy",
 		Repositories: []protocol.RepositoryRegistration{{
 			Key: "factory", RemoteIdentity: "github.com/example/unproven-disposal",
 		}},
 		DisposedAttemptIDs: []string{"missing-attempt"},
-	})
-	assertErrorCode(t, err, "invalid_disposed_attempts")
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestUnattributedRetainedSummaryPreservesRegistrationContractWithoutAcknowledgingHandoff(t *testing.T) {

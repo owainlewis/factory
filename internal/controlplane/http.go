@@ -37,6 +37,7 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /api/v1/tasks", api.listTasks)
 	mux.HandleFunc("POST /api/v1/tasks", api.createTask)
 	mux.HandleFunc("GET /api/v1/tasks/{task_id}", api.getTask)
+	mux.HandleFunc("DELETE /api/v1/tasks/{task_id}", api.deleteTask)
 	mux.HandleFunc("POST /api/v1/tasks/{task_id}/cancel", api.cancelTask)
 	mux.HandleFunc("POST /api/v1/executions/{execution_id}/retry", api.retryExecution)
 	mux.HandleFunc("GET /api/v1/attempts/{attempt_id}", api.getAttempt)
@@ -219,6 +220,22 @@ func (a *API) getTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, task)
+}
+
+func (a *API) deleteTask(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	if !decodeEmptyJSON(w, r) {
+		return
+	}
+	taskID := r.PathValue("task_id")
+	if err := a.store.DeleteTask(r.Context(), taskID); err != nil {
+		writeError(w, err)
+		return
+	}
+	a.logger.Info("task_history_deleted", "task_id", taskID)
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
 func (a *API) cancelTask(w http.ResponseWriter, r *http.Request) {

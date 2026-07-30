@@ -462,10 +462,15 @@ func TestMultiRepositorySuccessAndBoundedOutput(t *testing.T) {
 			success.Attempts[0].ID: success.Task.ID,
 			long.Attempts[0].ID:    long.Task.ID,
 		}[attempt.ID][:12] + "-" + attempt.ID[:12]
-		runGitTest(t, map[string]string{
+		repositoryPath := map[string]string{
 			success.Attempts[0].ID: first.path,
 			long.Attempts[0].ID:    second.path,
-		}[attempt.ID], "show-ref", "--verify", "refs/heads/"+branch)
+		}[attempt.ID]
+		waitFor(t, 5*time.Second, func() bool {
+			command := exec.Command("git", "show-ref", "--verify", "refs/heads/"+branch)
+			command.Dir = repositoryPath
+			return command.Run() != nil
+		})
 	}
 	prompt, err := os.ReadFile(filepath.Join(os.Getenv("FACTORY_TEST_CODEX_LOG"), success.Attempts[0].ID+".prompt"))
 	if err != nil {
@@ -800,6 +805,8 @@ func TestFailureRetainsWorktree(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(manager.dataDirectory, "worktrees", detail.Attempts[0].ID)); err != nil {
 		t.Fatalf("failed worktree was not retained: %v", err)
 	}
+	branch := "factory-v2/" + detail.Task.ID[:12] + "-" + detail.Attempts[0].ID[:12]
+	runGitTest(t, repository.path, "show-ref", "--verify", "refs/heads/"+branch)
 }
 
 func TestDirtyAndUnpublishedSuccessesAreRetained(t *testing.T) {
@@ -826,6 +833,12 @@ func TestDirtyAndUnpublishedSuccessesAreRetained(t *testing.T) {
 			_, retained := manager.retained[attempt.ID]
 			return retained
 		})
+		taskID := dirty.Task.ID
+		if attempt.ID == unpublished.Attempts[0].ID {
+			taskID = unpublished.Task.ID
+		}
+		branch := "factory-v2/" + taskID[:12] + "-" + attempt.ID[:12]
+		runGitTest(t, repository.path, "show-ref", "--verify", "refs/heads/"+branch)
 	}
 }
 
@@ -859,6 +872,8 @@ func TestCancellationStopsCompleteProcessGroup(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(manager.dataDirectory, "worktrees", detail.Attempts[0].ID)); err != nil {
 		t.Fatalf("cancelled worktree was not retained: %v", err)
 	}
+	branch := "factory-v2/" + detail.Task.ID[:12] + "-" + detail.Attempts[0].ID[:12]
+	runGitTest(t, repository.path, "show-ref", "--verify", "refs/heads/"+branch)
 }
 
 func TestSuccessfulLeaderExitStopsDescendantHoldingOutputPipes(t *testing.T) {

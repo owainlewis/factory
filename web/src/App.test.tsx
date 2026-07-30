@@ -163,6 +163,65 @@ describe("App", () => {
     expect(within(repository).queryByRole("option", { name: /factory/ })).not.toBeInTheDocument();
   });
 
+  it("confirms permanent deletion only for terminal task history", async () => {
+    window.history.replaceState({}, "", "/tasks/task-succeeded");
+    const fetch = mockControlPlane();
+    const user = userEvent.setup();
+    const { client } = renderApp();
+
+    expect(await screen.findByRole("heading", { name: "succeeded task" })).toBeVisible();
+    expect(await screen.findByText("Terminal event")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Delete history" }));
+    expect(screen.getByText(/Permanently delete this task, prompt, attempts, and events/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Keep history" }));
+    expect(screen.queryByRole("button", { name: "Confirm delete" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Delete history" }));
+    await user.click(screen.getByRole("button", { name: "Confirm delete" }));
+
+    expect(await screen.findByText("queued task")).toBeVisible();
+    expect(screen.queryByText("succeeded task")).not.toBeInTheDocument();
+    const deleteCall = fetch.mock.calls.find(([, init]) => init?.method === "DELETE");
+    expect(deleteCall?.[0]).toBe("/api/v1/tasks/task-succeeded");
+    expect(deleteCall?.[1]?.body).toBe("{}");
+    expect(client.getQueryData(["task", "task-succeeded"])).toBeUndefined();
+    expect(client.getQueryData(["events", "attempt-succeeded"])).toBeUndefined();
+    expect(
+      client
+        .getQueryData<{ tasks: Array<{ id: string }> }>(["tasks", "head"])
+        ?.tasks.some((task) => task.id === "task-succeeded"),
+    ).toBe(false);
+  });
+
+  it("does not offer history deletion for active work", async () => {
+    window.history.replaceState({}, "", "/tasks/task-running");
+    mockControlPlane();
+    renderApp();
+    expect(await screen.findByRole("heading", { name: "running task" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Delete history" })).not.toBeInTheDocument();
+  });
+
+  it("does not restore deleted work when an older history request finishes late", async () => {
+    const fetch = mockControlPlane({ staleHistoryAfterDelete: true });
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Load more work" }));
+    await user.click(screen.getByText("succeeded task"));
+    expect(await screen.findByRole("heading", { name: "succeeded task" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Delete history" }));
+    await user.click(screen.getByRole("button", { name: "Confirm delete" }));
+
+    expect(await screen.findByText("queued task")).toBeVisible();
+    await vi.waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Load more work" })).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText("succeeded task")).not.toBeInTheDocument();
+    expect(fetch.mock.calls.some(([input]) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return path === "/api/v1/tasks?limit=50&cursor=stale-page";
+    })).toBe(true);
+  });
+
   it("validates the delegate form and creates a normalized task", async () => {
     const fetch = mockControlPlane();
     const user = userEvent.setup();
