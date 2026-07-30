@@ -290,6 +290,12 @@ label again after the workflow or context is corrected creates a new episode.
 Transport, temporary server, and rate-limit failures leave the episode pending
 for bounded retry.
 
+Recovery also treats `410 request_key_deleted` as terminal. It atomically marks
+the pending episode `abandoned`, records that stable error, and never recreates
+the deliberately deleted task under another key while the issue remains
+continuously matched. Removing the label through a complete poll and applying
+it again creates a new episode under the normal rearm rule.
+
 Absence reconciliation requires a successful result with fewer than 100 issues
 and a valid issue number for every entry. Other invalid fields suppress the
 entry's submission but preserve its number as seen. An entry without a usable
@@ -342,6 +348,8 @@ on-disk event history.
 - A lost-response task is recovered after workflow disablement. A request that
   never created a task becomes abandoned after disablement and does not retry
   or duplicate work while the issue remains matched.
+- A lost-response task deleted before ingest recovers it makes the pending
+  episode abandoned with `request_key_deleted` and does not recreate the task.
 - A permanently oversized pinned request becomes abandoned and is not retried
   every poll.
 - An issue whose normalized context exceeds the task description limit is
@@ -384,10 +392,10 @@ trigger reconciliation, request-key idempotency, the lost-response plus label
 rearm crash window, replay after issue and workflow changes, trigger versus
 delivery configuration changes, workflow revision adoption only after restart,
 lost-response recovery after workflow disablement, pre-creation failure
-followed by disablement and abandonment, permanent prompt-size abandonment,
-local oversized-context abandonment, submitted and abandoned absence
-transitions, malformed issue identities, truncation, the hard row limit,
-pruning, and clean shutdown.
+followed by disablement and abandonment, lost-response deletion abandonment,
+permanent prompt-size abandonment, local oversized-context abandonment,
+submitted and abandoned absence transitions, malformed issue identities,
+truncation, the hard row limit, pruning, and clean shutdown.
 
 An integration test runs a real control-plane store and API with a registered
 fake worker. It polls a fake issue, submits one task, repeats the poll, restarts

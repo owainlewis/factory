@@ -329,7 +329,8 @@ same-origin content security policy to the UI.
 - The UI must use semantic tokens for application canvas, surface, raised
   surface, border, text, muted text, selection, and task status.
 - The server must reject duplicate request keys without creating duplicate
-  tasks.
+  tasks. Deleting history must continue blocking that key for 30 days without
+  retaining task content.
 - The server must return the original result when a claim request is repeated.
 - The worker must claim the oldest eligible queued execution assigned to its
   worker ID after filtering for repositories it currently advertises and for
@@ -396,12 +397,17 @@ The first API surface is:
   creation time and task ID. `cursor` is the opaque `next_cursor` from the
   previous response. The default is 50 tasks and the maximum is 200.
   `POST /api/v1/tasks` creates a task.
+- `GET /api/v1/tasks/by-request-key?key=REQUEST_KEY` performs an indexed exact
+  lookup and returns the original task, not found, or
+  `410 request_key_deleted` for a retained deletion tombstone.
 - `GET /api/v1/tasks/{id}` returns task, execution, attempt, and result detail.
 - `GET /api/v1/attempts/{id}/events?after=N&limit=M` returns a bounded,
   ascending page with `next_after` and `has_more` for incremental polling.
   The default is 100 events and the maximum is 500.
 - `POST /api/v1/tasks/{id}/cancel` cancels a queued execution immediately or
   records desired cancellation for its active attempt.
+- `DELETE /api/v1/tasks/{id}` deletes eligible terminal history and atomically
+  retains a digest-only request-key tombstone.
 - `POST /api/v1/executions/{id}/retry` requeues a failed or cancelled
   execution. Its next claim creates the new attempt.
 
@@ -418,11 +424,15 @@ Task creation accepts one normalized body:
 }
 ```
 
-The server trims the title, rejects a blank title or description, preserves
-description whitespace, validates the worker and repository relationship, and
-stores the body before returning `201`. It does not accept a separate `prompt`
-field. The worker builds the agent input from a fixed Factory safety preamble,
-task title, task description, and repository identity.
+Before every lookup, digest, storage, or comparison, the server canonicalizes a
+request key with Go `strings.TrimSpace` and then enforces the existing non-empty
+200-byte limit. The canonical UTF-8 bytes are the stored value and tombstone
+digest input. The server also trims the title, rejects a blank title or
+description, preserves description whitespace, validates the worker and
+repository relationship, and stores the body before returning `201`. It does
+not accept a separate `prompt` field. The worker builds the agent input from a
+fixed Factory safety preamble, task title, task description, and repository
+identity.
 
 A claim body contains:
 
@@ -691,10 +701,21 @@ SQLite until an operator confirms **Delete history** or calls
 `DELETE /api/v1/tasks/{task_id}`. Only `succeeded`, `failed`, and `cancelled`
 tasks can be deleted. Deletion is refused while any attempt appears in a
 worker's retained-worktree report or while the worker has not yet acknowledged
-the terminal attempt's cleaned-or-retained disposition. An accepted deletion
-removes only that task's task, execution, attempt, claim, and event rows in one
-transaction. Workers, repositories, other tasks, V1 state, remote branches,
-and local worktrees are outside this operation.
+the terminal attempt's cleaned-or-retained disposition.
+
+An accepted deletion atomically inserts a row into
+`task_request_tombstones(request_key_hash, deleted_at)` and removes that task's
+task, execution, attempt, claim, and event rows. The hash is SHA-256 over the
+canonical request-key UTF-8 bytes defined in the task-creation contract. Lookup
+and creation apply the same normalization, then check both live task keys and
+tombstone digests before validating mutable targets. A tombstone returns
+`410 request_key_deleted`, preventing a lost-response replay from creating
+duplicate work after its history was deliberately removed. Startup and
+periodic maintenance delete tombstones after 30 days. Tombstones contain no
+prompt, result, event, worker, repository, workflow, or schedule data.
+
+Workers, repositories, other tasks, V1 state, remote branches, and local
+worktrees are outside this operation.
 
 ## 8. Security, privacy, and operations
 
@@ -749,6 +770,8 @@ and model output.
 - The Delegate task drawer requires title, description, worker, and one of that
   worker's repositories.
 - A task stores title and description once when its request is repeated.
+- Deleting a terminal task removes its content, blocks its request key through
+  a digest-only tombstone for 30 days, and permits key reuse only after expiry.
 - A task delegated to worker A cannot be claimed by worker B.
 - The worker claims the task, creates a managed worktree, starts its agent, reports
   progress, and records the result.
@@ -803,7 +826,12 @@ fencing, and explicit retry behaviour.
 SQLite integration tests run concurrent claims against a real temporary
 database. They prove that one execution has one owner, lost claim responses are
 idempotent, conflicting claim requests fail, event replay is idempotent, and
-startup and periodic expiry sweeps close dead attempts.
+startup and periodic expiry sweeps close dead attempts. They also prove that
+task deletion and tombstone insertion are atomic, lookup and creation return
+`request_key_deleted` for 30 days without retaining task content, and startup
+and periodic maintenance prune expired tombstones. Request-key tests cover
+leading and trailing Unicode whitespace plus query-unsafe characters and prove
+lookup, storage, digest, replay, and deletion all use the same canonical key.
 
 Worker tests use fake Codex and Claude Code executables that emit events, exit with selected
 codes, hangs, forks children, and ignores graceful termination. Tests cover

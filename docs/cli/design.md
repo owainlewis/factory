@@ -422,15 +422,30 @@ that filter before cursor pagination, so each page contains up to the requested
 number of matching tasks and its next cursor continues the same filtered query.
 
 `GET /api/v1/tasks/by-request-key?key=REQUEST_KEY` returns the one task created
-by that globally unique key or not found. The key is query-encoded because the
-existing request-key contract permits characters that are unsafe in a path
-segment. This is an indexed exact lookup, not a list scan. `factory run` and
+by that globally unique key, `410 request_key_deleted` for a retained deletion
+tombstone, or not found. The key is query-encoded because the existing
+request-key contract permits characters that are unsafe in a path segment.
+The server applies the task contract's `strings.TrimSpace` normalization before
+lookup, storage, comparison, or hashing, so preflight and creation use one
+canonical key.
+This is an indexed exact lookup, not a list scan. `factory run` and
 `factory schedules run` call it before resolving mutable friendly names when
 the operator supplies `--request-key`. A found task is the replay result even
 if its worker, repository advertisement, workflow, or schedule has since
-changed. A not-found result proceeds through normal resolution and task
-creation; the create transaction still checks the key before validating
+changed. A tombstone prevents a duplicate but cannot recover deliberately
+deleted history, so the CLI reports that fact and exits 1 without mutation. A
+not-found result proceeds through normal resolution and task creation; the
+create transaction still checks the task and tombstone keys before validating
 current target state, closing the lookup-to-create race.
+
+Deleting task history writes a tombstone containing only the SHA-256 digest of
+its request key and the deletion time in the same transaction that removes the
+task. Both lookup and task creation check the digest. The server deletes
+tombstones after 30 days during its existing periodic and startup maintenance
+sweeps. Therefore safe replay is permanent while task history exists and
+duplicate-blocking lasts 30 days after explicit deletion; after that documented
+window the key may be reused. Tombstones retain no prompt, result, event, worker,
+repository, workflow, or schedule data.
 
 The workflow-list and schedule-list APIs accept an exact Boolean `enabled`
 query parameter and an exact `name` query parameter. The server applies filters
@@ -567,6 +582,8 @@ rebuilding requires Node.
 - Existing Go V2 state selected by `FACTORY_V2_DATA_HOME` or
   `FACTORY_V2_WORKER_CONFIG` remains selected with a deprecation warning, while
   conflicting new and legacy variables fail before opening state.
+- Deleting task history prevents the same request key from creating duplicate
+  work for 30 days without retaining the task prompt or result.
 - The Rust archive gate is documented and blocks removal until manual run,
   workflows, schedules, one ingest path, Codex, Claude Code, migration, and
   rollback have passed end-to-end tests.
@@ -581,9 +598,11 @@ and JSON output with stdout and stderr captured separately.
 
 HTTP client tests will use a local test server to prove name resolution,
 pagination, request-key replay before mutable-name resolution, lookup-to-create
-races, API error display, wait polling, disconnect backoff and exhaustion, and
-Ctrl-C behavior. They will assert that ambiguous input causes no mutating
-request and that explicit context ignores inherited empty non-terminal stdin.
+races, deleted-key errors, API error display, wait polling, disconnect backoff
+and exhaustion, and Ctrl-C behavior. They will assert that ambiguous input
+causes no mutating request and that explicit context ignores inherited empty
+non-terminal stdin. Request-key cases include surrounding Unicode whitespace
+and query-unsafe characters.
 
 Process tests will start the real server with temporary state and fake worker
 entry points. They will cover readiness bounds, multiple workers, child
@@ -597,7 +616,9 @@ End-to-end tests will submit one blank task and one workflow task to disposable
 Codex and Claude Code test repositories. Scheduler tests will control the clock,
 cross due instants and restarts, and assert one task per schedule instant.
 Migration tests will start from a copy of existing Go V2 state and verify task,
-worker, attempt, and retained-worktree visibility.
+worker, attempt, and retained-worktree visibility. Retention tests will verify
+that deletion writes a digest-only request-key tombstone, blocks lookup and
+creation for 30 days, and permits reuse only after expiry.
 
 Before Rust removal, a manual release checklist will run `factory start`,
 `factory run`, `factory schedules run`, and one ingest episode against a

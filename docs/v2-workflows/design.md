@@ -238,11 +238,22 @@ original task before revalidating workflow state.
 
 `GET /api/v1/tasks/by-request-key?key=REQUEST_KEY` provides the indexed recovery
 path for a client whose create response was lost. The query value supports the
-existing request-key character set without path ambiguity. It returns the
-original task before the client resolves mutable worker, repository, or
-workflow names. Task creation still checks the same globally unique key before
-validation, so a concurrent create between lookup and submission returns the
-original task.
+existing request-key character set without path ambiguity. Lookup, storage,
+comparison, and hashing all use the task contract's `strings.TrimSpace`
+canonical form. It returns the original task before the client resolves mutable
+worker, repository, or workflow names. Task creation still checks the same
+globally unique key before validation, so a concurrent create between lookup
+and submission returns the original task.
+
+Explicit task-history deletion atomically replaces the task's request key with
+a tombstone containing only the SHA-256 digest of its canonical UTF-8 bytes and
+the deletion time. Lookup and creation return `410 request_key_deleted` while
+that tombstone exists, so a replay cannot silently create duplicate work after
+its original result was deliberately removed. Startup and periodic maintenance
+delete tombstones after 30 days. The replay guarantee therefore lasts while
+task history exists; duplicate blocking continues for 30 days after deletion,
+after which the key may be reused. Tombstones retain no task, prompt, result,
+event, or workflow content.
 
 The stored task adds nullable workflow ID and revision ID, workflow-name and
 revision-number snapshots, and a required resolved prompt. Browser list and
