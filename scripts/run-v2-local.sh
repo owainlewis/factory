@@ -75,7 +75,14 @@ stop_processes() {
     wait "$server_pid" 2>/dev/null || true
   fi
 }
-trap stop_processes INT TERM EXIT
+
+stop_after_signal() {
+  stop_processes
+  exit 0
+}
+
+trap stop_after_signal INT TERM
+trap stop_processes EXIT
 
 echo "Starting Factory V2 server on http://$listen/ ..."
 "$server_binary" -listen "$listen" &
