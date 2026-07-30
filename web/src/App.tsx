@@ -1,4 +1,4 @@
-import { Bot, ListChecks, Menu, Plus, X } from "lucide-react";
+import { Bot, Boxes, ListChecks, Menu, Plus, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
@@ -115,7 +115,7 @@ export function App() {
       <aside className={`sidebar ${mobileNavOpen ? "sidebar-open" : ""}`}>
         <div className="brand">
           <div className="brand-mark" aria-hidden="true">
-            F
+            <Boxes size={18} strokeWidth={2.2} />
           </div>
           <div>
             <span className="brand-name">Factory</span>
@@ -126,12 +126,14 @@ export function App() {
         <nav aria-label="Primary navigation">
           <button
             className={`nav-item ${route.page === "work" || route.page === "task" ? "active" : ""}`}
+            aria-current={route.page === "work" || route.page === "task" ? "page" : undefined}
             onClick={() => navigate({ page: "work" })}
           >
             <ListChecks size={17} /> Work
           </button>
           <button
             className={`nav-item ${route.page === "workers" || route.page === "worker" ? "active" : ""}`}
+            aria-current={route.page === "workers" || route.page === "worker" ? "page" : undefined}
             onClick={() => navigate({ page: "workers" })}
           >
             <Bot size={17} /> Workers
