@@ -98,6 +98,67 @@ func registerHTTPWorker(t *testing.T, fixture *httpFixture, id, key, remote stri
 	return decodeResponse[protocol.Worker](t, response)
 }
 
+func TestHTTPManagedRepositoryCatalog(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	response := fixture.request(http.MethodPost, "/api/v1/repositories", "application/json", "", map[string]string{
+		"remote_identity": "github.com/OwainLewis/Factory.git",
+	})
+	requireStatus(t, response, http.StatusCreated)
+	repository := decodeResponse[protocol.ManagedRepository](t, response)
+	if repository.RemoteIdentity != "github.com/owainlewis/factory" || !repository.Enabled {
+		t.Fatalf("created repository = %#v", repository)
+	}
+
+	response = fixture.request(http.MethodPost, "/api/v1/repositories", "application/json", "", map[string]string{
+		"remote_identity": "github.com/owainlewis/factory",
+	})
+	requireStatus(t, response, http.StatusOK)
+	replayed := decodeResponse[protocol.ManagedRepository](t, response)
+	if replayed.ID != repository.ID {
+		t.Fatalf("replayed repository = %#v", replayed)
+	}
+
+	response = fixture.request(http.MethodGet, "/api/v1/repositories", "", "", nil)
+	requireStatus(t, response, http.StatusOK)
+	listed := decodeResponse[struct {
+		Repositories []protocol.ManagedRepository `json:"repositories"`
+	}](t, response)
+	if len(listed.Repositories) != 1 || listed.Repositories[0].ID != repository.ID {
+		t.Fatalf("listed repositories = %#v", listed.Repositories)
+	}
+
+	response = fixture.request(
+		http.MethodPut,
+		"/api/v1/repositories/"+repository.ID+"/enabled",
+		"application/json",
+		"",
+		protocol.SetManagedRepositoryEnabledRequest{Enabled: false},
+	)
+	requireStatus(t, response, http.StatusOK)
+	disabled := decodeResponse[protocol.ManagedRepository](t, response)
+	if disabled.Enabled {
+		t.Fatalf("disabled repository = %#v", disabled)
+	}
+
+	response = fixture.request(http.MethodGet, "/api/v1/repositories/"+repository.ID, "", "", nil)
+	requireStatus(t, response, http.StatusOK)
+	if fetched := decodeResponse[protocol.ManagedRepository](t, response); fetched.Enabled {
+		t.Fatalf("fetched repository = %#v", fetched)
+	}
+
+	response = fixture.request(
+		http.MethodPut,
+		"/api/v1/repositories/"+repository.ID+"/enabled",
+		"application/json",
+		"",
+		map[string]any{},
+	)
+	requireStatus(t, response, http.StatusBadRequest)
+	if body := decodeResponse[protocol.ErrorBody](t, response); body.Error.Code != "invalid_repository" {
+		t.Fatalf("missing enabled error = %#v", body)
+	}
+}
+
 func TestHTTPMetricsUseABoundedWindowContract(t *testing.T) {
 	fixture := newHTTPFixture(t)
 	response := fixture.request(http.MethodGet, "/api/v1/metrics/summary", "", "", nil)

@@ -320,7 +320,7 @@ func inspectManifestWorktree(
 	if err != nil {
 		return worktreeInspection{}, fmt.Errorf("verify manifest repository: %w", err)
 	}
-	if repository.Path != manifest.RepositoryPath || repository.RemoteIdentity != manifest.RemoteIdentity {
+	if repository.Path != manifest.RepositoryPath || !sameRemoteIdentity(repository.RemoteIdentity, manifest.RemoteIdentity) {
 		return worktreeInspection{}, worktreeMismatch("manifest repository identity no longer matches")
 	}
 	inspection := worktreeInspection{Repository: repository}

@@ -1,17 +1,14 @@
-# Copy this file to ~/.factory/worker.toml, then replace both paths with
-# absolute paths to local non-bare Git repositories that have an origin.
+# Copy this file to ~/.factory/worker.toml.
 server = "http://127.0.0.1:7337"
 name = "local"
 # One worker identity runs exactly one runtime: "codex" or "claude-code".
 runtime = "codex"
 max_concurrent = 1
 data_directory = "workers/local"
-# Opt this worker into centrally routed GitHub issue work. Factory advertises
-# the capability only while `gh auth status --hostname github.com` succeeds.
-source_access = ["github"]
+# No repository or GitHub opt-in is required. Factory advertises GitHub access
+# while `gh auth status --hostname github.com` succeeds and clones centrally
+# managed repositories into this worker's data directory on demand.
 
-[repositories.factory]
-path = "/absolute/path/to/factory"
-
-[repositories.second-repository]
-path = "/absolute/path/to/another-repository"
+# Legacy manual delegation may still point a worker at an existing checkout:
+# [repositories.factory]
+# path = "/absolute/path/to/factory"

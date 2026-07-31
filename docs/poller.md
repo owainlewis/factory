@@ -13,8 +13,9 @@ task coordination, and workers stay focused on agent execution.
 Requirements:
 
 - a running Factory control plane;
-- a healthy online worker that advertises the target repository and opts into
-  GitHub source access;
+- the target repository enabled in the control-plane managed repository
+  catalog;
+- a healthy online worker whose automatic GitHub probe succeeds;
 - the authenticated `gh` CLI on the poller host;
 - the authenticated `gh` CLI on the worker host when the agent workflow reads
   or updates GitHub.
@@ -56,14 +57,19 @@ Implement and verify the change, update the issue, and open a pull request.
 timeout_seconds = 7200
 ```
 
-Opt each eligible worker into GitHub routing once in `worker.toml`:
+Add the queue repository to the central fleet once:
 
-```toml
-source_access = ["github"]
+```sh
+curl --fail --silent --show-error \
+  -H 'Content-Type: application/json' \
+  -d '{"remote_identity":"github.com/owner/repository"}' \
+  http://127.0.0.1:7337/api/v1/repositories
 ```
 
-The worker advertises GitHub access only while its local
-`gh auth status --hostname github.com` probe succeeds.
+No queue, ticket, or worker configuration names a worker ID or repository path.
+Every worker automatically advertises GitHub access and managed-repository
+acquisition only while its local `gh auth status --hostname github.com` probe
+succeeds.
 
 Safely test GitHub matching before creating a task:
 
@@ -184,10 +190,19 @@ stderr to 64 KiB, execution to 30 seconds, and each result to 100 issues.
 For GitHub tasks, the poller sends the repository remote and required GitHub
 source access to the control plane instead of a worker ID. In the task-creation
 transaction, the control plane considers healthy online workers that advertise
-both and whose repository has retained-worktree headroom under the same rule
-used when claiming work. It chooses the lowest `(active + queued) / capacity`
-load and breaks an exact tie by worker ID. The selected worker and repository
-are then frozen on the task and execution.
+the required source access and accept managed repositories. It also accepts a
+legacy worker that already advertises that checkout. Workers without repository
+retention headroom are excluded. The control plane chooses the lowest
+`(active + queued) / capacity` load and breaks an exact tie by worker ID. The
+selected worker and repository are then frozen on the task and execution.
+
+For a cattle worker, the scheduler reserves cache headroom for dynamic
+repository assignments. A full cache remains eligible for repositories already
+present in it.
+
+A cattle worker clones a missing repository through `gh` or fetches its cached
+copy before starting the agent. The provider identity comes only from the
+enabled central catalog. A ticket cannot supply an arbitrary clone URL.
 
 The poller stores its ledger in
 `~/.factory/poller/poller.sqlite3` by default. It writes the exact task request
@@ -212,9 +227,11 @@ live queue to avoid redispatching old issues.
 - A failed or malformed source result creates no new observations.
 - A failed task submission remains pending and is recovered before the next
   source poll.
-- When no worker currently advertises both the repository and GitHub access,
-  the pass fails without retaining a stale pending request. The next pass
-  refetches and revalidates the issue before trying to route it again.
+- When no worker currently has GitHub access and capacity, the pass fails
+  without retaining a stale pending request. The next pass refetches and
+  revalidates the issue before trying to route it again.
+- An unmanaged or disabled repository fails closed. Enable it centrally before
+  polling that queue.
 - Oversized prompts and source results fail instead of being truncated.
 - A full 10,000-row dispatch ledger rejects new observations.
 - Configuration is read at startup. Restart the poller after changing it.

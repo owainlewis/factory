@@ -1,8 +1,9 @@
 # Worker contract
 
-A Factory worker is one stable identity, one runtime, a capacity limit, and a
-repository allowlist. It can run on a developer machine, VM, or Unix container.
-Windows is not supported.
+A Factory worker is one stable identity, one runtime, and a capacity limit. It
+can run on a developer machine, VM, or Unix container. Workers are cattle: the
+control plane owns repository scope, and an eligible worker acquires an assigned
+repository into its bounded local cache. Windows is not supported.
 
 ## Configuration
 
@@ -12,22 +13,21 @@ name = "local-codex"
 runtime = "codex"
 max_concurrent = 1
 data_directory = "workers/local-codex"
-source_access = ["github"]
-
-[repositories.factory]
-path = "/absolute/path/to/factory"
 ```
 
 `runtime` is `codex` or `claude-code`. A worker never switches runtime per task.
 Run two workers when you want to send the same task to both agents.
 
-Relative data directories and repository paths resolve from the directory
-containing the worker TOML file. Repository paths must resolve to real, non-bare
-Git repositories with an `origin`.
+Relative data directories resolve from the directory containing the worker
+TOML file. The worker probes `gh auth status --hostname github.com`
+automatically. A successful probe advertises GitHub source access and the
+ability to acquire centrally managed GitHub repositories. It contains no token.
 
-`source_access = ["github"]` opts the worker into centrally routed GitHub issue
-work. The capability is advertised only while the worker's local
-`gh auth status --hostname github.com` probe succeeds. It contains no token.
+The legacy `[repositories.<key>]` map remains optional for manual delegation to
+an existing non-bare checkout. Its paths resolve relative to the worker TOML.
+Newly discovered legacy checkouts enter the catalog disabled and support only
+explicit assignment until an operator enables them centrally. Repositories
+already known before this migration remain enabled for routing compatibility.
 
 ## Identity and registration
 
@@ -40,8 +40,12 @@ Registration advertises:
 - display name and runtime;
 - maximum concurrent attempts;
 - worker version;
-- repository keys, normalized remote identities, and retained counts.
-- successfully probed source access such as GitHub.
+- optional legacy repository keys, normalized remote identities, and retained
+  counts;
+- successfully probed source access such as GitHub;
+- whether the worker can acquire managed repositories;
+- the bounded set of cached control-plane repository IDs, used for exact cache
+  headroom accounting. The public Worker view exposes only the count.
 
 The server returns repository IDs used for task assignment. Heartbeats refresh
 health and current capacity. A worker is offline when its heartbeat expires.
@@ -58,7 +62,7 @@ Print the configured identity without starting the worker:
 Workers poll the loopback API for compatible work. A claim succeeds only when:
 
 - the task targets that worker;
-- the repository is in its current advertisement;
+- the repository assignment is frozen to that worker;
 - worker capacity is available;
 - the repository has fewer than ten retained worktrees, active attempts, and
   terminal attempts awaiting a local disposition on that worker.
@@ -71,8 +75,10 @@ lease expires.
 
 The worker prepares a task as follows:
 
-1. validate the repository and remote identity;
-2. read the base commit from the configured checkout;
+1. validate the repository ID and canonical `github.com/owner/repository`
+   identity;
+2. clone a missing repository with `gh repo clone` or fetch its existing cache,
+   then resolve the current remote default-branch commit;
 3. create an owned worktree below its data directory;
 4. create a `factory/<task-prefix>-<attempt-prefix>` branch;
 5. write a protected, durable attempt manifest;
@@ -87,6 +93,13 @@ the same control-plane result contract.
 
 Runtime output and API event payloads are bounded. Oversized output is truncated
 or summarized so one agent cannot grow a request without limit.
+
+Managed caches live at `DATA_DIRECTORY/repositories/REPOSITORY_ID`. Clone and
+fetch operations are serialized per worker, have a five-minute bound, and
+complete before the agent starts. A worker keeps at most 100 repository cache
+entries. This version does not evict caches automatically.
+Interrupted `.clone-*` directories are removed during startup after the worker
+has locked its data directory, so hard crashes cannot bypass the cache bound.
 
 ## Cancellation and shutdown
 
@@ -132,7 +145,8 @@ factory-worker cleanup ATTEMPT_ID \
 
 Confirmed operator cleanup preserves the local branch but removes the worktree
 with force, so uncommitted changes shown in the preview are lost. Cleanup never
-deletes the configured checkout or another worker's path.
+deletes the repository cache, a legacy configured checkout, or another worker's
+path.
 
 ## Deployment model
 

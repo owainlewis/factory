@@ -354,6 +354,202 @@ func normalizeRemote(value string) string {
 	return strings.TrimSpace(value)
 }
 
+func normalizeRegisteredRemote(value string) string {
+	value = normalizeRemote(value)
+	parts := strings.Split(value, "/")
+	if len(parts) == 3 && strings.EqualFold(parts[0], "github.com") {
+		if canonical, err := normalizeManagedGitHubRemote(value); err == nil {
+			return canonical
+		}
+	}
+	return value
+}
+
+func normalizeManagedGitHubRemote(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	value = strings.TrimSuffix(value, ".git")
+	parts := strings.Split(value, "/")
+	if len(parts) != 3 || !strings.EqualFold(parts[0], "github.com") ||
+		!validGitHubOwner(parts[1]) || !validGitHubRepository(parts[2]) {
+		return "", invalid(
+			"invalid_repository",
+			"remote_identity must use the canonical github.com/owner/repository form",
+		)
+	}
+	return strings.ToLower(strings.Join(parts, "/")), nil
+}
+
+func validGitHubOwner(value string) bool {
+	if len(value) < 1 || len(value) > 39 || value[0] == '-' || value[len(value)-1] == '-' || strings.Contains(value, "--") {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') && character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func validGitHubRepository(value string) bool {
+	if len(value) < 1 || len(value) > 100 || value == "." || value == ".." {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') &&
+			character != '-' && character != '_' && character != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+func scanManagedRepository(row scanner) (protocol.ManagedRepository, error) {
+	var repository protocol.ManagedRepository
+	var enabled int
+	var createdAt, updatedAt int64
+	if err := row.Scan(
+		&repository.ID,
+		&repository.RemoteIdentity,
+		&enabled,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return repository, err
+	}
+	repository.Enabled = enabled != 0
+	repository.CreatedAt = fromMillis(createdAt)
+	repository.UpdatedAt = fromMillis(updatedAt)
+	return repository, nil
+}
+
+func (s *Store) CreateManagedRepository(
+	ctx context.Context,
+	input protocol.CreateManagedRepositoryRequest,
+) (protocol.ManagedRepository, bool, error) {
+	remoteIdentity, err := normalizeManagedGitHubRemote(input.RemoteIdentity)
+	if err != nil {
+		return protocol.ManagedRepository{}, false, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.ManagedRepository{}, false, unavailable(err)
+	}
+	defer tx.Rollback()
+
+	repository, err := scanManagedRepository(tx.QueryRowContext(ctx, `
+		SELECT id, remote_identity, enabled, created_at, updated_at
+		FROM repositories
+		WHERE lower(remote_identity) = lower(?)
+	`, remoteIdentity))
+	if err == nil {
+		if err := tx.Commit(); err != nil {
+			return protocol.ManagedRepository{}, false, unavailable(err)
+		}
+		return repository, false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return protocol.ManagedRepository{}, false, unavailable(err)
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM repositories`).Scan(&count); err != nil {
+		return protocol.ManagedRepository{}, false, unavailable(err)
+	}
+	if count >= protocol.MaxManagedRepositories {
+		return protocol.ManagedRepository{}, false, conflict(
+			"repository_limit_reached",
+			"the managed repository limit has been reached",
+		)
+	}
+	repositoryID, err := newID()
+	if err != nil {
+		return protocol.ManagedRepository{}, false, unavailable(err)
+	}
+	now := s.now().UnixMilli()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO repositories(id, remote_identity, enabled, created_at, updated_at)
+		VALUES (?, ?, 1, ?, ?)
+	`, repositoryID, remoteIdentity, now, now); err != nil {
+		return protocol.ManagedRepository{}, false, unavailable(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return protocol.ManagedRepository{}, false, unavailable(err)
+	}
+	return protocol.ManagedRepository{
+		ID:             repositoryID,
+		RemoteIdentity: remoteIdentity,
+		Enabled:        true,
+		CreatedAt:      fromMillis(now),
+		UpdatedAt:      fromMillis(now),
+	}, true, nil
+}
+
+func (s *Store) ManagedRepositories(ctx context.Context) ([]protocol.ManagedRepository, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, remote_identity, enabled, created_at, updated_at
+		FROM repositories
+		ORDER BY remote_identity
+	`)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	defer rows.Close()
+	repositories := make([]protocol.ManagedRepository, 0)
+	for rows.Next() {
+		repository, err := scanManagedRepository(rows)
+		if err != nil {
+			return nil, unavailable(err)
+		}
+		repositories = append(repositories, repository)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, unavailable(err)
+	}
+	return repositories, nil
+}
+
+func (s *Store) ManagedRepository(ctx context.Context, repositoryID string) (protocol.ManagedRepository, error) {
+	repository, err := scanManagedRepository(s.db.QueryRowContext(ctx, `
+		SELECT id, remote_identity, enabled, created_at, updated_at
+		FROM repositories
+		WHERE id = ?
+	`, strings.TrimSpace(repositoryID)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.ManagedRepository{}, ErrNotFound
+	}
+	if err != nil {
+		return protocol.ManagedRepository{}, unavailable(err)
+	}
+	return repository, nil
+}
+
+func (s *Store) SetManagedRepositoryEnabled(
+	ctx context.Context,
+	repositoryID string,
+	enabled bool,
+) (protocol.ManagedRepository, error) {
+	repositoryID = strings.TrimSpace(repositoryID)
+	now := s.now().UnixMilli()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE repositories SET enabled = ?, updated_at = ? WHERE id = ?
+	`, enabled, now, repositoryID)
+	if err != nil {
+		return protocol.ManagedRepository{}, unavailable(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return protocol.ManagedRepository{}, unavailable(err)
+	}
+	if affected == 0 {
+		return protocol.ManagedRepository{}, ErrNotFound
+	}
+	return s.ManagedRepository(ctx, repositoryID)
+}
+
 func normalizeSourceAccess(values []protocol.SourceAccess) ([]protocol.SourceAccess, error) {
 	if len(values) > 10 {
 		return nil, invalid("invalid_source_access", "a worker may advertise at most 10 source access entries")
@@ -405,6 +601,38 @@ func validHostname(value string) bool {
 	return true
 }
 
+func validUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			if character != '-' {
+				return false
+			}
+			continue
+		}
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Store) resolveRepositoryAlias(ctx context.Context, repositoryID string) (string, error) {
+	var canonicalID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT repository_id FROM repository_aliases WHERE alias_id = ?
+	`, repositoryID).Scan(&canonicalID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return repositoryID, nil
+	}
+	if err != nil {
+		return "", unavailable(err)
+	}
+	return canonicalID, nil
+}
+
 func (s *Store) RegisterWorker(ctx context.Context, workerID string, input protocol.WorkerRegistration) (protocol.Worker, error) {
 	workerID = strings.TrimSpace(workerID)
 	if workerID == "" || len(workerID) > 200 {
@@ -435,8 +663,27 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 		return protocol.Worker{}, invalid(
 			"invalid_capacity_handoff", "capacity_handoff_version must be 0 or 1")
 	}
-	if len(input.Repositories) == 0 {
-		return protocol.Worker{}, invalid("invalid_repositories", "at least one repository is required")
+	if len(input.ManagedRepositoryIDs) > protocol.MaxRepositoryCacheEntries {
+		return protocol.Worker{}, invalid(
+			"invalid_managed_repository_ids",
+			"a worker may advertise at most 100 cached managed repository IDs",
+		)
+	}
+	seenManagedRepositoryIDs := make(map[string]bool, len(input.ManagedRepositoryIDs))
+	for index, repositoryID := range input.ManagedRepositoryIDs {
+		canonicalID, err := s.resolveRepositoryAlias(ctx, repositoryID)
+		if err != nil {
+			return protocol.Worker{}, err
+		}
+		input.ManagedRepositoryIDs[index] = canonicalID
+		repositoryID = canonicalID
+		if !validUUID(repositoryID) || seenManagedRepositoryIDs[repositoryID] {
+			return protocol.Worker{}, invalid(
+				"invalid_managed_repository_ids",
+				"cached managed repository IDs must be unique UUIDs",
+			)
+		}
+		seenManagedRepositoryIDs[repositoryID] = true
 	}
 	sourceAccess, err := normalizeSourceAccess(input.SourceAccess)
 	if err != nil {
@@ -448,7 +695,7 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	for i := range input.Repositories {
 		repo := &input.Repositories[i]
 		repo.Key = strings.TrimSpace(repo.Key)
-		repo.RemoteIdentity = normalizeRemote(repo.RemoteIdentity)
+		repo.RemoteIdentity = normalizeRegisteredRemote(repo.RemoteIdentity)
 		if repo.Key == "" || repo.RemoteIdentity == "" || len(repo.Key) > 200 || len(repo.RemoteIdentity) > 2048 {
 			return protocol.Worker{}, invalid("invalid_repository", "repository key and remote_identity are required")
 		}
@@ -468,6 +715,13 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 		worktree := &input.RetainedWorktrees[index]
 		worktree.AttemptID = strings.TrimSpace(worktree.AttemptID)
 		worktree.RepositoryID = strings.TrimSpace(worktree.RepositoryID)
+		if worktree.RepositoryID != "" {
+			canonicalID, err := s.resolveRepositoryAlias(ctx, worktree.RepositoryID)
+			if err != nil {
+				return protocol.Worker{}, err
+			}
+			worktree.RepositoryID = canonicalID
+		}
 		// Older API clients may send display-only summaries before they know the
 		// control-plane repository ID. Preserve those summaries, but do not use
 		// incomplete or duplicate entries as capacity-handoff evidence.
@@ -506,6 +760,13 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	sourceAccessJSON, err := json.Marshal(input.SourceAccess)
 	if err != nil {
 		return protocol.Worker{}, invalid("invalid_source_access", "source access could not be encoded")
+	}
+	managedRepositoryIDsJSON, err := json.Marshal(input.ManagedRepositoryIDs)
+	if err != nil {
+		return protocol.Worker{}, invalid(
+			"invalid_managed_repository_ids",
+			"cached managed repository IDs could not be encoded",
+		)
 	}
 	now := s.now().UnixMilli()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -547,20 +808,29 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO workers(
 			id, name, worker_version, runtime, runtime_version, capacity, active_count,
-			health, source_access_json, retained_worktrees_json, registered_at, last_heartbeat
+			health, source_access_json, accepts_managed_repositories,
+			managed_repository_ids_json, retained_worktrees_json, registered_at, last_heartbeat
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name=excluded.name, worker_version=excluded.worker_version, runtime_version=excluded.runtime_version,
 			capacity=excluded.capacity, active_count=excluded.active_count, health=excluded.health,
 			source_access_json=excluded.source_access_json,
+			accepts_managed_repositories=excluded.accepts_managed_repositories,
+			managed_repository_ids_json=excluded.managed_repository_ids_json,
 			retained_worktrees_json=excluded.retained_worktrees_json, last_heartbeat=excluded.last_heartbeat
 	`, workerID, input.Name, input.WorkerVersion, input.Runtime, input.RuntimeVersion,
-		input.Capacity, input.ActiveCount, input.Health, sourceAccessJSON, retained, now, now)
+		input.Capacity, input.ActiveCount, input.Health, sourceAccessJSON,
+		input.AcceptsManagedRepositories, managedRepositoryIDsJSON, retained, now, now)
 	if err != nil {
 		return protocol.Worker{}, unavailable(err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE worker_repositories SET advertised = 0, updated_at = ? WHERE worker_id = ?`, now, workerID); err != nil {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE worker_repositories
+		SET advertised = CASE WHEN dynamic = 1 AND ? THEN 1 ELSE 0 END,
+		    updated_at = ?
+		WHERE worker_id = ?
+	`, input.AcceptsManagedRepositories, now, workerID); err != nil {
 		return protocol.Worker{}, unavailable(err)
 	}
 	for _, repo := range input.Repositories {
@@ -569,7 +839,12 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 		if errors.Is(err, sql.ErrNoRows) {
 			repositoryID, err = newID()
 			if err == nil {
-				_, err = tx.ExecContext(ctx, `INSERT INTO repositories(id, remote_identity, created_at) VALUES (?, ?, ?)`, repositoryID, repo.RemoteIdentity, now)
+				// A legacy static checkout supports explicit manual assignment, but
+				// worker registration must not expand the centrally managed fleet.
+				_, err = tx.ExecContext(ctx, `
+					INSERT INTO repositories(id, remote_identity, enabled, created_at, updated_at)
+					VALUES (?, ?, 0, ?, ?)
+				`, repositoryID, repo.RemoteIdentity, now, now)
 			}
 		}
 		if err != nil {
@@ -589,24 +864,61 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 		case mappingErr == nil && existingKey != repo.Key:
 			_, err = tx.ExecContext(ctx, `
 				UPDATE worker_repositories
-				SET display_key = ?, retained_count = ?, advertised = 1, updated_at = ?
+				SET display_key = ?, retained_count = ?, advertised = 1, dynamic = 0, updated_at = ?
 				WHERE worker_id = ? AND repository_id = ?
 			`, repo.Key, effectiveRetainedCount, now, workerID, repositoryID)
 		case mappingErr == nil:
 			_, err = tx.ExecContext(ctx, `
 				UPDATE worker_repositories
-				SET retained_count = ?, advertised = 1, updated_at = ?
+				SET retained_count = ?, advertised = 1, dynamic = 0, updated_at = ?
 				WHERE worker_id = ? AND repository_id = ?
 			`, effectiveRetainedCount, now, workerID, repositoryID)
 		case errors.Is(mappingErr, sql.ErrNoRows):
 			_, err = tx.ExecContext(ctx, `
-				INSERT INTO worker_repositories(worker_id, display_key, repository_id, retained_count, advertised, updated_at)
-				VALUES (?, ?, ?, ?, 1, ?)
+				INSERT INTO worker_repositories(
+					worker_id, display_key, repository_id, retained_count, advertised, dynamic, updated_at
+				)
+				VALUES (?, ?, ?, ?, 1, 0, ?)
 			`, workerID, repo.Key, repositoryID, effectiveRetainedCount, now)
 		default:
 			err = mappingErr
 		}
 		if err != nil {
+			return protocol.Worker{}, unavailable(err)
+		}
+	}
+	dynamicRows, err := tx.QueryContext(ctx, `
+		SELECT repository_id
+		FROM worker_repositories
+		WHERE worker_id = ? AND dynamic = 1
+	`, workerID)
+	if err != nil {
+		return protocol.Worker{}, unavailable(err)
+	}
+	var dynamicRepositoryIDs []string
+	for dynamicRows.Next() {
+		var repositoryID string
+		if err := dynamicRows.Scan(&repositoryID); err != nil {
+			dynamicRows.Close()
+			return protocol.Worker{}, unavailable(err)
+		}
+		dynamicRepositoryIDs = append(dynamicRepositoryIDs, repositoryID)
+	}
+	if err := dynamicRows.Close(); err != nil {
+		return protocol.Worker{}, unavailable(err)
+	}
+	if err := dynamicRows.Err(); err != nil {
+		return protocol.Worker{}, unavailable(err)
+	}
+	for _, repositoryID := range dynamicRepositoryIDs {
+		if input.AcceptsManagedRepositories {
+			advertisedRepositoryIDs[repositoryID] = true
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE worker_repositories
+			SET retained_count = ?, advertised = ?, updated_at = ?
+			WHERE worker_id = ? AND repository_id = ? AND dynamic = 1
+		`, retainedCounts[repositoryID], input.AcceptsManagedRepositories, now, workerID, repositoryID); err != nil {
 			return protocol.Worker{}, unavailable(err)
 		}
 	}
@@ -687,7 +999,9 @@ func (s *Store) Workers(ctx context.Context) ([]protocol.Worker, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT w.id, w.name, w.worker_version, w.runtime, w.runtime_version,
 		       w.capacity, w.active_count, w.health, w.source_access_json,
-		       w.retained_worktrees_json, w.registered_at, w.last_heartbeat,
+		       w.accepts_managed_repositories, w.managed_repository_ids_json,
+		       w.retained_worktrees_json,
+		       w.registered_at, w.last_heartbeat,
 		       COALESCE((
 		           SELECT t.title
 		           FROM executions e JOIN tasks t ON t.id = e.task_id
@@ -729,7 +1043,9 @@ func (s *Store) Worker(ctx context.Context, id string) (protocol.Worker, error) 
 	row := s.db.QueryRowContext(ctx, `
 		SELECT w.id, w.name, w.worker_version, w.runtime, w.runtime_version,
 		       w.capacity, w.active_count, w.health, w.source_access_json,
-		       w.retained_worktrees_json, w.registered_at, w.last_heartbeat,
+		       w.accepts_managed_repositories, w.managed_repository_ids_json,
+		       w.retained_worktrees_json,
+		       w.registered_at, w.last_heartbeat,
 		       COALESCE((
 		           SELECT t.title
 		           FROM executions e JOIN tasks t ON t.id = e.task_id
@@ -756,10 +1072,12 @@ type scanner interface {
 
 func scanWorker(row scanner, now time.Time) (protocol.Worker, error) {
 	var worker protocol.Worker
-	var sourceAccess, retained []byte
+	var sourceAccess, managedRepositoryIDs, retained []byte
+	var acceptsManagedRepositories int
 	var registered, heartbeat int64
 	if err := row.Scan(&worker.ID, &worker.Name, &worker.WorkerVersion, &worker.Runtime, &worker.RuntimeVersion,
 		&worker.Capacity, &worker.ActiveCount, &worker.Health, &sourceAccess,
+		&acceptsManagedRepositories, &managedRepositoryIDs,
 		&retained, &registered, &heartbeat,
 		&worker.CurrentTaskTitle); err != nil {
 		return worker, err
@@ -767,6 +1085,12 @@ func scanWorker(row scanner, now time.Time) (protocol.Worker, error) {
 	if err := json.Unmarshal(sourceAccess, &worker.SourceAccess); err != nil {
 		return worker, err
 	}
+	worker.AcceptsManagedRepositories = acceptsManagedRepositories != 0
+	var repositoryIDs []string
+	if err := json.Unmarshal(managedRepositoryIDs, &repositoryIDs); err != nil {
+		return worker, err
+	}
+	worker.RepositoryCacheCount = len(repositoryIDs)
 	if err := json.Unmarshal(retained, &worker.RetainedWorktrees); err != nil {
 		return worker, err
 	}
@@ -798,11 +1122,13 @@ func (s *Store) workerRepositories(ctx context.Context, workerID string) ([]prot
 }
 
 type taskRouteCandidate struct {
-	workerID     string
-	repositoryID string
-	runtime      string
-	capacity     int
-	load         int
+	workerID                   string
+	repositoryID               string
+	runtime                    string
+	capacity                   int
+	load                       int
+	repositoryAdvertised       bool
+	acceptsManagedRepositories bool
 }
 
 func normalizeTaskRoute(route *protocol.TaskRoute) error {
@@ -818,6 +1144,16 @@ func normalizeTaskRoute(route *protocol.TaskRoute) error {
 		)
 	}
 	route.SourceAccess = values[0]
+	if route.SourceAccess.Provider == "github" && route.SourceAccess.Hostname == "github.com" {
+		canonical, err := normalizeManagedGitHubRemote(route.RepositoryRemoteIdentity)
+		if err != nil {
+			return invalid(
+				"invalid_route",
+				"GitHub route repository_remote_identity must use github.com/owner/repository",
+			)
+		}
+		route.RepositoryRemoteIdentity = canonical
+	}
 	return nil
 }
 
@@ -846,26 +1182,65 @@ func (s *Store) selectTaskRoute(
 	if route.SourceAccess.Provider == "github" && route.SourceAccess.Hostname == "github.com" {
 		repositoryPredicate = "lower(r.remote_identity) = lower(?)"
 	}
+	var repositoryID, repositoryIdentity string
+	err := tx.QueryRowContext(ctx, `
+		SELECT r.id, r.remote_identity
+		FROM repositories r
+		WHERE `+repositoryPredicate+` AND r.enabled = 1
+	`, route.RepositoryRemoteIdentity).Scan(&repositoryID, &repositoryIdentity)
+	if errors.Is(err, sql.ErrNoRows) {
+		return taskRouteCandidate{}, conflict(
+			"repository_not_managed",
+			"repository is not enabled in the control-plane managed repository catalog",
+		)
+	}
+	if err != nil {
+		return taskRouteCandidate{}, unavailable(err)
+	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT w.id, r.id, w.runtime, w.capacity, w.active_count,
-		       w.source_access_json,
+		SELECT w.id, w.runtime, w.capacity, w.active_count,
+		       w.source_access_json, COALESCE(wr.advertised, 0),
+		       w.accepts_managed_repositories,
 		       COALESCE((
 		           SELECT COUNT(*) FROM executions e
 		           WHERE e.assigned_worker_id = w.id AND e.state = 'queued'
 		       ), 0)
 		FROM workers w
-		JOIN worker_repositories wr ON wr.worker_id = w.id AND wr.advertised = 1
-		JOIN repositories r ON r.id = wr.repository_id
-		WHERE `+repositoryPredicate+`
-		  AND w.health = 'healthy'
+		LEFT JOIN worker_repositories wr
+		  ON wr.worker_id = w.id AND wr.repository_id = ?
+		WHERE w.health = 'healthy'
 		  AND w.last_heartbeat >= ?
-		  AND wr.retained_count + (
+		  AND (
+		      COALESCE(wr.advertised, 0) = 1
+		      OR (
+		          w.accepts_managed_repositories = 1
+		          AND (
+		              EXISTS (
+		                  SELECT 1
+		                  FROM json_each(w.managed_repository_ids_json) cached_repository
+		                  WHERE cached_repository.value = ?
+		              )
+		              OR json_array_length(w.managed_repository_ids_json) + (
+		                  SELECT COUNT(*)
+		                  FROM worker_repositories reserved_repository
+		                  WHERE reserved_repository.worker_id = w.id
+		                    AND reserved_repository.dynamic = 1
+		                    AND NOT EXISTS (
+		                        SELECT 1
+		                        FROM json_each(w.managed_repository_ids_json) cached_repository
+		                        WHERE cached_repository.value = reserved_repository.repository_id
+		                    )
+		              ) < ?
+		          )
+		      )
+		  )
+		  AND COALESCE(wr.retained_count, 0) + (
 		      SELECT COUNT(*)
 		      FROM attempts active_attempt
 		      JOIN executions active_execution ON active_execution.id = active_attempt.execution_id
 		      JOIN tasks active_task ON active_task.id = active_execution.task_id
 		      WHERE active_attempt.worker_id = w.id
-		        AND active_task.repository_id = r.id
+		        AND active_task.repository_id = ?
 		        AND active_attempt.state IN ('preparing', 'running')
 		  ) + (
 		      SELECT COUNT(*)
@@ -873,12 +1248,13 @@ func (s *Store) selectTaskRoute(
 		      JOIN executions terminal_execution ON terminal_execution.id = terminal_attempt.execution_id
 		      JOIN tasks terminal_task ON terminal_task.id = terminal_execution.task_id
 		      WHERE terminal_attempt.worker_id = w.id
-		        AND terminal_task.repository_id = r.id
+		        AND terminal_task.repository_id = ?
 		        AND terminal_attempt.state IN ('succeeded', 'failed', 'cancelled', 'lost')
 		        AND terminal_attempt.capacity_acknowledged = 0
 		  ) < ?
 		ORDER BY w.id
-	`, route.RepositoryRemoteIdentity, now-protocol.WorkerOnlineWindow.Milliseconds(), protocol.MaxRetainedPerRepo)
+	`, repositoryID, now-protocol.WorkerOnlineWindow.Milliseconds(), repositoryID, protocol.MaxRepositoryCacheEntries,
+		repositoryID, repositoryID, protocol.MaxRetainedPerRepo)
 	if err != nil {
 		return taskRouteCandidate{}, unavailable(err)
 	}
@@ -887,14 +1263,18 @@ func (s *Store) selectTaskRoute(
 	found := false
 	for rows.Next() {
 		var candidate taskRouteCandidate
-		var active, queued int
+		var active, queued, repositoryAdvertised, acceptsManagedRepositories int
 		var encoded []byte
 		if err := rows.Scan(
-			&candidate.workerID, &candidate.repositoryID, &candidate.runtime,
-			&candidate.capacity, &active, &encoded, &queued,
+			&candidate.workerID, &candidate.runtime, &candidate.capacity,
+			&active, &encoded, &repositoryAdvertised, &acceptsManagedRepositories, &queued,
 		); err != nil {
+			rows.Close()
 			return taskRouteCandidate{}, unavailable(err)
 		}
+		candidate.repositoryID = repositoryID
+		candidate.repositoryAdvertised = repositoryAdvertised != 0
+		candidate.acceptsManagedRepositories = acceptsManagedRepositories != 0
 		var access []protocol.SourceAccess
 		if err := json.Unmarshal(encoded, &access); err != nil {
 			return taskRouteCandidate{}, unavailable(err)
@@ -909,13 +1289,35 @@ func (s *Store) selectTaskRoute(
 		}
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
+		return taskRouteCandidate{}, unavailable(err)
+	}
+	if err := rows.Close(); err != nil {
 		return taskRouteCandidate{}, unavailable(err)
 	}
 	if !found {
 		return taskRouteCandidate{}, conflict(
 			"no_eligible_worker",
-			"no healthy online worker advertises the repository and required source access",
+			"no healthy online worker can acquire the repository and access its source provider",
 		)
+	}
+	if !best.repositoryAdvertised {
+		if !best.acceptsManagedRepositories {
+			return taskRouteCandidate{}, unavailable(errors.New("selected worker cannot acquire managed repositories"))
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO worker_repositories(
+				worker_id, display_key, repository_id, retained_count, advertised, dynamic, updated_at
+			)
+			VALUES (?, ?, ?, 0, 1, 1, ?)
+			ON CONFLICT(worker_id, repository_id) DO UPDATE SET
+				display_key=excluded.display_key,
+				advertised=1,
+				dynamic=1,
+				updated_at=excluded.updated_at
+		`, best.workerID, repositoryIdentity, repositoryID, now); err != nil {
+			return taskRouteCandidate{}, unavailable(err)
+		}
 	}
 	return best, nil
 }

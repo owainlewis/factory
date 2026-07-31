@@ -71,6 +71,10 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /api/v1/workers/{worker_id}/claims", api.claim)
 	mux.HandleFunc("GET /api/v1/workers", api.listWorkers)
 	mux.HandleFunc("GET /api/v1/workers/{worker_id}", api.getWorker)
+	mux.HandleFunc("GET /api/v1/repositories", api.listManagedRepositories)
+	mux.HandleFunc("POST /api/v1/repositories", api.createManagedRepository)
+	mux.HandleFunc("GET /api/v1/repositories/{repository_id}", api.getManagedRepository)
+	mux.HandleFunc("PUT /api/v1/repositories/{repository_id}/enabled", api.setManagedRepositoryEnabled)
 	mux.HandleFunc("GET /api/v1/metrics/summary", api.getMetrics)
 	mux.HandleFunc("GET /api/v1/tasks", api.listTasks)
 	mux.HandleFunc("POST /api/v1/tasks", api.createTask)
@@ -236,6 +240,70 @@ func (a *API) getWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, worker)
+}
+
+func (a *API) listManagedRepositories(w http.ResponseWriter, r *http.Request) {
+	repositories, err := a.store.ManagedRepositories(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"repositories": repositories})
+}
+
+func (a *API) createManagedRepository(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input protocol.CreateManagedRepositoryRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	repository, created, err := a.store.CreateManagedRepository(r.Context(), input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, repository)
+}
+
+func (a *API) getManagedRepository(w http.ResponseWriter, r *http.Request) {
+	repository, err := a.store.ManagedRepository(r.Context(), r.PathValue("repository_id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, repository)
+}
+
+func (a *API) setManagedRepositoryEnabled(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if input.Enabled == nil {
+		writeError(w, invalid("invalid_repository", "enabled is required"))
+		return
+	}
+	repository, err := a.store.SetManagedRepositoryEnabled(
+		r.Context(),
+		r.PathValue("repository_id"),
+		*input.Enabled,
+	)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, repository)
 }
 
 func (a *API) listTasks(w http.ResponseWriter, r *http.Request) {

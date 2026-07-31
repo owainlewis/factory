@@ -314,7 +314,7 @@ func TestGitHubSourceAccessIsAdvertisedOnlyAfterSuccessfulProbe(t *testing.T) {
 	writeProbe("0")
 	value := checkHealth(
 		context.Background(), "git", protocol.RuntimeCodex, codexPath,
-		githubPath, []string{"github"},
+		githubPath, nil,
 	)
 	want := []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}}
 	if value.State != "healthy" || !reflect.DeepEqual(value.SourceAccess, want) {
@@ -328,6 +328,241 @@ func TestGitHubSourceAccessIsAdvertisedOnlyAfterSuccessfulProbe(t *testing.T) {
 	)
 	if value.State != "healthy" || len(value.SourceAccess) != 0 {
 		t.Fatalf("failed GitHub probe health = %#v", value)
+	}
+}
+
+func TestZeroRepositoryWorkerAcquiresCentrallyManagedGitHubRepository(t *testing.T) {
+	upstream := createRepository(t, "cattle")
+	fixture := newServerFixture(t, nil)
+	managed, created, err := fixture.store.CreateManagedRepository(
+		context.Background(),
+		protocol.CreateManagedRepositoryRequest{RemoteIdentity: "github.com/example/cattle"},
+	)
+	if err != nil || !created {
+		t.Fatalf("create managed repository: created %t, err %v", created, err)
+	}
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolDirectory := t.TempDir()
+	githubPath := filepath.Join(toolDirectory, "gh")
+	gitPath := filepath.Join(toolDirectory, "git")
+	t.Setenv("FACTORY_TEST_REAL_GIT", realGit)
+	t.Setenv("FACTORY_TEST_GH_ORIGIN", upstream.origin)
+	githubScript := `#!/bin/sh
+set -eu
+if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then
+  exit 0
+fi
+if [ "${1:-}" != "repo" ] || [ "${2:-}" != "clone" ] || [ "${3:-}" != "example/cattle" ]; then
+  exit 91
+fi
+"$FACTORY_TEST_REAL_GIT" clone --no-checkout "$FACTORY_TEST_GH_ORIGIN" "$4"
+"$FACTORY_TEST_REAL_GIT" -C "$4" remote set-url origin https://github.com/example/cattle.git
+`
+	if err := os.WriteFile(githubPath, []byte(githubScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitScript := `#!/bin/sh
+set -eu
+if [ "${1:-}" = "remote" ] && [ "${2:-}" = "get-url" ] && [ "${3:-}" = "origin" ]; then
+  case "$PWD" in
+    */repositories/*)
+      echo https://github.com/example/cattle.git
+      exit 0
+      ;;
+  esac
+fi
+if [ "${1:-}" = "fetch" ]; then
+  exec "$FACTORY_TEST_REAL_GIT" -c "url.$FACTORY_TEST_GH_ORIGIN.insteadOf=https://github.com/example/cattle.git" "$@"
+fi
+if [ "${1:-}" = "remote" ] && [ "${2:-}" = "set-head" ]; then
+  exec "$FACTORY_TEST_REAL_GIT" -c "url.$FACTORY_TEST_GH_ORIGIN.insteadOf=https://github.com/example/cattle.git" "$@"
+fi
+exec "$FACTORY_TEST_REAL_GIT" "$@"
+`
+	if err := os.WriteFile(gitPath, []byte(gitScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	codexPath := filepath.Join(toolDirectory, "codex")
+	writeFakeCodex(t, codexPath)
+	t.Setenv("FACTORY_TEST_SUPERVISOR", "1")
+	logDirectory := filepath.Join(t.TempDir(), "codex-log")
+	t.Setenv("FACTORY_TEST_CODEX_LOG", logDirectory)
+	dataDirectory := filepath.Join(t.TempDir(), "worker")
+	options := testOptions(codexPath)
+	options.GitExecutable = gitPath
+	options.GitHubExecutable = githubPath
+	manager, err := New(Config{
+		Server: fixture.server.URL, Name: "cattle-worker", MaxConcurrent: 1,
+		DataDirectory: dataDirectory,
+	}, options, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelFirst, firstDone := startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy" && worker.AcceptsManagedRepositories &&
+			len(worker.Repositories) == 0 && hasGitHubSourceAccess(worker.SourceAccess)
+	})
+
+	task, taskCreated, err := fixture.store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+		RequestKey: "cattle-e2e", Title: "Cattle worker task",
+		Description: "Exercise managed repository acquisition.\nFAKE_MODE=success",
+		Route: &protocol.TaskRoute{
+			RepositoryRemoteIdentity: managed.RemoteIdentity,
+			SourceAccess:             protocol.SourceAccess{Provider: "github", Hostname: "github.com"},
+		},
+		TimeoutSeconds: 60,
+	})
+	if err != nil || !taskCreated {
+		t.Fatalf("create routed task: created %t, err %v", taskCreated, err)
+	}
+	if task.Execution.AssignedWorkerID != worker.ID {
+		t.Fatalf("assigned worker = %q, want %q", task.Execution.AssignedWorkerID, worker.ID)
+	}
+	task = waitForTaskState(t, fixture.store, task.Task.ID, "succeeded")
+	if len(task.Attempts) != 1 || task.Attempts[0].Result != "completed by fake Codex" {
+		t.Fatalf("cattle task attempts = %#v", task.Attempts)
+	}
+	cachePath := filepath.Join(dataDirectory, "repositories", managed.ID)
+	if info, err := os.Stat(cachePath); err != nil || !info.IsDir() {
+		t.Fatalf("managed repository cache = %v, err %v", info, err)
+	}
+	if err := os.WriteFile(filepath.Join(upstream.path, "SECOND.md"), []byte("second\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, upstream.path, "add", "SECOND.md")
+	runGitTest(t, upstream.path, "commit", "-m", "second")
+	runGitTest(t, upstream.path, "push", "origin", "main")
+	refreshed, err := manager.acquireManagedRepository(context.Background(), protocol.Repository{
+		ID: managed.ID, Key: managed.RemoteIdentity, RemoteIdentity: managed.RemoteIdentity,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := runGitTest(t, upstream.path, "rev-parse", "HEAD"); refreshed.BaseCommit != want {
+		t.Fatalf("refreshed base commit = %q, want %q", refreshed.BaseCommit, want)
+	}
+	worker = waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return len(worker.Repositories) == 1 && worker.Repositories[0].ID == managed.ID
+	})
+	if worker.Repositories[0].Key != managed.RemoteIdentity {
+		t.Fatalf("dynamic repository = %#v", worker.Repositories[0])
+	}
+	prompt, err := os.ReadFile(filepath.Join(logDirectory, task.Attempts[0].ID+".prompt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(prompt), "Repository: "+managed.RemoteIdentity) {
+		t.Fatalf("prompt did not identify managed repository:\n%s", prompt)
+	}
+
+	cancelFirst()
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := New(Config{
+		Server: fixture.server.URL, Name: "cattle-worker", MaxConcurrent: 1,
+		DataDirectory: dataDirectory,
+	}, options, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.ID() != manager.ID() {
+		t.Fatalf("worker ID changed across restart: %q != %q", restarted.ID(), manager.ID())
+	}
+	startManager(t, restarted)
+	waitForWorker(t, fixture.store, restarted.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy" && worker.AcceptsManagedRepositories &&
+			len(worker.Repositories) == 1 && worker.Repositories[0].ID == managed.ID
+	})
+	restartedTask, restartedCreated, err := fixture.store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+		RequestKey: "cattle-e2e-restart", Title: "Restarted cattle worker task",
+		Description: "Reuse the managed repository cache.\nFAKE_MODE=success",
+		Route: &protocol.TaskRoute{
+			RepositoryRemoteIdentity: managed.RemoteIdentity,
+			SourceAccess:             protocol.SourceAccess{Provider: "github", Hostname: "github.com"},
+		},
+		TimeoutSeconds: 60,
+	})
+	if err != nil || !restartedCreated {
+		t.Fatalf("create restarted routed task: created %t, err %v", restartedCreated, err)
+	}
+	restartedTask = waitForTaskState(t, fixture.store, restartedTask.Task.ID, "succeeded")
+	if len(restartedTask.Attempts) != 1 || restartedTask.Attempts[0].Result != "completed by fake Codex" {
+		t.Fatalf("restarted cattle task attempts = %#v", restartedTask.Attempts)
+	}
+}
+
+func TestManagedRepositoryCacheEnforcesItsHardLimit(t *testing.T) {
+	root := t.TempDir()
+	for index := 0; index < protocol.MaxRepositoryCacheEntries; index++ {
+		if err := os.Mkdir(filepath.Join(root, fixtureUUID(index+1)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := enforceRepositoryCacheLimit(root); err == nil || !strings.Contains(err.Error(), "cache limit") {
+		t.Fatalf("cache limit error = %v", err)
+	}
+}
+
+func TestManagedRepositoryCacheStartupRemovesInterruptedClones(t *testing.T) {
+	dataDirectory := t.TempDir()
+	root := filepath.Join(dataDirectory, "repositories")
+	staleClone := filepath.Join(root, ".clone-interrupted", "repository")
+	if err := os.MkdirAll(staleClone, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staleClone, "partial.pack"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installedID := fixtureUUID(780)
+	if err := os.Mkdir(filepath.Join(root, installedID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := filepath.Join(root, "operator-note")
+	if err := os.Mkdir(unrelated, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	ids, err := managedRepositoryCacheIDs(dataDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || !ids[installedID] {
+		t.Fatalf("managed repository cache IDs = %#v", ids)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".clone-interrupted")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("interrupted clone remains after startup scan: %v", err)
+	}
+	if _, err := os.Stat(unrelated); err != nil {
+		t.Fatalf("startup scan removed an unrelated entry: %v", err)
+	}
+}
+
+func TestFailedManagedRepositoryCloneLeavesNoCacheEntry(t *testing.T) {
+	dataDirectory := t.TempDir()
+	githubPath := filepath.Join(t.TempDir(), "gh")
+	if err := os.WriteFile(githubPath, []byte("#!/bin/sh\nexit 42\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{
+		dataDirectory: dataDirectory,
+		options:       Options{GitExecutable: "git", GitHubExecutable: githubPath},
+	}
+	repositoryID := fixtureUUID(500)
+	_, err := manager.acquireManagedRepository(context.Background(), protocol.Repository{
+		ID: repositoryID, Key: "github.com/example/failure",
+		RemoteIdentity: "github.com/example/failure",
+	})
+	if err == nil || !strings.Contains(err.Error(), "clone managed GitHub repository") {
+		t.Fatalf("clone failure = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dataDirectory, "repositories", repositoryID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed clone left cache entry: %v", err)
 	}
 }
 
@@ -390,6 +625,7 @@ func TestClaudeCodeSupervisorAcceptsOversizedResult(t *testing.T) {
 func testOptions(codexPath string) Options {
 	return Options{
 		GitExecutable:        "git",
+		GitHubExecutable:     filepath.Join(filepath.Dir(codexPath), "unavailable-gh"),
 		RuntimeExecutable:    codexPath,
 		SupervisorCommand:    []string{os.Args[0], "-test.run=TestWorkerSupervisorHelperProcess", "--"},
 		WorkerVersion:        "test",

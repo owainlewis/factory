@@ -43,11 +43,12 @@ func resolveRepositories(config Config, gitExecutable string) ([]Repository, err
 		if previous := paths[repository.Path]; previous != "" {
 			return nil, fmt.Errorf("repositories %q and %q resolve to the same path", previous, key)
 		}
-		if previous := identities[repository.RemoteIdentity]; previous != "" {
+		identityKey := remoteIdentityComparisonKey(repository.RemoteIdentity)
+		if previous := identities[identityKey]; previous != "" {
 			return nil, fmt.Errorf("repositories %q and %q resolve to the same remote", previous, key)
 		}
 		paths[repository.Path] = key
-		identities[repository.RemoteIdentity] = key
+		identities[identityKey] = key
 		repositories = append(repositories, repository)
 	}
 	return repositories, nil
@@ -216,6 +217,17 @@ func normalizeHostPath(host, path string) string {
 	return strings.ToLower(host) + "/" + path
 }
 
+func remoteIdentityComparisonKey(value string) string {
+	if strings.HasPrefix(strings.ToLower(value), "github.com/") {
+		return strings.ToLower(value)
+	}
+	return value
+}
+
+func sameRemoteIdentity(left, right string) bool {
+	return remoteIdentityComparisonKey(left) == remoteIdentityComparisonKey(right)
+}
+
 func createWorktree(ctx context.Context, gitExecutable, root string, repository Repository, taskID, attemptID string) (worktree, error) {
 	value, err := prepareWorktree(ctx, gitExecutable, root, repository, taskID, attemptID)
 	if err != nil {
@@ -249,11 +261,14 @@ func prepareWorktree(ctx context.Context, gitExecutable, root string, repository
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return worktree{}, fmt.Errorf("inspect attempt worktree path: %w", err)
 	}
-	stdout, stderr, err := runGitCommand(ctx, gitExecutable, repository.Path, 64<<10, "rev-parse", "HEAD")
-	if err != nil {
-		return worktree{}, commandFailure("resolve repository HEAD", stdout, stderr, err)
+	base := repository.BaseCommit
+	if base == "" {
+		stdout, stderr, err := runGitCommand(ctx, gitExecutable, repository.Path, 64<<10, "rev-parse", "HEAD")
+		if err != nil {
+			return worktree{}, commandFailure("resolve repository HEAD", stdout, stderr, err)
+		}
+		base = strings.TrimSpace(string(stdout))
 	}
-	base := strings.TrimSpace(string(stdout))
 	if !commitPattern.MatchString(base) {
 		return worktree{}, errors.New("repository HEAD is not a full commit ID")
 	}

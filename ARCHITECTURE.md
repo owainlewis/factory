@@ -2,7 +2,7 @@
 
 > **Status:** Current implementation
 >
-> **Verification basis:** Working tree based on commit `88a5093`
+> **Verification basis:** Working tree based on commit `2d732ec`
 
 ## 1. Executive summary
 
@@ -12,16 +12,17 @@ It separates durable coordination from agent execution:
 - `factory-server` stores work, assigns it, exposes the HTTP API, and serves the
   embedded browser UI.
 - `factory-worker` has one stable identity and one agent runtime. It advertises
-  allowed repositories, polls for work, and runs attempts in isolated Git
-  worktrees.
+  runtime capacity and provider access, acquires centrally managed repositories
+  on demand, and runs attempts in isolated Git worktrees.
 - `factory-poller` lists configured issue queues through provider CLIs and
   submits matching tickets as ordinary control-plane tasks.
 - Codex or Claude Code performs the repository work as a child process of the
   worker.
 
 The current task contract is a title, prompt, assigned worker, repository, and
-timeout. The scheduler is part of the control plane. The deployment is limited
-to a trusted user and loopback HTTP on one host.
+timeout. Callers may name the assignment directly or ask the control-plane
+scheduler to choose from cattle workers. The deployment is limited to a trusted
+user and loopback HTTP on one host.
 
 ## 2. System context
 
@@ -38,7 +39,8 @@ factory-server
            | registration, polling, leases, events, completion
            |
 factory-worker (one identity and one runtime)
-   |-- repository allowlist
+   |-- bounded on-demand repository cache
+   |-- optional legacy static checkouts
    |-- attempt manifests and owned Git worktrees
    `-- Codex CLI or Claude Code CLI
 
@@ -57,8 +59,8 @@ the system does not use WebSockets.
 
 1. One worker identity has one immutable runtime, either `codex` or
    `claude-code`.
-2. Tasks are assigned to a specific worker and one repository currently
-   advertised by that worker.
+2. Every task freezes one worker and one control-plane repository. Routed work
+   may select a cattle worker before that repository exists in its local cache.
 3. Only a healthy, recently registered worker with free capacity can claim its
    queued work.
 4. A lease token owns one active attempt. Active operations require a matching,
@@ -116,11 +118,13 @@ credentials and API clients outside Factory.
 
 For GitHub, the poller submits the repository remote and a GitHub source-access
 requirement. In the task-creation transaction, the control plane chooses the
-healthy online repository advertiser with the lowest
-`(active + queued) / capacity` load, breaking an exact tie by worker ID. It
-excludes repositories without retained-worktree headroom, then freezes the
-selected worker and repository on the execution. The poller writes the exact
-task request to its own SQLite ledger, submits through
+healthy online cattle worker with GitHub access and the lowest `(active +
+queued) / capacity` load, breaking an exact tie by worker ID. A legacy worker
+that already advertises the checkout is also eligible. It excludes repositories
+without retained-worktree headroom and excludes a cattle worker without cache
+headroom unless that repository is already cached. It then freezes the selected
+worker and repository on the execution. The poller writes the exact task request
+to its own SQLite ledger, submits through
 `POST /api/v1/tasks`, and records the returned task ID. Its default state is
 `~/.factory/poller/poller.sqlite3`.
 
@@ -131,8 +135,11 @@ manual cleanup, or starts the internal attempt supervisor. The manager:
 
 - resolves and locks its data directory;
 - creates or loads a durable worker ID;
-- resolves repository paths and normalizes their `origin` identities;
-- checks Git and runtime health;
+- resolves any optional legacy repository paths and normalizes their `origin`
+  identities;
+- checks Git and runtime health and automatically probes local GitHub access;
+- clones or fetches assigned managed repositories into a bounded cache before
+  agent startup;
 - registers every ten seconds and polls for claims every two seconds with
   jitter;
 - renews active leases every ten seconds;
@@ -171,19 +178,24 @@ Node.js is a contributor dependency only when UI source changes.
 
 1. The server validates its data root, opens SQLite, applies migrations, and
    marks already expired attempts as `lost`.
-2. The worker validates its TOML, data directory, runtime, and repositories.
+2. The worker validates its TOML, data directory, runtime, and any optional
+   legacy repositories.
 3. The worker reconciles durable attempt manifests before accepting new work.
-4. A healthy worker registers its identity, runtime, capacity, repositories,
-   retained worktrees, and disposed attempt IDs.
+4. A healthy worker registers its identity, runtime, capacity, provider access,
+   managed-repository acquisition capability, optional legacy repositories,
+   bounded cached repository IDs, retained worktrees, and disposed attempt IDs.
 5. A worker is shown as offline when its last registration is more than 30
    seconds old.
 
 ### Task creation and claiming
 
-1. An operator submits a unique `request_key`, title, description, worker ID,
-   repository ID, and optional timeout.
-2. The control plane creates one task and one queued execution. Reusing the
-   request key returns the original task.
+1. A caller submits a unique `request_key`, title, description, optional timeout,
+   and either an explicit worker/repository pair or a repository remote plus
+   source-access route.
+2. For a route, the control plane requires an enabled managed repository,
+   chooses an eligible worker by fair load, and freezes both IDs. It then
+   creates one task and one queued execution. Reusing the request key returns
+   the original task.
 3. The assigned worker polls its claim endpoint with a unique request ID and
    lease token.
 4. The control plane verifies worker health, recency, capacity, runtime,
@@ -212,8 +224,10 @@ use its installed provider CLI to update the issue and open a pull request.
 
 ### Attempt execution
 
-1. The worker validates the claim against its identity and repository allowlist.
-2. It reads the configured checkout's current `HEAD`.
+1. The worker validates the claim identity, assignment, runtime, repository ID,
+   and remote identity.
+2. It uses a compatible legacy checkout or serially clones/fetches the managed
+   repository. Managed work starts at the fetched remote default-branch commit.
 3. It creates a branch named
    `factory/<task-prefix>-<attempt-prefix>` and an owned worktree.
 4. It writes a protected attempt manifest before starting the runtime.
@@ -261,6 +275,10 @@ GET    /healthz
 GET    /api/v1/metrics/summary?window=24h|7d|30d|all
 GET    /api/v1/workers
 GET    /api/v1/workers/{worker_id}
+GET    /api/v1/repositories
+POST   /api/v1/repositories
+GET    /api/v1/repositories/{repository_id}
+PUT    /api/v1/repositories/{repository_id}/enabled
 GET    /api/v1/tasks?limit={1..200}&cursor={cursor}
 POST   /api/v1/tasks
 GET    /api/v1/tasks/{task_id}
@@ -296,6 +314,10 @@ Task   1 --- 1 Execution       1 --- * Attempt 1 --- * AttemptEvent
 ```
 
 - A task stores the operator request and repository.
+- A repository is the central fleet record. Its enabled flag gates new routed
+  work but does not rewrite existing assignments.
+- A worker-repository row may be a legacy static advertisement or the dynamic
+  association frozen when a cattle worker is selected.
 - An execution stores its assigned worker, required runtime, state,
   cancellation flag, and explicit retry count.
 - An attempt stores one claim, lease, process identity, result, and outcome.
@@ -321,6 +343,8 @@ task list.
 | Completion result | 256 KiB |
 | Completion error | 64 KiB |
 | Retained and reserved worktrees per worker repository | 10 |
+| Managed repositories | 1,000 |
+| Cached repositories per worker | 100 |
 | Task page | 50 by default, 200 maximum |
 | Event page | 100 by default, 500 maximum |
 | Issues per queue pass | 100 |
@@ -347,6 +371,7 @@ task list.
   workers/<worker>/
     worker-id
     worker.lock
+    repositories/<repository-id>/
     attempts/
     disposed-attempts.json
     worktrees/
@@ -362,9 +387,9 @@ preview storage format. They do not represent a second application.
 names remain migration aliases in code and the local launcher, but are not
 operator-facing configuration.
 
-Relative worker data and repository paths are resolved from the directory that
-contains the worker TOML. Repositories must resolve to real Git checkouts with
-an `origin` remote.
+Relative worker data and optional legacy repository paths are resolved from the
+directory that contains the worker TOML. Managed repositories are configured by
+the control-plane API and cached below the worker data directory.
 
 ## 7. Security and trust boundaries
 
@@ -375,11 +400,12 @@ The current trust boundary is one trusted user on one host:
 - worker IDs identify local state but are not secrets;
 - the agent process has the worker OS user's permissions and can access anything
   available to that user;
-- the repository allowlist controls assignment and worktree creation, but it is
-  not a filesystem sandbox;
+- the enabled central repository catalog controls routed assignment. Workers
+  accept only canonical GitHub identities from that catalog and never clone an
+  arbitrary URL supplied by a ticket. This is not a filesystem sandbox;
 - provider CLIs own their credentials; the poller does not request, store, or
   pass provider tokens;
-- workers advertise GitHub source access only after an explicit opt-in and a
+- workers advertise GitHub source access and managed acquisition only after a
   successful local `gh auth status` probe; registrations contain no token;
 - configured source commands and queue prompts are trusted operator policy;
 - issue fields are stored in the poller ledger and task prompt as untrusted
@@ -490,7 +516,7 @@ designs.
 | Shared contracts and limits | `internal/protocol` |
 | Worker orchestration | `internal/worker/manager.go`, `registration.go`, `claiming.go`, `attempt_lifecycle.go` |
 | Runtime supervision | `internal/worker/supervisor.go` |
-| Git worktrees and cleanup | `internal/worker/git.go`, `reconcile.go`, `cleanup.go` |
+| Repository acquisition, Git worktrees, and cleanup | `internal/worker/repository_cache.go`, `git.go`, `reconcile.go`, `cleanup.go` |
 | Durable worker state | `internal/worker/identity.go`, `manifest.go` |
 | Issue sources and dispatch ledger | `internal/poller` |
 | State path compatibility | `internal/statepath` |

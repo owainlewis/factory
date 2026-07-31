@@ -6,26 +6,28 @@ import (
 )
 
 const (
-	RuntimeCodex         = "codex"
-	RuntimeClaudeCode    = "claude-code"
-	MaxBodyBytes         = 1 << 20
-	MaxDescriptionBytes  = 64 << 10
-	MaxEventBatchBytes   = 256 << 10
-	MaxEventBytes        = 64 << 10
-	MaxEventsPerBatch    = 100
-	MaxAttemptEventBytes = 10 << 20
-	MaxResultBytes       = 256 << 10
-	MaxErrorBytes        = 64 << 10
-	DefaultTimeout       = 2 * time.Hour
-	MaxTimeout           = 8 * time.Hour
-	LeaseDuration        = 30 * time.Second
-	EmptyClaimTTL        = 5 * time.Minute
-	WorkerOnlineWindow   = 30 * time.Second
-	MaxRetainedPerRepo   = 10
-	DefaultTaskPageSize  = 50
-	MaxTaskPageSize      = 200
-	DefaultEventPageSize = 100
-	MaxEventPageSize     = 500
+	RuntimeCodex              = "codex"
+	RuntimeClaudeCode         = "claude-code"
+	MaxBodyBytes              = 1 << 20
+	MaxDescriptionBytes       = 64 << 10
+	MaxEventBatchBytes        = 256 << 10
+	MaxEventBytes             = 64 << 10
+	MaxEventsPerBatch         = 100
+	MaxAttemptEventBytes      = 10 << 20
+	MaxResultBytes            = 256 << 10
+	MaxErrorBytes             = 64 << 10
+	DefaultTimeout            = 2 * time.Hour
+	MaxTimeout                = 8 * time.Hour
+	LeaseDuration             = 30 * time.Second
+	EmptyClaimTTL             = 5 * time.Minute
+	WorkerOnlineWindow        = 30 * time.Second
+	MaxRetainedPerRepo        = 10
+	MaxManagedRepositories    = 1000
+	MaxRepositoryCacheEntries = 100
+	DefaultTaskPageSize       = 50
+	MaxTaskPageSize           = 200
+	DefaultEventPageSize      = 100
+	MaxEventPageSize          = 500
 )
 
 func SupportedRuntime(value string) bool {
@@ -52,18 +54,20 @@ type SourceAccess struct {
 }
 
 type WorkerRegistration struct {
-	Name                   string                   `json:"name"`
-	WorkerVersion          string                   `json:"worker_version"`
-	Runtime                string                   `json:"runtime"`
-	RuntimeVersion         string                   `json:"runtime_version"`
-	Capacity               int                      `json:"capacity"`
-	ActiveCount            int                      `json:"active_count"`
-	Health                 string                   `json:"health"`
-	Repositories           []RepositoryRegistration `json:"repositories"`
-	SourceAccess           []SourceAccess           `json:"source_access,omitempty"`
-	RetainedWorktrees      []RetainedWorktree       `json:"retained_worktrees"`
-	CapacityHandoffVersion int                      `json:"capacity_handoff_version,omitempty"`
-	DisposedAttemptIDs     []string                 `json:"disposed_attempt_ids,omitempty"`
+	Name                       string                   `json:"name"`
+	WorkerVersion              string                   `json:"worker_version"`
+	Runtime                    string                   `json:"runtime"`
+	RuntimeVersion             string                   `json:"runtime_version"`
+	Capacity                   int                      `json:"capacity"`
+	ActiveCount                int                      `json:"active_count"`
+	Health                     string                   `json:"health"`
+	Repositories               []RepositoryRegistration `json:"repositories"`
+	SourceAccess               []SourceAccess           `json:"source_access,omitempty"`
+	AcceptsManagedRepositories bool                     `json:"accepts_managed_repositories,omitempty"`
+	ManagedRepositoryIDs       []string                 `json:"managed_repository_ids,omitempty"`
+	RetainedWorktrees          []RetainedWorktree       `json:"retained_worktrees"`
+	CapacityHandoffVersion     int                      `json:"capacity_handoff_version,omitempty"`
+	DisposedAttemptIDs         []string                 `json:"disposed_attempt_ids,omitempty"`
 }
 
 type Repository struct {
@@ -73,22 +77,40 @@ type Repository struct {
 	RetainedCount  int    `json:"retained_count"`
 }
 
+type ManagedRepository struct {
+	ID             string    `json:"id"`
+	RemoteIdentity string    `json:"remote_identity"`
+	Enabled        bool      `json:"enabled"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type CreateManagedRepositoryRequest struct {
+	RemoteIdentity string `json:"remote_identity"`
+}
+
+type SetManagedRepositoryEnabledRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
 type Worker struct {
-	ID                string             `json:"id"`
-	Name              string             `json:"name"`
-	WorkerVersion     string             `json:"worker_version"`
-	Runtime           string             `json:"runtime"`
-	RuntimeVersion    string             `json:"runtime_version"`
-	Capacity          int                `json:"capacity"`
-	ActiveCount       int                `json:"active_count"`
-	Health            string             `json:"health"`
-	Online            bool               `json:"online"`
-	Repositories      []Repository       `json:"repositories"`
-	SourceAccess      []SourceAccess     `json:"source_access,omitempty"`
-	RetainedWorktrees []RetainedWorktree `json:"retained_worktrees"`
-	CurrentTaskTitle  string             `json:"current_task_title,omitempty"`
-	RegisteredAt      time.Time          `json:"registered_at"`
-	LastHeartbeat     time.Time          `json:"last_heartbeat"`
+	ID                         string             `json:"id"`
+	Name                       string             `json:"name"`
+	WorkerVersion              string             `json:"worker_version"`
+	Runtime                    string             `json:"runtime"`
+	RuntimeVersion             string             `json:"runtime_version"`
+	Capacity                   int                `json:"capacity"`
+	ActiveCount                int                `json:"active_count"`
+	Health                     string             `json:"health"`
+	Online                     bool               `json:"online"`
+	Repositories               []Repository       `json:"repositories"`
+	SourceAccess               []SourceAccess     `json:"source_access,omitempty"`
+	AcceptsManagedRepositories bool               `json:"accepts_managed_repositories,omitempty"`
+	RepositoryCacheCount       int                `json:"repository_cache_count,omitempty"`
+	RetainedWorktrees          []RetainedWorktree `json:"retained_worktrees"`
+	CurrentTaskTitle           string             `json:"current_task_title,omitempty"`
+	RegisteredAt               time.Time          `json:"registered_at"`
+	LastHeartbeat              time.Time          `json:"last_heartbeat"`
 }
 
 type CreateTaskRequest struct {

@@ -50,16 +50,20 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 	}()
 	go manager.heartbeatAttempt(handle, claim.Attempt.ID, token)
 
-	repository, err := manager.validateClaim(claim)
-	if err != nil {
-		manager.finishWithoutWorktree(claim, token, handle, "failed", err)
-		return
-	}
 	taskDeadline := claim.Attempt.CreatedAt.Add(time.Duration(claim.Task.TimeoutSeconds) * time.Second)
 	taskTimer := time.AfterFunc(time.Until(taskDeadline), func() {
 		handle.stop("timeout")
 	})
 	defer taskTimer.Stop()
+	if err := manager.validateClaim(claim); err != nil {
+		manager.finishWithoutWorktree(claim, token, handle, "failed", err)
+		return
+	}
+	repository, err := manager.repositoryForClaim(handle.context, claim)
+	if err != nil {
+		manager.finishWithoutWorktree(claim, token, handle, terminalForStop(handle), stoppedAttemptError(handle, err))
+		return
+	}
 	worktreeRoot := filepath.Join(manager.dataDirectory, "worktrees")
 	value, err := prepareWorktree(handle.context, manager.options.GitExecutable, worktreeRoot,
 		repository, claim.Task.ID, claim.Attempt.ID)
@@ -209,27 +213,23 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		terminalState(message), message.Result, message.Error)
 }
 
-func (manager *Manager) validateClaim(claim protocol.Claim) (Repository, error) {
+func (manager *Manager) validateClaim(claim protocol.Claim) error {
 	if !uuidPattern.MatchString(claim.Attempt.ID) || !uuidPattern.MatchString(claim.Task.ID) {
-		return Repository{}, errors.New("claim contains invalid IDs")
+		return errors.New("claim contains invalid IDs")
 	}
 	if claim.Attempt.WorkerID != manager.id || claim.Execution.AssignedWorkerID != manager.id {
-		return Repository{}, errors.New("claim is assigned to a different worker")
+		return errors.New("claim is assigned to a different worker")
 	}
 	if claim.Execution.RequiredRuntime != manager.config.Runtime {
-		return Repository{}, errors.New("claim requires a different worker runtime")
+		return errors.New("claim requires a different worker runtime")
 	}
 	if claim.Task.RepositoryID != claim.Repository.ID {
-		return Repository{}, errors.New("claim repository IDs do not match")
+		return errors.New("claim repository IDs do not match")
 	}
 	if claim.Task.TimeoutSeconds < 1 || claim.Task.TimeoutSeconds > int(protocol.MaxTimeout/time.Second) {
-		return Repository{}, errors.New("claim timeout is outside the supported range")
+		return errors.New("claim timeout is outside the supported range")
 	}
-	repository, exists := manager.repositoriesByKey[claim.Repository.Key]
-	if !exists || repository.RemoteIdentity != claim.Repository.RemoteIdentity {
-		return Repository{}, errors.New("claim repository is not advertised by this worker")
-	}
-	return repository, nil
+	return nil
 }
 
 func (manager *Manager) heartbeatAttempt(handle *attemptHandle, attemptID, token string) {

@@ -40,6 +40,7 @@ type Repository struct {
 	Key            string
 	Path           string
 	RemoteIdentity string
+	BaseCommit     string
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -102,9 +103,6 @@ func validateConfig(config Config) error {
 	}
 	if strings.TrimSpace(config.DataDirectory) == "" {
 		return errors.New("data_directory is required")
-	}
-	if len(config.Repositories) == 0 {
-		return errors.New("at least one repository is required")
 	}
 	seenSourceAccess := make(map[string]bool, len(config.SourceAccess))
 	for _, source := range config.SourceAccess {

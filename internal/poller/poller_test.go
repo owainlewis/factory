@@ -541,6 +541,12 @@ func pollerFixture(t *testing.T) (*controlplane.Store, *httptest.Server, Config)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	if _, _, err := store.CreateManagedRepository(
+		context.Background(),
+		protocol.CreateManagedRepositoryRequest{RemoteIdentity: "github.com/example/project"},
+	); err != nil {
+		t.Fatal(err)
+	}
 	worker, err := store.RegisterWorker(context.Background(), pollerWorkerID, protocol.WorkerRegistration{
 		Name: "poller-worker", WorkerVersion: "test", Runtime: protocol.RuntimeCodex,
 		RuntimeVersion: "test", Capacity: 1, Health: "healthy",

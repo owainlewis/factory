@@ -303,12 +303,13 @@ environment and never enter Factory storage.
 
 #### Worker router
 
-The router selects one current worker that advertises the provider repository
-through the existing normalized repository identity and advertises live source
-access matching the binding's immutable provider namespace, hostname, and
-scope. It depends on current worker registrations and uses a generic
-least-loaded eligible rule. It does not infer provider access from adapter
-output, inspect the phase name, or create a new worker pool abstraction. The
+The router first resolves an enabled repository in the control-plane managed
+fleet. It then selects one current cattle worker that accepts managed
+repositories and advertises live source access matching the binding's immutable
+provider namespace, hostname, and scope. A legacy worker that already
+advertises the checkout remains eligible during migration. Routing uses the
+generic least-loaded rule. It does not infer provider access from adapter
+output, inspect the phase name, or create a phase-specific worker pool. The
 chosen worker and repository are frozen on the delivery and normal Execution.
 
 #### Browser UI
@@ -456,6 +457,11 @@ installed, authenticated for the hostname, and can read each scope. Old workers
 omit the field and remain valid for manual tasks, but the trigger router does
 not assign them work that requires live source revalidation. The capability
 carries no token and is not phase-specific.
+
+Worker registration also carries a generic managed-repository acquisition
+capability. A selected worker clones or fetches the frozen central repository
+before starting the unchanged agent contract. This capability is runtime
+infrastructure, not phase or repository configuration.
 
 ### Decisions
 
@@ -608,16 +614,17 @@ A later reviewed protocol version may add typed provider-evidence operations
 with explicit idempotency and uncertain-write recovery. Until then, Factory
 claims exactly-once task creation, not exactly-once provider comments or checks.
 
-#### Managed fleet scope uses existing repository advertisements
+#### Managed fleet scope uses the control-plane repository catalog
 
 A repository belongs to a binding’s fleet when its normalized provider identity
-is inside the binding’s organization or group scope and at least one current
-worker advertises that Factory repository. No checked-in file or per-repository
-Factory record opts it in. Optional central include and exclude patterns may
-narrow a binding, but they live on the binding. The router chooses a healthy,
-online advertiser by lowest `(active + queued) / capacity`, breaking ties by
-worker ID, and freezes that assignment. If none is eligible, delivery waits for
-routing rather than creating an unclaimable task.
+is enabled in the central managed-repository catalog and is inside the
+binding’s organization or group scope. No checked-in file or per-repository
+worker configuration opts it in. Optional central include and exclude patterns
+may narrow a binding, but they live on the binding. The router chooses a
+healthy, online worker with matching provider access and managed-repository
+capability by lowest `(active + queued) / capacity`, breaking ties by worker ID,
+and freezes that assignment. If none is eligible, delivery waits for routing
+rather than creating an unclaimable task.
 
 #### Source metadata is provenance, not a work item
 
@@ -788,9 +795,9 @@ require a separate design.
   parsing, arrays, filtering, and pagination.
 - Trigger routing requires a current worker `source_access` capability exactly
   matching the binding's provider namespace, provider, and hostname and
-  containing its organization, group, or site scope, as well as repository
-  advertisement. Workers derive it from central host credentials, not
-  repository configuration, and advertise no secret.
+  containing its organization, group, or site scope, plus generic
+  managed-repository acquisition capability. Workers derive both from host
+  capabilities, not repository configuration, and advertise no secret.
 - Startup reconciliation runs before the trigger manager reports healthy. It
   recovers incomplete deliveries first, then performs one live scan for every
   enabled poll target. Workers may continue existing executions during that
@@ -1002,11 +1009,11 @@ an exact namespace, provider, hostname, and containing scope match. Old
 registrations without the field decode as an empty list. Claims, attempts,
 leases, events, and completions are unchanged.
 
-The worker’s host-level configuration names access probes, not repositories or
-phases. For the MVP, a GitHub probe invokes the existing authenticated `gh`
-profile and advertises only scopes it can read. Failure makes triggered work
-ineligible for that worker but does not make the worker unhealthy for manual
-tasks.
+The worker’s host-level configuration does not name repositories or phases. For
+the MVP, the worker automatically invokes the existing authenticated `gh`
+profile and advertises GitHub access plus managed acquisition while that probe
+succeeds. Failure makes triggered work ineligible for that worker but does not
+make the runtime itself unhealthy for manual tasks.
 
 A Jira probe must exercise the same centrally configured Jira credential path
 that the agent will use. It verifies authenticated identity and performs one
@@ -1326,12 +1333,13 @@ records bounded stderr. It retries with exponential backoff and jitter starting
 at 5 seconds and capped at 15 minutes. A successful complete poll resets the
 backoff. Provider-specific rate-limit behavior remains inside the adapter.
 
-When no healthy online worker advertises a matching managed repository, the
-delivery remains `pending_route`. Registration changes wake routing, and the
-periodic reconciler also retries it. A route is attempted within 10 seconds of
-an eligible registration while the server is running. Once assigned, worker
-loss follows the existing lease and explicit retry model; triggers do not
-reschedule the task to a different worker.
+When no healthy online worker can acquire an enabled matching managed
+repository with the required source access, the delivery remains
+`pending_route`. Registration changes wake routing, and the periodic reconciler
+also retries it. A route is attempted within 10 seconds of an eligible
+registration while the server is running. Once assigned, worker loss follows
+the existing lease and explicit retry model; triggers do not reschedule the task
+to a different worker.
 
 Before any pending delivery creates its task, a new complete poll for its target
 must contain the same source identity and revision. Adapter failure leaves the
@@ -1503,9 +1511,10 @@ relay, repository CI job, worker-side poller, or phase-specific runtime.
 - One central GitHub issue binding expands across currently managed repositories
   in its organization without repository files or a configured repository
   array.
-- Trigger routing selects only a worker that advertises both the repository and
-  fresh provider, hostname, and organization source access. An old worker with
-  no additive capability still runs manual tasks.
+- Trigger routing selects only an enabled central repository and a worker with
+  managed-repository acquisition plus fresh provider, hostname, and
+  organization source access. A legacy worker that advertises the exact
+  checkout remains compatible during migration.
 - A trusted GitHub adapter may use existing `gh` authentication, owns provider
   parsing and pagination, and emits no issue body, description, or raw payload.
 - Factory passes versioned bounded JSON on stdin, executes the absolute adapter
@@ -1597,8 +1606,8 @@ normalization, required-label set inclusion, a candidate that fails
 revalidation, and rejection of an opaque condition not represented by protocol
 version 1.
 
-Polling tests will expand changing bindings and worker repository
-advertisements into independent targets, enforce the concurrency bound, process
+Polling tests will expand changing bindings and the central managed-repository
+fleet into independent targets, enforce the concurrency bound, process
 observations one at a time, and prove that a failed target cannot end
 eligibility or block another target. Fake clocks will prove the 60-second
 default cadence, jitter range, capped adapter backoff, startup

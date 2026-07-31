@@ -28,10 +28,10 @@ Requirements:
 Node.js is only needed when changing the UI. Normal builds use the committed,
 embedded UI assets.
 
-GitHub issue polling is optional, but it depends on the GitHub CLI, `gh`.
-Factory does not include a separate GitHub API client. Install and authenticate
-[`gh`](https://cli.github.com/) on the poller host before configuring a GitHub
-queue:
+GitHub issue polling and on-demand worker checkout are optional, but both depend
+on the GitHub CLI, `gh`. Factory does not include a separate GitHub API client.
+Install and authenticate [`gh`](https://cli.github.com/) on the poller host and
+each eligible worker host before configuring a GitHub queue:
 
 ```sh
 gh --version
@@ -44,8 +44,9 @@ mkdir -p ~/.factory
 cp examples/worker.toml ~/.factory/worker.toml
 ```
 
-Edit `~/.factory/worker.toml` to select `codex` or `claude-code` and add the
-repositories this worker may use. Then start the server and worker:
+Edit `~/.factory/worker.toml` to select `codex` or `claude-code`. Workers need
+no repository list. They probe local `gh` access and acquire centrally managed
+GitHub repositories on demand. Then start the server and worker:
 
 ```sh
 just run
@@ -87,7 +88,7 @@ Go control plane <--- Issue poller
    | registration, claim, heartbeat, events, completion
    |
 Go workers
-  one identity + one runtime + allowed repositories
+  one identity + one runtime + on-demand repository cache
    |
    +-- Codex CLI
    `-- Claude Code CLI
@@ -121,7 +122,8 @@ Implemented:
 - Codex and Claude Code workers;
 - configurable issue queues with GitHub CLI polling and a normalized command
   contract for other provider CLIs;
-- repository allowlists and isolated Git worktrees;
+- a central managed-repository catalog, bounded worker caches, and isolated Git
+  worktrees;
 - bounded list APIs and retained-data metrics;
 - automatic cleanup of clean unchanged or published work and preservation of
   unpublished branches.

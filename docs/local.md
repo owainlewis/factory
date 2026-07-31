@@ -9,6 +9,7 @@ This guide starts one control plane and one worker on macOS or Linux.
 - `curl`
 - `just`
 - an authenticated Codex CLI or Claude Code CLI
+- an authenticated `gh` CLI for centrally managed GitHub repositories
 
 Node.js is not required for normal startup.
 
@@ -30,14 +31,12 @@ name = "local-codex"
 runtime = "codex"
 max_concurrent = 1
 data_directory = "workers/local-codex"
-
-[repositories.factory]
-path = "/absolute/path/to/factory"
 ```
 
-Relative repository paths resolve from the directory containing the worker TOML.
-Each path must resolve to a real, non-bare Git checkout with an `origin` remote.
-The map key is the repository name shown in the UI.
+No worker repository list is required. Factory detects local GitHub access with
+`gh auth status` and clones centrally managed repositories on demand. Optional
+legacy repository paths still resolve from the worker TOML directory and remain
+available for manual UI delegation.
 
 For Claude Code, use another config and identity:
 
@@ -47,9 +46,6 @@ name = "local-claude"
 runtime = "claude-code"
 max_concurrent = 1
 data_directory = "workers/local-claude"
-
-[repositories.factory]
-path = "/absolute/path/to/factory"
 ```
 
 Do not share a `data_directory` between worker identities.
@@ -67,6 +63,20 @@ Open [http://127.0.0.1:7337](http://127.0.0.1:7337).
 
 Stop both processes with Ctrl+C.
 
+Add a GitHub repository to the central fleet once:
+
+```sh
+curl --fail --silent --show-error \
+  -H 'Content-Type: application/json' \
+  -d '{"remote_identity":"github.com/OWNER/REPOSITORY"}' \
+  http://127.0.0.1:7337/api/v1/repositories
+```
+
+List the current fleet with `GET /api/v1/repositories`. Set
+`{"enabled":false}` with `PUT /api/v1/repositories/REPOSITORY_ID/enabled` to
+stop new routed work without interrupting an execution whose worker assignment
+is already frozen.
+
 To start with a different worker config:
 
 ```sh
@@ -82,6 +92,11 @@ additional worker directly:
 ```
 
 ## Delegate a task
+
+The current manual delegation screen lists optional legacy checkouts advertised
+by workers. Add a `[repositories.<key>]` entry when you need that path. Cattle
+workers with no static checkout are currently exercised through centrally
+routed task creation such as the GitHub poller.
 
 In the UI:
 

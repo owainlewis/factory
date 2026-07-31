@@ -1024,6 +1024,39 @@ func TestAcknowledgedDisposedManifestIsPrunedBeforeSecondRestart(t *testing.T) {
 	}
 }
 
+func TestRestartInspectionAcceptsHistoricalGitHubIdentityCase(t *testing.T) {
+	repository := createRepository(t, "historical-github-case")
+	dataDirectory, err := resolveDataDirectory(filepath.Join(t.TempDir(), "worker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveRepository("factory", repository.path, "git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := fixtureUUID(790)
+	attemptID := fixtureUUID(791)
+	value, err := createWorktree(
+		context.Background(), "git", filepath.Join(dataDirectory, "worktrees"), resolved, taskID, attemptID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a repository that now advertises the canonical lower-case
+	// identity while its pre-upgrade manifest retains historical GitHub case.
+	runGitTest(t, repository.path, "remote", "set-url", "origin", "git@github.com:example/migration.git")
+	manifest := attemptManifest{
+		TaskID: taskID, ExecutionID: fixtureUUID(792), AttemptID: attemptID,
+		RepositoryID: fixtureUUID(793), RepositoryKey: "factory", RepositoryPath: resolved.Path,
+		RemoteIdentity: "github.com/Example/Migration", BaseCommit: value.BaseCommit,
+		WorktreePath: value.Path, Branch: value.Branch, Lifecycle: manifestRetained,
+	}
+
+	if _, err := inspectManifestWorktree(context.Background(), "git", dataDirectory, manifest); err != nil {
+		t.Fatalf("inspect historical mixed-case manifest after restart: %v", err)
+	}
+}
+
 func TestDeletedDisposedAttemptDoesNotPoisonStartupReconciliation(t *testing.T) {
 	fixture := newServerFixture(t, nil)
 	repository := createRepository(t, "deleted-disposed-attempt")

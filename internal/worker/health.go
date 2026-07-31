@@ -27,7 +27,7 @@ func checkHealth(
 	runtime string,
 	runtimeExecutable string,
 	githubExecutable string,
-	configuredSourceAccess []string,
+	_ []string,
 ) health {
 	result := health{State: "unhealthy"}
 	gitContext, cancel := context.WithTimeout(ctx, healthCheckTimeout)
@@ -81,21 +81,16 @@ func checkHealth(
 		result.Error = errors.New("Codex authentication check returned no status")
 		return result
 	}
-	for _, source := range configuredSourceAccess {
-		if source != "github" {
-			continue
-		}
-		githubContext, githubCancel := context.WithTimeout(ctx, healthCheckTimeout)
-		_, _, githubErr := runCommand(
-			githubContext, githubExecutable, "", 64<<10,
-			"auth", "status", "--hostname", "github.com",
-		)
-		githubCancel()
-		if githubErr == nil {
-			result.SourceAccess = append(result.SourceAccess, protocol.SourceAccess{
-				Provider: "github", Hostname: "github.com",
-			})
-		}
+	githubContext, githubCancel := context.WithTimeout(ctx, healthCheckTimeout)
+	_, _, githubErr := runCommand(
+		githubContext, githubExecutable, "", 64<<10,
+		"auth", "status", "--hostname", "github.com",
+	)
+	githubCancel()
+	if githubErr == nil {
+		result.SourceAccess = append(result.SourceAccess, protocol.SourceAccess{
+			Provider: "github", Hostname: "github.com",
+		})
 	}
 	result.State = "healthy"
 	return result

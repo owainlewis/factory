@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 
 	"github.com/owainlewis/factory/internal/protocol"
@@ -56,32 +57,49 @@ func (manager *Manager) registration() protocol.WorkerRegistration {
 	repositories := make([]protocol.RepositoryRegistration, 0, len(manager.repositories))
 	retained := make([]protocol.RetainedWorktree, 0, len(manager.retained))
 	disposedAttemptIDs := make([]string, 0, len(manager.disposed))
+	managedRepositoryIDs := make([]string, 0, len(manager.managedRepositoryIDs))
 	for _, value := range manager.retained {
 		retained = append(retained, value)
 	}
 	for attemptID := range manager.disposed {
 		disposedAttemptIDs = append(disposedAttemptIDs, attemptID)
 	}
+	for repositoryID := range manager.managedRepositoryIDs {
+		managedRepositoryIDs = append(managedRepositoryIDs, repositoryID)
+	}
+	sort.Strings(managedRepositoryIDs)
 	for _, repository := range manager.repositories {
 		repositories = append(repositories, protocol.RepositoryRegistration{
 			Key: repository.Key, RemoteIdentity: repository.RemoteIdentity,
 			RetainedCount: manager.retainedCounts[repository.RemoteIdentity],
 		})
 	}
+	acceptsManagedRepositories := hasGitHubSourceAccess(manager.health.SourceAccess)
 	return protocol.WorkerRegistration{
-		Name:                   strings.TrimSpace(manager.config.Name),
-		WorkerVersion:          manager.options.WorkerVersion,
-		Runtime:                manager.config.Runtime,
-		RuntimeVersion:         manager.health.RuntimeVersion,
-		Capacity:               manager.config.MaxConcurrent,
-		ActiveCount:            len(manager.slots),
-		Health:                 manager.health.State,
-		Repositories:           repositories,
-		SourceAccess:           append([]protocol.SourceAccess(nil), manager.health.SourceAccess...),
-		RetainedWorktrees:      retained,
-		CapacityHandoffVersion: 1,
-		DisposedAttemptIDs:     disposedAttemptIDs,
+		Name:                       strings.TrimSpace(manager.config.Name),
+		WorkerVersion:              manager.options.WorkerVersion,
+		Runtime:                    manager.config.Runtime,
+		RuntimeVersion:             manager.health.RuntimeVersion,
+		Capacity:                   manager.config.MaxConcurrent,
+		ActiveCount:                len(manager.slots),
+		Health:                     manager.health.State,
+		Repositories:               repositories,
+		SourceAccess:               append([]protocol.SourceAccess(nil), manager.health.SourceAccess...),
+		AcceptsManagedRepositories: acceptsManagedRepositories,
+		ManagedRepositoryIDs:       managedRepositoryIDs,
+		RetainedWorktrees:          retained,
+		CapacityHandoffVersion:     1,
+		DisposedAttemptIDs:         disposedAttemptIDs,
 	}
+}
+
+func hasGitHubSourceAccess(values []protocol.SourceAccess) bool {
+	for _, value := range values {
+		if value.Provider == "github" && value.Hostname == "github.com" {
+			return true
+		}
+	}
+	return false
 }
 
 func (manager *Manager) register(ctx context.Context) {
