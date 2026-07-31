@@ -228,8 +228,9 @@ use its installed provider CLI to update the issue and open a pull request.
    and remote identity.
 2. It uses a compatible legacy checkout or serially clones/acquires the managed
    repository cache.
-3. It discovers the origin default branch or uses a legacy repository's
-   configured `base_branch`, fetches it, and freezes its exact commit.
+3. It revalidates the registered origin identity, discovers the origin default
+   branch or uses a legacy repository's configured `base_branch`, fetches it,
+   freezes its exact commit, and checks the origin identity again.
 4. It creates a branch named
    `factory/<task-prefix>-<attempt-prefix>` and an owned worktree.
 5. It writes a protected attempt manifest before starting the runtime.

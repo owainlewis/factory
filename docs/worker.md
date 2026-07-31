@@ -41,6 +41,10 @@ a centrally managed repository does not override an explicit disable.
 Repositories already known before this migration remain enabled for routing
 compatibility.
 
+The worker pins the normalized `origin` identity at startup and revalidates it
+before and after resolving each attempt base. An intentional origin change
+requires a worker restart; an unexpected change fails before agent launch.
+
 ## Identity and registration
 
 The first start creates a protected `worker-id` file in the worker data

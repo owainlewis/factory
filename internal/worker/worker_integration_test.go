@@ -321,6 +321,64 @@ func TestWorktreeRejectsMissingConfiguredBaseBranch(t *testing.T) {
 	}
 }
 
+func TestWorktreeRejectsOriginChangedAfterRegistration(t *testing.T) {
+	repository := createRepository(t, "registered-origin")
+	other := createRepository(t, "replacement-origin")
+	resolved, err := resolveRepository("factory", repository.path, "git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, repository.path, "remote", "set-url", "origin", other.origin)
+	root := filepath.Join(t.TempDir(), "worktrees")
+	attemptID := fixtureUUID(707)
+	_, err = prepareWorktree(
+		context.Background(), "git", root, resolved, fixtureUUID(706), attemptID,
+	)
+	if err == nil || !strings.Contains(err.Error(), "repository origin changed since worker registration") {
+		t.Fatalf("changed origin error = %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(root, attemptID)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("changed origin created a worktree path: %v", statErr)
+	}
+}
+
+func TestWorktreeRejectsOriginChangedDuringBaseResolution(t *testing.T) {
+	repository := createRepository(t, "origin-race")
+	other := createRepository(t, "origin-race-replacement")
+	resolved, err := resolveRepository("factory", repository.path, "git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FACTORY_TEST_REAL_GIT", realGit)
+	t.Setenv("FACTORY_TEST_REPLACEMENT_ORIGIN", other.origin)
+	wrapper := filepath.Join(t.TempDir(), "git")
+	if err := os.WriteFile(wrapper, []byte(`#!/bin/sh
+"$FACTORY_TEST_REAL_GIT" "$@"
+status=$?
+if [ "$status" -eq 0 ] && [ "$1" = "ls-remote" ] && [ "$2" = "--symref" ]; then
+  "$FACTORY_TEST_REAL_GIT" remote set-url origin "$FACTORY_TEST_REPLACEMENT_ORIGIN"
+fi
+exit "$status"
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "worktrees")
+	attemptID := fixtureUUID(709)
+	_, err = prepareWorktree(
+		context.Background(), wrapper, root, resolved, fixtureUUID(708), attemptID,
+	)
+	if err == nil || !strings.Contains(err.Error(), "repository origin changed since worker registration") {
+		t.Fatalf("concurrent origin change error = %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(root, attemptID)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("concurrent origin change created a worktree path: %v", statErr)
+	}
+}
+
 func runGitTest(t *testing.T, directory string, arguments ...string) string {
 	t.Helper()
 	command := exec.Command("git", arguments...)

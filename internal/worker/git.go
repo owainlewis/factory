@@ -288,6 +288,9 @@ func resolveBaseCommit(
 	gitExecutable string,
 	repository Repository,
 ) (string, string, error) {
+	if err := validateRegisteredOrigin(ctx, gitExecutable, repository); err != nil {
+		return "", "", err
+	}
 	branch := repository.BaseBranch
 	var base string
 	if branch == "" {
@@ -327,7 +330,26 @@ func resolveBaseCommit(
 	if !commitPattern.MatchString(base) {
 		return "", "", errors.New("base branch did not resolve to a full commit ID")
 	}
+	if err := validateRegisteredOrigin(ctx, gitExecutable, repository); err != nil {
+		return "", "", err
+	}
 	return branch, base, nil
+}
+
+func validateRegisteredOrigin(ctx context.Context, gitExecutable string, repository Repository) error {
+	stdout, stderr, err := runGitCommand(ctx, gitExecutable, repository.Path, 64<<10,
+		"remote", "get-url", "origin")
+	if err != nil {
+		return commandFailure("revalidate repository origin", stdout, stderr, err)
+	}
+	identity, err := normalizeRemoteIdentity(strings.TrimSpace(string(stdout)), repository.Path)
+	if err != nil {
+		return fmt.Errorf("revalidate repository origin: %w", err)
+	}
+	if identity != repository.RemoteIdentity {
+		return errors.New("repository origin changed since worker registration")
+	}
+	return nil
 }
 
 func validateBaseBranch(
