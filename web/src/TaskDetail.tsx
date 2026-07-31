@@ -12,7 +12,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { invalidateControlPlane } from "./controlPlaneQueries";
-import { duration, eventText, runtimeLabel, stateLabel } from "./format";
+import { duration, eventSummary, runtimeLabel, type EventSummary } from "./format";
 import { useVisibleInterval } from "./polling";
 import type {
   Attempt,
@@ -159,6 +159,10 @@ export function TaskDetail({
   const worker = workers.find((item) => item.id === data.execution.assigned_worker_id);
   const active = data.task.state === "queued" || data.task.state === "running";
   const retryable = data.task.state === "failed" || data.task.state === "cancelled";
+  const progress = (events.data ?? []).flatMap((event) => {
+    const summary = eventSummary(event);
+    return summary ? [{ event, summary }] : [];
+  });
 
   return (
     <div className="page detail-page">
@@ -242,17 +246,19 @@ export function TaskDetail({
       </div>
 
       <section className="panel progress-panel">
-        <PanelHeading title="Progress" aside={`${events.data?.length ?? 0} events`} />
+        <PanelHeading title="Progress" aside={`${progress.length} updates`} />
         {events.error && <InlineError error={events.error} />}
         {!latestAttempt ? (
           <div className="quiet-empty">Progress will appear when the worker starts this task.</div>
         ) : events.isPending && events.data === undefined ? (
           <LoadingLine label="Loading progress" />
-        ) : events.data === undefined ? null : events.data.length === 0 ? (
+        ) : events.data === undefined ? null : progress.length === 0 ? (
           <div className="quiet-empty">Progress will appear when the worker starts this task.</div>
         ) : (
           <ol className="event-list">
-            {(events.data ?? []).map((event) => <ProgressEvent key={event.sequence} event={event} />)}
+            {progress.map(({ event, summary }) => (
+              <ProgressEvent key={event.sequence} event={event} summary={summary} />
+            ))}
           </ol>
         )}
       </section>
@@ -289,13 +295,13 @@ async function loadLaterEvents(attemptID: string, initialAfter: number): Promise
   }
 }
 
-function ProgressEvent({ event }: { event: AttemptEvent }) {
+function ProgressEvent({ event, summary }: { event: AttemptEvent; summary: EventSummary }) {
   return (
     <li>
       <span className="event-marker" aria-hidden="true" />
       <div>
-        <span className="event-kind">{stateLabel(event.kind)}</span>
-        <p>{eventText(event)}</p>
+        <span className="event-kind">{summary.label}</span>
+        <p>{summary.text}</p>
         <time dateTime={event.server_time}>{new Date(event.server_time).toLocaleTimeString()}</time>
       </div>
     </li>

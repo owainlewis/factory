@@ -279,9 +279,29 @@ test.beforeAll(async () => {
     data: {
       lease_token: active.token,
       events: [
-        { sequence: 0, kind: "progress", payload: { text: "Inspected the control-plane contract." } },
-        { sequence: 1, kind: "progress", payload: { text: "Built the embedded React interface." } },
-        { sequence: 2, kind: "check", payload: { summary: "Running browser verification." } },
+        {
+          sequence: 0,
+          kind: "codex",
+          payload: {
+            type: "item.completed",
+            item: { type: "agent_message", text: "Inspected the control-plane contract." },
+          },
+        },
+        {
+          sequence: 1,
+          kind: "codex",
+          payload: {
+            type: "item.completed",
+            item: {
+              type: "command_execution",
+              command: "npm test",
+              aggregated_output: "RAW_COMMAND_OUTPUT_SHOULD_NOT_RENDER",
+              exit_code: 0,
+            },
+          },
+        },
+        { sequence: 2, kind: "codex", payload: { type: "thread.started", thread_id: "thread-e2e" } },
+        { sequence: 3, kind: "check", payload: { summary: "Running browser verification." } },
       ],
     },
   });
@@ -524,9 +544,12 @@ test("shows ordered progress and long task detail", async ({ page }) => {
   const events = page.locator(".event-list li");
   await expect(events).toHaveCount(3);
   await expect(events.nth(0)).toContainText("Inspected the control-plane contract.");
+  await expect(events.nth(1)).toContainText("Succeeded: npm test");
   await expect(events.nth(2)).toContainText("Running browser verification.");
+  await expect(page.getByText("RAW_COMMAND_OUTPUT_SHOULD_NOT_RENDER")).toHaveCount(0);
+  await expect(page.getByText("3 updates")).toBeVisible();
   await expect.poll(() => eventAfters).toContain("-1");
-  await expect.poll(() => eventAfters, { timeout: 8_000 }).toContain("2");
+  await expect.poll(() => eventAfters, { timeout: 8_000 }).toContain("3");
 
   await page.goto(`/tasks/${identifiers.longTask}`);
   await expect(page.getByText("End of description.")).toBeVisible();
