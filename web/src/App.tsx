@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { invalidateControlPlane } from "./controlPlaneQueries";
-import { DelegateDrawer } from "./DelegateDrawer";
+import { DelegateModal } from "./DelegateModal";
 import { Overview } from "./Overview";
 import { TaskDetail } from "./TaskDetail";
 import { useVisibleInterval } from "./polling";
@@ -248,7 +248,7 @@ export function App() {
         />
       )}
       {delegateRequest && (
-        <DelegateDrawer
+        <DelegateModal
           workers={workers.data ?? []}
           workersPending={workers.isPending}
           initialWorkerID={delegateRequest.workerID}

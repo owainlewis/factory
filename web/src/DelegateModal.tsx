@@ -14,7 +14,7 @@ import { runtimeLabel } from "./format";
 import type { CreateTaskInput, Worker } from "./types";
 import { InlineError } from "./ui";
 
-export function DelegateDrawer({
+export function DelegateModal({
   workers,
   workersPending,
   initialWorkerID,
@@ -31,7 +31,7 @@ export function DelegateDrawer({
   const titleID = useId();
   const descriptionID = useId();
   const titleRef = useRef<HTMLInputElement>(null);
-  const drawerRef = useRef<HTMLElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
   const requestRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
   const [workerID, setWorkerID] = useState(initialWorkerID ?? "");
   const [repositoryID, setRepositoryID] = useState("");
@@ -48,13 +48,13 @@ export function DelegateDrawer({
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
       if (event.key !== "Tab") return;
-      const focusable = [...(drawerRef.current?.querySelectorAll<HTMLElement>(
+      const focusable = [...(modalRef.current?.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
       ) ?? [])];
       if (focusable.length === 0) return;
       const first = focusable[0];
       const last = focusable.at(-1)!;
-      if (event.shiftKey && (document.activeElement === first || !drawerRef.current?.contains(document.activeElement))) {
+      if (event.shiftKey && (document.activeElement === first || !modalRef.current?.contains(document.activeElement))) {
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
@@ -110,17 +110,17 @@ export function DelegateDrawer({
   };
 
   return (
-    <div className="drawer-layer">
-      <button className="drawer-scrim" aria-label="Close delegate task" onClick={onClose} />
-      <aside ref={drawerRef} className="drawer" role="dialog" aria-modal="true" aria-labelledby="delegate-heading">
-        <div className="drawer-header">
+    <div className="modal-layer">
+      <button className="modal-scrim" aria-label="Close delegate task" onClick={onClose} />
+      <div ref={modalRef} className="modal" role="dialog" aria-modal="true" aria-labelledby="delegate-heading">
+        <div className="modal-header">
           <div>
             <h2 id="delegate-heading">Delegate task</h2>
           </div>
           <button className="icon-button" aria-label="Close" onClick={onClose}><X size={19} /></button>
         </div>
         <form onSubmit={submit} noValidate>
-          <div className="drawer-body">
+          <div className="modal-body">
             <Field label="Title" htmlFor={titleID} error={errors.title}>
               <input ref={titleRef} id={titleID} name="title" aria-invalid={Boolean(errors.title)} placeholder="Fix stale worker status" />
             </Field>
@@ -132,7 +132,7 @@ export function DelegateDrawer({
                 ? `This becomes the ${runtimeLabel(selectedWorker.runtime)} prompt.`
                 : "This becomes the selected worker runtime prompt."}
             >
-              <textarea id={descriptionID} name="description" rows={9} aria-invalid={Boolean(errors.description)} placeholder="Describe the outcome, constraints, and checks…" />
+              <textarea id={descriptionID} name="description" rows={6} aria-invalid={Boolean(errors.description)} placeholder="Describe the outcome, constraints, and checks…" />
             </Field>
             <Field label="Worker" htmlFor="delegate-worker" error={errors.worker}>
               <select
@@ -175,14 +175,14 @@ export function DelegateDrawer({
             </Field>
             {create.error && <InlineError error={create.error} />}
           </div>
-          <div className="drawer-footer">
+          <div className="modal-footer">
             <button type="button" className="button button-secondary" onClick={onClose}>Cancel</button>
             <button type="submit" className="button button-primary" disabled={create.isPending || workers.length === 0}>
               {create.isPending ? <><LoaderCircle size={16} className="spin" /> Delegating…</> : <><Plus size={16} /> Delegate task</>}
             </button>
           </div>
         </form>
-      </aside>
+      </div>
     </div>
   );
 }
