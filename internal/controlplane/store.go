@@ -447,6 +447,24 @@ func (s *Store) CreateManagedRepository(
 		WHERE lower(remote_identity) = lower(?)
 	`, remoteIdentity))
 	if err == nil {
+		var centrallyManaged int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT centrally_managed FROM repositories WHERE id = ?
+		`, repository.ID).Scan(&centrallyManaged); err != nil {
+			return protocol.ManagedRepository{}, false, unavailable(err)
+		}
+		if centrallyManaged == 0 {
+			now := s.now().UnixMilli()
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE repositories
+				SET enabled = 1, centrally_managed = 1, updated_at = ?
+				WHERE id = ? AND centrally_managed = 0
+			`, now, repository.ID); err != nil {
+				return protocol.ManagedRepository{}, false, unavailable(err)
+			}
+			repository.Enabled = true
+			repository.UpdatedAt = fromMillis(now)
+		}
 		if err := tx.Commit(); err != nil {
 			return protocol.ManagedRepository{}, false, unavailable(err)
 		}
@@ -471,8 +489,10 @@ func (s *Store) CreateManagedRepository(
 	}
 	now := s.now().UnixMilli()
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO repositories(id, remote_identity, enabled, created_at, updated_at)
-		VALUES (?, ?, 1, ?, ?)
+		INSERT INTO repositories(
+			id, remote_identity, enabled, centrally_managed, created_at, updated_at
+		)
+		VALUES (?, ?, 1, 1, ?, ?)
 	`, repositoryID, remoteIdentity, now, now); err != nil {
 		return protocol.ManagedRepository{}, false, unavailable(err)
 	}
@@ -535,7 +555,9 @@ func (s *Store) SetManagedRepositoryEnabled(
 	repositoryID = strings.TrimSpace(repositoryID)
 	now := s.now().UnixMilli()
 	result, err := s.db.ExecContext(ctx, `
-		UPDATE repositories SET enabled = ?, updated_at = ? WHERE id = ?
+		UPDATE repositories
+		SET enabled = ?, centrally_managed = 1, updated_at = ?
+		WHERE id = ?
 	`, enabled, now, repositoryID)
 	if err != nil {
 		return protocol.ManagedRepository{}, unavailable(err)
@@ -690,25 +712,42 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 		return protocol.Worker{}, err
 	}
 	input.SourceAccess = sourceAccess
-	seenKeys := map[string]bool{}
-	seenRemotes := map[string]bool{}
-	workerRemoteIdentities := make([]string, len(input.Repositories))
-	for i := range input.Repositories {
-		repo := &input.Repositories[i]
+	seenKeys := make(map[string]bool, len(input.Repositories))
+	seenRemotes := make(map[string]int, len(input.Repositories))
+	normalizedRepositories := make([]protocol.RepositoryRegistration, 0, len(input.Repositories))
+	workerRemoteIdentities := make([]string, 0, len(input.Repositories))
+	for _, value := range input.Repositories {
+		repo := value
 		repo.Key = strings.TrimSpace(repo.Key)
-		workerRemoteIdentities[i] = normalizeRemote(repo.RemoteIdentity)
-		repo.RemoteIdentity = normalizeRegisteredRemote(workerRemoteIdentities[i])
+		workerRemoteIdentity := normalizeRemote(repo.RemoteIdentity)
+		repo.RemoteIdentity = normalizeRegisteredRemote(workerRemoteIdentity)
 		if repo.Key == "" || repo.RemoteIdentity == "" || len(repo.Key) > 200 || len(repo.RemoteIdentity) > 2048 {
 			return protocol.Worker{}, invalid("invalid_repository", "repository key and remote_identity are required")
 		}
 		if repo.RetainedCount < 0 {
 			return protocol.Worker{}, invalid("invalid_repository", "retained_count cannot be negative")
 		}
-		if seenKeys[repo.Key] || seenRemotes[repo.RemoteIdentity] {
+		if seenKeys[repo.Key] {
 			return protocol.Worker{}, invalid("duplicate_repository", "repository keys and identities must be unique per worker")
 		}
-		seenKeys[repo.Key], seenRemotes[repo.RemoteIdentity] = true, true
+		seenKeys[repo.Key] = true
+		if previousIndex, exists := seenRemotes[repo.RemoteIdentity]; exists {
+			previousWorkerRemote := workerRemoteIdentities[previousIndex]
+			if workerRemoteIdentity == previousWorkerRemote ||
+				!strings.EqualFold(workerRemoteIdentity, previousWorkerRemote) {
+				return protocol.Worker{}, invalid(
+					"duplicate_repository", "repository identities must be unique per worker")
+			}
+			if repo.RetainedCount > normalizedRepositories[previousIndex].RetainedCount {
+				normalizedRepositories[previousIndex].RetainedCount = repo.RetainedCount
+			}
+			continue
+		}
+		seenRemotes[repo.RemoteIdentity] = len(normalizedRepositories)
+		normalizedRepositories = append(normalizedRepositories, repo)
+		workerRemoteIdentities = append(workerRemoteIdentities, workerRemoteIdentity)
 	}
+	input.Repositories = normalizedRepositories
 	retainedCounts := make(map[string]int)
 	retainedAttemptIDs := make(map[string][]string)
 	seenRetainedAttempts := make(map[string]string)
@@ -842,11 +881,23 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 		if errors.Is(err, sql.ErrNoRows) {
 			repositoryID, err = newID()
 			if err == nil {
+				var repositoryCount int
+				err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM repositories`).Scan(&repositoryCount)
+				if err == nil && repositoryCount >= protocol.MaxManagedRepositories {
+					return protocol.Worker{}, conflict(
+						"repository_limit_reached",
+						"the managed repository limit has been reached",
+					)
+				}
+			}
+			if err == nil {
 				// A legacy static checkout supports explicit manual assignment, but
 				// worker registration must not expand the centrally managed fleet.
 				_, err = tx.ExecContext(ctx, `
-					INSERT INTO repositories(id, remote_identity, enabled, created_at, updated_at)
-					VALUES (?, ?, 0, ?, ?)
+					INSERT INTO repositories(
+						id, remote_identity, enabled, centrally_managed, created_at, updated_at
+					)
+					VALUES (?, ?, 0, 0, ?, ?)
 				`, repositoryID, repo.RemoteIdentity, now, now)
 			}
 		}

@@ -14,6 +14,10 @@ CHECK (enabled IN (0, 1));
 ALTER TABLE repositories
 ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
 
+ALTER TABLE repositories
+ADD COLUMN centrally_managed INTEGER NOT NULL DEFAULT 1
+CHECK (centrally_managed IN (0, 1));
+
 UPDATE repositories
 SET updated_at = created_at
 WHERE updated_at = 0;

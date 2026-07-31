@@ -366,16 +366,21 @@ func TestCapacityMigrationDerivesOnlyAttributableLegacyRetainedCounts(t *testing
 	retainedAliasWorker := protocol.WorkerRegistration{
 		Name: "legacy", WorkerVersion: "upgraded", RuntimeVersion: "upgraded",
 		Capacity: 2, Health: "healthy",
-		Repositories: []protocol.RepositoryRegistration{{
-			Key: "factory", RemoteIdentity: "github.com/Example/Migration",
-		}},
+		Repositories: []protocol.RepositoryRegistration{
+			{Key: "factory", RemoteIdentity: "github.com/Example/Migration"},
+			{Key: "factory-case-alias", RemoteIdentity: "github.com/example/migration"},
+		},
 		RetainedWorktrees: []protocol.RetainedWorktree{{
 			AttemptID: "historical-attempt", RepositoryID: "case-alias-repository",
 		}},
 		CapacityHandoffVersion: 1,
 	}
-	if _, err := store.RegisterWorker(context.Background(), workerA, retainedAliasWorker); err != nil {
+	registeredAliasWorker, err := store.RegisterWorker(context.Background(), workerA, retainedAliasWorker)
+	if err != nil {
 		t.Fatalf("register worker with historical repository alias: %v", err)
+	}
+	if len(registeredAliasWorker.Repositories) != 1 || registeredAliasWorker.Repositories[0].Key != "factory" {
+		t.Fatalf("coalesced historical repository aliases = %#v", registeredAliasWorker.Repositories)
 	}
 	foreignKeys, err := database.Query(`PRAGMA foreign_key_check`)
 	if err != nil {
@@ -958,6 +963,37 @@ func TestManagedRepositoryCatalogIsCanonicalIdempotentAndDisableable(t *testing.
 	}
 }
 
+func TestManagedRepositoryCatalogPromotesOnlyWorkerDiscoveredRows(t *testing.T) {
+	store := newTestStore(t)
+	remoteIdentity := "github.com/example/discovered"
+	worker := registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{
+		Key: "discovered", RemoteIdentity: remoteIdentity,
+	})
+	if len(worker.Repositories) != 1 {
+		t.Fatalf("worker repositories = %#v", worker.Repositories)
+	}
+	discovered, err := store.ManagedRepository(context.Background(), worker.Repositories[0].ID)
+	if err != nil || discovered.Enabled {
+		t.Fatalf("worker-discovered repository = %#v, err %v", discovered, err)
+	}
+	promoted, created, err := store.CreateManagedRepository(
+		context.Background(), protocol.CreateManagedRepositoryRequest{RemoteIdentity: remoteIdentity},
+	)
+	if err != nil || created || !promoted.Enabled || promoted.ID != discovered.ID {
+		t.Fatalf("promoted repository = %#v, created %t, err %v", promoted, created, err)
+	}
+	disabled, err := store.SetManagedRepositoryEnabled(context.Background(), promoted.ID, false)
+	if err != nil || disabled.Enabled {
+		t.Fatalf("disable promoted repository = %#v, err %v", disabled, err)
+	}
+	replayed, created, err := store.CreateManagedRepository(
+		context.Background(), protocol.CreateManagedRepositoryRequest{RemoteIdentity: remoteIdentity},
+	)
+	if err != nil || created || replayed.Enabled {
+		t.Fatalf("replayed explicitly disabled repository = %#v, created %t, err %v", replayed, created, err)
+	}
+}
+
 func TestManagedRepositoryCatalogEnforcesItsHardLimit(t *testing.T) {
 	store := newTestStore(t)
 	for index := 0; index < protocol.MaxManagedRepositories; index++ {
@@ -973,6 +1009,24 @@ func TestManagedRepositoryCatalogEnforcesItsHardLimit(t *testing.T) {
 		protocol.CreateManagedRepositoryRequest{RemoteIdentity: "github.com/example/over-limit"},
 	)
 	assertErrorCode(t, err, "repository_limit_reached")
+	_, err = store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: workerA, WorkerVersion: "test", RuntimeVersion: "test",
+		Capacity: 1, Health: "healthy",
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "over-limit", RemoteIdentity: "github.com/example/worker-over-limit",
+		}},
+	})
+	assertErrorCode(t, err, "repository_limit_reached")
+	var repositoryCount, workerCount int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM repositories`).Scan(&repositoryCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM workers WHERE id = ?`, workerA).Scan(&workerCount); err != nil {
+		t.Fatal(err)
+	}
+	if repositoryCount != protocol.MaxManagedRepositories || workerCount != 0 {
+		t.Fatalf("limit rollback repositories=%d workers=%d", repositoryCount, workerCount)
+	}
 }
 
 func TestRoutedTaskCanFreezeAZeroRepositoryCattleWorker(t *testing.T) {

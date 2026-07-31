@@ -26,8 +26,10 @@ ability to acquire centrally managed GitHub repositories. It contains no token.
 The legacy `[repositories.<key>]` map remains optional for manual delegation to
 an existing non-bare checkout. Its paths resolve relative to the worker TOML.
 Newly discovered legacy checkouts enter the catalog disabled and support only
-explicit assignment until an operator enables them centrally. Repositories
-already known before this migration remain enabled for routing compatibility.
+explicit assignment until an operator adds or enables them centrally. Reposting
+a centrally managed repository does not override an explicit disable.
+Repositories already known before this migration remain enabled for routing
+compatibility.
 
 ## Identity and registration
 

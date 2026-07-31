@@ -75,7 +75,9 @@ curl --fail --silent --show-error \
 List the current fleet with `GET /api/v1/repositories`. Set
 `{"enabled":false}` with `PUT /api/v1/repositories/REPOSITORY_ID/enabled` to
 stop new routed work without interrupting an execution whose worker assignment
-is already frozen.
+is already frozen. Posting a repository first discovered from a legacy worker
+promotes it into the enabled central fleet. Reposting a centrally managed
+repository does not override an explicit disable.
 
 To start with a different worker config:
 
