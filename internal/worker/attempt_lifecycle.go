@@ -619,7 +619,7 @@ func terminalState(message supervisorMessage) string {
 
 func buildPrompt(claim protocol.Claim) string {
 	return "You are running in a Factory managed Git worktree.\n" +
-		"Work only on the assigned task and repository. Preserve unrelated changes and do not touch Factory state or unrelated worktrees. " +
+		"Work only on the assigned task and repository. Preserve unrelated changes and do not touch Factory state or unrelated worktrees, " +
 		"and do not delete worktrees or branches. Complete and verify the task before returning a concise result.\n\n" +
 		"Task title: " + claim.Task.Title + "\n" +
 		"Repository: " + claim.Repository.RemoteIdentity + "\n\n" +
