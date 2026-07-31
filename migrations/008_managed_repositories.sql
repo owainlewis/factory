@@ -22,6 +22,18 @@ ALTER TABLE worker_repositories
 ADD COLUMN dynamic INTEGER NOT NULL DEFAULT 0
 CHECK (dynamic IN (0, 1));
 
+ALTER TABLE worker_repositories
+ADD COLUMN worker_remote_identity TEXT NOT NULL DEFAULT '';
+
+-- Claims sent to a pre-upgrade worker must retain the exact remote spelling
+-- that worker advertised because its compatibility check is byte-for-byte.
+UPDATE worker_repositories
+SET worker_remote_identity = (
+    SELECT repository.remote_identity
+    FROM repositories repository
+    WHERE repository.id = worker_repositories.repository_id
+);
+
 -- Historical worker registrations preserved GitHub owner/repository casing.
 -- Collapse those aliases before making the surviving identity canonical. The
 -- temporary tables also merge the unlikely case where one worker advertised

@@ -394,6 +394,71 @@ func TestCapacityMigrationDerivesOnlyAttributableLegacyRetainedCounts(t *testing
 	}
 }
 
+func TestManagedRepositoryMigrationPreservesLegacyClaimRemoteSpelling(t *testing.T) {
+	database, err := sql.Open("sqlite", t.TempDir()+"/legacy-remote.sqlite3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	database.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := database.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	schema, err := migrations.Files.ReadFile("001_controlplane.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(string(schema)); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	if _, err := database.Exec(`
+		INSERT INTO schema_migrations(version, applied_at) VALUES (1, 1);
+		INSERT INTO workers(
+			id, name, worker_version, codex_version, capacity, active_count, health,
+			retained_worktrees_json, registered_at, last_heartbeat
+		) VALUES ('legacy-case-worker', 'legacy', 'legacy', 'legacy', 1, 0, 'healthy', '[]', ?, ?);
+		INSERT INTO repositories(id, remote_identity, created_at)
+		VALUES ('legacy-case-repository', 'github.com/Owner/Repository', 1);
+		INSERT INTO worker_repositories(
+			worker_id, display_key, repository_id, retained_count, advertised, updated_at
+		) VALUES ('legacy-case-worker', 'legacy', 'legacy-case-repository', 0, 1, 1);
+		INSERT INTO tasks(
+			id, request_key, title, description, repository_id, timeout_seconds, created_at
+		) VALUES ('legacy-case-task', 'legacy-case-task', 'legacy case', '', 'legacy-case-repository', 60, 1);
+		INSERT INTO executions(
+			id, task_id, assigned_worker_id, required_runtime, state,
+			cancellation_requested, created_at, updated_at
+		) VALUES (
+			'legacy-case-execution', 'legacy-case-task', 'legacy-case-worker',
+			'codex', 'queued', 0, 1, 1
+		);
+	`, now.UnixMilli(), now.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{db: database, now: func() time.Time { return now }, sweepEvery: 5 * time.Second}
+	if err := store.migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.Claim(context.Background(), "legacy-case-worker", protocol.ClaimRequest{
+		RequestID: "legacy-case-claim", LeaseToken: tokenA,
+	})
+	if err != nil || claim == nil {
+		t.Fatalf("legacy claim = %#v, err %v", claim, err)
+	}
+	if claim.Repository.RemoteIdentity != "github.com/Owner/Repository" {
+		t.Fatalf("legacy claim remote = %q", claim.Repository.RemoteIdentity)
+	}
+	detail, err := store.Task(context.Background(), "legacy-case-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Repository.RemoteIdentity != "github.com/owner/repository" {
+		t.Fatalf("canonical control-plane remote = %q", detail.Repository.RemoteIdentity)
+	}
+}
+
 func TestCapacityMigrationRequiresDrainedLegacyWorkers(t *testing.T) {
 	database, err := sql.Open("sqlite", t.TempDir()+"/active-migration.sqlite3")
 	if err != nil {
@@ -966,6 +1031,44 @@ func TestRoutedTaskCanFreezeAZeroRepositoryCattleWorker(t *testing.T) {
 		TimeoutSeconds: 60,
 	})
 	assertErrorCode(t, err, "repository_not_managed")
+}
+
+func TestRoutedTaskSkipsWorkerWithConflictingDynamicDisplayKey(t *testing.T) {
+	store := newTestStore(t)
+	target := createManagedTestRepository(t, store, "github.com/example/target")
+	common := protocol.WorkerRegistration{
+		WorkerVersion: "test", RuntimeVersion: "test", Capacity: 1, Health: "healthy",
+		SourceAccess:               []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+		AcceptsManagedRepositories: true,
+	}
+	workerARegistration := common
+	workerARegistration.Name = workerA
+	workerARegistration.Repositories = []protocol.RepositoryRegistration{{
+		Key: target.RemoteIdentity, RemoteIdentity: "github.com/example/different",
+	}}
+	if _, err := store.RegisterWorker(context.Background(), workerA, workerARegistration); err != nil {
+		t.Fatal(err)
+	}
+	workerBRegistration := common
+	workerBRegistration.Name = workerB
+	if _, err := store.RegisterWorker(context.Background(), workerB, workerBRegistration); err != nil {
+		t.Fatal(err)
+	}
+	detail, created, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+		RequestKey: "display-key-collision", Title: "Display key collision",
+		Description: "Route around the collision.",
+		Route: &protocol.TaskRoute{
+			RepositoryRemoteIdentity: target.RemoteIdentity,
+			SourceAccess:             protocol.SourceAccess{Provider: "github", Hostname: "github.com"},
+		},
+		TimeoutSeconds: 60,
+	})
+	if err != nil || !created {
+		t.Fatalf("route around display key collision: created %t, err %v", created, err)
+	}
+	if detail.Execution.AssignedWorkerID != workerB {
+		t.Fatalf("collision route assigned worker %q; want %q", detail.Execution.AssignedWorkerID, workerB)
+	}
 }
 
 func TestRoutedTaskReservesManagedRepositoryCacheHeadroom(t *testing.T) {

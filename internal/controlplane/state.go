@@ -233,7 +233,9 @@ func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Cla
 		return claim, unavailable(err)
 	}
 	err = s.db.QueryRowContext(ctx, `
-		SELECT r.id, wr.display_key, r.remote_identity, wr.retained_count
+		SELECT r.id, wr.display_key,
+		       COALESCE(NULLIF(wr.worker_remote_identity, ''), r.remote_identity),
+		       wr.retained_count
 		FROM repositories r JOIN worker_repositories wr ON wr.repository_id = r.id
 		WHERE r.id = ? AND wr.worker_id = ?
 	`, claim.Task.RepositoryID, claim.Attempt.WorkerID).Scan(

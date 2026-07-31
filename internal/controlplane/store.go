@@ -692,10 +692,12 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	input.SourceAccess = sourceAccess
 	seenKeys := map[string]bool{}
 	seenRemotes := map[string]bool{}
+	workerRemoteIdentities := make([]string, len(input.Repositories))
 	for i := range input.Repositories {
 		repo := &input.Repositories[i]
 		repo.Key = strings.TrimSpace(repo.Key)
-		repo.RemoteIdentity = normalizeRegisteredRemote(repo.RemoteIdentity)
+		workerRemoteIdentities[i] = normalizeRemote(repo.RemoteIdentity)
+		repo.RemoteIdentity = normalizeRegisteredRemote(workerRemoteIdentities[i])
 		if repo.Key == "" || repo.RemoteIdentity == "" || len(repo.Key) > 200 || len(repo.RemoteIdentity) > 2048 {
 			return protocol.Worker{}, invalid("invalid_repository", "repository key and remote_identity are required")
 		}
@@ -833,7 +835,8 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	`, input.AcceptsManagedRepositories, now, workerID); err != nil {
 		return protocol.Worker{}, unavailable(err)
 	}
-	for _, repo := range input.Repositories {
+	for index, repo := range input.Repositories {
+		workerRemoteIdentity := workerRemoteIdentities[index]
 		var repositoryID string
 		err := tx.QueryRowContext(ctx, `SELECT id FROM repositories WHERE remote_identity = ?`, repo.RemoteIdentity).Scan(&repositoryID)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -864,22 +867,25 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 		case mappingErr == nil && existingKey != repo.Key:
 			_, err = tx.ExecContext(ctx, `
 				UPDATE worker_repositories
-				SET display_key = ?, retained_count = ?, advertised = 1, dynamic = 0, updated_at = ?
+				SET display_key = ?, worker_remote_identity = ?, retained_count = ?,
+				    advertised = 1, dynamic = 0, updated_at = ?
 				WHERE worker_id = ? AND repository_id = ?
-			`, repo.Key, effectiveRetainedCount, now, workerID, repositoryID)
+			`, repo.Key, workerRemoteIdentity, effectiveRetainedCount, now, workerID, repositoryID)
 		case mappingErr == nil:
 			_, err = tx.ExecContext(ctx, `
 				UPDATE worker_repositories
-				SET retained_count = ?, advertised = 1, dynamic = 0, updated_at = ?
+				SET worker_remote_identity = ?, retained_count = ?,
+				    advertised = 1, dynamic = 0, updated_at = ?
 				WHERE worker_id = ? AND repository_id = ?
-			`, effectiveRetainedCount, now, workerID, repositoryID)
+			`, workerRemoteIdentity, effectiveRetainedCount, now, workerID, repositoryID)
 		case errors.Is(mappingErr, sql.ErrNoRows):
 			_, err = tx.ExecContext(ctx, `
 				INSERT INTO worker_repositories(
-					worker_id, display_key, repository_id, retained_count, advertised, dynamic, updated_at
+					worker_id, display_key, repository_id, worker_remote_identity,
+					retained_count, advertised, dynamic, updated_at
 				)
-				VALUES (?, ?, ?, ?, 1, 0, ?)
-			`, workerID, repo.Key, repositoryID, effectiveRetainedCount, now)
+				VALUES (?, ?, ?, ?, ?, 1, 0, ?)
+			`, workerID, repo.Key, repositoryID, workerRemoteIdentity, effectiveRetainedCount, now)
 		default:
 			err = mappingErr
 		}
@@ -1129,7 +1135,9 @@ func scanWorker(row scanner, now time.Time) (protocol.Worker, error) {
 
 func (s *Store) workerRepositories(ctx context.Context, workerID string) ([]protocol.Repository, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT r.id, wr.display_key, r.remote_identity, wr.retained_count
+		SELECT r.id, wr.display_key,
+		       COALESCE(NULLIF(wr.worker_remote_identity, ''), r.remote_identity),
+		       wr.retained_count
 		FROM worker_repositories wr JOIN repositories r ON r.id = wr.repository_id
 		WHERE wr.worker_id = ? AND wr.advertised = 1 ORDER BY wr.display_key
 	`, workerID)
@@ -1239,6 +1247,16 @@ func (s *Store) selectTaskRoute(
 		  AND w.last_heartbeat >= ?
 		  AND (
 		      COALESCE(wr.advertised, 0) = 1
+		      OR NOT EXISTS (
+		          SELECT 1
+		          FROM worker_repositories display_key_conflict
+		          WHERE display_key_conflict.worker_id = w.id
+		            AND display_key_conflict.display_key = ?
+		            AND display_key_conflict.repository_id != ?
+		      )
+		  )
+		  AND (
+		      COALESCE(wr.advertised, 0) = 1
 		      OR (
 		          w.accepts_managed_repositories = 1
 		          AND (
@@ -1281,7 +1299,8 @@ func (s *Store) selectTaskRoute(
 		        AND terminal_attempt.capacity_acknowledged = 0
 		  ) < ?
 		ORDER BY w.id
-	`, repositoryID, now-protocol.WorkerOnlineWindow.Milliseconds(), repositoryID, protocol.MaxRepositoryCacheEntries,
+	`, repositoryID, now-protocol.WorkerOnlineWindow.Milliseconds(), repositoryIdentity, repositoryID,
+		repositoryID, protocol.MaxRepositoryCacheEntries,
 		repositoryID, repositoryID, protocol.MaxRetainedPerRepo)
 	if err != nil {
 		return taskRouteCandidate{}, unavailable(err)
@@ -1335,15 +1354,17 @@ func (s *Store) selectTaskRoute(
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO worker_repositories(
-				worker_id, display_key, repository_id, retained_count, advertised, dynamic, updated_at
+				worker_id, display_key, repository_id, worker_remote_identity,
+				retained_count, advertised, dynamic, updated_at
 			)
-			VALUES (?, ?, ?, 0, 1, 1, ?)
+			VALUES (?, ?, ?, ?, 0, 1, 1, ?)
 			ON CONFLICT(worker_id, repository_id) DO UPDATE SET
 				display_key=excluded.display_key,
+				worker_remote_identity=excluded.worker_remote_identity,
 				advertised=1,
 				dynamic=1,
 				updated_at=excluded.updated_at
-		`, best.workerID, repositoryIdentity, repositoryID, now); err != nil {
+		`, best.workerID, repositoryIdentity, repositoryID, repositoryIdentity, now); err != nil {
 			return taskRouteCandidate{}, unavailable(err)
 		}
 	}
