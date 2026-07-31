@@ -68,7 +68,7 @@ jobs:
         run: npm run test:browser
       - name: Upload browser evidence
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: control-plane-browser-evidence
           path: |
