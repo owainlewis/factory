@@ -1,12 +1,13 @@
 # GitHub issue ingest for Factory
 
-> **Status:** Future advanced design. The simpler implemented MVP is documented
-> in the [poller guide](../poller.md).
+> **Status:** Superseded. Do not implement this external-ingest architecture.
+> GitHub polling, scheduling, typed Trigger configuration, and durable
+> deduplication belong to the control plane in the
+> [Workflow and Automation design](../workflows/design.md). The standalone MVP
+> remains documented only for migration in the [poller guide](../poller.md).
 
-> **Workflow dependency:** This design uses the
-> [workflow contract](../workflows/design.md). Ingest pins a
-> control-plane workflow revision in each pending task request. The control
-> plane, not ingest, composes and snapshots the resolved prompt.
+The material below is retained as historical context for the rejected
+`factory ingest github` process and must not be used for implementation.
 
 ## 1. Executive summary
 

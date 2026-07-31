@@ -2,6 +2,11 @@
 
 > **Status:** Proposed, not implemented
 
+> **Automation boundary:** The external `factory ingest github` role and
+> standalone schedule resource in earlier revisions are superseded by
+> control-plane typed Automations. This CLI proposal does not define an
+> Automation command surface; that is deferred until the accepted API ships.
+
 ## Goal
 
 Factory will ship one Go binary named `factory`. It will preserve the current
@@ -25,7 +30,6 @@ factory server [--listen ADDRESS] [--database PATH]
 factory worker [--config PATH]
 factory worker identity [--config PATH]
 factory worker cleanup [--config PATH] [--confirm] ATTEMPT_ID
-factory ingest github [--config PATH] [--once]
 
 factory run [--file PATH] [--title TITLE]
             [--workflow NAME_OR_ID] [--worker NAME_OR_ID]
@@ -48,20 +52,13 @@ factory workflows apply FILE
 factory workflows enable NAME_OR_ID
 factory workflows disable NAME_OR_ID
 
-factory schedules list [--enabled BOOL] [--limit N] [--cursor CURSOR]
-factory schedules show NAME_OR_ID
-factory schedules apply FILE
-factory schedules enable NAME_OR_ID
-factory schedules disable NAME_OR_ID
-factory schedules run [--request-key KEY] NAME_OR_ID
-factory schedules delete [--confirm] NAME_OR_ID
-
 factory version
 ```
 
-Commands for workflows, schedules, and ingest ship only after their APIs exist.
-The first CLI slice can cover `start`, `server`, `worker`, `run`, `status`,
-`tasks`, `workers`, and `version`.
+Workflow commands ship only after their API exists. The first CLI slice can
+cover `start`, `server`, `worker`, `run`, `status`, `tasks`, `workers`, and
+`version`. Automation commands require a later CLI revision built on the typed
+control-plane API.
 
 ## Process roles
 
@@ -74,12 +71,7 @@ health, starts one or more selected workers, waits for fresh healthy
 registrations, and stops all children when one fails or the operator sends a
 signal.
 
-`factory ingest github` is a separate long-running role because provider polling
-has different credentials, failure modes, and restart behavior. It submits
-normal tasks through the API.
-
 Finite commands are HTTP clients. They never open SQLite, inspect worker data,
-or execute agents.
 
 ## Manual runs
 
@@ -121,8 +113,8 @@ for display without changing the stored context.
 
 ## Resolution and idempotency
 
-Workers, repositories, workflows, and schedules accept a stable ID or a unique
-friendly name. Ambiguity fails before mutation and prints candidates.
+Workers, repositories, and workflows accept a stable ID or a unique friendly
+name. Ambiguity fails before mutation and prints candidates.
 
 Selection order is:
 
@@ -156,7 +148,8 @@ Destructive commands are non-interactive and require `--confirm`.
 
 ## Configuration
 
-Factory keeps one home at `~/.factory`. Proposed client config:
+Factory keeps one home at `~/.factory`. Proposed client config at
+`~/.factory/client.toml`:
 
 ```toml
 server = "http://127.0.0.1:7337"
@@ -165,8 +158,10 @@ default_repository = "factory"
 ```
 
 `FACTORY_HOME` may select another root when the unified CLI ships.
-`FACTORY_CONFIG` selects another client config. `FACTORY_SERVER` overrides the
-client endpoint.
+`FACTORY_CLIENT_CONFIG` selects another client config. `FACTORY_SERVER`
+overrides the client endpoint. The server's bootstrap-only
+`~/.factory/config.toml` and `FACTORY_SERVER_CONFIG` are a separate schema and
+selector; finite client commands never decode them.
 
 Current server and worker compatibility remains:
 
@@ -191,24 +186,6 @@ enabled = true
 
 Applying unchanged content is a no-op. Changed instructions create an immutable
 revision. Every task pins the exact revision used.
-
-## Schedule files
-
-```toml
-name = "weekly-docs"
-enabled = true
-cron = "0 9 * * 1"
-timezone = "Europe/London"
-workflow = "docs-review"
-worker = "local-codex"
-repository = "factory"
-context = "Review the documentation for errors and open a pull request with fixes."
-```
-
-Schedules are control-plane resources. The scheduler runs beside SQLite inside
-the server so one durable owner decides which occurrences are due.
-`factory schedules run NAME` creates an immediate occurrence through the same
-task service.
 
 ## Invariants
 
@@ -235,7 +212,8 @@ Suggested order:
 3. add `server`, `worker`, `start`, `version`, and `status`;
 4. add `run`, task inspection, and worker inspection;
 5. switch scripts and releases to the unified binary;
-6. add workflow, schedule, and ingest commands with their features.
+6. add Workflow commands, leaving typed Automation commands to their own CLI
+   revision.
 
 During the transition, the internal `factory-server` and `factory-worker`
 packages can remain testable build targets. Releases should publish only
@@ -254,8 +232,7 @@ packages can remain testable build targets. Releases should publish only
 - `run --wait` returns documented exit codes;
 - task and worker commands show the same durable state as the UI;
 - startup and operator builds require no Node installation;
-- workflows, schedules, and ingest extend the command tree without changing the
-  task contract.
+- Workflow commands extend the command tree without changing the Task contract.
 
 ## Out of scope
 

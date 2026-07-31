@@ -14,13 +14,18 @@ Start with the root [README](../README.md) to run Factory.
 - [Security policy](../SECURITY.md): reporting and the current trust model.
 - [Contributing](../CONTRIBUTING.md): setup, checks, and pull request standards.
 
-## Proposed designs
+## Active design work
 
-These documents describe work that is not implemented:
+The Workflow slice is implemented; the same document specifies its pending
+typed Automation follow-on:
 
 - [Reusable workflows and automations](workflows/design.md)
-- [Advanced GitHub ingest design](github-ingest/design.md)
 - [Unified CLI](cli/design.md)
+
+## Superseded designs
+
+- [External GitHub ingest](github-ingest/design.md): replaced by control-plane
+  typed Automations.
 
 Current behavior belongs in the root `ARCHITECTURE.md`. Proposed behavior belongs
 in a focused design until it is implemented.
