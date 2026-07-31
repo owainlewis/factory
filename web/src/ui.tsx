@@ -15,20 +15,14 @@ export interface ViewStateProps {
 }
 
 export function ViewHeader({
-  eyebrow,
   title,
-  description,
   fetching,
   updatedAt,
   onRefresh,
-}: ViewStateProps & { eyebrow: string; title: string; description: string }) {
+}: ViewStateProps & { title: string }) {
   return (
     <div className="view-header">
-      <div>
-        <span className="eyebrow">{eyebrow}</span>
-        <h1>{title}</h1>
-        <p>{description}</p>
-      </div>
+      <h1>{title}</h1>
       <div className="refresh-state" aria-live="polite">
         <span>{updatedAt ? `Updated ${timeAgo(new Date(updatedAt).toISOString())}` : "Waiting for data"}</span>
         <button className="icon-button" aria-label="Refresh" onClick={onRefresh} disabled={fetching}>

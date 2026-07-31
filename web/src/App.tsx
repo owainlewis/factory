@@ -123,10 +123,9 @@ export function App() {
           </div>
           <div>
             <span className="brand-name">Factory</span>
-            <span className="brand-subtitle">Control plane</span>
+            <span className="brand-subtitle">control plane</span>
           </div>
         </div>
-        <span className="nav-section-label">Workspace</span>
         <nav aria-label="Primary navigation">
           <button
             className={`nav-item ${route.page === "overview" ? "active" : ""}`}

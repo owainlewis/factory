@@ -46,9 +46,7 @@ export function WorkView({
   return (
     <div className="page page-work">
       <ViewHeader
-        eyebrow="Live queue"
         title="Agent work"
-        description="Delegate tasks and follow their progress across the local worker fleet."
         fetching={fetching}
         updatedAt={updatedAt}
         onRefresh={onRefresh}
@@ -108,12 +106,12 @@ function TaskCard({ task, worker, onClick }: { task: Task; worker?: Worker; onCl
     <button className="task-card" onClick={onClick}>
       <div className="task-card-top">
         <StatusBadge state={task.state} />
-        <ChevronRight size={15} aria-hidden="true" />
+        <ChevronRight size={14} aria-hidden="true" />
       </div>
       <span className="task-title">{task.title}</span>
       {task.description && <span className="task-description">{task.description}</span>}
       <div className="task-meta">
-        <span>{worker?.name ?? "Unknown worker"}</span>
+        <span className="task-worker">{worker?.name ?? "Unknown worker"}</span>
         <span aria-hidden="true">·</span>
         {worker && (
           <>

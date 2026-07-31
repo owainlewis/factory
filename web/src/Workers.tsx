@@ -56,9 +56,7 @@ export function WorkersView({
   return (
     <div className="page">
       <ViewHeader
-        eyebrow="Worker fleet"
         title="Execution capacity"
-        description="Health, capacity, repositories, and retained worktrees reported by every registration."
         fetching={fetching}
         updatedAt={updatedAt}
         onRefresh={onRefresh}

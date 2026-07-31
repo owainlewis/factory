@@ -115,7 +115,6 @@ export function DelegateDrawer({
       <aside ref={drawerRef} className="drawer" role="dialog" aria-modal="true" aria-labelledby="delegate-heading">
         <div className="drawer-header">
           <div>
-            <span className="eyebrow">New work</span>
             <h2 id="delegate-heading">Delegate task</h2>
           </div>
           <button className="icon-button" aria-label="Close" onClick={onClose}><X size={19} /></button>

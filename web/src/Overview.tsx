@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, CheckCircle2, CircleDot, Clock3, Play, RotateCcw, Users } from "lucide-react";
+import { CircleDot, Play, RotateCcw, Users } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { api } from "./api";
 import { useVisibleInterval } from "./polling";
@@ -30,9 +30,7 @@ export function Overview() {
   return (
     <div className="page page-overview">
       <ViewHeader
-        eyebrow="Retained control-plane data"
         title="Factory overview"
-        description="Measure execution throughput, reliability, and speed across the worker fleet."
         fetching={metrics.isFetching}
         updatedAt={metrics.dataUpdatedAt}
         onRefresh={() => void metrics.refetch()}
@@ -63,25 +61,21 @@ function Metrics({ data }: { data: MetricsSummary }) {
       label: "Executions created",
       value: formatNumber(data.executions_created),
       detail: "New work entering Factory",
-      icon: <Play size={17} />,
     },
     {
       label: "Executions completed",
       value: formatNumber(data.executions_completed),
       detail: "Succeeded, failed, or cancelled",
-      icon: <CheckCircle2 size={17} />,
     },
     {
       label: "Success rate",
       value: formatRate(data.success_rate),
       detail: "Succeeded out of succeeded and failed",
-      icon: <Activity size={17} />,
     },
     {
       label: "Median cycle time",
       value: formatSeconds(data.median_cycle_time_seconds),
       detail: "Creation to succeeded or failed",
-      icon: <Clock3 size={17} />,
     },
   ];
 
@@ -90,7 +84,6 @@ function Metrics({ data }: { data: MetricsSummary }) {
       <div className="primary-metrics">
         {primary.map((metric) => (
           <article className="metric-card" key={metric.label}>
-            <span className="metric-icon" aria-hidden="true">{metric.icon}</span>
             <span className="metric-label">{metric.label}</span>
             <strong>{metric.value}</strong>
             <small>{metric.detail}</small>
@@ -101,10 +94,7 @@ function Metrics({ data }: { data: MetricsSummary }) {
       <div className="metrics-detail-grid">
         <section className="metric-panel" aria-labelledby="outcomes-heading">
           <div className="metric-panel-heading">
-            <div>
-              <span className="eyebrow">Completed work</span>
-              <h2 id="outcomes-heading">Execution outcomes</h2>
-            </div>
+            <h2 id="outcomes-heading">Execution outcomes</h2>
             <span>{formatNumber(data.executions_completed)} total</span>
           </div>
           <div className="outcome-bars">
@@ -131,11 +121,8 @@ function Metrics({ data }: { data: MetricsSummary }) {
 
         <section className="metric-panel" aria-labelledby="health-heading">
           <div className="metric-panel-heading">
-            <div>
-              <span className="eyebrow">Current state</span>
-              <h2 id="health-heading">Factory health</h2>
-            </div>
-            <CircleDot size={17} aria-hidden="true" />
+            <h2 id="health-heading">Factory health</h2>
+            <span>Now</span>
           </div>
           <dl className="health-metrics">
             <HealthMetric icon={<CircleDot size={15} />} label="Queued now" value={data.queued} />
@@ -155,8 +142,7 @@ function Metrics({ data }: { data: MetricsSummary }) {
       </div>
 
       <p className="metrics-note">
-        Rates exclude cancellations. Metrics cover retained control-plane data only.
-        Provider-confirmed ticket and pull request outcomes will appear when source integrations record them.
+        Rates exclude cancellations. Retained control-plane data only.
       </p>
     </section>
   );
