@@ -55,6 +55,17 @@ the managed repository fleet. A merge request becomes eligible when it is open
 and its current head commit has no delivery for that phase. A new head commit is
 a new eligible occurrence even when the merge-request ID is unchanged.
 
+Technical design review is a second high-value use case. An operator defines
+one global `Technical design review` phase that checks a specification for
+clear scope, architecture fit, failure behavior, security, operational impact,
+acceptance criteria, and testability. The phase can run manually from a Jira
+reference or automatically when a trusted Jira adapter emits a matching item.
+The adapter does not copy the Jira description into Factory. The agent fetches
+the current specification and comments from Jira at execution time, revalidates
+the configured state and labels, and publishes review evidence back to Jira
+when the phase prompt asks it to. Jira remains authoritative for the
+specification, review discussion, and lifecycle state.
+
 This design fixes both issue and merge-request fingerprint contracts. The first
 implementation slice ships a versioned trusted-command adapter protocol and
 uses a centrally installed GitHub issue adapter that may call `gh`. Fleet-wide
@@ -209,6 +220,23 @@ the existing Execution retry, creates a manual run, or deliberately creates a
 new trigger identity when another automation episode is wanted. Factory adds no
 separate ingest database or issue-match state machine.
 
+Jira technical design review follows the same issue path. A manual run selects
+the phase, managed repository, worker, and Jira URL or key. An automatic Jira
+binding may match a normalized state and labels such as `In Review` and
+`design-review-ready`. Its trusted adapter reads a binding-selected,
+provider-owned repository reference from a Jira development link or dedicated
+custom field. The value must identify exactly one repository in Factory's
+current managed fleet. The binding stores the Jira field ID or link relation,
+not a project-to-repository mapping or repository array. If the reference is
+missing or ambiguous, the adapter does not emit that candidate and the item
+remains available for manual review. Factory rejects any emitted repository
+identity that is not in the live managed fleet.
+
+The generated prompt contains the phase instructions, Jira reference, title,
+and revalidation condition, but not the design body. The agent reads the live
+design with its Jira credentials and leaves the review in Jira. This adds no
+Jira-specific task state or phase type.
+
 The same architecture supports the later fleet-wide `Review` trigger. Its
 fingerprint must be:
 
@@ -277,10 +305,11 @@ environment and never enter Factory storage.
 
 The router selects one current worker that advertises the provider repository
 through the existing normalized repository identity and advertises live source
-access for the binding’s provider and hostname. It depends on current worker
-registrations and uses a generic least-loaded eligible rule. It does not inspect
-the phase name or create a new worker pool abstraction. The chosen worker and
-repository are frozen on the delivery and normal Execution.
+access matching the binding's immutable provider namespace, hostname, and
+scope. It depends on current worker registrations and uses a generic
+least-loaded eligible rule. It does not infer provider access from adapter
+output, inspect the phase name, or create a new worker pool abstraction. The
+chosen worker and repository are frozen on the delivery and normal Execution.
 
 #### Browser UI
 
@@ -303,6 +332,7 @@ protocol. Factory sends one JSON object on stdin:
   "trigger": {
     "id": "trigger-uuid",
     "version": 3,
+    "provider_namespace": "github:github.com",
     "config": {},
     "revalidation": {
       "state_equals": "open",
@@ -353,6 +383,11 @@ full head commit for merge-request review. Labels are the
 predicate-relevant labels the agent must revalidate, not an archived provider
 payload. The protocol has no description, body, raw payload, provider cursor,
 check, review, or provider pagination field.
+
+Every candidate's `provider` must exactly match the binding's immutable
+`provider_namespace`. Worker access is not inferred from this candidate value.
+The binding separately declares the provider, hostname, and scope that an
+eligible worker must advertise.
 
 For a per-repository target, `repository_identity` may be omitted and Factory
 uses the input target; an emitted different identity fails the poll. Fleet-wide
@@ -699,7 +734,8 @@ require a separate design.
   adapter boundary supports later GitHub pull-request and GitLab merge-request
   open-state and head-freshness triggers without schema changes.
 - A binding references one trusted absolute executable, at most 100 literal
-  arguments of at most 4 KiB each, protocol version 1, source kind, at most
+  arguments of at most 4 KiB each, protocol version 1, immutable provider
+  namespace, immutable worker source-access requirement, source kind, at most
   64 KiB adapter JSON, one normalized revalidation condition, and a central
   fleet scope.
 - Protocol version 1 revalidation contains exactly one normalized state
@@ -716,6 +752,14 @@ require a separate design.
   source context contains only reference, URL, title, a minimal required-state
   and required-label summary, and a fixed instruction to fetch live state and
   stop without mutation unless the same predicate still matches.
+- A Jira technical-design-review run uses the same minimal issue candidate.
+  Manual creation supplies its managed repository explicitly. Automatic
+  creation reads a provider-owned development link or one binding-selected Jira
+  custom field containing exactly one normalized repository locator. Factory
+  validates that locator against the live managed fleet. The binding stores no
+  project-to-repository map or repository array. The agent fetches the live
+  specification and comments, revalidates state and labels, and keeps review
+  evidence in Jira.
 - Trigger polling defaults to 60 seconds, accepts 30 seconds through 1 hour,
   applies jitter, and retries failed adapter processes with bounded backoff.
 - Each tick expands enabled bindings and current managed repositories into
@@ -742,8 +786,9 @@ require a separate design.
 - Factory executes the adapter’s absolute path with literal arguments, no
   `sh -c` or shell pipeline. The trusted adapter owns provider authentication,
   parsing, arrays, filtering, and pagination.
-- Trigger routing requires a current worker `source_access` capability matching
-  provider, hostname, and organization scope as well as repository
+- Trigger routing requires a current worker `source_access` capability exactly
+  matching the binding's provider namespace, provider, and hostname and
+  containing its organization, group, or site scope, as well as repository
   advertisement. Workers derive it from central host credentials, not
   repository configuration, and advertise no secret.
 - Startup reconciliation runs before the trigger manager reports healthy. It
@@ -843,6 +888,12 @@ An MVP GitHub issue binding references one trusted central command:
   "adapter_protocol_version": 1,
   "adapter_executable": "/Users/example/.factory/adapters/github-issues",
   "adapter_args": ["--hostname", "github.com"],
+  "provider_namespace": "github:github.com",
+  "source_access_requirement": {
+    "provider": "github",
+    "hostname": "github.com",
+    "scopes": ["example"]
+  },
   "source_kind": "issue",
   "repository_scope": {
     "mode": "per_managed_repository",
@@ -872,14 +923,24 @@ runs one adapter target and requires every candidate to emit a managed
 advertisements and passes one repository per invocation. Neither mode stores a
 configured repository array.
 
+A Jira design-review binding uses a namespace such as `jira:site-id`, requires
+worker access to the exact Jira hostname and site scope, and names one
+provider-owned repository-reference source in opaque adapter config. The source
+is either a Jira development-link relation or one dedicated custom-field ID
+whose value is a normalized repository locator. It is not a central
+project-to-repository lookup table. The adapter omits items with zero or
+multiple locators and may report their count on bounded stderr. Factory rejects
+an emitted locator that does not match exactly one current managed repository.
+
 Trigger updates require a mutation request key and `expected_version`. They
 may change name, executable, literal arguments, adapter config, revalidation
 condition, central include or exclude patterns, cadence, routing, and enabled
 state, then increment the binding version. Parent phase, protocol version,
 source kind, and scope mode are immutable. Changing one requires a new binding
-identity. The stable provider namespace is part of source identity, while
-repository identity is routing only. Updating a binding does not create a phase
-revision or rerun an already delivered item.
+identity. Provider namespace and source-access requirement are also immutable
+because they define source identity and routing authority. Repository identity
+is routing only. Updating a binding does not create a phase revision or rerun
+an already delivered item.
 
 Archiving is the trigger retention boundary. It requires the binding to be
 disabled, every linked task to be terminal, no unsubmitted delivery, and no
@@ -925,6 +986,7 @@ Worker registration adds one optional field:
 {
   "source_access": [
     {
+      "provider_namespace": "github:github.com",
       "provider": "github",
       "hostname": "github.com",
       "scopes": ["example"]
@@ -934,16 +996,27 @@ Worker registration adds one optional field:
 ```
 
 Each entry is a recent successful read-access probe, not a credential. The
-control plane validates bounded lowercase provider and hostname values plus at
-most 20 organization scopes per worker. Old registrations without the field
-decode as an empty list. Claims, attempts, leases, events, and completions are
-unchanged.
+control plane validates a bounded provider namespace, lowercase provider and
+hostname values, plus at most 20 provider scopes per worker. A trigger requires
+an exact namespace, provider, hostname, and containing scope match. Old
+registrations without the field decode as an empty list. Claims, attempts,
+leases, events, and completions are unchanged.
 
 The worker’s host-level configuration names access probes, not repositories or
 phases. For the MVP, a GitHub probe invokes the existing authenticated `gh`
 profile and advertises only scopes it can read. Failure makes triggered work
 ineligible for that worker but does not make the worker unhealthy for manual
 tasks.
+
+A Jira probe must exercise the same centrally configured Jira credential path
+that the agent will use. It verifies authenticated identity and performs one
+bounded read against the configured hostname and stable site ID, using `acli`,
+a custom Jira CLI, or an HTTP client. A successful probe advertises
+`provider_namespace: jira:<site-id>`, provider `jira`, the exact hostname, and
+the site ID scope. The five-minute refresh removes that entry after auth, site,
+or read-access failure. Posting review evidence remains an agent action and may
+fail normally if the host credential lacks write permission; it is not inferred
+from successful polling credentials.
 
 ### Task API
 
@@ -1020,8 +1093,9 @@ workers therefore need no phase-specific code or coordinated rollout.
 
 - stable binding ID, parent phase ID, name, version, and enabled flag;
 - nullable irreversible archived timestamp;
-- protocol version, absolute executable, literal argument array, and source
-  kind plus the validated executable digest;
+- protocol version, immutable provider namespace and worker source-access
+  requirement, absolute executable, literal argument array, and source kind
+  plus the validated executable digest;
 - per-managed-repository or fleet-wide scope plus central include or exclude
   patterns;
 - bounded opaque adapter configuration JSON;
@@ -1287,7 +1361,7 @@ config reload lifecycle. Browser lists refresh on their normal polling cycle.
 Selection is pinned by revision ID, so a stale list cannot silently select a
 newer prompt.
 
-Once a task is committed, later GitHub, GitLab, or Linear failures do not
+Once a task is committed, later GitHub, GitLab, Jira, or Linear failures do not
 corrupt it because the source snapshot and prompt are local. Whether an agent
 should reread live source data is phase policy. The reconciler retries provider
 reads, but Factory does not infer provider outcomes from agent text.
@@ -1328,12 +1402,19 @@ credentials, or a custom CLI environment, and a Linear adapter may use an API
 key or OAuth environment. Factory stores none of those provider credentials.
 
 Phase prompts are trusted operator instructions. Source content and provenance
-are untrusted input, even when an adapter obtained them from GitHub or Linear.
+are untrusted input, even when an adapter obtained them from GitHub, Jira, or
+Linear.
 The fixed worker safety preamble remains before the resolved prompt, and phase
 content precedes the clearly labeled source context. Delimiters reduce
 accidental ambiguity but do not prevent prompt injection. A phase that grants
 tools or credentials must instruct the agent to revalidate live authority
 before destructive external actions.
+
+Keeping a Jira design body out of the candidate and task snapshot reduces
+control-plane retention, but the worker's agent runtime still reads that body
+to perform the review. Its model provider, tool logs, and retention policy must
+therefore be approved for the specification's sensitivity. The Jira credential
+should permit only the reads and review-evidence writes required by the phase.
 
 The generic engine never fetches a source URL. Trusted adapters own their
 network destinations and transport. The UI
@@ -1391,6 +1472,20 @@ relay, repository CI job, worker-side poller, or phase-specific runtime.
   provenance, original context, and exact resolved prompt.
 - GitHub and Linear context can be represented without storing or updating
   their lifecycle state.
+- An operator can run a global technical-design-review phase manually from a
+  Jira reference. A trusted Jira trigger can run the same phase automatically
+  when it emits a matching item with one unambiguous managed repository.
+- A Jira design-review task contains only the reference, URL, title, and
+  normalized revalidation condition from polling. Its prompt requires the agent
+  to fetch the live design and comments before reviewing, and Factory stores no
+  copied Jira description or review lifecycle.
+- A Jira automatic candidate routes only from one provider-owned development
+  link or configured Jira field whose value matches the current managed fleet.
+  Missing, ambiguous, or unmanaged values create no task, and no central
+  project-to-repository array is introduced.
+- A Jira-triggered task routes only to a worker whose recent source-access probe
+  matches the binding's Jira namespace, hostname, and site ID. Adapter polling
+  credentials alone never establish worker access.
 - Planning, building, reviewing, and validating phases all use the existing
   generic Task, Execution, Attempt, lease, event, retry, and cancellation
   contracts.
@@ -1520,6 +1615,16 @@ source prompt, live-state revalidation instruction, pinned phase revision,
 generic worker claim, explicit retry, manual rerun, disable behavior, and
 all-or-nothing poll failure.
 
+Jira design-review tests will create one manual task from a Jira reference and
+one automatic candidate with a managed repository. They will prove that both
+use the same phase revision and generic task contract, that neither prompt or
+delivery contains the Jira description, and that the agent is instructed to
+fetch the live specification, revalidate state and labels, and publish evidence
+in Jira. Routing fixtures will cover one development link, one dedicated custom
+field, missing and multiple locators, an unmanaged locator, no central mapping
+array, and a repository entering or leaving the live fleet. Only one exact live
+fleet match may create a task.
+
 Fingerprint contract tests will prove that the MVP issue key changes only with
 trigger, provider namespace, source kind, or issue identity, while the later
 merge-request key also changes with head commit. Repository rename or transfer,
@@ -1538,7 +1643,10 @@ Code and compare the received prompt bytes. A compatibility fixture using the
 current worker claim decoder will prove that the unchanged description field is
 sufficient. Registration tests will cover bounded source-access probes,
 five-minute refresh, credential loss, secret exclusion, triggered routing, and
-old-worker manual compatibility.
+old-worker manual compatibility. Jira fixtures will prove exact namespace,
+hostname, and site-scope matching, same-credential-path read probing, removal
+after probe failure, and rejection when only the polling adapter has Jira
+access.
 
 React tests will cover phase management, revision pinning during concurrent UI
 refresh, the default blank selection, worker and repository selection, free
