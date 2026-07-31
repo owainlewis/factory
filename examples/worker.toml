@@ -4,7 +4,9 @@ name = "local"
 # One worker identity runs exactly one runtime: "codex" or "claude-code".
 runtime = "codex"
 max_concurrent = 1
-data_directory = "workers/local"
+# With no data_directory, this worker stores durable state in
+# ~/.factory/workers/worker, derived from this file's name (worker.toml).
+# Set data_directory only to override that location.
 # No repository or GitHub opt-in is required. Factory advertises GitHub access
 # while `gh auth status --hostname github.com` succeeds and clones centrally
 # managed repositories into this worker's data directory on demand.

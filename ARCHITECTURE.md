@@ -387,9 +387,12 @@ preview storage format. They do not represent a second application.
 names remain migration aliases in code and the local launcher, but are not
 operator-facing configuration.
 
-Relative worker data and optional legacy repository paths are resolved from the
-directory that contains the worker TOML. Managed repositories are configured by
-the control-plane API and cached below the worker data directory.
+When `data_directory` is omitted, a worker derives the absolute
+`<config-directory>/workers/<config-basename-without-.toml>` path. Explicit
+relative worker data paths and optional legacy repository paths are resolved
+from the directory that contains the worker TOML; explicit absolute worker data
+paths are unchanged. Managed repositories are configured by the control-plane
+API and cached below the worker data directory.
 
 ## 7. Security and trust boundaries
 

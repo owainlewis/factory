@@ -1634,6 +1634,112 @@ path = %q
 	}
 }
 
+func TestLoadConfigDefaultsDataDirectoryFromConfigFilename(t *testing.T) {
+	root := t.TempDir()
+	body := []byte(`name = "local"
+runtime = "codex"
+`)
+
+	for _, filename := range []string{"worker.toml", "claude-worker.toml"} {
+		configPath := filepath.Join(root, filename)
+		if err := os.WriteFile(configPath, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		config, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := filepath.Join(root, "workers", strings.TrimSuffix(filename, ".toml"))
+		if config.DataDirectory != want {
+			t.Fatalf("%s data directory = %q, want %q", filename, config.DataDirectory, want)
+		}
+	}
+}
+
+func TestLoadConfigPreservesExplicitDataDirectories(t *testing.T) {
+	root := t.TempDir()
+	absolute := filepath.Join(t.TempDir(), "worker-data")
+	for name, dataDirectory := range map[string]string{
+		"relative": "custom-data",
+		"absolute": absolute,
+	} {
+		t.Run(name, func(t *testing.T) {
+			configPath := filepath.Join(root, name+".toml")
+			body := fmt.Sprintf("name = %q\ndata_directory = %q\n", name, dataDirectory)
+			if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			config, err := LoadConfig(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := dataDirectory
+			if !filepath.IsAbs(want) {
+				want = filepath.Join(root, want)
+			}
+			if config.DataDirectory != want {
+				t.Fatalf("data directory = %q, want %q", config.DataDirectory, want)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRejectsDefaultWithoutUsableBasename(t *testing.T) {
+	for _, filename := range []string{".toml", "..toml", "...toml"} {
+		t.Run(filename, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), filename)
+			if err := os.WriteFile(configPath, []byte(`name = "local"`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(configPath); err == nil || !strings.Contains(err.Error(), "no usable basename") {
+				t.Fatalf("invalid default basename error = %v", err)
+			}
+		})
+	}
+}
+
+func TestDerivedDataDirectoryReusesIdentityAndRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "worker.toml")
+	if err := os.WriteFile(configPath, []byte(`name = "local"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := ResolveWorkerID(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ResolveWorkerID(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatalf("worker ID changed: %q != %q", first, second)
+	}
+
+	unsafeRoot := t.TempDir()
+	unsafeConfigPath := filepath.Join(unsafeRoot, "unsafe.toml")
+	if err := os.WriteFile(unsafeConfigPath, []byte(`name = "unsafe"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(unsafeRoot, "workers"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(unsafeRoot, "workers", "unsafe")); err != nil {
+		t.Fatal(err)
+	}
+	unsafeConfig, err := LoadConfig(unsafeConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveWorkerID(unsafeConfig); err == nil || !strings.Contains(err.Error(), "not a symlink") {
+		t.Fatalf("derived symlink error = %v", err)
+	}
+}
+
 func TestDefaultConfigPathUsesFactoryHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

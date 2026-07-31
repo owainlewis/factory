@@ -12,14 +12,21 @@ server = "http://127.0.0.1:7337"
 name = "local-codex"
 runtime = "codex"
 max_concurrent = 1
-data_directory = "workers/local-codex"
 ```
 
 `runtime` is `codex` or `claude-code`. A worker never switches runtime per task.
 Run two workers when you want to send the same task to both agents.
 
-Relative data directories resolve from the directory containing the worker
-TOML file. The worker probes `gh auth status --hostname github.com`
+When `data_directory` is omitted, Factory derives an absolute path beside the
+configuration as `workers/<config filename without .toml>`. For example,
+`~/.factory/worker.toml` uses `~/.factory/workers/worker`, while
+`~/.factory/claude-worker.toml` uses `~/.factory/workers/claude-worker`. The
+config filename, not the mutable worker display name, selects durable local
+state, so use a different config filename for each worker on one host.
+
+Set `data_directory` to override the default. Explicit relative paths resolve
+from the directory containing the worker TOML file; explicit absolute paths are
+used as written. The worker probes `gh auth status --hostname github.com`
 automatically. A successful probe advertises GitHub source access and the
 ability to acquire centrally managed GitHub repositories. It contains no token.
 

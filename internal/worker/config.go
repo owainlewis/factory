@@ -66,13 +66,21 @@ func LoadConfig(path string) (Config, error) {
 	if config.MaxConcurrent == 0 {
 		config.MaxConcurrent = defaultMaxConcurrent
 	}
-	if config.DataDirectory == "" {
-		return Config{}, errors.New("data_directory is required")
+	config.path, err = filepath.Abs(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve worker configuration path: %w", err)
+	}
+	dataDirectoryDefaulted := config.DataDirectory == ""
+	if dataDirectoryDefaulted {
+		config.DataDirectory, err = defaultDataDirectory(config.path)
+		if err != nil {
+			return Config{}, err
+		}
 	}
 	for index := range config.SourceAccess {
 		config.SourceAccess[index] = strings.ToLower(strings.TrimSpace(config.SourceAccess[index]))
 	}
-	if !filepath.IsAbs(config.DataDirectory) {
+	if !dataDirectoryDefaulted && !filepath.IsAbs(config.DataDirectory) {
 		config.DataDirectory = filepath.Join(filepath.Dir(path), config.DataDirectory)
 	}
 	for key, repository := range config.Repositories {
@@ -81,11 +89,15 @@ func LoadConfig(path string) (Config, error) {
 			config.Repositories[key] = repository
 		}
 	}
-	config.path, err = filepath.Abs(path)
-	if err != nil {
-		return Config{}, fmt.Errorf("resolve worker configuration path: %w", err)
-	}
 	return config, validateConfig(config)
+}
+
+func defaultDataDirectory(configPath string) (string, error) {
+	base := strings.TrimSuffix(filepath.Base(configPath), ".toml")
+	if strings.TrimSpace(base) == "" || base == "." || base == ".." {
+		return "", errors.New("derive data_directory: worker configuration filename has no usable basename after removing .toml")
+	}
+	return filepath.Join(filepath.Dir(configPath), "workers", base), nil
 }
 
 func validateConfig(config Config) error {

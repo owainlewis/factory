@@ -30,8 +30,11 @@ server = "http://127.0.0.1:7337"
 name = "local-codex"
 runtime = "codex"
 max_concurrent = 1
-data_directory = "workers/local-codex"
 ```
+
+With this `~/.factory/worker.toml` filename, Factory defaults durable worker
+state to `~/.factory/workers/worker`. The config filename, rather than `name`,
+selects the state directory.
 
 No worker repository list is required. Factory detects local GitHub access with
 `gh auth status` and clones centrally managed repositories on demand. Optional
@@ -45,10 +48,13 @@ server = "http://127.0.0.1:7337"
 name = "local-claude"
 runtime = "claude-code"
 max_concurrent = 1
-data_directory = "workers/local-claude"
 ```
 
-Do not share a `data_directory` between worker identities.
+Saved as `~/.factory/claude-worker.toml`, this worker uses
+`~/.factory/workers/claude-worker`. Different config filenames keep multiple
+worker identities separate on one host. Set `data_directory` only when an
+explicit relative or absolute override is needed; never share one data
+directory between worker identities.
 
 ## Start
 
