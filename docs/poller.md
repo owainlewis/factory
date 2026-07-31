@@ -184,9 +184,10 @@ stderr to 64 KiB, execution to 30 seconds, and each result to 100 issues.
 For GitHub tasks, the poller sends the repository remote and required GitHub
 source access to the control plane instead of a worker ID. In the task-creation
 transaction, the control plane considers healthy online workers that advertise
-both. It chooses the lowest `(active + queued) / capacity` load and breaks an
-exact tie by worker ID. The selected worker and repository are then frozen on
-the task and execution.
+both and whose repository has retained-worktree headroom under the same rule
+used when claiming work. It chooses the lowest `(active + queued) / capacity`
+load and breaks an exact tie by worker ID. The selected worker and repository
+are then frozen on the task and execution.
 
 The poller stores its ledger in
 `~/.factory/poller/poller.sqlite3` by default. It writes the exact task request

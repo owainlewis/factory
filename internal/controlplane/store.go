@@ -856,9 +856,29 @@ func (s *Store) selectTaskRoute(
 		FROM workers w
 		JOIN worker_repositories wr ON wr.worker_id = w.id AND wr.advertised = 1
 		JOIN repositories r ON r.id = wr.repository_id
-		WHERE `+repositoryPredicate+` AND w.health = 'healthy' AND w.last_heartbeat >= ?
+		WHERE `+repositoryPredicate+`
+		  AND w.health = 'healthy'
+		  AND w.last_heartbeat >= ?
+		  AND wr.retained_count + (
+		      SELECT COUNT(*)
+		      FROM attempts active_attempt
+		      JOIN executions active_execution ON active_execution.id = active_attempt.execution_id
+		      JOIN tasks active_task ON active_task.id = active_execution.task_id
+		      WHERE active_attempt.worker_id = w.id
+		        AND active_task.repository_id = r.id
+		        AND active_attempt.state IN ('preparing', 'running')
+		  ) + (
+		      SELECT COUNT(*)
+		      FROM attempts terminal_attempt
+		      JOIN executions terminal_execution ON terminal_execution.id = terminal_attempt.execution_id
+		      JOIN tasks terminal_task ON terminal_task.id = terminal_execution.task_id
+		      WHERE terminal_attempt.worker_id = w.id
+		        AND terminal_task.repository_id = r.id
+		        AND terminal_attempt.state IN ('succeeded', 'failed', 'cancelled', 'lost')
+		        AND terminal_attempt.capacity_acknowledged = 0
+		  ) < ?
 		ORDER BY w.id
-	`, route.RepositoryRemoteIdentity, now-protocol.WorkerOnlineWindow.Milliseconds())
+	`, route.RepositoryRemoteIdentity, now-protocol.WorkerOnlineWindow.Milliseconds(), protocol.MaxRetainedPerRepo)
 	if err != nil {
 		return taskRouteCandidate{}, unavailable(err)
 	}

@@ -793,6 +793,76 @@ func TestRoutedTaskMatchesGitHubRepositoryIdentityWithoutCaseSensitivity(t *test
 	}
 }
 
+func TestRoutedTaskExcludesWorkersWithoutRepositoryCapacity(t *testing.T) {
+	for _, capacityTerm := range []string{"retained", "active", "terminal-unacknowledged"} {
+		t.Run(capacityTerm, func(t *testing.T) {
+			store := newTestStore(t)
+			repository := protocol.RepositoryRegistration{
+				Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+				RetainedCount: protocol.MaxRetainedPerRepo - 1,
+			}
+			if capacityTerm == "retained" {
+				repository.RetainedCount = protocol.MaxRetainedPerRepo
+			}
+			access := []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}}
+			fullWorker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+				Name: workerA, WorkerVersion: "test", RuntimeVersion: "test",
+				Capacity: 2, Health: "healthy", Repositories: []protocol.RepositoryRegistration{repository},
+				SourceAccess: access,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			repository.RetainedCount = 0
+			if _, err := store.RegisterWorker(context.Background(), workerB, protocol.WorkerRegistration{
+				Name: workerB, WorkerVersion: "test", RuntimeVersion: "test",
+				Capacity: 1, Health: "healthy", Repositories: []protocol.RepositoryRegistration{repository},
+				SourceAccess: access,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			if capacityTerm != "retained" {
+				createTestTask(t, store, "capacity-reservation", workerA, fullWorker.Repositories[0].ID)
+				claim := claimTestTask(t, store, workerA, "capacity-reservation", tokenA)
+				if capacityTerm == "terminal-unacknowledged" {
+					if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID,
+						protocol.CompleteAttemptRequest{
+							LeaseToken: tokenA, State: "failed", Error: "retained",
+						}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+
+			request := protocol.CreateTaskRequest{
+				RequestKey: "route-repository-capacity", Title: "GitHub issue", Description: "Fetch live issue.",
+				Route: &protocol.TaskRoute{
+					RepositoryRemoteIdentity: repository.RemoteIdentity,
+					SourceAccess:             access[0],
+				},
+				TimeoutSeconds: 60,
+			}
+			detail, created, err := store.CreateTask(context.Background(), request)
+			if err != nil || !created || detail.Execution.AssignedWorkerID != workerB {
+				t.Fatalf("repository-capacity route = %#v, created %t, err %v", detail, created, err)
+			}
+
+			repository.RetainedCount = protocol.MaxRetainedPerRepo
+			if _, err := store.RegisterWorker(context.Background(), workerB, protocol.WorkerRegistration{
+				Name: workerB, WorkerVersion: "test", RuntimeVersion: "test",
+				Capacity: 1, Health: "healthy", Repositories: []protocol.RepositoryRegistration{repository},
+				SourceAccess: access,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			request.RequestKey = "route-no-repository-capacity"
+			_, _, err = store.CreateTask(context.Background(), request)
+			assertErrorCode(t, err, "no_eligible_worker")
+		})
+	}
+}
+
 func TestTasksPagesEqualTimestampsByIDWithoutDuplicates(t *testing.T) {
 	store := newTestStore(t)
 	store.now = func() time.Time {

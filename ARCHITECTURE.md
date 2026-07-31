@@ -118,7 +118,8 @@ For GitHub, the poller submits the repository remote and a GitHub source-access
 requirement. In the task-creation transaction, the control plane chooses the
 healthy online repository advertiser with the lowest
 `(active + queued) / capacity` load, breaking an exact tie by worker ID. It
-freezes that worker and repository on the execution. The poller writes the exact
+excludes repositories without retained-worktree headroom, then freezes the
+selected worker and repository on the execution. The poller writes the exact
 task request to its own SQLite ledger, submits through
 `POST /api/v1/tasks`, and records the returned task ID. Its default state is
 `~/.factory/poller/poller.sqlite3`.
