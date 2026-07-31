@@ -921,6 +921,33 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 		`, retainedCounts[repositoryID], input.AcceptsManagedRepositories, now, workerID, repositoryID); err != nil {
 			return protocol.Worker{}, unavailable(err)
 		}
+		if seenManagedRepositoryIDs[repositoryID] || retainedCounts[repositoryID] > 0 {
+			continue
+		}
+		result, err := tx.ExecContext(ctx, `
+			UPDATE worker_repositories
+			SET advertised = 0, updated_at = ?
+			WHERE worker_id = ?
+			  AND repository_id = ?
+			  AND dynamic = 1
+			  AND retained_count = 0
+			  AND NOT EXISTS (
+			      SELECT 1
+			      FROM executions execution
+			      JOIN tasks task ON task.id = execution.task_id
+			      WHERE execution.assigned_worker_id = ?
+			        AND task.repository_id = ?
+			        AND execution.state IN ('queued', 'preparing', 'running')
+			  )
+		`, now, workerID, repositoryID, workerID, repositoryID)
+		if err != nil {
+			return protocol.Worker{}, unavailable(err)
+		}
+		if released, err := result.RowsAffected(); err != nil {
+			return protocol.Worker{}, unavailable(err)
+		} else if released > 0 {
+			delete(advertisedRepositoryIDs, repositoryID)
+		}
 	}
 	canBulkAcknowledge := input.CapacityHandoffVersion == 0 && !hasUnattributedRetainedSummary
 	for repositoryID := range retainedCounts {
@@ -1225,6 +1252,7 @@ func (s *Store) selectTaskRoute(
 		                  FROM worker_repositories reserved_repository
 		                  WHERE reserved_repository.worker_id = w.id
 		                    AND reserved_repository.dynamic = 1
+		                    AND reserved_repository.advertised = 1
 		                    AND NOT EXISTS (
 		                        SELECT 1
 		                        FROM json_each(w.managed_repository_ids_json) cached_repository

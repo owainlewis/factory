@@ -100,6 +100,8 @@ complete before the agent starts. A worker keeps at most 100 repository cache
 entries. This version does not evict caches automatically.
 Interrupted `.clone-*` directories are removed during startup after the worker
 has locked its data directory, so hard crashes cannot bypass the cache bound.
+On the next registration, the control plane releases an uncached dynamic
+reservation once no queued or active execution and no retained worktree uses it.
 
 ## Cancellation and shutdown
 

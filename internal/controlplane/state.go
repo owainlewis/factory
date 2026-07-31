@@ -601,8 +601,13 @@ func (s *Store) RetryExecution(ctx context.Context, executionID string) (protoco
 		return protocol.TaskDetail{}, unavailable(err)
 	}
 	defer tx.Rollback()
-	var taskID, state string
-	err = tx.QueryRowContext(ctx, `SELECT task_id, state FROM executions WHERE id = ?`, executionID).Scan(&taskID, &state)
+	var taskID, state, workerID, repositoryID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT execution.task_id, execution.state, execution.assigned_worker_id, task.repository_id
+		FROM executions execution
+		JOIN tasks task ON task.id = execution.task_id
+		WHERE execution.id = ?
+	`, executionID).Scan(&taskID, &state, &workerID, &repositoryID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.TaskDetail{}, ErrNotFound
 	}
@@ -611,6 +616,61 @@ func (s *Store) RetryExecution(ctx context.Context, executionID string) (protoco
 	}
 	if state != "failed" && state != "cancelled" {
 		return protocol.TaskDetail{}, conflict("retry_not_allowed", "only a failed or cancelled execution can be retried")
+	}
+	var dynamic, advertised int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT dynamic, advertised
+		FROM worker_repositories
+		WHERE worker_id = ? AND repository_id = ?
+	`, workerID, repositoryID).Scan(&dynamic, &advertised); errors.Is(err, sql.ErrNoRows) {
+		return protocol.TaskDetail{}, conflict(
+			"retry_repository_unavailable", "the frozen worker repository assignment is unavailable")
+	} else if err != nil {
+		return protocol.TaskDetail{}, unavailable(err)
+	}
+	if dynamic != 0 && advertised == 0 {
+		var acceptsManagedRepositories, repositoryCached, cacheUse int
+		err := tx.QueryRowContext(ctx, `
+			SELECT worker.accepts_managed_repositories,
+			       EXISTS (
+			           SELECT 1
+			           FROM json_each(worker.managed_repository_ids_json) cached_repository
+			           WHERE cached_repository.value = ?
+			       ),
+			       json_array_length(worker.managed_repository_ids_json) + (
+			           SELECT COUNT(*)
+			           FROM worker_repositories reservation
+			           WHERE reservation.worker_id = worker.id
+			             AND reservation.dynamic = 1
+			             AND reservation.advertised = 1
+			             AND NOT EXISTS (
+			                 SELECT 1
+			                 FROM json_each(worker.managed_repository_ids_json) cached_repository
+			                 WHERE cached_repository.value = reservation.repository_id
+			             )
+			       )
+			FROM workers worker
+			WHERE worker.id = ?
+		`, repositoryID, workerID).Scan(
+			&acceptsManagedRepositories, &repositoryCached, &cacheUse,
+		)
+		if err != nil {
+			return protocol.TaskDetail{}, unavailable(err)
+		}
+		if acceptsManagedRepositories == 0 ||
+			(repositoryCached == 0 && cacheUse >= protocol.MaxRepositoryCacheEntries) {
+			return protocol.TaskDetail{}, conflict(
+				"retry_repository_unavailable",
+				"the frozen worker cannot currently reserve this managed repository",
+			)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE worker_repositories
+			SET advertised = 1, updated_at = ?
+			WHERE worker_id = ? AND repository_id = ? AND dynamic = 1
+		`, now, workerID, repositoryID); err != nil {
+			return protocol.TaskDetail{}, unavailable(err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE executions

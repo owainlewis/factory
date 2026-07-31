@@ -1017,6 +1017,105 @@ func TestRoutedTaskReservesManagedRepositoryCacheHeadroom(t *testing.T) {
 	assertErrorCode(t, err, "no_eligible_worker")
 }
 
+func TestRegistrationReleasesFailedUncachedRepositoryReservation(t *testing.T) {
+	store := newTestStore(t)
+	failedRepository := createManagedTestRepository(t, store, "github.com/example/failed-clone")
+	nextRepository := createManagedTestRepository(t, store, "github.com/example/next-clone")
+	cachedRepositoryIDs := make([]string, 0, protocol.MaxRepositoryCacheEntries-1)
+	for index := 0; index < protocol.MaxRepositoryCacheEntries-1; index++ {
+		cachedRepositoryIDs = append(cachedRepositoryIDs, fmt.Sprintf(
+			"%08x-0000-4000-8000-%012x", index+1, index+1,
+		))
+	}
+	registration := protocol.WorkerRegistration{
+		Name: workerA, WorkerVersion: "test", RuntimeVersion: "test",
+		Capacity: 1, Health: "healthy",
+		SourceAccess:               []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+		AcceptsManagedRepositories: true,
+		ManagedRepositoryIDs:       cachedRepositoryIDs,
+	}
+	if _, err := store.RegisterWorker(context.Background(), workerA, registration); err != nil {
+		t.Fatal(err)
+	}
+	createRouted := func(requestKey string, repository protocol.ManagedRepository) (protocol.TaskDetail, error) {
+		detail, _, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+			RequestKey: requestKey, Title: requestKey, Description: "Exercise failed acquisition recovery.",
+			Route: &protocol.TaskRoute{
+				RepositoryRemoteIdentity: repository.RemoteIdentity,
+				SourceAccess:             protocol.SourceAccess{Provider: "github", Hostname: "github.com"},
+			},
+			TimeoutSeconds: 60,
+		})
+		return detail, err
+	}
+	failed, err := createRouted("failed-cache-reservation", failedRepository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createRouted("blocked-by-failed-reservation", nextRepository); err == nil {
+		t.Fatal("cache headroom ignored the outstanding acquisition reservation")
+	} else {
+		assertErrorCode(t, err, "no_eligible_worker")
+	}
+	claim := claimTestTask(t, store, workerA, "failed-cache-claim", tokenA)
+	if claim.Task.ID != failed.Task.ID {
+		t.Fatalf("claimed task = %s; want %s", claim.Task.ID, failed.Task.ID)
+	}
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Error: "clone failed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterWorker(context.Background(), workerA, registration); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := store.Task(context.Background(), failed.Task.ID)
+	if err != nil || detail.Repository.ID != failedRepository.ID || detail.RepositoryAvailable {
+		t.Fatalf("failed task after reservation release = %#v, err %v", detail, err)
+	}
+	next, err := createRouted("route-after-failed-reservation", nextRepository)
+	if err != nil {
+		t.Fatalf("failed reservation still consumes cache headroom: %v", err)
+	}
+	var remaining, advertised int
+	if err := store.db.QueryRow(`
+		SELECT COUNT(*), COALESCE(MAX(advertised), 0)
+		FROM worker_repositories
+		WHERE worker_id = ? AND repository_id = ? AND dynamic = 1
+	`, workerA, failedRepository.ID).Scan(&remaining, &advertised); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 1 || advertised != 0 {
+		t.Fatalf("released historical association count = %d, advertised = %d", remaining, advertised)
+	}
+	if _, err := store.RetryExecution(context.Background(), failed.Execution.ID); err == nil {
+		t.Fatal("retry ignored managed repository cache headroom")
+	} else {
+		assertErrorCode(t, err, "retry_repository_unavailable")
+	}
+	failedAfterBlockedRetry, err := store.Task(context.Background(), failed.Task.ID)
+	if err != nil || failedAfterBlockedRetry.Execution.State != "failed" || failedAfterBlockedRetry.RepositoryAvailable {
+		t.Fatalf("blocked retry changed failed execution = %#v, err %v", failedAfterBlockedRetry, err)
+	}
+	if _, err := store.CancelTask(context.Background(), next.Task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterWorker(context.Background(), workerA, registration); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := store.RetryExecution(context.Background(), failed.Execution.ID)
+	if err != nil {
+		t.Fatalf("retry released failed acquisition: %v", err)
+	}
+	if retried.Execution.State != "queued" || !retried.RepositoryAvailable {
+		t.Fatalf("retried failed acquisition = %#v", retried)
+	}
+	retryClaim := claimTestTask(t, store, workerA, "failed-cache-retry-claim", tokenB)
+	if retryClaim.Task.ID != failed.Task.ID || retryClaim.Attempt.AttemptNumber != 2 {
+		t.Fatalf("retry claim = %#v", retryClaim)
+	}
+}
+
 func TestRoutedTaskMatchesGitHubRepositoryIdentityWithoutCaseSensitivity(t *testing.T) {
 	store := newTestStore(t)
 	repository := protocol.RepositoryRegistration{
