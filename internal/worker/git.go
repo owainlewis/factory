@@ -288,8 +288,6 @@ func resolveBaseCommit(
 	gitExecutable string,
 	repository Repository,
 ) (string, string, error) {
-	ctx, cancel := context.WithTimeout(ctx, gitCommandTimeout)
-	defer cancel()
 	branch := repository.BaseBranch
 	var base string
 	if branch == "" {
