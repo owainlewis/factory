@@ -379,6 +379,43 @@ exit "$status"
 	}
 }
 
+func TestWorktreeFetchDoesNotApplyConfiguredOriginRefmap(t *testing.T) {
+	repository := createRepository(t, "custom-refmap")
+	sentinel := runGitTest(t, repository.path, "rev-parse", "HEAD")
+	runGitTest(t, repository.path, "branch", "vendor/main", sentinel)
+	runGitTest(t, repository.path, "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/vendor/*")
+
+	publisher := filepath.Join(t.TempDir(), "publisher")
+	runGitTest(t, "", "clone", repository.origin, publisher)
+	runGitTest(t, publisher, "config", "user.name", "Factory Publisher")
+	runGitTest(t, publisher, "config", "user.email", "publisher@example.invalid")
+	if err := os.WriteFile(filepath.Join(publisher, "remote-refmap.txt"), []byte("remote\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, publisher, "add", "remote-refmap.txt")
+	runGitTest(t, publisher, "commit", "-m", "advance refmap remote")
+	runGitTest(t, publisher, "push", "origin", "main")
+	remoteCommit := runGitTest(t, publisher, "rev-parse", "HEAD")
+
+	resolved, err := resolveRepository("factory", repository.path, "git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := createWorktree(
+		context.Background(), "git", filepath.Join(t.TempDir(), "worktrees"),
+		resolved, fixtureUUID(710), fixtureUUID(711),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.BaseCommit != remoteCommit {
+		t.Fatalf("worktree base = %q; want remote %q", value.BaseCommit, remoteCommit)
+	}
+	if branchCommit := runGitTest(t, repository.path, "rev-parse", "refs/heads/vendor/main"); branchCommit != sentinel {
+		t.Fatalf("configured fetch mapping changed vendor/main from %q to %q", sentinel, branchCommit)
+	}
+}
+
 func runGitTest(t *testing.T, directory string, arguments ...string) string {
 	t.Helper()
 	command := exec.Command("git", arguments...)
