@@ -9,6 +9,8 @@ Start with the root [README](../README.md) to run Factory.
 - [Local guide](local.md): build, configure, start, delegate, and troubleshoot.
 - [Worker contract](worker.md): identity, runtimes, claiming, process safety,
   and worktree cleanup.
+- [Issue poller](poller.md): GitHub queues, provider command adapters,
+  deduplication, and operation.
 - [Security policy](../SECURITY.md): reporting and the current trust model.
 - [Contributing](../CONTRIBUTING.md): setup, checks, and pull request standards.
 
@@ -17,7 +19,7 @@ Start with the root [README](../README.md) to run Factory.
 These documents describe work that is not implemented:
 
 - [Reusable workflows and automations](workflows/design.md)
-- [GitHub issue ingest](github-ingest/design.md)
+- [Advanced GitHub ingest design](github-ingest/design.md)
 - [Unified CLI](cli/design.md)
 
 Current behavior belongs in the root `ARCHITECTURE.md`. Proposed behavior belongs

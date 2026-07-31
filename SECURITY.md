@@ -43,12 +43,18 @@ Factory state defaults to `~/.factory`. Protect this directory because it may
 contain:
 
 - task prompts and execution events;
+- polled ticket bodies and pending task requests;
 - worker identity and disposal records;
 - repository paths and branch names;
 - retained worktrees with unpublished changes.
 
 Worker configuration should use mode `0600`. Data directories should not be
 shared between worker identities.
+
+Provider CLIs own their credentials. Factory does not request or persist
+provider tokens. Treat configured poller commands and queue prompts as trusted
+operator policy. Ticket titles and bodies are untrusted input passed to the
+agent as labelled context.
 
 See the [architecture](ARCHITECTURE.md) and
 [worker guide](docs/worker.md) for the complete boundary.

@@ -24,48 +24,37 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - uses: extractions/setup-just@v4
       - name: Install UI dependencies
         working-directory: web
         run: npm ci
-      - name: Check UI lint
-        working-directory: web
-        run: npm run lint
-      - name: Check UI types
-        working-directory: web
-        run: npm run typecheck
-      - name: Run UI component tests
-        working-directory: web
-        run: npm test
+      - name: Check UI
+        run: just ui-check
       - name: Build embedded UI
-        env:
-          FACTORY_SKIP_INSTALL: "1"
-        run: ./scripts/build-ui.sh
+        run: just ui-build 0
       - name: Check embedded UI is current
         run: |
           git diff --exit-code -- web/dist
           test -z "$(git status --porcelain --untracked-files=all -- web/dist)"
       - name: Test Node-free operator build
-        run: ./scripts/test-build.sh
+        run: just test-tooling
       - name: Build Go binaries
-        run: ./scripts/build.sh
+        run: just build
       - name: Test local startup workflow
-        run: ./scripts/test-run-local.sh
+        run: just test-launcher
       - name: Check Go formatting
-        run: test -z "$(gofmt -l cmd internal migrations web/*.go)"
+        run: just format-check
       - name: Run Go vet
-        run: go vet ./...
+        run: just vet
       - name: Check worker-control-plane boundary
-        run: |
-          ! go list -deps ./internal/worker |
-            grep -qx 'github.com/owainlewis/factory/internal/controlplane'
+        run: just boundary
       - name: Run Go server and worker tests
-        run: go test -timeout 5m ./...
+        run: just test
       - name: Install Chromium
         working-directory: web
         run: npx playwright install --with-deps chromium
       - name: Run real-server browser tests
-        working-directory: web
-        run: npm run test:browser
+        run: just test-browser
       - name: Upload browser evidence
         if: always()
         uses: actions/upload-artifact@v7

@@ -13,45 +13,41 @@ Install:
 
 - Go 1.25 or newer
 - Git
+- just
 - Node.js 22 and npm when changing the UI
 - Codex CLI or Claude Code CLI for real worker tests
 
 Build the Go binaries from the committed UI:
 
 ```sh
-./scripts/build.sh
+just build
 ```
 
 Rebuild the UI only when its source changes:
 
 ```sh
-cd web
-npm ci
-cd ..
-FACTORY_SKIP_INSTALL=1 ./scripts/build-ui.sh
+just ui-install
+just ui-build 0
 ```
 
 ## Checks
 
-Run backend and launcher checks:
+Run backend, tooling, and launcher checks:
 
 ```sh
-find cmd internal migrations web -path web/node_modules -prune -o \
-  -name '*.go' -exec gofmt -w {} +
-go test ./...
-go vet ./...
-./scripts/test-build.sh
-./scripts/test-run-local.sh
+just format-check
+just vet
+just boundary
+just test
+just test-tooling
+just test-launcher
 ```
 
 Run UI checks:
 
 ```sh
-cd web
-npm run typecheck
-npm run lint
-npm test
-npm run test:browser
+just ui-check
+just test-browser
 ```
 
 `web/dist` is committed because it is embedded in `factory-server`. If UI source

@@ -3,6 +3,7 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+just_binary=$(command -v just)
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT
 mkdir -p "$temporary/bin"
@@ -57,12 +58,12 @@ mkdir -p "$temporary/home"
   HOME="$temporary/home" \
   FACTORY_TEST_GO_LOG="$temporary/default-go.log" \
   PATH="$temporary/bin:/usr/bin:/bin" \
-    "$root/scripts/build.sh"
+    "$just_binary" --justfile "$root/Justfile" --working-directory "$root" build
 )
 
 test -x "$temporary/home/.factory/bin/factory-server"
 test -x "$temporary/home/.factory/bin/factory-worker"
-test "$(wc -l <"$temporary/default-go.log" | tr -d ' ')" = "2"
+test "$(wc -l <"$temporary/default-go.log" | tr -d ' ')" = "3"
 
 set +e
 output=$(
@@ -165,13 +166,15 @@ fi
 FACTORY_V2_BUILD_DIR="$temporary/output" \
 FACTORY_TEST_GO_LOG="$temporary/go.log" \
 PATH="$temporary/bin:/usr/bin:/bin" \
-  "$root/scripts/build.sh"
+  "$just_binary" --justfile "$root/Justfile" --working-directory "$root" build
 
 test -x "$temporary/output/factory-server"
 test -x "$temporary/output/factory-worker"
-test "$(wc -l <"$temporary/go.log" | tr -d ' ')" = "2"
+test -x "$temporary/output/factory-poller"
+test "$(wc -l <"$temporary/go.log" | tr -d ' ')" = "3"
 grep -q 'build -o .*factory-server ./cmd/factory-server' "$temporary/go.log"
 grep -q 'build -o .*factory-worker ./cmd/factory-worker' "$temporary/go.log"
+grep -q 'build -o .*factory-poller ./cmd/factory-poller' "$temporary/go.log"
 
 rm -rf "$temporary/output"
 : >"$temporary/go.log"
@@ -183,7 +186,7 @@ output=$(
     FACTORY_DATA_HOME="$temporary/data" \
     FACTORY_LISTEN="127.0.0.1:1" \
     FACTORY_TEST_GO_LOG="$temporary/go.log" \
-    PATH="$temporary/bin:/usr/bin:/bin" \
+    PATH="$temporary/bin:$(dirname "$just_binary"):/usr/bin:/bin" \
     "$root/scripts/run-local.sh" "$temporary/worker.toml" 2>&1
 )
 status=$?
@@ -200,7 +203,7 @@ if ! printf '%s\n' "$output" |
   echo "$output" >&2
   exit 1
 fi
-test "$(wc -l <"$temporary/go.log" | tr -d ' ')" = "2"
+test "$(wc -l <"$temporary/go.log" | tr -d ' ')" = "3"
 
 mkdir -p "$temporary/ui-bin"
 cat >"$temporary/ui-bin/node" <<'EOF'
@@ -216,9 +219,9 @@ chmod +x "$temporary/ui-bin/node" "$temporary/ui-bin/npm"
 FACTORY_V2_SKIP_INSTALL=1 \
 FACTORY_TEST_NPM_LOG="$temporary/npm.log" \
 PATH="$temporary/ui-bin:/usr/bin:/bin" \
-  "$root/scripts/build-ui.sh"
+  "$just_binary" --justfile "$root/Justfile" --working-directory "$root" ui-build 0
 
 test "$(wc -l <"$temporary/npm.log" | tr -d ' ')" = "1"
 grep -qx 'run build' "$temporary/npm.log"
 
-echo "Factory operator build and default launcher route require only Go."
+echo "Factory Just recipes preserve the Node-free operator build and tested launcher route."

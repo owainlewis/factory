@@ -22,13 +22,14 @@ Requirements:
 - Go 1.25 or newer
 - Git
 - `curl`
+- `just`
 - Codex CLI or Claude Code CLI, authenticated on the worker host
 
 Node.js is only needed when changing the UI. Normal builds use the committed,
 embedded UI assets.
 
 ```sh
-./scripts/build.sh
+just build
 mkdir -p ~/.factory
 cp examples/worker.toml ~/.factory/worker.toml
 ```
@@ -37,7 +38,7 @@ Edit `~/.factory/worker.toml` to select `codex` or `claude-code` and add the
 repositories this worker may use. Then start the server and worker:
 
 ```sh
-./scripts/run-local.sh
+just run
 ```
 
 Open [http://127.0.0.1:7337](http://127.0.0.1:7337).
@@ -60,11 +61,13 @@ Browser
    |
    | HTTP + JSON
    v
-Go control plane
-  SQLite, scheduler, embedded UI
-   |
+Go control plane <--- Issue poller
+  SQLite,          normal task submissions
+  scheduler,       from GitHub CLI or a
+  embedded UI      normalized provider command
+   ^
    | registration, claim, heartbeat, events, completion
-   v
+   |
 Go workers
   one identity + one runtime + allowed repositories
    |
@@ -82,6 +85,8 @@ All default state is below `~/.factory`:
 ~/.factory/
   bin/
   server/factory.sqlite3
+  poller.toml
+  poller/poller.sqlite3
   worker.toml
   workers/
 ```
@@ -96,6 +101,8 @@ Implemented:
 - Go control-plane API and embedded React UI;
 - durable tasks, executions, attempts, leases, events, and cancellation;
 - Codex and Claude Code workers;
+- configurable issue queues with GitHub CLI polling and a normalized command
+  contract for other provider CLIs;
 - repository allowlists and isolated Git worktrees;
 - bounded list APIs and retained-data metrics;
 - automatic cleanup of clean unchanged or published work and preservation of
@@ -105,7 +112,6 @@ Designed but not implemented:
 
 - reusable workflows;
 - scheduled automations;
-- GitHub issue ingest;
 - a unified `factory` CLI.
 
 See the [documentation index](docs/README.md) for current guides and proposed
@@ -116,24 +122,21 @@ designs.
 Backend:
 
 ```sh
-go test ./...
-go vet ./...
+just test
+just vet
 ```
 
 UI:
 
 ```sh
-cd web
-npm ci
-npm run typecheck
-npm run lint
-npm test
+just ui-install
+just ui-check
 ```
 
 After changing the UI, rebuild the committed assets:
 
 ```sh
-FACTORY_SKIP_INSTALL=1 ./scripts/build-ui.sh
+just ui-build 0
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full check set.

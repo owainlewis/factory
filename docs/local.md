@@ -7,6 +7,7 @@ This guide starts one control plane and one worker on macOS or Linux.
 - Go 1.25 or newer
 - Git
 - `curl`
+- `just`
 - an authenticated Codex CLI or Claude Code CLI
 
 Node.js is not required for normal startup.
@@ -16,7 +17,7 @@ Node.js is not required for normal startup.
 Build the binaries and copy the example:
 
 ```sh
-./scripts/build.sh
+just build
 mkdir -p ~/.factory
 cp examples/worker.toml ~/.factory/worker.toml
 ```
@@ -59,7 +60,7 @@ The launcher builds the Go binaries, starts the server, waits for health, starts
 the worker, and waits for that worker to register:
 
 ```sh
-./scripts/run-local.sh
+just run
 ```
 
 Open [http://127.0.0.1:7337](http://127.0.0.1:7337).
@@ -69,7 +70,7 @@ Stop both processes with Ctrl+C.
 To start with a different worker config:
 
 ```sh
-./scripts/run-local.sh ~/.factory/claude-worker.toml
+just run ~/.factory/claude-worker.toml
 ```
 
 To run more than one worker, start the control plane once and then start each
@@ -131,10 +132,10 @@ FACTORY_WORKER_READY_SECONDS
 Examples:
 
 ```sh
-FACTORY_LISTEN=127.0.0.1:7444 ./scripts/run-local.sh
+FACTORY_LISTEN=127.0.0.1:7444 just run
 
 FACTORY_DATA_HOME=/srv/factory \
-  ./scripts/run-local.sh /srv/factory/worker.toml
+  just run /srv/factory/worker.toml
 ```
 
 The server remains loopback-only.
@@ -144,20 +145,15 @@ The server remains loopback-only.
 Only contributors changing the UI need Node.js:
 
 ```sh
-cd web
-npm ci
-npm run dev
+just ui-install
+cd web && npm run dev
 ```
 
 Before committing UI changes:
 
 ```sh
-cd web
-npm run typecheck
-npm run lint
-npm test
-cd ..
-FACTORY_SKIP_INSTALL=1 ./scripts/build-ui.sh
+just ui-check
+just ui-build 0
 ```
 
 The operator build embeds the committed `web/dist` and never invokes npm.
@@ -166,7 +162,7 @@ The operator build embeds the committed `web/dist` and never invokes npm.
 
 `127.0.0.1 refused to connect`
 
-- confirm `./scripts/run-local.sh` is still running;
+- confirm `just run` is still running;
 - inspect the terminal for server or worker startup errors;
 - check `curl http://127.0.0.1:7337/healthz`;
 - check that another process is not using port 7337.

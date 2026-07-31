@@ -2,7 +2,7 @@
 
 > **Status:** Current implementation
 >
-> **Verification basis:** Working tree based on commit `295badb`
+> **Verification basis:** Working tree based on commit `88a5093`
 
 ## 1. Executive summary
 
@@ -14,6 +14,8 @@ It separates durable coordination from agent execution:
 - `factory-worker` has one stable identity and one agent runtime. It advertises
   allowed repositories, polls for work, and runs attempts in isolated Git
   worktrees.
+- `factory-poller` lists configured issue queues through provider CLIs and
+  submits matching tickets as ordinary control-plane tasks.
 - Codex or Claude Code performs the repository work as a child process of the
   worker.
 
@@ -39,6 +41,13 @@ factory-worker (one identity and one runtime)
    |-- repository allowlist
    |-- attempt manifests and owned Git worktrees
    `-- Codex CLI or Claude Code CLI
+
+factory-poller
+   |-- GitHub through gh
+   |-- command adapters for other provider CLIs
+   `-- local dispatch ledger
+           |
+           `-- POST normal tasks to factory-server
 ```
 
 Workers initiate every connection. The server does not connect to workers, and
@@ -65,6 +74,8 @@ the system does not use WebSockets.
    remote authentication and transport security are not implemented.
 9. Operator builds embed the committed `web/dist` assets and do not require
    Node.js.
+10. Polling is read-only. A queue and issue identity creates at most one task,
+    including across poller restarts and lost HTTP responses.
 
 ## 4. Components and dependencies
 
@@ -86,6 +97,26 @@ by execution creation time for the requesting worker.
 SQLite runs with foreign keys, WAL journaling, a five-second busy timeout, and
 at most eight open connections. The default database is
 `~/.factory/server/factory.sqlite3`.
+
+### Issue poller
+
+`cmd/factory-poller` runs one pass with `-once` or polls continuously. Each
+configured queue names a source, project, native status, required labels,
+worker, repository key, prompt, and timeout.
+
+GitHub support is built in and invokes the authenticated `gh issue list`
+command. Other source names invoke one configured executable without a shell.
+Factory appends `--project`, `--status`, and repeated `--label` arguments. The
+command returns the normalized issue shape documented in
+[docs/poller.md](docs/poller.md). This keeps provider credentials and API
+clients outside Factory.
+
+Before submission, the poller resolves the configured worker and repository
+through the control-plane API. A GitHub queue also requires the worker
+repository remote to match the configured GitHub project. The poller writes the
+exact task request to its own SQLite ledger, submits through
+`POST /api/v1/tasks`, and records the returned task ID. Its default state is
+`~/.factory/poller/poller.sqlite3`.
 
 ### Worker
 
@@ -155,6 +186,22 @@ Node.js is a contributor dependency only when UI source changes.
    attempt, stores only a digest of the lease token, and returns the claim.
 6. An empty response is idempotent for five minutes. A successful response is
    idempotent while its attempt remains active and its lease remains valid.
+
+### Issue polling and dispatch
+
+1. The poller recovers every pending stored request before reading a source.
+2. For each queue, it asks the provider CLI for issues matching the configured
+   project, status, and labels.
+3. GitHub results and normalized command results are validated and limited to
+   100 issues.
+4. The poller composes the trusted queue prompt followed by clearly marked
+   untrusted ticket context.
+5. It stores the exact task request before posting it to the control plane.
+6. The existing task request key makes a lost response safe to replay.
+7. Later polls skip the same queue, source, project, and issue key.
+
+Source polling never changes the issue. The agent prompt may tell the worker to
+use its installed provider CLI to update the issue and open a pull request.
 
 ### Attempt execution
 
@@ -269,6 +316,11 @@ task list.
 | Retained and reserved worktrees per worker repository | 10 |
 | Task page | 50 by default, 200 maximum |
 | Event page | 100 by default, 500 maximum |
+| Issues per queue pass | 100 |
+| Source command output | 4 MiB |
+| Source command stderr | 64 KiB |
+| Source command duration | 30 seconds |
+| Poller observations | 10,000 |
 
 ### Files and configuration
 
@@ -277,10 +329,14 @@ task list.
   bin/
     factory-server
     factory-worker
+    factory-poller
   server/
     factory.sqlite3
     factory.sqlite3.v2-control-plane
   worker.toml
+  poller.toml
+  poller/
+    poller.sqlite3
   workers/<worker>/
     worker-id
     worker.lock
@@ -292,10 +348,11 @@ task list.
 The marker filename and contents retain compatibility with the earlier Go
 preview storage format. They do not represent a second application.
 
-`FACTORY_DATA_HOME` changes the default root. `FACTORY_WORKER_CONFIG` selects a
-worker TOML. `FACTORY_BUILD_DIR`, `FACTORY_LISTEN`, `FACTORY_SKIP_BUILD`, and
-`FACTORY_WORKER_READY_SECONDS` configure local scripts. Earlier
-`FACTORY_V2_*` names remain migration aliases in code and scripts, but are not
+`FACTORY_DATA_HOME` changes the default root. `FACTORY_WORKER_CONFIG` and
+`FACTORY_POLLER_CONFIG` select worker and poller TOML files.
+`FACTORY_BUILD_DIR`, `FACTORY_LISTEN`, `FACTORY_SKIP_BUILD`, and
+`FACTORY_WORKER_READY_SECONDS` configure local commands. Earlier `FACTORY_V2_*`
+names remain migration aliases in code and the local launcher, but are not
 operator-facing configuration.
 
 Relative worker data and repository paths are resolved from the directory that
@@ -313,6 +370,11 @@ The current trust boundary is one trusted user on one host:
   available to that user;
 - the repository allowlist controls assignment and worktree creation, but it is
   not a filesystem sandbox;
+- provider CLIs own their credentials; the poller does not request, store, or
+  pass provider tokens;
+- configured source commands and queue prompts are trusted operator policy;
+- issue fields are stored in the poller ledger and task prompt as untrusted
+  context;
 - lease tokens are random, sent over local HTTP, and stored as SHA-256 digests;
 - browser mutations must be same-origin and use JSON;
 - worker data directories, identity files, and manifests use restrictive
@@ -345,6 +407,13 @@ and a reviewed tenant model.
   tasks. Factory has no age-based automatic retention job.
 - Event storage is bounded per attempt. Results, errors, prompts, and request
   bodies also have byte limits.
+- One failed issue queue does not stop later queues in the same pass. Failed
+  source results create no observations. Failed task submissions remain pending
+  and replay before the next source poll.
+- Poller observations are capped at 10,000. Submitted rows discard their stored
+  request body, but remain as deduplication records until the operator archives
+  and resets the ledger. An issue does not rearm after leaving and re-entering
+  its queue condition.
 
 Summary metrics are derived only from retained control-plane facts: execution
 counts and outcomes, queue and running counts, success and retry rates, median
@@ -360,10 +429,12 @@ The implementation is covered by:
 - worker identity, configuration, registration, process supervision, runtime
   output, cancellation, lease loss, restart reconciliation, and cleanup tests in
   `internal/worker`;
+- issue-source validation, durable dispatch, HTTP replay, and restart
+  deduplication tests in `internal/poller`;
 - server and worker command tests in `cmd`;
 - embedded asset tests in `web`;
 - React unit, polling, and browser tests in `web/src`;
-- build and local-launch checks in `scripts/test-build.sh` and
+- Just command-surface and local-launch checks in `scripts/test-build.sh` and
   `scripts/test-run-local.sh`.
 
 The contributor check set is documented in [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -376,19 +447,24 @@ The contributor check set is documented in [CONTRIBUTING.md](CONTRIBUTING.md).
   transport.
 - A task has one execution assigned to one worker. Fan-out and cross-worker
   rescheduling are not implemented.
-- Scheduling is pull-based FIFO per worker. There are no priorities, cron
-  triggers, provider polling, or automatic retries.
-- Workflows, scheduled automations, GitHub ingest, and a unified CLI are
+- Execution scheduling is pull-based FIFO per worker. There are no priorities,
+  cron triggers, or automatic retries.
+- GitHub is the only built-in issue source. Jira, Linear, and other providers
+  need a command adapter that implements the normalized issue JSON contract.
+- Poller configuration is file-based and has no UI. Issue observations do not
+  rearm or expire automatically.
+- Reusable workflows, scheduled automations, and a unified `factory` CLI are
   proposed but not implemented.
 - Metrics do not confirm external outcomes such as merged pull requests or
   closed tickets.
 - Terminal history requires explicit deletion. There is no time-based retention
   policy.
 
-Proposed behavior is documented separately in the
+The current poller is documented in [docs/poller.md](docs/poller.md). More
+advanced behavior is described separately in the
 [workflow](docs/workflows/design.md),
-[GitHub ingest](docs/github-ingest/design.md), and
-[CLI](docs/cli/design.md) designs.
+[GitHub ingest](docs/github-ingest/design.md), and [CLI](docs/cli/design.md)
+designs.
 
 ## 11. Source map
 
@@ -396,6 +472,7 @@ Proposed behavior is documented separately in the
 | --- | --- |
 | Server process and defaults | `cmd/factory-server` |
 | Worker process and commands | `cmd/factory-worker` |
+| Poller process and commands | `cmd/factory-poller` |
 | HTTP API and state machine | `internal/controlplane/http.go`, `state.go` |
 | Persistence and metrics | `internal/controlplane/store.go`, `metrics.go` |
 | Database schema | `migrations` |
@@ -404,7 +481,9 @@ Proposed behavior is documented separately in the
 | Runtime supervision | `internal/worker/supervisor.go` |
 | Git worktrees and cleanup | `internal/worker/git.go`, `reconcile.go`, `cleanup.go` |
 | Durable worker state | `internal/worker/identity.go`, `manifest.go` |
+| Issue sources and dispatch ledger | `internal/poller` |
 | State path compatibility | `internal/statepath` |
 | UI source and API client | `web/src` |
 | Embedded UI serving | `web/embed.go`, `web/dist` |
-| Local build and launch | `scripts/build.sh`, `scripts/run-local.sh` |
+| Build and checks | `Justfile` |
+| Local process launcher | `scripts/run-local.sh` |

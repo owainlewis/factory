@@ -1,6 +1,7 @@
 # GitHub issue ingest for Factory
 
-> **Status:** Proposed, not implemented
+> **Status:** Future advanced design. The simpler implemented MVP is documented
+> in the [poller guide](../poller.md).
 
 > **Workflow dependency:** This design uses the
 > [workflow contract](../workflows/design.md). Ingest pins a
@@ -9,18 +10,17 @@
 
 ## 1. Executive summary
 
-Factory can run manually delegated tasks, but it cannot watch GitHub for
-work. Operators must copy each issue into the control-plane UI. This design
-adds the Go process role `factory ingest github`. It polls one GitHub
-repository, turns each matching issue into the existing task shape, and
-assigns it to one configured worker.
+Factory now has a simple `factory-poller` process that submits a matching issue
+once and keeps a local dispatch ledger. It does not support workflow revisions,
+trigger rearming, or the proposed unified CLI. This design describes that more
+advanced model through the future process role `factory ingest github`.
 
 The process uses the authenticated `gh` CLI and the control-plane HTTP API. It
 keeps its own small SQLite database so restarts and repeated polls do not
 create duplicate tasks. A pinned control-plane workflow revision remains
 responsible for live issue checks, issue comments, branches, pull requests,
-and status changes. The main downside is that the first version has file-based
-configuration and supports one repository and one trigger.
+and status changes. The main downside is that this model remains file-based and
+starts with one repository and one trigger.
 
 ## 2. Context and scope
 
@@ -30,11 +30,12 @@ from the UI or API. The proposed workflow extension adds an optional immutable
 Claude Code. They do not know whether a task came from a human, GitHub, or a
 future scheduler.
 
-Source polling, trigger episode deduplication, live revalidation, and provider
-updates are not implemented by the current control plane or workers. They
-remain explicit ingest and workflow responsibilities.
+Source polling is outside the control plane and workers. The current poller
+implements one-time dispatch. Trigger episode rearming, workflow revision
+pinning, live revalidation, and provider updates remain future ingest and
+workflow responsibilities.
 
-This design adds only the first GitHub issue path needed to test:
+This design extends the current GitHub issue path:
 
 ```text
 matching GitHub issue -> Factory task -> selected worker -> agent-managed issue and PR
