@@ -315,8 +315,10 @@ The current trust boundary is one trusted user on one host:
   not a filesystem sandbox;
 - lease tokens are random, sent over local HTTP, and stored as SHA-256 digests;
 - browser mutations must be same-origin and use JSON;
-- worker data directories, identity files, manifests, and database marker files
-  use restrictive permissions and reject unsafe symlinks where identity matters;
+- worker data directories, identity files, and manifests use restrictive
+  permissions and reject unsafe symlinks where identity matters;
+- an existing database must be a regular non-symlink file; its adjacent marker
+  validates the storage format, and a newly created marker uses mode `0600`;
 - cleanup proves ownership and Git identity before deleting a worktree.
 
 Factory must not be exposed directly to a network. Remote workers require
