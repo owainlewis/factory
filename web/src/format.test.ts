@@ -70,6 +70,22 @@ describe("eventSummary", () => {
     expect(summary?.text).not.toContain("private command output");
   });
 
+  it("reports failed Claude terminal results as errors", () => {
+    expect(eventSummary(event({
+      type: "result",
+      is_error: true,
+      result: "The release check failed.",
+    }, "claude-code"))).toEqual({ label: "Error", text: "The release check failed." });
+    expect(eventSummary(event({
+      type: "result",
+      is_error: true,
+      result: "",
+    }, "claude-code"))).toEqual({
+      label: "Error",
+      text: "Claude Code reported a terminal error",
+    });
+  });
+
   it("hides lifecycle and telemetry events", () => {
     expect(eventSummary(event({ type: "thread.started", thread_id: "thread-1" }))).toBeNull();
     expect(eventSummary(event({ type: "system", subtype: "thinking_tokens" }, "claude-code"))).toBeNull();

@@ -62,6 +62,9 @@ export function eventSummary(event: AttemptEvent): EventSummary | null {
   if (type === "user") return claudeToolResultSummary(payload);
   if (type === "result") {
     const result = stringValue(payload.result);
+    if (payload.is_error === true) {
+      return { label: "Error", text: result ?? "Claude Code reported a terminal error" };
+    }
     return result ? { label: "Result", text: result } : null;
   }
   if (type === "item.started" || type === "item.completed") {
