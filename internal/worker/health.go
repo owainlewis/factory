@@ -17,10 +17,18 @@ type health struct {
 	State          string
 	GitVersion     string
 	RuntimeVersion string
+	SourceAccess   []protocol.SourceAccess
 	Error          error
 }
 
-func checkHealth(ctx context.Context, gitExecutable, runtime, runtimeExecutable string) health {
+func checkHealth(
+	ctx context.Context,
+	gitExecutable string,
+	runtime string,
+	runtimeExecutable string,
+	githubExecutable string,
+	configuredSourceAccess []string,
+) health {
 	result := health{State: "unhealthy"}
 	gitContext, cancel := context.WithTimeout(ctx, healthCheckTimeout)
 	stdout, stderr, err := runCommand(gitContext, gitExecutable, "", 64<<10, "--version")
@@ -72,6 +80,22 @@ func checkHealth(ctx context.Context, gitExecutable, runtime, runtimeExecutable 
 	} else if strings.TrimSpace(string(stdout))+strings.TrimSpace(string(stderr)) == "" {
 		result.Error = errors.New("Codex authentication check returned no status")
 		return result
+	}
+	for _, source := range configuredSourceAccess {
+		if source != "github" {
+			continue
+		}
+		githubContext, githubCancel := context.WithTimeout(ctx, healthCheckTimeout)
+		_, _, githubErr := runCommand(
+			githubContext, githubExecutable, "", 64<<10,
+			"auth", "status", "--hostname", "github.com",
+		)
+		githubCancel()
+		if githubErr == nil {
+			result.SourceAccess = append(result.SourceAccess, protocol.SourceAccess{
+				Provider: "github", Hostname: "github.com",
+			})
+		}
 	}
 	result.State = "healthy"
 	return result

@@ -46,6 +46,11 @@ type RetainedWorktree struct {
 	CleanupCommand string `json:"cleanup_command"`
 }
 
+type SourceAccess struct {
+	Provider string `json:"provider"`
+	Hostname string `json:"hostname"`
+}
+
 type WorkerRegistration struct {
 	Name                   string                   `json:"name"`
 	WorkerVersion          string                   `json:"worker_version"`
@@ -55,6 +60,7 @@ type WorkerRegistration struct {
 	ActiveCount            int                      `json:"active_count"`
 	Health                 string                   `json:"health"`
 	Repositories           []RepositoryRegistration `json:"repositories"`
+	SourceAccess           []SourceAccess           `json:"source_access,omitempty"`
 	RetainedWorktrees      []RetainedWorktree       `json:"retained_worktrees"`
 	CapacityHandoffVersion int                      `json:"capacity_handoff_version,omitempty"`
 	DisposedAttemptIDs     []string                 `json:"disposed_attempt_ids,omitempty"`
@@ -78,6 +84,7 @@ type Worker struct {
 	Health            string             `json:"health"`
 	Online            bool               `json:"online"`
 	Repositories      []Repository       `json:"repositories"`
+	SourceAccess      []SourceAccess     `json:"source_access,omitempty"`
 	RetainedWorktrees []RetainedWorktree `json:"retained_worktrees"`
 	CurrentTaskTitle  string             `json:"current_task_title,omitempty"`
 	RegisteredAt      time.Time          `json:"registered_at"`
@@ -85,12 +92,18 @@ type Worker struct {
 }
 
 type CreateTaskRequest struct {
-	RequestKey     string `json:"request_key"`
-	Title          string `json:"title"`
-	Description    string `json:"description"`
-	WorkerID       string `json:"worker_id"`
-	RepositoryID   string `json:"repository_id"`
-	TimeoutSeconds int    `json:"timeout_seconds"`
+	RequestKey     string     `json:"request_key"`
+	Title          string     `json:"title"`
+	Description    string     `json:"description"`
+	WorkerID       string     `json:"worker_id,omitempty"`
+	RepositoryID   string     `json:"repository_id,omitempty"`
+	Route          *TaskRoute `json:"route,omitempty"`
+	TimeoutSeconds int        `json:"timeout_seconds"`
+}
+
+type TaskRoute struct {
+	RepositoryRemoteIdentity string       `json:"repository_remote_identity"`
+	SourceAccess             SourceAccess `json:"source_access"`
 }
 
 type Task struct {

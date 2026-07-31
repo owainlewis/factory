@@ -207,3 +207,12 @@ func (store *Store) markSubmitted(ctx context.Context, requestKey, taskID string
 	}
 	return nil
 }
+
+func (store *Store) deletePending(ctx context.Context, requestKey string) error {
+	if _, err := store.db.ExecContext(ctx, `
+		DELETE FROM observations WHERE request_key = ? AND state = 'pending'
+	`, requestKey); err != nil {
+		return fmt.Errorf("remove unroutable poller observation: %w", err)
+	}
+	return nil
+}

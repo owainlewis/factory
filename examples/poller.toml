@@ -10,8 +10,6 @@ source = "github"
 project = "owner/repository"
 status = "open"
 labels = ["factory:ready"]
-worker_id = "replace-with-worker-id"
-repository_key = "repository"
 prompt = """
 Work on this ticket end to end.
 Use the installed GitHub CLI to read the live issue before changing code.

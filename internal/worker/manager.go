@@ -29,6 +29,7 @@ const (
 
 type Options struct {
 	GitExecutable        string
+	GitHubExecutable     string
 	RuntimeExecutable    string
 	SupervisorCommand    []string
 	HTTPClient           *http.Client
@@ -146,6 +147,9 @@ func (options Options) withDefaults(runtime string) Options {
 	if options.GitExecutable == "" {
 		options.GitExecutable = "git"
 	}
+	if options.GitHubExecutable == "" {
+		options.GitHubExecutable = "gh"
+	}
 	if options.RuntimeExecutable == "" {
 		if runtime == protocol.RuntimeClaudeCode {
 			options.RuntimeExecutable = "claude"
@@ -215,7 +219,8 @@ func (manager *Manager) Run(ctx context.Context) error {
 		}
 	}
 	manager.setHealth(checkHealth(ctx, manager.options.GitExecutable,
-		manager.config.Runtime, manager.options.RuntimeExecutable))
+		manager.config.Runtime, manager.options.RuntimeExecutable,
+		manager.options.GitHubExecutable, manager.config.SourceAccess))
 	manager.register(ctx)
 
 	healthTicker := time.NewTicker(manager.options.HealthInterval)
@@ -232,7 +237,8 @@ func (manager *Manager) Run(ctx context.Context) error {
 			return manager.waitForShutdown()
 		case <-healthTicker.C:
 			manager.setHealth(checkHealth(ctx, manager.options.GitExecutable,
-				manager.config.Runtime, manager.options.RuntimeExecutable))
+				manager.config.Runtime, manager.options.RuntimeExecutable,
+				manager.options.GitHubExecutable, manager.config.SourceAccess))
 		case <-registrationTicker.C:
 			manager.register(ctx)
 		case <-claimTimer.C:

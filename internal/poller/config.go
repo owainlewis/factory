@@ -173,8 +173,11 @@ func validateConfig(config Config) error {
 				}
 			}
 		}
-		if queue.WorkerID == "" || queue.RepositoryKey == "" {
-			return fmt.Errorf("queue %q worker_id and repository_key are required", queue.Name)
+		if queue.Source != "github" && (queue.WorkerID == "" || queue.RepositoryKey == "") {
+			return fmt.Errorf(
+				"queue %q worker_id and repository_key are required for non-GitHub sources",
+				queue.Name,
+			)
 		}
 		if strings.TrimSpace(queue.Prompt) == "" {
 			return fmt.Errorf("queue %q prompt is required", queue.Name)

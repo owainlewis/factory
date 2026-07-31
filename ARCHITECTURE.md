@@ -100,9 +100,11 @@ at most eight open connections. The default database is
 
 ### Issue poller
 
-`cmd/factory-poller` runs one pass with `-once` or polls continuously. Each
-configured queue names a source, project, native status, required labels,
-worker, repository key, prompt, and timeout.
+`cmd/factory-poller` tests GitHub matching without mutation with `-test-github`,
+runs one submitting pass with `-once`, or polls continuously. Each configured
+queue names a source, project, native status, required labels, prompt, and
+timeout. Non-GitHub command queues also retain an explicit worker and
+repository key for compatibility.
 
 GitHub support is built in and invokes the authenticated `gh issue list`
 command. A configured GitHub queue fails at startup with installation and
@@ -112,10 +114,12 @@ one configured executable without a shell. Factory appends `--project`,
 issue shape documented in [docs/poller.md](docs/poller.md). This keeps provider
 credentials and API clients outside Factory.
 
-Before submission, the poller resolves the configured worker and repository
-through the control-plane API. A GitHub queue also requires the worker
-repository remote to match the configured GitHub project. The poller writes the
-exact task request to its own SQLite ledger, submits through
+For GitHub, the poller submits the repository remote and a GitHub source-access
+requirement. In the task-creation transaction, the control plane chooses the
+healthy online repository advertiser with the lowest
+`(active + queued) / capacity` load, breaking an exact tie by worker ID. It
+freezes that worker and repository on the execution. The poller writes the exact
+task request to its own SQLite ledger, submits through
 `POST /api/v1/tasks`, and records the returned task ID. Its default state is
 `~/.factory/poller/poller.sqlite3`.
 
@@ -195,8 +199,9 @@ Node.js is a contributor dependency only when UI source changes.
    project, status, and labels.
 3. GitHub results and normalized command results are validated and limited to
    100 issues.
-4. The poller composes the trusted queue prompt followed by clearly marked
-   untrusted ticket context.
+4. GitHub polling keeps only issue identity, URL, title, state, and labels. The
+   poller composes the trusted queue prompt followed by that clearly marked
+   untrusted context and a live-state revalidation instruction.
 5. It stores the exact task request before posting it to the control plane.
 6. The existing task request key makes a lost response safe to replay.
 7. Later polls skip the same queue, source, project, and issue key.
@@ -373,6 +378,8 @@ The current trust boundary is one trusted user on one host:
   not a filesystem sandbox;
 - provider CLIs own their credentials; the poller does not request, store, or
   pass provider tokens;
+- workers advertise GitHub source access only after an explicit opt-in and a
+  successful local `gh auth status` probe; registrations contain no token;
 - configured source commands and queue prompts are trusted operator policy;
 - issue fields are stored in the poller ledger and task prompt as untrusted
   context;
@@ -411,6 +418,8 @@ and a reviewed tenant model.
 - One failed issue queue does not stop later queues in the same pass. Failed
   source results create no observations. Failed task submissions remain pending
   and replay before the next source poll.
+- A GitHub route with no eligible worker removes its unsubmitted pending row so
+  the next pass refetches the live issue before another routing attempt.
 - Poller observations are capped at 10,000. Submitted rows discard their stored
   request body, but remain as deduplication records until the operator archives
   and resets the ledger. An issue does not rearm after leaving and re-entering

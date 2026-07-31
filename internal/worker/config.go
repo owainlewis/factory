@@ -31,6 +31,7 @@ type Config struct {
 	Runtime       string                      `toml:"runtime"`
 	MaxConcurrent int                         `toml:"max_concurrent"`
 	DataDirectory string                      `toml:"data_directory"`
+	SourceAccess  []string                    `toml:"source_access"`
 	Repositories  map[string]RepositoryConfig `toml:"repositories"`
 	path          string
 }
@@ -67,6 +68,9 @@ func LoadConfig(path string) (Config, error) {
 	if config.DataDirectory == "" {
 		return Config{}, errors.New("data_directory is required")
 	}
+	for index := range config.SourceAccess {
+		config.SourceAccess[index] = strings.ToLower(strings.TrimSpace(config.SourceAccess[index]))
+	}
 	if !filepath.IsAbs(config.DataDirectory) {
 		config.DataDirectory = filepath.Join(filepath.Dir(path), config.DataDirectory)
 	}
@@ -101,6 +105,16 @@ func validateConfig(config Config) error {
 	}
 	if len(config.Repositories) == 0 {
 		return errors.New("at least one repository is required")
+	}
+	seenSourceAccess := make(map[string]bool, len(config.SourceAccess))
+	for _, source := range config.SourceAccess {
+		if source != "github" {
+			return fmt.Errorf("source_access %q is unsupported; v1 supports github", source)
+		}
+		if seenSourceAccess[source] {
+			return fmt.Errorf("source_access %q is duplicated", source)
+		}
+		seenSourceAccess[source] = true
 	}
 	for key, repository := range config.Repositories {
 		if strings.TrimSpace(key) == "" || len(key) > 200 || key != strings.TrimSpace(key) {

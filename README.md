@@ -64,6 +64,14 @@ FACTORY_WORKER_CONFIG=~/.factory/claude-worker.toml \
 See the [local guide](docs/local.md) for a complete setup and the
 [worker guide](docs/worker.md) for runtime and worktree behavior.
 
+Before enabling continuous GitHub polling, safely preview the configured
+`factory:ready` queue without creating tasks:
+
+```sh
+cp examples/poller.toml ~/.factory/poller.toml
+just poll-test ~/.factory/poller.toml github-ready
+```
+
 ## Architecture
 
 ```text

@@ -354,6 +354,57 @@ func normalizeRemote(value string) string {
 	return strings.TrimSpace(value)
 }
 
+func normalizeSourceAccess(values []protocol.SourceAccess) ([]protocol.SourceAccess, error) {
+	if len(values) > 10 {
+		return nil, invalid("invalid_source_access", "a worker may advertise at most 10 source access entries")
+	}
+	seen := make(map[string]bool, len(values))
+	result := make([]protocol.SourceAccess, 0, len(values))
+	for _, value := range values {
+		value.Provider = strings.TrimSpace(value.Provider)
+		value.Hostname = strings.ToLower(strings.TrimSpace(value.Hostname))
+		if !validProvider(value.Provider) || !validHostname(value.Hostname) {
+			return nil, invalid(
+				"invalid_source_access",
+				"source access provider and hostname must be lowercase bounded identifiers",
+			)
+		}
+		key := value.Provider + "\x00" + value.Hostname
+		if seen[key] {
+			return nil, invalid("invalid_source_access", "source access entries must be unique")
+		}
+		seen[key] = true
+		result = append(result, value)
+	}
+	return result, nil
+}
+
+func validProvider(value string) bool {
+	if len(value) < 1 || len(value) > 50 || value[0] < 'a' || value[0] > 'z' {
+		return false
+	}
+	for _, character := range value[1:] {
+		if (character < 'a' || character > 'z') &&
+			(character < '0' || character > '9') && character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func validHostname(value string) bool {
+	if len(value) < 1 || len(value) > 253 || strings.ContainsAny(value, " /:@") {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') &&
+			(character < '0' || character > '9') && character != '-' && character != '.' {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Store) RegisterWorker(ctx context.Context, workerID string, input protocol.WorkerRegistration) (protocol.Worker, error) {
 	workerID = strings.TrimSpace(workerID)
 	if workerID == "" || len(workerID) > 200 {
@@ -387,6 +438,11 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	if len(input.Repositories) == 0 {
 		return protocol.Worker{}, invalid("invalid_repositories", "at least one repository is required")
 	}
+	sourceAccess, err := normalizeSourceAccess(input.SourceAccess)
+	if err != nil {
+		return protocol.Worker{}, err
+	}
+	input.SourceAccess = sourceAccess
 	seenKeys := map[string]bool{}
 	seenRemotes := map[string]bool{}
 	for i := range input.Repositories {
@@ -447,6 +503,10 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	if err != nil || len(retained) > protocol.MaxBodyBytes {
 		return protocol.Worker{}, invalid("invalid_retained_worktrees", "retained worktree summaries are too large")
 	}
+	sourceAccessJSON, err := json.Marshal(input.SourceAccess)
+	if err != nil {
+		return protocol.Worker{}, invalid("invalid_source_access", "source access could not be encoded")
+	}
 	now := s.now().UnixMilli()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -487,15 +547,16 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO workers(
 			id, name, worker_version, runtime, runtime_version, capacity, active_count,
-			health, retained_worktrees_json, registered_at, last_heartbeat
+			health, source_access_json, retained_worktrees_json, registered_at, last_heartbeat
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name=excluded.name, worker_version=excluded.worker_version, runtime_version=excluded.runtime_version,
 			capacity=excluded.capacity, active_count=excluded.active_count, health=excluded.health,
+			source_access_json=excluded.source_access_json,
 			retained_worktrees_json=excluded.retained_worktrees_json, last_heartbeat=excluded.last_heartbeat
 	`, workerID, input.Name, input.WorkerVersion, input.Runtime, input.RuntimeVersion,
-		input.Capacity, input.ActiveCount, input.Health, retained, now, now)
+		input.Capacity, input.ActiveCount, input.Health, sourceAccessJSON, retained, now, now)
 	if err != nil {
 		return protocol.Worker{}, unavailable(err)
 	}
@@ -625,7 +686,7 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 func (s *Store) Workers(ctx context.Context) ([]protocol.Worker, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT w.id, w.name, w.worker_version, w.runtime, w.runtime_version,
-		       w.capacity, w.active_count, w.health,
+		       w.capacity, w.active_count, w.health, w.source_access_json,
 		       w.retained_worktrees_json, w.registered_at, w.last_heartbeat,
 		       COALESCE((
 		           SELECT t.title
@@ -667,7 +728,7 @@ func (s *Store) Workers(ctx context.Context) ([]protocol.Worker, error) {
 func (s *Store) Worker(ctx context.Context, id string) (protocol.Worker, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT w.id, w.name, w.worker_version, w.runtime, w.runtime_version,
-		       w.capacity, w.active_count, w.health,
+		       w.capacity, w.active_count, w.health, w.source_access_json,
 		       w.retained_worktrees_json, w.registered_at, w.last_heartbeat,
 		       COALESCE((
 		           SELECT t.title
@@ -695,11 +756,15 @@ type scanner interface {
 
 func scanWorker(row scanner, now time.Time) (protocol.Worker, error) {
 	var worker protocol.Worker
-	var retained []byte
+	var sourceAccess, retained []byte
 	var registered, heartbeat int64
 	if err := row.Scan(&worker.ID, &worker.Name, &worker.WorkerVersion, &worker.Runtime, &worker.RuntimeVersion,
-		&worker.Capacity, &worker.ActiveCount, &worker.Health, &retained, &registered, &heartbeat,
+		&worker.Capacity, &worker.ActiveCount, &worker.Health, &sourceAccess,
+		&retained, &registered, &heartbeat,
 		&worker.CurrentTaskTitle); err != nil {
+		return worker, err
+	}
+	if err := json.Unmarshal(sourceAccess, &worker.SourceAccess); err != nil {
 		return worker, err
 	}
 	if err := json.Unmarshal(retained, &worker.RetainedWorktrees); err != nil {
@@ -732,9 +797,114 @@ func (s *Store) workerRepositories(ctx context.Context, workerID string) ([]prot
 	return repos, rows.Err()
 }
 
+type taskRouteCandidate struct {
+	workerID     string
+	repositoryID string
+	runtime      string
+	capacity     int
+	load         int
+}
+
+func normalizeTaskRoute(route *protocol.TaskRoute) error {
+	route.RepositoryRemoteIdentity = normalizeRemote(route.RepositoryRemoteIdentity)
+	values, err := normalizeSourceAccess([]protocol.SourceAccess{route.SourceAccess})
+	if err != nil {
+		return err
+	}
+	if route.RepositoryRemoteIdentity == "" || len(route.RepositoryRemoteIdentity) > 2048 {
+		return invalid(
+			"invalid_route",
+			"route repository_remote_identity is required and must be at most 2048 bytes",
+		)
+	}
+	route.SourceAccess = values[0]
+	return nil
+}
+
+func hasSourceAccess(values []protocol.SourceAccess, required protocol.SourceAccess) bool {
+	for _, value := range values {
+		if value == required {
+			return true
+		}
+	}
+	return false
+}
+
+func betterRoute(candidate, current taskRouteCandidate) bool {
+	left := candidate.load * current.capacity
+	right := current.load * candidate.capacity
+	return left < right || (left == right && candidate.workerID < current.workerID)
+}
+
+func (s *Store) selectTaskRoute(
+	ctx context.Context,
+	tx *sql.Tx,
+	route protocol.TaskRoute,
+	now int64,
+) (taskRouteCandidate, error) {
+	repositoryPredicate := "r.remote_identity = ?"
+	if route.SourceAccess.Provider == "github" && route.SourceAccess.Hostname == "github.com" {
+		repositoryPredicate = "lower(r.remote_identity) = lower(?)"
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT w.id, r.id, w.runtime, w.capacity, w.active_count,
+		       w.source_access_json,
+		       COALESCE((
+		           SELECT COUNT(*) FROM executions e
+		           WHERE e.assigned_worker_id = w.id AND e.state = 'queued'
+		       ), 0)
+		FROM workers w
+		JOIN worker_repositories wr ON wr.worker_id = w.id AND wr.advertised = 1
+		JOIN repositories r ON r.id = wr.repository_id
+		WHERE `+repositoryPredicate+` AND w.health = 'healthy' AND w.last_heartbeat >= ?
+		ORDER BY w.id
+	`, route.RepositoryRemoteIdentity, now-protocol.WorkerOnlineWindow.Milliseconds())
+	if err != nil {
+		return taskRouteCandidate{}, unavailable(err)
+	}
+	defer rows.Close()
+	var best taskRouteCandidate
+	found := false
+	for rows.Next() {
+		var candidate taskRouteCandidate
+		var active, queued int
+		var encoded []byte
+		if err := rows.Scan(
+			&candidate.workerID, &candidate.repositoryID, &candidate.runtime,
+			&candidate.capacity, &active, &encoded, &queued,
+		); err != nil {
+			return taskRouteCandidate{}, unavailable(err)
+		}
+		var access []protocol.SourceAccess
+		if err := json.Unmarshal(encoded, &access); err != nil {
+			return taskRouteCandidate{}, unavailable(err)
+		}
+		if !hasSourceAccess(access, route.SourceAccess) {
+			continue
+		}
+		candidate.load = active + queued
+		if !found || betterRoute(candidate, best) {
+			best = candidate
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return taskRouteCandidate{}, unavailable(err)
+	}
+	if !found {
+		return taskRouteCandidate{}, conflict(
+			"no_eligible_worker",
+			"no healthy online worker advertises the repository and required source access",
+		)
+	}
+	return best, nil
+}
+
 func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest) (protocol.TaskDetail, bool, error) {
 	input.RequestKey = strings.TrimSpace(input.RequestKey)
 	input.Title = strings.TrimSpace(input.Title)
+	input.WorkerID = strings.TrimSpace(input.WorkerID)
+	input.RepositoryID = strings.TrimSpace(input.RepositoryID)
 	if input.RequestKey == "" || len(input.RequestKey) > 200 {
 		return protocol.TaskDetail{}, false, invalid("invalid_request_key", "request_key is required")
 	}
@@ -749,6 +919,24 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	}
 	if input.TimeoutSeconds < 1 || input.TimeoutSeconds > int(protocol.MaxTimeout/time.Second) {
 		return protocol.TaskDetail{}, false, invalid("invalid_timeout", "timeout_seconds must be between 1 and 28800")
+	}
+	if input.Route == nil {
+		if input.WorkerID == "" || input.RepositoryID == "" {
+			return protocol.TaskDetail{}, false, invalid(
+				"invalid_assignment",
+				"worker_id and repository_id are required when route is omitted",
+			)
+		}
+	} else {
+		if input.WorkerID != "" || input.RepositoryID != "" {
+			return protocol.TaskDetail{}, false, invalid(
+				"invalid_assignment",
+				"route cannot be combined with worker_id or repository_id",
+			)
+		}
+		if err := normalizeTaskRoute(input.Route); err != nil {
+			return protocol.TaskDetail{}, false, err
+		}
 	}
 	now := s.now().UnixMilli()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -769,17 +957,27 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 		return protocol.TaskDetail{}, false, unavailable(err)
 	}
 	var runtime string
-	err = tx.QueryRowContext(ctx, `
-		SELECT w.runtime
-		FROM workers w
-		JOIN worker_repositories wr ON wr.worker_id = w.id
-		WHERE w.id = ? AND wr.repository_id = ? AND wr.advertised = 1
-	`, input.WorkerID, input.RepositoryID).Scan(&runtime)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return protocol.TaskDetail{}, false, unavailable(err)
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		return protocol.TaskDetail{}, false, invalid("repository_not_advertised", "repository is not advertised by the assigned worker")
+	if input.Route != nil {
+		selection, routeErr := s.selectTaskRoute(ctx, tx, *input.Route, now)
+		if routeErr != nil {
+			return protocol.TaskDetail{}, false, routeErr
+		}
+		input.WorkerID = selection.workerID
+		input.RepositoryID = selection.repositoryID
+		runtime = selection.runtime
+	} else {
+		err = tx.QueryRowContext(ctx, `
+			SELECT w.runtime
+			FROM workers w
+			JOIN worker_repositories wr ON wr.worker_id = w.id
+			WHERE w.id = ? AND wr.repository_id = ? AND wr.advertised = 1
+		`, input.WorkerID, input.RepositoryID).Scan(&runtime)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return protocol.TaskDetail{}, false, unavailable(err)
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return protocol.TaskDetail{}, false, invalid("repository_not_advertised", "repository is not advertised by the assigned worker")
+		}
 	}
 	taskID, err := newID()
 	if err != nil {

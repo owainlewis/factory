@@ -13,7 +13,8 @@ task coordination, and workers stay focused on agent execution.
 Requirements:
 
 - a running Factory control plane;
-- a registered worker that advertises the target repository;
+- a healthy online worker that advertises the target repository and opts into
+  GitHub source access;
 - the authenticated `gh` CLI on the poller host;
 - the authenticated `gh` CLI on the worker host when the agent workflow reads
   or updates GitHub.
@@ -47,8 +48,6 @@ source = "github"
 project = "owner/repository"
 status = "open"
 labels = ["factory:ready"]
-worker_id = "61b30338-95dc-4704-80bd-8a4c63aa3037"
-repository_key = "repository"
 prompt = """
 Work on this ticket end to end.
 Use gh to read the live issue before changing code.
@@ -57,14 +56,26 @@ Implement and verify the change, update the issue, and open a pull request.
 timeout_seconds = 7200
 ```
 
-Get worker and repository information from the Workers view or:
+Opt each eligible worker into GitHub routing once in `worker.toml`:
 
-```sh
-curl --fail --silent --show-error \
-  http://127.0.0.1:7337/api/v1/workers
+```toml
+source_access = ["github"]
 ```
 
-Test one pass:
+The worker advertises GitHub access only while its local
+`gh auth status --hostname github.com` probe succeeds.
+
+Safely test GitHub matching before creating a task:
+
+```sh
+just poll-test ~/.factory/poller.toml github-ready
+```
+
+This prints normalized matching issue references as JSON. It does not contact
+the control plane, create a task, or read or write the poller ledger. It never
+prints an issue body.
+
+Submit one real pass:
 
 ```sh
 just poll-once ~/.factory/poller.toml
@@ -90,9 +101,13 @@ Each `[[queues]]` entry configures:
 - a stable queue name;
 - a source name and project;
 - one native status and zero or more required labels;
-- one registered worker and repository key;
 - the trusted prompt placed before ticket context;
 - an optional timeout.
+
+A GitHub queue contains no worker ID or repository key. The project identifies
+the repository. Non-GitHub command queues retain their explicit worker and
+repository fields until their routing adapters adopt the same source-access
+contract.
 
 The built-in GitHub source runs:
 
@@ -105,10 +120,11 @@ mistake a truncated list for a complete queue.
 
 The task title is `Work on <source> ticket <key>`. Ticket keys are restricted to
 identifier characters, and the provider-controlled ticket title stays inside
-the task description. The description contains the configured prompt followed
-by the source, project, ticket key, URL, title, and body. Ticket fields are
-clearly labelled as untrusted data. The prompt tells the agent to reread the
-live ticket with the provider CLI before acting.
+the task description. GitHub polling reads and stores only the issue number,
+URL, title, state, and labels. It never requests the issue body. The task prompt
+contains those minimal fields and tells the agent to fetch the live issue,
+revalidate the configured state and labels, and stop without mutation when the
+condition is stale.
 
 The poller does not mutate issues. Updating labels, status, comments, branches,
 or pull requests is part of the configured agent prompt.
@@ -165,9 +181,12 @@ stderr to 64 KiB, execution to 30 seconds, and each result to 100 issues.
 
 ## Delivery and deduplication
 
-Before polling, Factory confirms that every configured worker is registered and
-advertises the repository key. The worker may be offline; matching work remains
-queued until it returns.
+For GitHub tasks, the poller sends the repository remote and required GitHub
+source access to the control plane instead of a worker ID. In the task-creation
+transaction, the control plane considers healthy online workers that advertise
+both. It chooses the lowest `(active + queued) / capacity` load and breaks an
+exact tie by worker ID. The selected worker and repository are then frozen on
+the task and execution.
 
 The poller stores its ledger in
 `~/.factory/poller/poller.sqlite3` by default. It writes the exact task request
@@ -192,10 +211,14 @@ live queue to avoid redispatching old issues.
 - A failed or malformed source result creates no new observations.
 - A failed task submission remains pending and is recovered before the next
   source poll.
+- When no worker currently advertises both the repository and GitHub access,
+  the pass fails without retaining a stale pending request. The next pass
+  refetches and revalidates the issue before trying to route it again.
 - Oversized prompts and source results fail instead of being truncated.
 - A full 10,000-row dispatch ledger rejects new observations.
 - Configuration is read at startup. Restart the poller after changing it.
 - Ctrl+C or SIGTERM stops before another polling pass begins.
 
-Poller state contains issue text, task requests, repository names, and task IDs.
-Protect `~/.factory` as sensitive local data.
+Poller state contains issue references and titles, task requests, repository
+names, and task IDs. GitHub issue bodies are not retained. Protect
+`~/.factory` as sensitive local data.

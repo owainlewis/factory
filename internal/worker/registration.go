@@ -77,6 +77,7 @@ func (manager *Manager) registration() protocol.WorkerRegistration {
 		ActiveCount:            len(manager.slots),
 		Health:                 manager.health.State,
 		Repositories:           repositories,
+		SourceAccess:           append([]protocol.SourceAccess(nil), manager.health.SourceAccess...),
 		RetainedWorktrees:      retained,
 		CapacityHandoffVersion: 1,
 		DisposedAttemptIDs:     disposedAttemptIDs,

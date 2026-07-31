@@ -12,6 +12,7 @@ name = "local-codex"
 runtime = "codex"
 max_concurrent = 1
 data_directory = "workers/local-codex"
+source_access = ["github"]
 
 [repositories.factory]
 path = "/absolute/path/to/factory"
@@ -23,6 +24,10 @@ Run two workers when you want to send the same task to both agents.
 Relative data directories and repository paths resolve from the directory
 containing the worker TOML file. Repository paths must resolve to real, non-bare
 Git repositories with an `origin`.
+
+`source_access = ["github"]` opts the worker into centrally routed GitHub issue
+work. The capability is advertised only while the worker's local
+`gh auth status --hostname github.com` probe succeeds. It contains no token.
 
 ## Identity and registration
 
@@ -36,6 +41,7 @@ Registration advertises:
 - maximum concurrent attempts;
 - worker version;
 - repository keys, normalized remote identities, and retained counts.
+- successfully probed source access such as GitHub.
 
 The server returns repository IDs used for task assignment. Heartbeats refresh
 health and current capacity. A worker is offline when its heartbeat expires.

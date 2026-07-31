@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -241,7 +242,9 @@ func writeFakeClaude(t *testing.T, path string) {
 func TestClaudeCodeHealthAndSupervisorContract(t *testing.T) {
 	claudePath := filepath.Join(t.TempDir(), "claude")
 	writeFakeClaude(t, claudePath)
-	value := checkHealth(context.Background(), "git", protocol.RuntimeClaudeCode, claudePath)
+	value := checkHealth(
+		context.Background(), "git", protocol.RuntimeClaudeCode, claudePath, "gh", nil,
+	)
 	if value.State != "healthy" || value.RuntimeVersion != "2.1.220 (Claude Code)" {
 		t.Fatalf("Claude Code health = %#v", value)
 	}
@@ -291,6 +294,40 @@ func TestClaudeCodeHealthAndSupervisorContract(t *testing.T) {
 		case <-timeout.C:
 			t.Fatal("Claude Code supervisor did not exit")
 		}
+	}
+}
+
+func TestGitHubSourceAccessIsAdvertisedOnlyAfterSuccessfulProbe(t *testing.T) {
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	githubPath := filepath.Join(t.TempDir(), "gh")
+	writeProbe := func(exitCode string) {
+		t.Helper()
+		body := "#!/bin/sh\n" +
+			"test \"$*\" = \"auth status --hostname github.com\" || exit 91\n" +
+			"exit " + exitCode + "\n"
+		if err := os.WriteFile(githubPath, []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeProbe("0")
+	value := checkHealth(
+		context.Background(), "git", protocol.RuntimeCodex, codexPath,
+		githubPath, []string{"github"},
+	)
+	want := []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}}
+	if value.State != "healthy" || !reflect.DeepEqual(value.SourceAccess, want) {
+		t.Fatalf("successful GitHub probe health = %#v", value)
+	}
+
+	writeProbe("1")
+	value = checkHealth(
+		context.Background(), "git", protocol.RuntimeCodex, codexPath,
+		githubPath, []string{"github"},
+	)
+	if value.State != "healthy" || len(value.SourceAccess) != 0 {
+		t.Fatalf("failed GitHub probe health = %#v", value)
 	}
 }
 
@@ -1325,6 +1362,7 @@ name = "local"
 runtime = "claude-code"
 max_concurrent = 1
 data_directory = "data"
+source_access = ["github"]
 
 [repositories.factory]
 path = %q
@@ -1341,6 +1379,16 @@ path = %q
 	}
 	if config.Runtime != protocol.RuntimeClaudeCode {
 		t.Fatalf("runtime = %q", config.Runtime)
+	}
+	if !reflect.DeepEqual(config.SourceAccess, []string{"github"}) {
+		t.Fatalf("source access = %#v", config.SourceAccess)
+	}
+	invalidSource := strings.Replace(body, `["github"]`, `["linear"]`, 1)
+	if err := os.WriteFile(configPath, []byte(invalidSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(configPath); err == nil || !strings.Contains(err.Error(), "supports github") {
+		t.Fatalf("unsupported source access error = %v", err)
 	}
 	if err := os.WriteFile(configPath, []byte(body+"unsafe_shortcut = true\n"), 0o600); err != nil {
 		t.Fatal(err)

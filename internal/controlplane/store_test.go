@@ -664,6 +664,135 @@ func TestTaskCreationIsNormalizedAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestRoutedTaskChoosesLeastLoadedEligibleWorkerAndFreezesAssignment(t *testing.T) {
+	store := newTestStore(t)
+	fixed := time.Date(2026, 7, 31, 10, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return fixed }
+	repository := protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	}
+	access := []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}}
+	for _, workerID := range []string{workerA, workerB} {
+		if _, err := store.RegisterWorker(context.Background(), workerID, protocol.WorkerRegistration{
+			Name: workerID, WorkerVersion: "test", RuntimeVersion: "test",
+			Capacity: 1, Health: "healthy", Repositories: []protocol.RepositoryRegistration{repository},
+			SourceAccess: access,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	createRouted := func(requestKey string) protocol.TaskDetail {
+		t.Helper()
+		detail, created, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+			RequestKey: requestKey, Title: "GitHub issue", Description: "Fetch the live issue.",
+			Route: &protocol.TaskRoute{
+				RepositoryRemoteIdentity: repository.RemoteIdentity,
+				SourceAccess:             access[0],
+			},
+			TimeoutSeconds: 60,
+		})
+		if err != nil || !created {
+			t.Fatalf("create routed task: created %t, err %v", created, err)
+		}
+		return detail
+	}
+
+	first := createRouted("route-first")
+	second := createRouted("route-second")
+	third := createRouted("route-third")
+	if first.Execution.AssignedWorkerID != workerA ||
+		second.Execution.AssignedWorkerID != workerB ||
+		third.Execution.AssignedWorkerID != workerA {
+		t.Fatalf(
+			"routed assignments = %s, %s, %s",
+			first.Execution.AssignedWorkerID,
+			second.Execution.AssignedWorkerID,
+			third.Execution.AssignedWorkerID,
+		)
+	}
+	if first.Repository.RemoteIdentity != repository.RemoteIdentity {
+		t.Fatalf("routed repository = %#v", first.Repository)
+	}
+
+	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: workerA, WorkerVersion: "test", RuntimeVersion: "test",
+		Capacity: 1, Health: "healthy", Repositories: []protocol.RepositoryRegistration{repository},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	replayed, created, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+		RequestKey: "route-first", Title: "Changed", Description: "Changed",
+		Route: &protocol.TaskRoute{
+			RepositoryRemoteIdentity: repository.RemoteIdentity,
+			SourceAccess:             access[0],
+		},
+		TimeoutSeconds: 60,
+	})
+	if err != nil || created || replayed.Execution.AssignedWorkerID != workerA {
+		t.Fatalf("replayed route = %#v, created %t, err %v", replayed, created, err)
+	}
+}
+
+func TestRoutedTaskRequiresRepositoryAndSourceAccessOnHealthyOnlineWorker(t *testing.T) {
+	store := newTestStore(t)
+	repository := protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	}
+	registerTestWorker(t, store, workerA, 1, repository)
+	request := protocol.CreateTaskRequest{
+		RequestKey: "route-ineligible", Title: "GitHub issue", Description: "Fetch live issue.",
+		Route: &protocol.TaskRoute{
+			RepositoryRemoteIdentity: repository.RemoteIdentity,
+			SourceAccess: protocol.SourceAccess{
+				Provider: "github", Hostname: "github.com",
+			},
+		},
+		TimeoutSeconds: 60,
+	}
+	_, _, err := store.CreateTask(context.Background(), request)
+	assertErrorCode(t, err, "no_eligible_worker")
+
+	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: workerA, WorkerVersion: "test", RuntimeVersion: "test",
+		Capacity: 1, Health: "healthy", Repositories: []protocol.RepositoryRegistration{repository},
+		SourceAccess: []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request.RequestKey = "route-wrong-repository"
+	request.Route.RepositoryRemoteIdentity = "github.com/owainlewis/other"
+	_, _, err = store.CreateTask(context.Background(), request)
+	assertErrorCode(t, err, "no_eligible_worker")
+}
+
+func TestRoutedTaskMatchesGitHubRepositoryIdentityWithoutCaseSensitivity(t *testing.T) {
+	store := newTestStore(t)
+	repository := protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	}
+	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: workerA, WorkerVersion: "test", RuntimeVersion: "test",
+		Capacity: 1, Health: "healthy", Repositories: []protocol.RepositoryRegistration{repository},
+		SourceAccess: []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	detail, created, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+		RequestKey: "route-github-case", Title: "GitHub issue", Description: "Fetch live issue.",
+		Route: &protocol.TaskRoute{
+			RepositoryRemoteIdentity: "github.com/OwainLewis/Factory",
+			SourceAccess: protocol.SourceAccess{
+				Provider: "github", Hostname: "github.com",
+			},
+		},
+		TimeoutSeconds: 60,
+	})
+	if err != nil || !created || detail.Execution.AssignedWorkerID != workerA {
+		t.Fatalf("case-insensitive GitHub route = %#v, created %t, err %v", detail, created, err)
+	}
+}
+
 func TestTasksPagesEqualTimestampsByIDWithoutDuplicates(t *testing.T) {
 	store := newTestStore(t)
 	store.now = func() time.Time {

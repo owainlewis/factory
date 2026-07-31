@@ -6,6 +6,9 @@ name = "local"
 runtime = "codex"
 max_concurrent = 1
 data_directory = "workers/local"
+# Opt this worker into centrally routed GitHub issue work. Factory advertises
+# the capability only while `gh auth status --hostname github.com` succeeds.
+source_access = ["github"]
 
 [repositories.factory]
 path = "/absolute/path/to/factory"

@@ -27,6 +27,15 @@ poll config="":
 poll-once config="":
     @if [[ -n "{{config}}" ]]; then go run ./cmd/factory-poller -config "{{config}}" -once; else go run ./cmd/factory-poller -once; fi
 
+# Safely test GitHub queue matching without contacting the control plane or writing the ledger.
+poll-test config="" queue="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=(-test-github)
+    if [[ -n "{{config}}" ]]; then args+=(-config "{{config}}"); fi
+    if [[ -n "{{queue}}" ]]; then args+=(-queue "{{queue}}"); fi
+    go run ./cmd/factory-poller "${args[@]}"
+
 # Install pinned UI dependencies.
 ui-install:
     cd web && npm ci

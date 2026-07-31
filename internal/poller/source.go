@@ -84,7 +84,7 @@ func (runner sourceRunner) listGitHub(ctx context.Context, queue QueueConfig) ([
 		"--repo", queue.Project,
 		"--state", queue.Status,
 		"--limit", strconv.Itoa(maxIssues + 1),
-		"--json", "number,title,body,url,labels,state",
+		"--json", "number,title,url,labels,state",
 	}
 	for _, label := range queue.Labels {
 		arguments = append(arguments, "--label", label)
@@ -96,7 +96,6 @@ func (runner sourceRunner) listGitHub(ctx context.Context, queue QueueConfig) ([
 	var values []struct {
 		Number int `json:"number"`
 		Title  string
-		Body   string
 		URL    string
 		State  string
 		Labels []struct {
@@ -120,8 +119,7 @@ func (runner sourceRunner) listGitHub(ctx context.Context, queue QueueConfig) ([
 		}
 		issues = append(issues, Issue{
 			Key: "#" + strconv.Itoa(value.Number), Title: value.Title,
-			Description: value.Body, State: strings.ToLower(value.State),
-			Labels: labels, URL: value.URL,
+			State: strings.ToLower(value.State), Labels: labels, URL: value.URL,
 		})
 	}
 	return validateIssues(queue, issues)

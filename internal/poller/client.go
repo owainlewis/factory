@@ -19,6 +19,16 @@ type controlPlaneClient struct {
 	http    *http.Client
 }
 
+type controlPlaneError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+func (err *controlPlaneError) Error() string {
+	return fmt.Sprintf("control plane returned %d %s: %s", err.Status, err.Code, err.Message)
+}
+
 func newControlPlaneClient(server string, httpClient *http.Client) *controlPlaneClient {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
@@ -83,10 +93,9 @@ func (client *controlPlaneClient) request(
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var value protocol.ErrorBody
 		if err := json.Unmarshal(responseBody, &value); err == nil && value.Error.Code != "" {
-			return response.StatusCode, fmt.Errorf(
-				"control plane returned %d %s: %s",
-				response.StatusCode, value.Error.Code, value.Error.Message,
-			)
+			return response.StatusCode, &controlPlaneError{
+				Status: response.StatusCode, Code: value.Error.Code, Message: value.Error.Message,
+			}
 		}
 		return response.StatusCode, fmt.Errorf("control plane returned HTTP %d", response.StatusCode)
 	}
