@@ -20,9 +20,9 @@ path = "/absolute/path/to/factory"
 `runtime` is `codex` or `claude-code`. A worker never switches runtime per task.
 Run two workers when you want to send the same task to both agents.
 
-Relative data directories resolve from the directory containing the worker
-TOML file. Repository paths must be absolute real directories, must be non-bare
-Git repositories, and must have an `origin`.
+Relative data directories and repository paths resolve from the directory
+containing the worker TOML file. Repository paths must resolve to real, non-bare
+Git repositories with an `origin`.
 
 ## Identity and registration
 
@@ -35,7 +35,7 @@ Registration advertises:
 - display name and runtime;
 - maximum concurrent attempts;
 - worker version;
-- repository keys, canonical paths, and normalized remote identities.
+- repository keys, normalized remote identities, and retained counts.
 
 The server returns repository IDs used for task assignment. Heartbeats refresh
 health and current capacity. A worker is offline when its heartbeat expires.
@@ -54,7 +54,8 @@ Workers poll the loopback API for compatible work. A claim succeeds only when:
 - the task targets that worker;
 - the repository is in its current advertisement;
 - worker capacity is available;
-- the repository does not already have another active attempt on that worker.
+- the repository has fewer than ten retained worktrees, active attempts, and
+  terminal attempts awaiting a local disposition on that worker.
 
 An attempt has a lease. The worker renews it while the agent process is alive.
 If the worker disappears, the control plane marks the attempt lost after the
@@ -71,7 +72,8 @@ The worker prepares a task as follows:
 5. write a protected, durable attempt manifest;
 6. launch the selected runtime in the worktree;
 7. stream bounded lifecycle and output events;
-8. report the result and final Git state.
+8. report the result and outcome;
+9. inspect final Git state locally to decide whether cleanup is safe.
 
 Codex is launched non-interactively with structured result output. Claude Code
 is launched non-interactively with JSON output. The worker normalizes both into
@@ -84,7 +86,7 @@ or summarized so one agent cannot grow a request without limit.
 
 Cancellation is cooperative but enforced:
 
-1. the control plane marks the execution as cancelling;
+1. the control plane sets the execution's cancellation request flag;
 2. the worker observes the state while renewing the lease;
 3. it terminates the runtime process group;
 4. it reports the attempt as cancelled.
@@ -102,10 +104,11 @@ The worker validates:
 - that the path is a direct child of its worktree root;
 - the matching Git worktree registration;
 - a clean working tree;
-- publication before automatic cleanup.
+- publication of every new commit before automatic cleanup.
 
 Dirty work, uncommitted changes, unpushed commits, and uncertain publication are
-retained. The task result records the path and branch.
+retained. The Worker view reports the path, reason, and cleanup command. Its
+cleanup preview reports the branch and Git status.
 
 Preview manual cleanup without changing the worktree:
 

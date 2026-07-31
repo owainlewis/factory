@@ -1,6 +1,6 @@
 # Factory command-line interface
 
-Status: proposed
+> **Status:** Proposed, not implemented
 
 ## Goal
 

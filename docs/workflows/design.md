@@ -1,6 +1,6 @@
 # Reusable workflows for Factory
 
-> **Status:** Proposed for review
+> **Status:** Proposed, not implemented
 
 ## 1. Executive summary
 
@@ -16,7 +16,7 @@ credentials.
 
 ## 2. Context and scope
 
-The implemented [architecture](../architecture/design.md) accepts a
+The implemented [architecture](../../ARCHITECTURE.md) accepts a
 title, description, worker, repository, and timeout. The description becomes
 the agent prompt. This is a useful normalized execution contract, but it has no
 shared place for team instructions such as coding standards, sub-agent review,

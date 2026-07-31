@@ -62,7 +62,7 @@ run Node or npm.
 
 - Keep changes focused.
 - Include tests for changed behavior.
-- Update architecture documents when boundaries or contracts change.
+- Update `ARCHITECTURE.md` when current boundaries or contracts change.
 - Use Conventional Commit messages.
 - Explain what was verified, including browser checks for UI work.
 - Do not commit credentials, local worker configuration, databases, or retained

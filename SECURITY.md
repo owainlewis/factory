@@ -29,6 +29,8 @@ A worker can:
 
 Treat worker hosts and repository allowlists as trusted infrastructure. Do not
 register a repository that the runtime should not be able to modify.
+The allowlist controls Factory assignment and worktree creation. It does not
+sandbox the agent from other files or tools available to the worker OS user.
 
 The control plane validates loopback addresses, worker leases, repository
 assignments, event sizes, and state transitions. Workers validate owned
@@ -48,5 +50,5 @@ contain:
 Worker configuration should use mode `0600`. Data directories should not be
 shared between worker identities.
 
-See the [architecture](docs/architecture/design.md) and
+See the [architecture](ARCHITECTURE.md) and
 [worker guide](docs/worker.md) for the complete boundary.

@@ -34,8 +34,9 @@ data_directory = "workers/local-codex"
 path = "/absolute/path/to/factory"
 ```
 
-Repository paths must be absolute, non-bare Git checkouts. Each must have an
-`origin` remote. The map key is the repository name shown in the UI.
+Relative repository paths resolve from the directory containing the worker TOML.
+Each path must resolve to a real, non-bare Git checkout with an `origin` remote.
+The map key is the repository name shown in the UI.
 
 For Claude Code, use another config and identity:
 
@@ -90,7 +91,7 @@ In the UI:
 5. Submit.
 
 The Work view shows the task state. Task detail shows attempts, lifecycle events,
-the working branch, and the final result.
+results, and errors.
 
 The same operation is available through the API:
 
@@ -181,7 +182,8 @@ Worker never becomes healthy
 Work is retained
 
 Factory keeps worktrees when they are dirty or may contain unpublished work.
-Use the task detail result to find the path. Preview the cleanup decision:
+Open the assigned Worker to see retained paths and cleanup commands. Use the
+attempt ID from the task detail or retained worktree card to preview cleanup:
 
 ```sh
 ~/.factory/bin/factory-worker cleanup ATTEMPT_ID \

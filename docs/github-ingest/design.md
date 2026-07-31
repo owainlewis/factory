@@ -1,6 +1,6 @@
 # GitHub issue ingest for Factory
 
-> **Status:** Proposed for review
+> **Status:** Proposed, not implemented
 
 > **Workflow dependency:** This design uses the
 > [workflow contract](../workflows/design.md). Ingest pins a

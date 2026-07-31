@@ -33,8 +33,8 @@ mkdir -p ~/.factory
 cp examples/worker.toml ~/.factory/worker.toml
 ```
 
-Edit `~/.factory/worker.toml` to select `codex` or `claude-code` and add absolute
-paths to the repositories this worker may use. Then start the server and worker:
+Edit `~/.factory/worker.toml` to select `codex` or `claude-code` and add the
+repositories this worker may use. Then start the server and worker:
 
 ```sh
 ./scripts/run-local.sh
@@ -86,7 +86,7 @@ All default state is below `~/.factory`:
   workers/
 ```
 
-Read the [architecture](docs/architecture/design.md) for the contracts and
+Read the [architecture](ARCHITECTURE.md) for the contracts and
 security boundaries.
 
 ## Current scope
@@ -98,8 +98,8 @@ Implemented:
 - Codex and Claude Code workers;
 - repository allowlists and isolated Git worktrees;
 - bounded list APIs and retained-data metrics;
-- automatic cleanup of published clean work and preservation of unpublished
-  branches.
+- automatic cleanup of clean unchanged or published work and preservation of
+  unpublished branches.
 
 Designed but not implemented:
 
@@ -108,9 +108,8 @@ Designed but not implemented:
 - GitHub issue ingest;
 - a unified `factory` CLI.
 
-Those designs live in [workflows](docs/workflows/design.md),
-[GitHub ingest](docs/github-ingest/design.md), and the
-[CLI design](docs/cli/design.md).
+See the [documentation index](docs/README.md) for current guides and proposed
+designs.
 
 ## Development
 
