@@ -48,6 +48,7 @@ type attemptManifest struct {
 	RepositoryKey  string `json:"repository_key"`
 	RepositoryPath string `json:"repository_path"`
 	RemoteIdentity string `json:"remote_identity"`
+	BaseBranch     string `json:"base_branch,omitempty"`
 	BaseCommit     string `json:"base_commit"`
 	WorktreePath   string `json:"worktree_path"`
 	Branch         string `json:"branch"`

@@ -32,6 +32,9 @@ ability to acquire centrally managed GitHub repositories. It contains no token.
 
 The legacy `[repositories.<key>]` map remains optional for manual delegation to
 an existing non-bare checkout. Its paths resolve relative to the worker TOML.
+Each repository must have an `origin`. `base_branch` is an optional short branch
+name such as `main`, `develop`, or `release/2026.07`; when omitted, Factory uses
+the branch advertised as the origin default.
 Newly discovered legacy checkouts enter the catalog disabled and support only
 explicit assignment until an operator adds or enables them centrally. Reposting
 a centrally managed repository does not override an explicit disable.
@@ -85,16 +88,24 @@ lease expires.
 The worker prepares a task as follows:
 
 1. validate the repository ID and canonical `github.com/owner/repository`
-   identity;
-2. clone a missing repository with `gh repo clone` or fetch its existing cache,
-   then resolve the current remote default-branch commit;
-3. create an owned worktree below its data directory;
-4. create a `factory/<task-prefix>-<attempt-prefix>` branch;
-5. write a protected, durable attempt manifest;
-6. launch the selected runtime in the worktree;
-7. stream bounded lifecycle and output events;
-8. report the result and outcome;
-9. inspect final Git state locally to decide whether cleanup is safe.
+   identity, or validate a compatible legacy checkout;
+2. clone a missing managed repository with `gh repo clone` or use its existing
+   cache;
+3. discover the origin default branch or use a legacy repository's configured
+   `base_branch`, fetch it, and freeze its exact commit;
+4. create an owned worktree below its data directory;
+5. create a `factory/<task-prefix>-<attempt-prefix>` branch;
+6. write a protected, durable attempt manifest;
+7. launch the selected runtime in the worktree;
+8. stream bounded lifecycle and output events;
+9. report the result and outcome;
+10. inspect final Git state locally to decide whether cleanup is safe.
+
+The registered checkout is never switched to the base branch and agent work
+never runs in it. A worktree isolates Git state but is not a security sandbox:
+the runtime still has the worker process's filesystem, network, and credential
+access. A later sandbox can contain this same prepared workspace without
+changing the task contract.
 
 Codex is launched non-interactively with structured result output. Claude Code
 is launched non-interactively with JSON output. The worker normalizes both into

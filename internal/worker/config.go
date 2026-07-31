@@ -22,7 +22,8 @@ const (
 )
 
 type RepositoryConfig struct {
-	Path string `toml:"path"`
+	Path       string `toml:"path"`
+	BaseBranch string `toml:"base_branch"`
 }
 
 type Config struct {
@@ -41,6 +42,7 @@ type Repository struct {
 	Path           string
 	RemoteIdentity string
 	BaseCommit     string
+	BaseBranch     string
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -132,6 +134,12 @@ func validateConfig(config Config) error {
 		}
 		if strings.TrimSpace(repository.Path) == "" {
 			return fmt.Errorf("repository %q path is required", key)
+		}
+		if repository.BaseBranch != strings.TrimSpace(repository.BaseBranch) {
+			return fmt.Errorf("repository %q base_branch must not have surrounding whitespace", key)
+		}
+		if len(repository.BaseBranch) > 244 {
+			return fmt.Errorf("repository %q base_branch must be at most 244 bytes", key)
 		}
 	}
 	return nil

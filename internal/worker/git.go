@@ -22,6 +22,7 @@ var commitPattern = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 type worktree struct {
 	Path       string
 	Branch     string
+	BaseBranch string
 	BaseCommit string
 	HeadCommit string
 }
@@ -39,6 +40,15 @@ func resolveRepositories(config Config, gitExecutable string) ([]Repository, err
 		repository, err := resolveRepository(key, config.Repositories[key].Path, gitExecutable)
 		if err != nil {
 			return nil, fmt.Errorf("repository %q: %w", key, err)
+		}
+		repository.BaseBranch = config.Repositories[key].BaseBranch
+		if repository.BaseBranch != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+			err = validateBaseBranch(ctx, gitExecutable, repository, repository.BaseBranch)
+			cancel()
+			if err != nil {
+				return nil, fmt.Errorf("repository %q: %w", key, err)
+			}
 		}
 		if previous := paths[repository.Path]; previous != "" {
 			return nil, fmt.Errorf("repositories %q and %q resolve to the same path", previous, key)
@@ -261,20 +271,127 @@ func prepareWorktree(ctx context.Context, gitExecutable, root string, repository
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return worktree{}, fmt.Errorf("inspect attempt worktree path: %w", err)
 	}
-	base := repository.BaseCommit
-	if base == "" {
-		stdout, stderr, err := runGitCommand(ctx, gitExecutable, repository.Path, 64<<10, "rev-parse", "HEAD")
-		if err != nil {
-			return worktree{}, commandFailure("resolve repository HEAD", stdout, stderr, err)
-		}
-		base = strings.TrimSpace(string(stdout))
-	}
-	if !commitPattern.MatchString(base) {
-		return worktree{}, errors.New("repository HEAD is not a full commit ID")
+	baseBranch, base, err := resolveBaseCommit(ctx, gitExecutable, repository)
+	if err != nil {
+		return worktree{}, err
 	}
 	branch := "factory/" + taskID[:12] + "-" + attemptID[:12]
-	value := worktree{Path: path, Branch: branch, BaseCommit: base, HeadCommit: base}
+	value := worktree{
+		Path: path, Branch: branch, BaseBranch: baseBranch,
+		BaseCommit: base, HeadCommit: base,
+	}
 	return value, nil
+}
+
+func resolveBaseCommit(
+	ctx context.Context,
+	gitExecutable string,
+	repository Repository,
+) (string, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, gitCommandTimeout)
+	defer cancel()
+	branch := repository.BaseBranch
+	var base string
+	if branch == "" {
+		var err error
+		branch, base, err = discoverRemoteDefaultBranch(ctx, gitExecutable, repository)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	if err := validateBaseBranch(ctx, gitExecutable, repository, branch); err != nil {
+		return "", "", err
+	}
+	if base == "" {
+		var err error
+		base, err = remoteBranchCommit(ctx, gitExecutable, repository, branch)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	stdout, _, localErr := runGitCommand(ctx, gitExecutable, repository.Path, 64<<10,
+		"rev-parse", "--verify", base+"^{commit}")
+	if localErr != nil || strings.TrimSpace(string(stdout)) != base {
+		stdout, stderr, err := runGitCommand(ctx, gitExecutable, repository.Path, 256<<10,
+			"fetch", "--no-tags", "origin", "refs/heads/"+branch)
+		if err != nil {
+			return "", "", commandFailure("fetch base branch origin/"+branch, stdout, stderr, err)
+		}
+		stdout, stderr, err = runGitCommand(ctx, gitExecutable, repository.Path, 64<<10,
+			"rev-parse", "--verify", base+"^{commit}")
+		if err != nil || strings.TrimSpace(string(stdout)) != base {
+			if err == nil {
+				err = errors.New("fetched branch did not contain the advertised commit")
+			}
+			return "", "", commandFailure("resolve fetched base branch origin/"+branch, stdout, stderr, err)
+		}
+	}
+	if !commitPattern.MatchString(base) {
+		return "", "", errors.New("base branch did not resolve to a full commit ID")
+	}
+	return branch, base, nil
+}
+
+func validateBaseBranch(
+	ctx context.Context,
+	gitExecutable string,
+	repository Repository,
+	branch string,
+) error {
+	if branch == "HEAD" || strings.HasPrefix(branch, "refs/") || strings.HasPrefix(branch, "origin/") {
+		return errors.New("base_branch must be a short branch name such as main or release/2026.07")
+	}
+	stdout, stderr, err := runGitCommand(ctx, gitExecutable, repository.Path, 64<<10,
+		"check-ref-format", "refs/heads/"+branch)
+	if err != nil {
+		return commandFailure("validate base_branch", stdout, stderr, err)
+	}
+	return nil
+}
+
+func discoverRemoteDefaultBranch(
+	ctx context.Context,
+	gitExecutable string,
+	repository Repository,
+) (string, string, error) {
+	stdout, stderr, err := runGitCommand(ctx, gitExecutable, repository.Path, 64<<10,
+		"ls-remote", "--symref", "origin", "HEAD")
+	if err != nil {
+		return "", "", commandFailure("discover origin default branch", stdout, stderr, err)
+	}
+	var branch, commit string
+	for _, line := range strings.Split(string(stdout), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == "ref:" && fields[2] == "HEAD" {
+			if value, found := strings.CutPrefix(fields[1], "refs/heads/"); found {
+				branch = value
+			}
+		} else if len(fields) == 2 && fields[1] == "HEAD" && commitPattern.MatchString(fields[0]) {
+			commit = fields[0]
+		}
+	}
+	if branch == "" || commit == "" {
+		return "", "", errors.New("origin did not advertise a default branch; set base_branch for this repository")
+	}
+	return branch, commit, nil
+}
+
+func remoteBranchCommit(
+	ctx context.Context,
+	gitExecutable string,
+	repository Repository,
+	branch string,
+) (string, error) {
+	stdout, stderr, err := runGitCommand(ctx, gitExecutable, repository.Path, 64<<10,
+		"ls-remote", "--refs", "origin", "refs/heads/"+branch)
+	if err != nil {
+		return "", commandFailure("resolve base branch origin/"+branch, stdout, stderr, err)
+	}
+	fields := strings.Fields(string(stdout))
+	if len(fields) != 2 || fields[1] != "refs/heads/"+branch || !commitPattern.MatchString(fields[0]) {
+		return "", errors.New("base branch origin/" + branch + " does not exist")
+	}
+	return fields[0], nil
 }
 
 func addPreparedWorktree(ctx context.Context, gitExecutable string, repository Repository, value worktree) error {

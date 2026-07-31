@@ -214,6 +214,113 @@ func createRepository(t *testing.T, name string) repositoryFixture {
 	return repositoryFixture{path: path, origin: origin}
 }
 
+func TestWorktreeUsesRemoteDefaultBranchWithoutChangingCheckout(t *testing.T) {
+	repository := createRepository(t, "remote-default")
+	runGitTest(t, repository.path, "checkout", "-b", "local-only")
+	if err := os.WriteFile(filepath.Join(repository.path, "local-only.txt"), []byte("local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, repository.path, "add", "local-only.txt")
+	runGitTest(t, repository.path, "commit", "-m", "local only")
+	localCommit := runGitTest(t, repository.path, "rev-parse", "HEAD")
+
+	publisher := filepath.Join(t.TempDir(), "publisher")
+	runGitTest(t, "", "clone", repository.origin, publisher)
+	runGitTest(t, publisher, "config", "user.name", "Factory Publisher")
+	runGitTest(t, publisher, "config", "user.email", "publisher@example.invalid")
+	if err := os.WriteFile(filepath.Join(publisher, "remote-only.txt"), []byte("remote\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, publisher, "add", "remote-only.txt")
+	runGitTest(t, publisher, "commit", "-m", "advance remote")
+	runGitTest(t, publisher, "push", "origin", "main")
+	mainCommit := runGitTest(t, publisher, "rev-parse", "HEAD")
+	if stale := runGitTest(t, repository.path, "rev-parse", "refs/remotes/origin/main"); stale == mainCommit {
+		t.Fatal("registered checkout unexpectedly observed the remote commit before workspace preparation")
+	}
+
+	resolved, err := resolveRepository("factory", repository.path, "git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := createWorktree(
+		context.Background(), "git", filepath.Join(t.TempDir(), "worktrees"),
+		resolved, fixtureUUID(700), fixtureUUID(701),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.BaseBranch != "main" || value.BaseCommit != mainCommit || value.BaseCommit == localCommit {
+		t.Fatalf("worktree base = %q %q; want main %q, not local %q",
+			value.BaseBranch, value.BaseCommit, mainCommit, localCommit)
+	}
+	if branch := runGitTest(t, repository.path, "branch", "--show-current"); branch != "local-only" {
+		t.Fatalf("configured checkout branch = %q; want local-only", branch)
+	}
+	if _, err := os.Stat(filepath.Join(value.Path, "local-only.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("isolated worktree contains local-only change: %v", err)
+	}
+	if body, err := os.ReadFile(filepath.Join(value.Path, "remote-only.txt")); err != nil || string(body) != "remote\n" {
+		t.Fatalf("isolated worktree did not fetch the authoritative remote commit: %q, %v", body, err)
+	}
+}
+
+func TestWorktreeUsesConfiguredBaseBranch(t *testing.T) {
+	repository := createRepository(t, "configured-base")
+	runGitTest(t, repository.path, "checkout", "-b", "release/2026.07")
+	if err := os.WriteFile(filepath.Join(repository.path, "release.txt"), []byte("release\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, repository.path, "add", "release.txt")
+	runGitTest(t, repository.path, "commit", "-m", "release")
+	runGitTest(t, repository.path, "push", "origin", "release/2026.07")
+	releaseCommit := runGitTest(t, repository.path, "rev-parse", "HEAD")
+	runGitTest(t, repository.path, "checkout", "main")
+
+	resolved, err := resolveRepository("factory", repository.path, "git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved.BaseBranch = "release/2026.07"
+	value, err := createWorktree(
+		context.Background(), "git", filepath.Join(t.TempDir(), "worktrees"),
+		resolved, fixtureUUID(702), fixtureUUID(703),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.BaseBranch != "release/2026.07" || value.BaseCommit != releaseCommit {
+		t.Fatalf("worktree base = %q %q; want release/2026.07 %q",
+			value.BaseBranch, value.BaseCommit, releaseCommit)
+	}
+	if body, err := os.ReadFile(filepath.Join(value.Path, "release.txt")); err != nil || string(body) != "release\n" {
+		t.Fatalf("release worktree file = %q, %v", body, err)
+	}
+	if branch := runGitTest(t, repository.path, "branch", "--show-current"); branch != "main" {
+		t.Fatalf("configured checkout branch = %q; want main", branch)
+	}
+}
+
+func TestWorktreeRejectsMissingConfiguredBaseBranch(t *testing.T) {
+	repository := createRepository(t, "missing-base")
+	resolved, err := resolveRepository("factory", repository.path, "git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved.BaseBranch = "release/missing"
+	root := filepath.Join(t.TempDir(), "worktrees")
+	attemptID := fixtureUUID(705)
+	_, err = prepareWorktree(
+		context.Background(), "git", root, resolved, fixtureUUID(704), attemptID,
+	)
+	if err == nil || !strings.Contains(err.Error(), "base branch origin/release/missing does not exist") {
+		t.Fatalf("missing base branch error = %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(root, attemptID)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("missing base branch created a worktree path: %v", statErr)
+	}
+}
+
 func runGitTest(t *testing.T, directory string, arguments ...string) string {
 	t.Helper()
 	command := exec.Command("git", arguments...)
@@ -1602,6 +1709,7 @@ source_access = ["github"]
 
 [repositories.factory]
 path = %q
+base_branch = "release/2026.07"
 `, repository.path)
 	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -1615,6 +1723,9 @@ path = %q
 	}
 	if config.Runtime != protocol.RuntimeClaudeCode {
 		t.Fatalf("runtime = %q", config.Runtime)
+	}
+	if config.Repositories["factory"].BaseBranch != "release/2026.07" {
+		t.Fatalf("base branch = %q", config.Repositories["factory"].BaseBranch)
 	}
 	if !reflect.DeepEqual(config.SourceAccess, []string{"github"}) {
 		t.Fatalf("source access = %#v", config.SourceAccess)

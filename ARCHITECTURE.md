@@ -226,17 +226,24 @@ use its installed provider CLI to update the issue and open a pull request.
 
 1. The worker validates the claim identity, assignment, runtime, repository ID,
    and remote identity.
-2. It uses a compatible legacy checkout or serially clones/fetches the managed
-   repository. Managed work starts at the fetched remote default-branch commit.
-3. It creates a branch named
+2. It uses a compatible legacy checkout or serially clones/acquires the managed
+   repository cache.
+3. It discovers the origin default branch or uses a legacy repository's
+   configured `base_branch`, fetches it, and freezes its exact commit.
+4. It creates a branch named
    `factory/<task-prefix>-<attempt-prefix>` and an owned worktree.
-4. It writes a protected attempt manifest before starting the runtime.
-5. The internal supervisor starts, then the worker transitions the attempt to
+5. It writes a protected attempt manifest before starting the runtime.
+6. The internal supervisor starts, then the worker transitions the attempt to
    `running`.
-6. Runtime output is sent as ordered, idempotent event batches.
-7. The worker renews the 30-second lease while the supervisor is active.
-8. Completion records a bounded result, error, and outcome, and moves the
+7. Runtime output is sent as ordered, idempotent event batches.
+8. The worker renews the 30-second lease while the supervisor is active.
+9. Completion records a bounded result, error, and outcome, and moves the
    execution to `succeeded`, `failed`, or `cancelled`.
+
+The configured checkout is repository metadata and a shared Git object store;
+agent work never runs inside it. Worktrees isolate Git state, not process,
+network, credential, or host filesystem access. A future sandbox may contain
+the prepared worktree without changing task or execution identity.
 
 ### Cancellation and lease expiry
 

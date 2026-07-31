@@ -75,7 +75,8 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		TaskID: claim.Task.ID, ExecutionID: claim.Execution.ID, AttemptID: claim.Attempt.ID,
 		RepositoryID: claim.Repository.ID, RepositoryKey: repository.Key,
 		RepositoryPath: repository.Path, RemoteIdentity: repository.RemoteIdentity,
-		BaseCommit: value.BaseCommit, WorktreePath: value.Path, Branch: value.Branch,
+		BaseBranch: value.BaseBranch, BaseCommit: value.BaseCommit,
+		WorktreePath: value.Path, Branch: value.Branch,
 		LeaseDeadline: claim.Attempt.LeaseExpiresAt, Lifecycle: manifestPreparing,
 	}
 	if err := manager.manifests.create(manifest); err != nil {
@@ -135,7 +136,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		RuntimeExecutable: manager.options.RuntimeExecutable,
 		Worktree:          value.Path,
 		ResultPath:        path,
-		Prompt:            buildPrompt(claim),
+		Prompt:            buildPrompt(claim, value),
 		TimeoutSeconds:    remainingTimeoutSeconds(taskDeadline),
 	}, os.Stderr)
 	if err != nil {
@@ -617,12 +618,14 @@ func terminalState(message supervisorMessage) string {
 	return "failed"
 }
 
-func buildPrompt(claim protocol.Claim) string {
+func buildPrompt(claim protocol.Claim, value worktree) string {
 	return "You are running in a Factory managed Git worktree.\n" +
-		"Work only on the assigned task and repository. Preserve unrelated changes and do not touch Factory state or unrelated worktrees, " +
-		"and do not delete worktrees or branches. Complete and verify the task before returning a concise result.\n\n" +
+		"Work only on the assigned task and repository. Preserve unrelated changes and do not touch Factory state or unrelated worktrees. " +
+		"Do not switch, create, rename, or delete branches or worktrees. Complete and verify the task before returning a concise result.\n\n" +
 		"Task title: " + claim.Task.Title + "\n" +
-		"Repository: " + claim.Repository.RemoteIdentity + "\n\n" +
+		"Repository: " + claim.Repository.RemoteIdentity + "\n" +
+		"Working branch: " + value.Branch + "\n" +
+		"Target base branch: " + value.BaseBranch + "\n\n" +
 		claim.Task.Description
 }
 

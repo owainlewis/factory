@@ -14,3 +14,5 @@ max_concurrent = 1
 # Legacy manual delegation may still point a worker at an existing checkout:
 # [repositories.factory]
 # path = "/absolute/path/to/factory"
+# Optional. When omitted, Factory uses the origin default branch.
+# base_branch = "release/2026.07"

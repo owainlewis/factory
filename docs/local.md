@@ -38,8 +38,15 @@ selects the state directory.
 
 No worker repository list is required. Factory detects local GitHub access with
 `gh auth status` and clones centrally managed repositories on demand. Optional
-legacy repository paths still resolve from the worker TOML directory and remain
-available for manual UI delegation.
+legacy repository paths remain available for manual UI delegation. Relative
+paths resolve from the worker TOML directory, and each path must be a real,
+non-bare Git checkout with an `origin` remote. Factory starts legacy work from
+the origin default branch without changing the checkout. To use another base,
+configure it under that repository:
+
+```toml
+base_branch = "release/2026.07"
+```
 
 For Claude Code, use another config and identity:
 
