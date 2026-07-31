@@ -73,6 +73,9 @@ export function eventSummary(event: AttemptEvent): EventSummary | null {
   if (type === "error") {
     return { label: "Error", text: errorText(payload) ?? "The runtime reported an error." };
   }
+  if (type === "turn.failed") {
+    return { label: "Error", text: errorText(payload) ?? "The Codex turn failed." };
+  }
   if (type && hiddenEventTypes.has(type)) return null;
 
   const stream = stringValue(payload.stream);

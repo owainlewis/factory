@@ -86,6 +86,13 @@ describe("eventSummary", () => {
     });
   });
 
+  it("preserves nested errors from failed Codex turns", () => {
+    expect(eventSummary(event({
+      type: "turn.failed",
+      error: { message: "The model provider rejected the request." },
+    }))).toEqual({ label: "Error", text: "The model provider rejected the request." });
+  });
+
   it("hides lifecycle and telemetry events", () => {
     expect(eventSummary(event({ type: "thread.started", thread_id: "thread-1" }))).toBeNull();
     expect(eventSummary(event({ type: "system", subtype: "thinking_tokens" }, "claude-code"))).toBeNull();
