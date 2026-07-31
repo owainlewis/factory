@@ -78,6 +78,7 @@ SELECT
     row_number() OVER (
         PARTITION BY worker_repository.worker_id, canonical.survivor_id
         ORDER BY
+            worker_repository.advertised DESC,
             CASE WHEN worker_repository.repository_id = canonical.survivor_id THEN 0 ELSE 1 END,
             worker_repository.display_key
     ) AS rank

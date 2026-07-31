@@ -172,7 +172,7 @@ func TestCapacityMigrationDerivesOnlyAttributableLegacyRetainedCounts(t *testing
 	for index := range retained {
 		retained[index] = protocol.RetainedWorktree{
 			AttemptID:    fmt.Sprintf("00000000-0000-4000-8000-%012d", index),
-			RepositoryID: "legacy-repository",
+			RepositoryID: "case-alias-repository",
 			Path:         fmt.Sprintf("/tmp/legacy-%d", index),
 			Reason:       "legacy retained worktree",
 		}
@@ -224,7 +224,7 @@ func TestCapacityMigrationDerivesOnlyAttributableLegacyRetainedCounts(t *testing
 		VALUES ('malformed-repository', 'github.com/example/malformed-migration', 1);
 		INSERT INTO worker_repositories(
 			worker_id, display_key, repository_id, retained_count, advertised, updated_at
-		) VALUES ('worker-a', 'factory', 'legacy-repository', 0, 1, 1);
+		) VALUES ('worker-a', 'factory', 'legacy-repository', 0, 0, 1);
 		INSERT INTO worker_repositories(
 			worker_id, display_key, repository_id, retained_count, advertised, updated_at
 		) VALUES ('worker-a', 'factory-case-alias', 'case-alias-repository', 3, 1, 2);
@@ -254,6 +254,10 @@ func TestCapacityMigrationDerivesOnlyAttributableLegacyRetainedCounts(t *testing
 			id, task_id, assigned_worker_id, required_runtime, state,
 			cancellation_requested, created_at, updated_at
 		) VALUES ('historical-execution', 'historical-task', 'worker-a', 'codex', 'failed', 0, 1, 1);
+		INSERT INTO executions(
+			id, task_id, assigned_worker_id, required_runtime, state,
+			cancellation_requested, created_at, updated_at
+		) VALUES ('case-alias-execution', 'case-alias-task', 'worker-a', 'codex', 'queued', 0, 2, 2);
 		INSERT INTO executions(
 			id, task_id, assigned_worker_id, required_runtime, state,
 			cancellation_requested, created_at, updated_at
@@ -363,6 +367,19 @@ func TestCapacityMigrationDerivesOnlyAttributableLegacyRetainedCounts(t *testing
 			canonicalCount, aliasMappings, canonicalTasks,
 		)
 	}
+	claim := claimTestTask(t, store, workerA, "case-alias-claim", tokenB)
+	if claim.Task.ID != "case-alias-task" {
+		t.Fatalf("claim selected %q; want case-alias-task", claim.Task.ID)
+	}
+	if claim.Repository.Key != "factory-case-alias" ||
+		claim.Repository.RemoteIdentity != "github.com/Example/Migration" {
+		t.Fatalf("claim repository = %#v; want the currently advertised alias", claim.Repository)
+	}
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenB, State: "failed", Error: "migration alias verified",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	retainedAliasWorker := protocol.WorkerRegistration{
 		Name: "legacy", WorkerVersion: "upgraded", RuntimeVersion: "upgraded",
 		Capacity: 2, Health: "healthy",
@@ -393,9 +410,9 @@ func TestCapacityMigrationDerivesOnlyAttributableLegacyRetainedCounts(t *testing
 		t.Fatal(err)
 	}
 	createTestTask(t, store, "post-migration-task", workerA, "legacy-repository")
-	claim := claimTestTask(t, store, workerA, "post-migration-claim", tokenA)
-	if claim.Task.RequestKey != "post-migration-task" {
-		t.Fatalf("post-migration claim selected %q", claim.Task.RequestKey)
+	postMigrationClaim := claimTestTask(t, store, workerA, "post-migration-claim", tokenA)
+	if postMigrationClaim.Task.RequestKey != "post-migration-task" {
+		t.Fatalf("post-migration claim selected %q", postMigrationClaim.Task.RequestKey)
 	}
 }
 
