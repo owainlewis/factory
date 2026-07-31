@@ -179,6 +179,39 @@ func TestCommandSourceReceivesProjectStatusAndLabels(t *testing.T) {
 	}
 }
 
+func TestGitHubDependencyErrorsExplainHowToRecover(t *testing.T) {
+	runner := sourceRunner{lookPath: func(string) (string, error) {
+		return "", errors.New("executable file not found")
+	}}
+	config := Config{Queues: []QueueConfig{{Name: "github-ready", Source: "github"}}}
+	err := runner.validateDependencies(config)
+	if err == nil {
+		t.Fatal("GitHub dependency check accepted a missing gh executable")
+	}
+	for _, expected := range []string{
+		`GitHub queue "github-ready" requires the GitHub CLI (gh)`,
+		"gh was not found on PATH",
+		"https://cli.github.com/",
+		`run "gh auth login"`,
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("dependency error %q does not contain %q", err, expected)
+		}
+	}
+
+	err = commandError("gh", []byte("not logged into any GitHub hosts"), errors.New("exit status 1"))
+	for _, expected := range []string{
+		"GitHub polling through the GitHub CLI (gh) failed",
+		"not logged into any GitHub hosts",
+		`run "gh auth status"`,
+		`"gh auth login"`,
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("command error %q does not contain %q", err, expected)
+		}
+	}
+}
+
 func TestCommandSourceRejectsTrailingAndOversizedOutput(t *testing.T) {
 	queue := QueueConfig{
 		Name: "linear-ready", Source: "linear", Command: []string{"linear-adapter"},
@@ -299,7 +332,7 @@ func TestPollerRejectsUnknownWorkerAndRepository(t *testing.T) {
 	_, _, config := pollerFixture(t)
 	config.DataDirectory = filepath.Join(t.TempDir(), "unknown-worker")
 	config.Queues[0].WorkerID = "22222222-2222-4222-8222-222222222222"
-	if engine, err := New(context.Background(), config, nil); err == nil {
+	if engine, err := newEngine(context.Background(), config, nil, newTestSourceRunner()); err == nil {
 		_ = engine.Close()
 		t.Fatal("New accepted an unknown worker")
 	}
@@ -307,7 +340,7 @@ func TestPollerRejectsUnknownWorkerAndRepository(t *testing.T) {
 	config.Queues[0].WorkerID = pollerWorkerID
 	config.Queues[0].RepositoryKey = "missing"
 	config.DataDirectory = filepath.Join(t.TempDir(), "unknown-repository")
-	if engine, err := New(context.Background(), config, nil); err == nil {
+	if engine, err := newEngine(context.Background(), config, nil, newTestSourceRunner()); err == nil {
 		_ = engine.Close()
 		t.Fatal("New accepted an unadvertised repository")
 	}
@@ -315,7 +348,7 @@ func TestPollerRejectsUnknownWorkerAndRepository(t *testing.T) {
 	config.Queues[0].RepositoryKey = "project"
 	config.Queues[0].Project = "example/other"
 	config.DataDirectory = filepath.Join(t.TempDir(), "wrong-github-repository")
-	if engine, err := New(context.Background(), config, nil); err == nil {
+	if engine, err := newEngine(context.Background(), config, nil, newTestSourceRunner()); err == nil {
 		_ = engine.Close()
 		t.Fatal("New accepted a GitHub project that does not match the repository remote")
 	}
@@ -433,11 +466,25 @@ func pollerFixture(t *testing.T) (*controlplane.Store, *httptest.Server, Config)
 
 func newTestEngine(t *testing.T, config Config) *Engine {
 	t.Helper()
-	engine, err := New(context.Background(), config, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	engine, err := newEngine(
+		context.Background(),
+		config,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		newTestSourceRunner(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return engine
+}
+
+func newTestSourceRunner() sourceRunner {
+	return sourceRunner{
+		run: runSourceCommand,
+		lookPath: func(string) (string, error) {
+			return "/test/bin/gh", nil
+		},
+	}
 }
 
 func fakeGitHubSource(t *testing.T) func(context.Context, string, ...string) ([]byte, []byte, error) {

@@ -6,6 +6,10 @@ task coordination, and workers stay focused on agent execution.
 
 ## GitHub quick start
 
+> **GitHub dependency:** Factory polls GitHub by running the `gh` CLI. It does
+> not call the GitHub API directly and will not start a GitHub queue when `gh`
+> is missing. Install `gh` from [cli.github.com](https://cli.github.com/).
+
 Requirements:
 
 - a running Factory control plane;
@@ -13,6 +17,19 @@ Requirements:
 - the authenticated `gh` CLI on the poller host;
 - the authenticated `gh` CLI on the worker host when the agent workflow reads
   or updates GitHub.
+
+Confirm the poller host is ready:
+
+```sh
+gh --version
+gh auth status
+```
+
+If authentication is missing, run:
+
+```sh
+gh auth login
+```
 
 Build the binaries and copy the example:
 

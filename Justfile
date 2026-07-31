@@ -19,11 +19,11 @@ build:
 run config="":
     @if [[ -n "{{config}}" ]]; then ./scripts/run-local.sh "{{config}}"; else ./scripts/run-local.sh; fi
 
-# Poll configured issue queues continuously.
+# Poll configured issue queues continuously. GitHub queues require authenticated gh.
 poll config="":
     @if [[ -n "{{config}}" ]]; then go run ./cmd/factory-poller -config "{{config}}"; else go run ./cmd/factory-poller; fi
 
-# Run one issue-queue pass and exit.
+# Run one issue-queue pass and exit. GitHub queues require authenticated gh.
 poll-once config="":
     @if [[ -n "{{config}}" ]]; then go run ./cmd/factory-poller -config "{{config}}" -once; else go run ./cmd/factory-poller -once; fi
 

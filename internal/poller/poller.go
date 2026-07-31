@@ -37,7 +37,19 @@ type target struct {
 }
 
 func New(ctx context.Context, config Config, logger *slog.Logger) (*Engine, error) {
+	return newEngine(ctx, config, logger, newSourceRunner())
+}
+
+func newEngine(
+	ctx context.Context,
+	config Config,
+	logger *slog.Logger,
+	sources sourceRunner,
+) (*Engine, error) {
 	if err := validateConfig(config); err != nil {
+		return nil, err
+	}
+	if err := sources.validateDependencies(config); err != nil {
 		return nil, err
 	}
 	store, err := openStore(ctx, config.DataDirectory)
@@ -49,7 +61,7 @@ func New(ctx context.Context, config Config, logger *slog.Logger) (*Engine, erro
 	}
 	engine := &Engine{
 		config: config, store: store, client: newControlPlaneClient(config.Server, nil),
-		sources: newSourceRunner(), logger: logger, targets: make(map[string]target),
+		sources: sources, logger: logger, targets: make(map[string]target),
 	}
 	if err := engine.resolveTargets(ctx); err != nil {
 		store.Close()

@@ -34,11 +34,28 @@ type issueResult struct {
 }
 
 type sourceRunner struct {
-	run func(context.Context, string, ...string) ([]byte, []byte, error)
+	run      func(context.Context, string, ...string) ([]byte, []byte, error)
+	lookPath func(string) (string, error)
 }
 
 func newSourceRunner() sourceRunner {
-	return sourceRunner{run: runSourceCommand}
+	return sourceRunner{run: runSourceCommand, lookPath: exec.LookPath}
+}
+
+func (runner sourceRunner) validateDependencies(config Config) error {
+	for _, queue := range config.Queues {
+		if queue.Source != "github" {
+			continue
+		}
+		if _, err := runner.lookPath("gh"); err != nil {
+			return fmt.Errorf(
+				"GitHub queue %q requires the GitHub CLI (gh), but gh was not found on PATH; install it from https://cli.github.com/, then run \"gh auth login\" before starting factory-poller",
+				queue.Name,
+			)
+		}
+		return nil
+	}
+	return nil
 }
 
 func (runner sourceRunner) list(ctx context.Context, queue QueueConfig) ([]Issue, error) {
@@ -178,6 +195,18 @@ func runSourceCommand(ctx context.Context, executable string, arguments ...strin
 
 func commandError(executable string, stderr []byte, err error) error {
 	message := strings.TrimSpace(string(stderr))
+	if executable == "gh" {
+		if message == "" {
+			return fmt.Errorf(
+				"GitHub polling through the GitHub CLI (gh) failed: %w; run \"gh auth status\" and authenticate with \"gh auth login\" if needed",
+				err,
+			)
+		}
+		return fmt.Errorf(
+			"GitHub polling through the GitHub CLI (gh) failed: %w: %s; run \"gh auth status\" and authenticate with \"gh auth login\" if needed",
+			err, message,
+		)
+	}
 	if message == "" {
 		return fmt.Errorf("%s source command failed: %w", executable, err)
 	}

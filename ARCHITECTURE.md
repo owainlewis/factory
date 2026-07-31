@@ -105,11 +105,12 @@ configured queue names a source, project, native status, required labels,
 worker, repository key, prompt, and timeout.
 
 GitHub support is built in and invokes the authenticated `gh issue list`
-command. Other source names invoke one configured executable without a shell.
-Factory appends `--project`, `--status`, and repeated `--label` arguments. The
-command returns the normalized issue shape documented in
-[docs/poller.md](docs/poller.md). This keeps provider credentials and API
-clients outside Factory.
+command. A configured GitHub queue fails at startup with installation and
+authentication guidance when `gh` is unavailable. Other source names invoke
+one configured executable without a shell. Factory appends `--project`,
+`--status`, and repeated `--label` arguments. The command returns the normalized
+issue shape documented in [docs/poller.md](docs/poller.md). This keeps provider
+credentials and API clients outside Factory.
 
 Before submission, the poller resolves the configured worker and repository
 through the control-plane API. A GitHub queue also requires the worker

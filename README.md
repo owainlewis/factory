@@ -28,6 +28,16 @@ Requirements:
 Node.js is only needed when changing the UI. Normal builds use the committed,
 embedded UI assets.
 
+GitHub issue polling is optional, but it depends on the GitHub CLI, `gh`.
+Factory does not include a separate GitHub API client. Install and authenticate
+[`gh`](https://cli.github.com/) on the poller host before configuring a GitHub
+queue:
+
+```sh
+gh --version
+gh auth status
+```
+
 ```sh
 just build
 mkdir -p ~/.factory
