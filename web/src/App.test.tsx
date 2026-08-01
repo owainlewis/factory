@@ -323,6 +323,37 @@ describe("App", () => {
     }
   });
 
+  it("loads every Workflow page in the Automation form", async () => {
+    window.history.replaceState({}, "", "/automations");
+    mockControlPlane({ paginatedAutomationWorkflows: true });
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Create Automation" }));
+    const workflow = screen.getByLabelText("Workflow");
+    expect(await within(workflow).findByRole("option", { name: "Historical workflow" })).toHaveValue("workflow-history");
+  });
+
+  it("keeps direct-detail Automation selections while form options load", async () => {
+    window.history.replaceState({}, "", "/automations/automation-ready");
+    const fetch = mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Automation" });
+    expect(within(dialog).getByLabelText("Workflow")).toHaveValue("workflow-implement");
+    expect(within(dialog).getByLabelText("Managed repository")).toHaveValue("repo-factory");
+    await user.type(within(dialog).getByLabelText("Name"), " updated");
+    await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    expect(fetch.mock.calls.some(([input, init]) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (!path.endsWith("/api/v1/automations/automation-ready") || init?.method !== "PUT") return false;
+      const body = JSON.parse(String(init.body)) as { workflow_id: string };
+      return body.workflow_id === "workflow-implement";
+    })).toBe(true);
+  });
+
   it("loads additional Automation and Occurrence pages", async () => {
     window.history.replaceState({}, "", "/automations");
     mockControlPlane({ paginatedAutomations: true, paginatedAutomationOccurrences: true });

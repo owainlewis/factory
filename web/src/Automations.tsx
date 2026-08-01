@@ -394,7 +394,7 @@ function AutomationForm({
   const closeRef = useRef(onClose);
   const requestRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const workflows = useQuery({ queryKey: ["workflows", "automation-form"], queryFn: () => api.workflows() });
+  const workflows = useQuery({ queryKey: ["workflows", "automation-form"], queryFn: api.allWorkflows });
   const repositories = useQuery({ queryKey: ["repositories"], queryFn: api.repositories });
   const current = detail?.automation;
   useEffect(() => {
@@ -465,8 +465,14 @@ function AutomationForm({
     }
     save.mutate({ request_key: requestRef.current.key, ...payload });
   };
-  const workflowItems = workflows.data?.workflows ?? [];
+  const workflowItems = workflows.data ?? [];
   const repositoryItems = repositories.data ?? [];
+  const selectedWorkflow = current
+    ? workflowItems.find((workflow) => workflow.id === current.workflow_id)
+    : undefined;
+  const selectedRepository = current
+    ? repositoryItems.find((repository) => repository.id === current.repository_id)
+    : undefined;
   return (
     <div className="modal-layer">
       <button className="modal-scrim" aria-label="Close Automation form" onClick={onClose} />
@@ -483,13 +489,19 @@ function AutomationForm({
             <Field label="Workflow" htmlFor={workflowID} error={errors.workflow}>
               <select id={workflowID} name="workflow_id" defaultValue={current?.workflow_id ?? ""} aria-invalid={Boolean(errors.workflow)}>
                 <option value="">Choose a Workflow</option>
-                {workflowItems.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.current_revision.name}{workflow.enabled ? "" : " (disabled)"}</option>)}
+                {current && <option key={current.workflow_id} value={current.workflow_id}>
+                  {selectedWorkflow?.current_revision.name ?? current.workflow_name}{selectedWorkflow?.enabled === false ? " (disabled)" : ""}
+                </option>}
+                {workflowItems.filter((workflow) => workflow.id !== current?.workflow_id).map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.current_revision.name}{workflow.enabled ? "" : " (disabled)"}</option>)}
               </select>
             </Field>
             <Field label="Managed repository" htmlFor={repositoryID} error={errors.repository} hint={mode === "edit" ? "Repository identity is immutable." : undefined}>
               <select id={repositoryID} name="repository_id" defaultValue={current?.repository_id ?? ""} disabled={mode === "edit"} aria-invalid={Boolean(errors.repository)}>
                 <option value="">Choose a repository</option>
-                {repositoryItems.map((repository) => <option key={repository.id} value={repository.id}>{repository.remote_identity}{repository.enabled ? "" : " (disabled)"}</option>)}
+                {current && <option key={current.repository_id} value={current.repository_id}>
+                  {selectedRepository?.remote_identity ?? current.repository_identity}{selectedRepository?.enabled === false ? " (disabled)" : ""}
+                </option>}
+                {repositoryItems.filter((repository) => repository.id !== current?.repository_id).map((repository) => <option key={repository.id} value={repository.id}>{repository.remote_identity}{repository.enabled ? "" : " (disabled)"}</option>)}
               </select>
             </Field>
             <Field label="Issue state" htmlFor={stateID}>

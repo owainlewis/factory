@@ -21,11 +21,12 @@ import (
 )
 
 const (
-	automationCommandTimeout  = 30 * time.Second
-	automationStdoutLimit     = 4 << 20
-	automationStderrLimit     = 64 << 10
-	automationDiagnosticLimit = 4 << 10
-	maxObservationBytes       = 16 << 10
+	automationCommandTimeout      = 30 * time.Second
+	automationStdoutLimit         = 4 << 20
+	automationStderrLimit         = 64 << 10
+	automationDiagnosticLimit     = 4 << 10
+	maxObservationBytes           = 16 << 10
+	maxConcurrentAutomationChecks = 4
 )
 
 type automationCheckError struct {
@@ -285,6 +286,7 @@ type AutomationService struct {
 	runner githubIssueLister
 	logger *slog.Logger
 	wake   chan struct{}
+	slots  chan struct{}
 	mu     sync.Mutex
 	cancel map[string]automationCancellation
 }
@@ -304,9 +306,30 @@ func NewAutomationService(store *Store, logger *slog.Logger) *AutomationService 
 func newAutomationService(store *Store, logger *slog.Logger, runner githubIssueLister) *AutomationService {
 	return &AutomationService{
 		store: store, runner: runner, logger: logger,
-		wake: make(chan struct{}, 1), cancel: make(map[string]automationCancellation),
+		wake: make(chan struct{}, 1), slots: make(chan struct{}, maxConcurrentAutomationChecks),
+		cancel: make(map[string]automationCancellation),
 	}
 }
+
+func (service *AutomationService) acquireSlot(ctx context.Context) error {
+	select {
+	case service.slots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (service *AutomationService) tryAcquireSlot() bool {
+	select {
+	case service.slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (service *AutomationService) releaseSlot() { <-service.slots }
 
 func (service *AutomationService) Wake() {
 	select {
@@ -335,6 +358,12 @@ func (service *AutomationService) Test(
 	if err != nil {
 		return protocol.TestAutomationResult{}, err
 	}
+	if err := service.acquireSlot(ctx); err != nil {
+		return protocol.TestAutomationResult{}, &ServiceError{
+			Code: "automation_test_busy", Message: "Automation Test could not start before the request deadline", Status: 503, Err: err,
+		}
+	}
+	defer service.releaseSlot()
 	matches, err := service.runner.ListIssues(ctx, detail.Automation.RepositoryIdentity, detail.Automation.Trigger)
 	if err != nil {
 		var checkErr *automationCheckError
@@ -353,27 +382,30 @@ func (service *AutomationService) Run(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	var checks sync.WaitGroup
-	slots := make(chan struct{}, 4)
 	runPass := func() {
-		for len(slots) < cap(slots) {
+		for {
 			if ctx.Err() != nil {
+				break
+			}
+			if !service.tryAcquireSlot() {
 				break
 			}
 			evaluation, found, err := service.store.reserveDueAutomation(ctx)
 			if err != nil {
+				service.releaseSlot()
 				if ctx.Err() == nil {
 					service.logger.Error("automation_reserve_failed", "error_class", "storage_unavailable")
 				}
 				break
 			}
 			if !found {
+				service.releaseSlot()
 				break
 			}
-			slots <- struct{}{}
 			checks.Add(1)
 			go func(evaluation automationEvaluation) {
 				defer checks.Done()
-				defer func() { <-slots }()
+				defer service.releaseSlot()
 				service.evaluate(ctx, evaluation)
 			}(evaluation)
 		}
@@ -415,6 +447,16 @@ func (service *AutomationService) evaluate(ctx context.Context, evaluation autom
 		}
 		service.mu.Unlock()
 	}()
+	current, err := service.store.automationEvaluationCurrent(checkContext, evaluation)
+	if err != nil {
+		if checkContext.Err() == nil {
+			service.logger.Error("automation_check_revalidation_failed", "automation_id", evaluation.Automation.ID, "error_class", "storage_unavailable")
+		}
+		return
+	}
+	if !current || checkContext.Err() != nil {
+		return
+	}
 	matches, err := service.runner.ListIssues(checkContext, evaluation.Automation.RepositoryIdentity, evaluation.Automation.Trigger)
 	if checkContext.Err() != nil {
 		return
@@ -554,6 +596,20 @@ func (s *Store) reserveDueAutomation(ctx context.Context) (automationEvaluation,
 		return automationEvaluation{}, false, unavailable(err)
 	}
 	return evaluation, true, nil
+}
+
+func (s *Store) automationEvaluationCurrent(ctx context.Context, evaluation automationEvaluation) (bool, error) {
+	var current bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM automations
+			WHERE id = ? AND enabled = 1 AND evaluation_token = ?
+		)
+	`, evaluation.Automation.ID, evaluation.Token).Scan(&current)
+	if err != nil {
+		return false, unavailable(err)
+	}
+	return current, nil
 }
 
 func (s *Store) completeAutomationFailure(

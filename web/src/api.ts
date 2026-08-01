@@ -112,6 +112,16 @@ export const api = {
     }>(`/api/v1/workflows?${query}`);
     return { workflows: page.workflows ?? [], next_cursor: page.next_cursor };
   },
+  allWorkflows: async () => {
+    const workflows: WorkflowPage["workflows"] = [];
+    let cursor = "";
+    do {
+      const page = await api.workflows(cursor);
+      workflows.push(...page.workflows);
+      cursor = page.next_cursor ?? "";
+    } while (cursor);
+    return workflows;
+  },
   allEnabledWorkflows: async () => {
     const workflows: WorkflowPage["workflows"] = [];
     let cursor = "";

@@ -56,6 +56,29 @@ func (fake fakeGitHubIssueLister) ListIssues(
 	return append([]protocol.GitHubIssueMatch(nil), fake.matches...), fake.err
 }
 
+type blockingGitHubIssueLister struct {
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (fake blockingGitHubIssueLister) ListIssues(
+	ctx context.Context,
+	_ string,
+	_ protocol.GitHubIssueTrigger,
+) ([]protocol.GitHubIssueMatch, error) {
+	select {
+	case fake.started <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-fake.release:
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func createAutomationFixture(
 	t *testing.T,
 	withWorker bool,
@@ -133,6 +156,16 @@ func TestAutomationStoreLifecycleIsTypedDisabledFirstAndOptimistic(t *testing.T)
 	})
 	if err != nil || updated.Automation.Version != 2 || updated.Automation.RepositoryID != detail.Automation.RepositoryID {
 		t.Fatalf("updated Automation = error %v, detail %#v", err, updated)
+	}
+	replayedUpdate, err := store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
+		ExpectedVersion: 1, Name: "Ready implementation issues",
+		WorkflowID: detail.Automation.WorkflowID, Context: "Use live state.", TimeoutSeconds: 7200,
+		Trigger: protocol.GitHubIssueTrigger{
+			Type: "github_issue", State: "open", RequiredLabels: []string{"bug", "factory:ready"}, PollIntervalSeconds: 30,
+		},
+	})
+	if err != nil || replayedUpdate.Automation.Version != 2 {
+		t.Fatalf("lost-response update replay = error %v, detail %#v", err, replayedUpdate)
 	}
 	_, err = store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
 		ExpectedVersion: 1, Name: "stale", WorkflowID: detail.Automation.WorkflowID,
@@ -212,6 +245,60 @@ func TestAutomationEvaluationPersistsBeforeAtomicIdempotentDispatch(t *testing.T
 		if !stringsContain(task.ResolvedPrompt, required) {
 			t.Fatalf("resolved prompt missing %q:\n%s", required, task.ResolvedPrompt)
 		}
+	}
+}
+
+func TestRepeatedAutomationEnablePreservesInFlightEvaluation(t *testing.T) {
+	store, detail := createAutomationFixture(t, false)
+	enableAutomation(t, store, detail.Automation.ID)
+	evaluation := reserveAutomation(t, store)
+
+	before, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, invalidatedToken, err := store.setAutomationEnabled(
+		context.Background(), detail.Automation.ID, true, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invalidatedToken != "" || replayed.Automation.Health.Status != "checking" ||
+		replayed.Automation.UpdatedAt != before.Automation.UpdatedAt {
+		t.Fatalf("repeated enable changed Automation = token %q, before %#v, after %#v", invalidatedToken, before.Automation, replayed.Automation)
+	}
+	var token string
+	if err := store.db.QueryRow(`SELECT evaluation_token FROM automations WHERE id = ?`, detail.Automation.ID).Scan(&token); err != nil {
+		t.Fatal(err)
+	}
+	if token != evaluation.Token {
+		t.Fatalf("evaluation token = %q, want %q", token, evaluation.Token)
+	}
+	if _, found, err := store.reserveDueAutomation(context.Background()); err != nil || found {
+		t.Fatalf("duplicate reservation = found %v, error %v", found, err)
+	}
+}
+
+func TestRepeatedDependencyEnablePreservesInFlightAutomationEvaluation(t *testing.T) {
+	store, detail := createAutomationFixture(t, false)
+	enableAutomation(t, store, detail.Automation.ID)
+	evaluation := reserveAutomation(t, store)
+
+	if _, err := store.SetWorkflowEnabled(context.Background(), detail.Automation.WorkflowID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetManagedRepositoryEnabled(context.Background(), detail.Automation.RepositoryID, true); err != nil {
+		t.Fatal(err)
+	}
+	var token string
+	if err := store.db.QueryRow(`SELECT evaluation_token FROM automations WHERE id = ?`, detail.Automation.ID).Scan(&token); err != nil {
+		t.Fatal(err)
+	}
+	if token != evaluation.Token {
+		t.Fatalf("evaluation token = %q, want %q", token, evaluation.Token)
+	}
+	if _, found, err := store.reserveDueAutomation(context.Background()); err != nil || found {
+		t.Fatalf("duplicate reservation = found %v, error %v", found, err)
 	}
 }
 
@@ -320,6 +407,26 @@ func TestAutomationDisableInvalidatesInFlightCheckAndPausesDispatch(t *testing.T
 	occurrences, err := store.AutomationOccurrences(context.Background(), detail.Automation.ID, 50)
 	if err != nil || len(occurrences) != 0 {
 		t.Fatalf("stale result admitted after disable = error %v, %#v", err, occurrences)
+	}
+}
+
+func TestAutomationEvaluatorRevalidatesTokenAfterPreRegistrationDisable(t *testing.T) {
+	store, detail := createAutomationFixture(t, false)
+	enableAutomation(t, store, detail.Automation.ID)
+	evaluation := reserveAutomation(t, store)
+	if _, err := store.SetAutomationEnabled(context.Background(), detail.Automation.ID, false, false); err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	close(release)
+	service := newAutomationService(store, slog.Default(), blockingGitHubIssueLister{started: started, release: release})
+	service.evaluate(context.Background(), evaluation)
+	select {
+	case <-started:
+		t.Fatal("stale evaluation invoked GitHub after disable")
+	default:
 	}
 }
 
@@ -439,6 +546,67 @@ func TestAutomationPreviewIsBoundedAndHasNoDurableSideEffects(t *testing.T) {
 	if len(after.Occurrences) != 0 || after.Automation.MatchedCount != before.MatchedCount ||
 		after.Automation.Health != before.Health || after.Automation.LastCheckedAt != nil {
 		t.Fatalf("preview mutated durable state: before %#v after %#v", before, after.Automation)
+	}
+}
+
+func TestAutomationPreviewSharesEvaluatorCapacity(t *testing.T) {
+	store, detail := createAutomationFixture(t, false)
+	started := make(chan struct{}, maxConcurrentAutomationChecks+1)
+	release := make(chan struct{})
+	service := newAutomationService(store, slog.Default(), blockingGitHubIssueLister{started: started, release: release})
+
+	errorsByCheck := make(chan error, maxConcurrentAutomationChecks)
+	for range maxConcurrentAutomationChecks {
+		go func() {
+			_, err := service.Test(context.Background(), detail.Automation.ID)
+			errorsByCheck <- err
+		}()
+	}
+	for range maxConcurrentAutomationChecks {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("preview did not occupy evaluator capacity")
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := service.Test(ctx, detail.Automation.ID)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("fifth preview error = %v", err)
+	}
+	select {
+	case <-started:
+		t.Fatal("fifth preview bypassed evaluator capacity")
+	default:
+	}
+	close(release)
+	for range maxConcurrentAutomationChecks {
+		if err := <-errorsByCheck; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestAutomationListReleasesRowsBeforeLatestTaskLookups(t *testing.T) {
+	store, first := createAutomationFixture(t, false)
+	_, created, err := store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
+		RequestKey: "automation-list-second", Name: "Second Automation",
+		WorkflowID: first.Automation.WorkflowID, RepositoryID: first.Automation.RepositoryID,
+		TimeoutSeconds: 60,
+		Trigger: protocol.GitHubIssueTrigger{
+			Type: protocol.AutomationTriggerGitHubIssue, State: "open", PollIntervalSeconds: 10,
+		},
+	})
+	if err != nil || !created {
+		t.Fatalf("create second Automation = created %v, error %v", created, err)
+	}
+	store.db.SetMaxOpenConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	page, err := store.Automations(ctx, 10)
+	if err != nil || len(page.Automations) != 2 {
+		t.Fatalf("Automation list with one connection = error %v, page %#v", err, page)
 	}
 }
 

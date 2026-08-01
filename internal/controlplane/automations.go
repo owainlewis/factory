@@ -330,18 +330,23 @@ func (s *Store) AutomationsPage(
 		if err != nil {
 			return protocol.AutomationPage{}, unavailable(err)
 		}
-		if err := s.loadLatestAutomationTask(ctx, &automation); err != nil {
-			return protocol.AutomationPage{}, err
-		}
 		page.Automations = append(page.Automations, automation)
 	}
 	if err := rows.Err(); err != nil {
+		return protocol.AutomationPage{}, unavailable(err)
+	}
+	if err := rows.Close(); err != nil {
 		return protocol.AutomationPage{}, unavailable(err)
 	}
 	if len(page.Automations) > limit {
 		page.Automations = page.Automations[:limit]
 		last := page.Automations[len(page.Automations)-1]
 		page.NextCursor = &protocol.AutomationCursor{UpdatedAtMillis: last.UpdatedAt.UnixMilli(), ID: last.ID}
+	}
+	for index := range page.Automations {
+		if err := s.loadLatestAutomationTask(ctx, &page.Automations[index]); err != nil {
+			return protocol.AutomationPage{}, err
+		}
 	}
 	return page, nil
 }
@@ -409,14 +414,36 @@ func (s *Store) UpdateAutomation(
 		return protocol.AutomationDetail{}, unavailable(err)
 	}
 	defer tx.Rollback()
-	var currentVersion, enabled int
-	err = tx.QueryRowContext(ctx, `SELECT version, enabled FROM automations WHERE id = ?`, strings.TrimSpace(automationID)).
-		Scan(&currentVersion, &enabled)
+	var currentVersion, enabled, currentTimeout, currentInterval int
+	var currentName, currentNameKey, currentWorkflowID, currentContext, currentState string
+	var currentLabels []byte
+	err = tx.QueryRowContext(ctx, `
+		SELECT automation.version, automation.enabled, automation.name, automation.name_key,
+		       automation.workflow_id, automation.context, automation.timeout_seconds,
+		       trigger.issue_state, trigger.required_labels_json, trigger.poll_interval_seconds
+		FROM automations automation
+		JOIN automation_github_issue_triggers trigger ON trigger.automation_id = automation.id
+		WHERE automation.id = ?
+	`, strings.TrimSpace(automationID)).Scan(
+		&currentVersion, &enabled, &currentName, &currentNameKey, &currentWorkflowID,
+		&currentContext, &currentTimeout, &currentState, &currentLabels, &currentInterval,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.AutomationDetail{}, ErrNotFound
 	}
 	if err != nil {
 		return protocol.AutomationDetail{}, unavailable(err)
+	}
+	exactReplay := currentVersion == input.ExpectedVersion+1 &&
+		currentName == value.Name && currentNameKey == nameKey && currentWorkflowID == value.WorkflowID &&
+		currentContext == value.Context && currentTimeout == value.TimeoutSeconds &&
+		currentState == value.Trigger.State && bytes.Equal(currentLabels, labels) &&
+		currentInterval == value.Trigger.PollIntervalSeconds
+	if exactReplay {
+		if err := tx.Commit(); err != nil {
+			return protocol.AutomationDetail{}, unavailable(err)
+		}
+		return s.Automation(ctx, automationID)
 	}
 	if enabled != 0 {
 		return protocol.AutomationDetail{}, conflict("automation_enabled", "disable the Automation before editing it")
@@ -486,12 +513,6 @@ func (s *Store) setAutomationEnabled(
 	enabled bool,
 	confirmLegacyPollerStopped bool,
 ) (protocol.AutomationDetail, string, error) {
-	if enabled && !confirmLegacyPollerStopped {
-		return protocol.AutomationDetail{}, "", invalid(
-			"legacy_poller_confirmation_required",
-			"confirm that factory-poller is stopped for any equivalent queue before enabling this Automation",
-		)
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return protocol.AutomationDetail{}, "", unavailable(err)
@@ -509,6 +530,19 @@ func (s *Store) setAutomationEnabled(
 	}
 	if err != nil {
 		return protocol.AutomationDetail{}, "", unavailable(err)
+	}
+	if enabled == (currentEnabled != 0) {
+		if err := tx.Commit(); err != nil {
+			return protocol.AutomationDetail{}, "", unavailable(err)
+		}
+		detail, err := s.Automation(ctx, automationID)
+		return detail, "", err
+	}
+	if enabled && !confirmLegacyPollerStopped {
+		return protocol.AutomationDetail{}, "", invalid(
+			"legacy_poller_confirmation_required",
+			"confirm that factory-poller is stopped for any equivalent queue before enabling this Automation",
+		)
 	}
 	if enabled {
 		if err := validateAutomationDependencies(ctx, tx, workflowID, repositoryID, true); err != nil {

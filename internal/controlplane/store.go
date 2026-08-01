@@ -686,6 +686,27 @@ func (s *Store) SetManagedRepositoryEnabled(
 		return protocol.ManagedRepository{}, unavailable(err)
 	}
 	defer tx.Rollback()
+	var currentEnabled, centrallyManaged bool
+	err = tx.QueryRowContext(ctx, `SELECT enabled, centrally_managed FROM repositories WHERE id = ?`, repositoryID).Scan(&currentEnabled, &centrallyManaged)
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.ManagedRepository{}, ErrNotFound
+	}
+	if err != nil {
+		return protocol.ManagedRepository{}, unavailable(err)
+	}
+	if currentEnabled == enabled {
+		if !centrallyManaged {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE repositories SET centrally_managed = 1, updated_at = ? WHERE id = ?
+			`, now, repositoryID); err != nil {
+				return protocol.ManagedRepository{}, unavailable(err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return protocol.ManagedRepository{}, unavailable(err)
+		}
+		return s.ManagedRepository(ctx, repositoryID)
+	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE repositories
 		SET enabled = ?, centrally_managed = 1, updated_at = ?

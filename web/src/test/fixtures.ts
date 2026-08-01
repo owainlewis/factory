@@ -157,6 +157,7 @@ export function mockControlPlane(
     incrementalEvents?: boolean;
     paginatedAutomations?: boolean;
     paginatedAutomationOccurrences?: boolean;
+    paginatedAutomationWorkflows?: boolean;
     paginatedTasks?: boolean;
     refreshesHistoricalWorkflow?: boolean;
     shiftingWorkflowBoundary?: boolean;
@@ -295,6 +296,12 @@ export function mockControlPlane(
     if (path.startsWith("/api/v1/workflows?limit=200")) {
       const query = new URL(path, "http://factory.test").searchParams;
       const enabled = query.get("enabled");
+      if (options.paginatedAutomationWorkflows && !enabled) {
+        if (query.get("cursor") === "automation-workflow-history") {
+          return Response.json({ workflows: [historicalWorkflow], next_cursor: null });
+        }
+        return Response.json({ workflows: [workflowDetail.workflow], next_cursor: "automation-workflow-history" });
+      }
       if (options.shiftingWorkflowBoundary && !enabled) {
         const cursor = query.get("cursor");
         if (cursor === "old-workflow-boundary") {
