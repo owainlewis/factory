@@ -13,6 +13,22 @@ This guide starts one control plane and one worker on macOS or Linux.
 
 Node.js is not required for normal startup.
 
+## Configure the control plane
+
+Most control-plane configuration is stored in SQLite and managed through the
+browser. The optional `~/.factory/config.toml` contains only bootstrap settings
+needed before SQLite opens:
+
+```toml
+listen = "127.0.0.1:7337"
+database = "server/factory.sqlite3"
+```
+
+Relative database paths resolve from the config file directory. Unknown fields,
+symlinks, and files larger than 1 MiB are rejected. Command-line flags override
+the file. Copy [the example](../examples/config.toml) only when changing these
+defaults.
+
 ## Configure a worker
 
 Build the binaries and copy the example:
@@ -65,8 +81,9 @@ directory between worker identities.
 
 ## Start
 
-The launcher builds the Go binaries, starts the server, waits for health, starts
-the worker, and waits for that worker to register:
+The launcher builds the Go binaries, starts one control-plane process, waits for
+health, starts the worker, and waits for that worker to register. The server
+runs every provider and schedule Automation evaluation loop:
 
 ```sh
 just run
@@ -110,8 +127,8 @@ additional worker directly:
 
 The current manual delegation screen lists optional legacy checkouts advertised
 by workers. Add a `[repositories.<key>]` entry when you need that path. Cattle
-workers with no static checkout are currently exercised through centrally
-routed task creation such as the GitHub poller.
+workers with no static checkout receive centrally routed work from typed
+Automations and API task creation.
 
 In the UI:
 
@@ -152,6 +169,7 @@ Factory stores state below `~/.factory` by default. Common overrides:
 
 ```text
 FACTORY_DATA_HOME
+FACTORY_SERVER_CONFIG
 FACTORY_WORKER_CONFIG
 FACTORY_BUILD_DIR
 FACTORY_LISTEN
@@ -169,6 +187,40 @@ FACTORY_DATA_HOME=/srv/factory \
 ```
 
 The server remains loopback-only.
+
+## Migrate a legacy factory-poller
+
+Migration is offline and disabled-first. Never run it while any legacy poller
+process can write the ledger.
+
+1. Stop every `factory-poller` process and keep it stopped.
+2. Back up the legacy `poller.toml` and ledger.
+3. Start the current Factory control plane and open **Automations → Migrate
+   legacy poller**.
+4. Select the legacy paths when they are not the defaults, confirm the poller is
+   stopped, and choose **Preview locked snapshot**.
+5. Review every resolved source path, managed-repository identity and ID,
+   proposed Workflow and Automation name, observation count, and error.
+   Unsupported command queues
+   remain recoverable from the later archive but are not imported.
+6. Choose **Import disabled Automations**. Factory verifies the exact Preview
+   snapshot while holding an exclusive legacy-ledger lock. Existing submitted
+   task identities and deleted-task tombstones are retained. Imported
+   Automations cannot be enabled yet.
+7. For every legacy pending observation, choose **Resume** to replay its exact
+   durable task request or **Skip** to record that it must not dispatch.
+8. Choose **Finalize and archive**. Factory locks and verifies the same snapshot,
+   then archives consistent copies of the config and ledger with a hash
+   manifest. It does not modify or delete either source file.
+9. Review and test each typed Automation, then enable it. The control plane now
+   owns evaluation and deduplication.
+
+Preview, Import, and Finalize fail closed if the source paths, config bytes,
+ledger bytes, inode, schema or rows, snapshot digest, or lock availability
+changes. Correct the cause and run a new Preview. An archive write failure
+leaves the migration imported and safe to retry. Closing the browser or
+restarting Factory rediscovers the active imported migration and preserves
+pending Resume or Skip decisions and an already completed archive.
 
 ## UI development
 
@@ -204,6 +256,28 @@ Worker never becomes healthy
 - confirm every repository path and its `origin`;
 - ensure each worker has a unique data directory;
 - inspect the worker JSON logs.
+
+GitHub Automation reports `gh_missing` or `gh_unauthenticated`
+
+- install `gh` on the control-plane host;
+- run `gh auth login` as the same OS user that starts `factory-server`;
+- verify `gh auth status --hostname github.com`;
+- restart the server or test the Automation again.
+
+Legacy poller migration cannot acquire its lock
+
+- confirm every old poller process is stopped;
+- confirm no SQLite inspection tool has a transaction open on the legacy
+  ledger;
+- do not copy or edit the source files during Preview, Import, or Finalize;
+- retry the action after releasing the writer.
+
+Legacy poller snapshot changed
+
+- leave imported Automations disabled;
+- inspect what changed in the config or ledger;
+- return to the migration dialog and run a new Preview against the stable
+  source. Factory does not partially import or archive a changed snapshot.
 
 Work is retained
 

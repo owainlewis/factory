@@ -502,6 +502,87 @@ type AutomationOccurrence struct {
 	UpdatedAt          time.Time              `json:"updated_at"`
 }
 
+type LegacyPollerSelection struct {
+	ConfigPath       string `json:"config_path,omitempty"`
+	DataHome         string `json:"data_home,omitempty"`
+	WorkingDirectory string `json:"working_directory,omitempty"`
+	ConfirmStopped   bool   `json:"confirm_stopped"`
+}
+
+type LegacyPollerCounts struct {
+	Queues      int `json:"queues"`
+	Supported   int `json:"supported_queues"`
+	Unsupported int `json:"unsupported_queues"`
+	Pending     int `json:"pending_observations"`
+	Submitted   int `json:"submitted_observations"`
+}
+
+type LegacyPollerQueue struct {
+	QueueID               string   `json:"queue_id"`
+	Name                  string   `json:"name"`
+	Source                string   `json:"source"`
+	Project               string   `json:"project"`
+	State                 string   `json:"state"`
+	RequiredLabels        []string `json:"required_labels"`
+	PollIntervalSeconds   int      `json:"poll_interval_seconds"`
+	TimeoutSeconds        int      `json:"timeout_seconds"`
+	RepositoryID          string   `json:"repository_id,omitempty"`
+	RepositoryIdentity    string   `json:"repository_identity,omitempty"`
+	WorkflowName          string   `json:"workflow_name"`
+	AutomationName        string   `json:"automation_name"`
+	PendingObservations   int      `json:"pending_observations"`
+	SubmittedObservations int      `json:"submitted_observations"`
+	Supported             bool     `json:"supported"`
+	Errors                []string `json:"errors"`
+}
+
+type LegacyPollerMigration struct {
+	ID               string                 `json:"id"`
+	SnapshotDigest   string                 `json:"snapshot_digest"`
+	Status           string                 `json:"status"`
+	ConfigPath       string                 `json:"config_path"`
+	DataHome         string                 `json:"data_home"`
+	WorkingDirectory string                 `json:"working_directory"`
+	DataDirectory    string                 `json:"data_directory"`
+	LedgerPath       string                 `json:"ledger_path"`
+	ArchiveRoot      string                 `json:"archive_root"`
+	ArchivePath      string                 `json:"archive_path,omitempty"`
+	Counts           LegacyPollerCounts     `json:"counts"`
+	Queues           []LegacyPollerQueue    `json:"queues"`
+	Automations      []Automation           `json:"automations"`
+	Occurrences      []AutomationOccurrence `json:"occurrences"`
+	Errors           []string               `json:"errors"`
+	CreatedAt        time.Time              `json:"created_at"`
+	UpdatedAt        time.Time              `json:"updated_at"`
+}
+
+type PreviewLegacyPollerRequest struct {
+	LegacyPollerSelection
+}
+
+type LegacyPollerQueueMapping struct {
+	QueueID        string `json:"queue_id"`
+	WorkflowName   string `json:"workflow_name"`
+	AutomationName string `json:"automation_name"`
+}
+
+type ImportLegacyPollerRequest struct {
+	LegacyPollerSelection
+	MigrationID    string                     `json:"migration_id"`
+	SnapshotDigest string                     `json:"snapshot_digest"`
+	Mappings       []LegacyPollerQueueMapping `json:"mappings"`
+}
+
+type FinalizeLegacyPollerRequest struct {
+	LegacyPollerSelection
+	MigrationID    string `json:"migration_id"`
+	SnapshotDigest string `json:"snapshot_digest"`
+}
+
+type ActiveLegacyPollerMigrationResponse struct {
+	Migration *LegacyPollerMigration `json:"migration"`
+}
+
 type AutomationDetail struct {
 	Automation  Automation             `json:"automation"`
 	Occurrences []AutomationOccurrence `json:"occurrences"`

@@ -1,8 +1,7 @@
 # Reusable Workflows and typed Automations
 
-> **Status:** Workflow slice implemented by issue #183. Typed Automation slices
-> are implemented for issues by #184, pull requests by #185, and schedules by
-> #186; legacy-poller migration remains proposed for issue #187.
+> **Status:** Implemented by issues #183 through #187, including the offline
+> disabled-first legacy-poller migration and retirement.
 >
 > **Tracks:** [GitHub issue #173](https://github.com/owainlewis/factory/issues/173)
 
@@ -27,10 +26,10 @@ to its existing Task coordination work.
 The current [architecture](../../ARCHITECTURE.md) stores one Task and one
 Execution for a title, description, worker, repository, and timeout. Managed
 GitHub repositories and routing are already control-plane resources. The
-standalone `factory-poller` reads `poller.toml`, runs `gh`, stores observations
-in a separate SQLite ledger, and submits ordinary Tasks. It has durable
-deduplication, but it requires another process and hides configuration and
-health from the browser.
+standalone `factory-poller` read `poller.toml`, ran `gh`, stored observations in
+a separate SQLite ledger, and submitted ordinary Tasks. It had durable
+deduplication, but required another process and hid configuration and health
+from the browser.
 
 This design builds on the implemented Workflow API and Task snapshot contract
 and adds one typed Automation path to the control-plane API, database,

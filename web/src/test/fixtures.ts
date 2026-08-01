@@ -1,4 +1,4 @@
-import type { AutomationDetail, AutomationOccurrence, ManagedRepository, MetricsSummary, Task, Worker, Workflow, WorkflowDetail } from "../types";
+import type { AutomationDetail, AutomationOccurrence, LegacyPollerMigration, ManagedRepository, MetricsSummary, Task, Worker, Workflow, WorkflowDetail } from "../types";
 import { vi } from "vitest";
 
 export const worker: Worker = {
@@ -152,6 +152,8 @@ export function mockControlPlane(
   options: {
     createFailures?: number;
     boundedLiveHead?: boolean;
+    commandOnlyMigration?: boolean;
+    failedLegacyOccurrence?: boolean;
     eventFailuresAfter?: number;
     growingTaskHistory?: boolean;
     incrementalEvents?: boolean;
@@ -196,6 +198,7 @@ export function mockControlPlane(
   let repositoryItems = managedRepositories.map((repository) => ({ ...repository }));
   let workflowDetail = structuredClone(initialWorkflowDetail);
   let automationDetail = structuredClone(initialAutomationDetail);
+  let legacyMigration: LegacyPollerMigration | undefined;
   const automationOccurrence = (id: string, issue: number, createdAt: string): AutomationOccurrence => ({
     id,
     automation_id: automationDetail.automation.id,
@@ -415,6 +418,100 @@ export function mockControlPlane(
         automations: [automationDetail.automation],
         next_cursor: options.paginatedAutomations ? "automation-history" : null,
       });
+    }
+    if (path === "/api/v1/migrations/legacy-poller/active") {
+      return Response.json({ migration: legacyMigration?.status === "imported" ? legacyMigration : null });
+    }
+    if (path === "/api/v1/migrations/legacy-poller/preview" && init?.method === "POST") {
+      legacyMigration = {
+        id: "legacy-migration",
+        snapshot_digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        status: "previewed",
+        config_path: "/tmp/legacy/poller.toml",
+        data_home: "/tmp/legacy",
+        working_directory: "/tmp/legacy",
+        data_directory: "/tmp/legacy/poller",
+        ledger_path: "/tmp/legacy/poller/poller.sqlite3",
+        archive_root: "/tmp/legacy/archive",
+        counts: {
+          queues: 1,
+          supported_queues: options.commandOnlyMigration ? 0 : 1,
+          unsupported_queues: options.commandOnlyMigration ? 1 : 0,
+          pending_observations: options.commandOnlyMigration ? 0 : 1,
+          submitted_observations: 0,
+        },
+        queues: [{
+          queue_id: "legacy-queue",
+          name: "github-ready",
+          source: "github",
+          project: "example/factory",
+          state: "open",
+          required_labels: ["factory:ready"],
+          poll_interval_seconds: 30,
+          timeout_seconds: 3600,
+          repository_id: "repo-factory",
+          repository_identity: "github.com/example/factory",
+          workflow_name: "Legacy github-ready",
+          automation_name: "Legacy github-ready issues",
+          pending_observations: 1,
+          submitted_observations: 0,
+          supported: !options.commandOnlyMigration,
+          errors: options.commandOnlyMigration ? ["Only built-in GitHub queues can be imported."] : [],
+        }],
+        automations: [],
+        occurrences: [],
+        errors: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      };
+      return Response.json(legacyMigration);
+    }
+    if (path === "/api/v1/migrations/legacy-poller/import" && init?.method === "POST") {
+      if (!legacyMigration) throw new Error("legacy migration was not previewed");
+      const body = JSON.parse(String(init.body)) as { mappings: Array<{ workflow_name: string; automation_name: string }> };
+      const importedAutomation = body.mappings.length > 0 ? {
+        ...automationDetail.automation,
+        id: "automation-imported",
+        name: body.mappings[0].automation_name,
+        workflow_name: body.mappings[0].workflow_name,
+        enabled: false,
+      } : undefined;
+      legacyMigration = {
+        ...legacyMigration,
+        status: "imported",
+        automations: importedAutomation ? [importedAutomation] : [],
+        occurrences: importedAutomation ? [{
+          ...automationOccurrence("legacy-occurrence", 187, "2026-08-01T08:00:00Z"),
+          automation_id: importedAutomation.id,
+          issue_title: "Retire factory-poller",
+          task_request_key: "legacy:issue:187",
+          state: options.failedLegacyOccurrence ? "failed" : "pending",
+          diagnostic: options.failedLegacyOccurrence ? "legacy_pending_invalid_requires_skip" : undefined,
+        }] : [],
+      };
+      return Response.json(legacyMigration);
+    }
+    if (path === "/api/v1/occurrences/legacy-occurrence/skip" && init?.method === "POST") {
+      if (!legacyMigration) throw new Error("legacy migration was not imported");
+      legacyMigration = {
+        ...legacyMigration,
+        counts: { ...legacyMigration.counts, pending_observations: 0 },
+        occurrences: legacyMigration.occurrences.map((occurrence) => ({ ...occurrence, state: "skipped" })),
+      };
+      return Response.json(legacyMigration.occurrences[0]);
+    }
+    if (path === "/api/v1/migrations/legacy-poller/legacy-migration") {
+      if (!legacyMigration) throw new Error("legacy migration does not exist");
+      return Response.json(legacyMigration);
+    }
+    if (path === "/api/v1/migrations/legacy-poller/legacy-migration/finalize" && init?.method === "POST") {
+      if (!legacyMigration) throw new Error("legacy migration was not imported");
+      legacyMigration = {
+        ...legacyMigration,
+        status: "finalized",
+        archive_path: "/tmp/legacy/archive/legacy-migration",
+      };
+      return Response.json(legacyMigration);
     }
     if (path === "/api/v1/automations?limit=200&cursor=automation-history") {
       return Response.json({

@@ -14,11 +14,14 @@ import type {
   CreateWorkflowInput,
   CreateWorkflowRevisionInput,
   AutomationDetail,
+  AutomationOccurrence,
   AutomationOccurrencePage,
   AutomationPage,
   CreateAutomationInput,
   UpdateAutomationInput,
   TestAutomationResult,
+  LegacyPollerMigration,
+  LegacyPollerSelection,
 } from "./types";
 
 export class APIError extends Error {
@@ -178,10 +181,7 @@ export const api = {
   setAutomationEnabled: ({ id, enabled }: { id: string; enabled: boolean }) =>
     request<AutomationDetail>(`/api/v1/automations/${encodeURIComponent(id)}/enabled`, {
       method: "PUT",
-      body: JSON.stringify({
-        enabled,
-        confirm_legacy_poller_stopped: enabled,
-      }),
+      body: JSON.stringify({ enabled }),
     }),
   testAutomation: (id: string) =>
     request<TestAutomationResult>(`/api/v1/automations/${encodeURIComponent(id)}/test`, {
@@ -197,6 +197,51 @@ export const api = {
     request<AutomationDetail>(`/api/v1/automations/${encodeURIComponent(id)}/run`, {
       method: "POST",
       body: JSON.stringify({ request_key: requestKey }),
+    }),
+  previewLegacyPoller: (selection: LegacyPollerSelection) =>
+    request<LegacyPollerMigration>("/api/v1/migrations/legacy-poller/preview", {
+      method: "POST",
+      body: JSON.stringify(selection),
+    }),
+  activeLegacyPollerMigration: () =>
+    request<{ migration: LegacyPollerMigration | null }>("/api/v1/migrations/legacy-poller/active"),
+  importLegacyPoller: ({
+    migration,
+    selection,
+    mappings,
+  }: {
+    migration: LegacyPollerMigration;
+    selection: LegacyPollerSelection;
+    mappings: Array<{ queue_id: string; workflow_name: string; automation_name: string }>;
+  }) => request<LegacyPollerMigration>("/api/v1/migrations/legacy-poller/import", {
+    method: "POST",
+    body: JSON.stringify({
+      ...selection,
+      migration_id: migration.id,
+      snapshot_digest: migration.snapshot_digest,
+      mappings,
+    }),
+  }),
+  legacyPollerMigration: (id: string) =>
+    request<LegacyPollerMigration>(`/api/v1/migrations/legacy-poller/${encodeURIComponent(id)}`),
+  finalizeLegacyPoller: ({ migration, selection }: { migration: LegacyPollerMigration; selection: LegacyPollerSelection }) =>
+    request<LegacyPollerMigration>(`/api/v1/migrations/legacy-poller/${encodeURIComponent(migration.id)}/finalize`, {
+      method: "POST",
+      body: JSON.stringify({
+        ...selection,
+        migration_id: migration.id,
+        snapshot_digest: migration.snapshot_digest,
+      }),
+    }),
+  resumeLegacyOccurrence: (id: string) =>
+    request<AutomationOccurrence>(`/api/v1/occurrences/${encodeURIComponent(id)}/resume`, {
+      method: "POST",
+      body: "{}",
+    }),
+  skipLegacyOccurrence: (id: string) =>
+    request<AutomationOccurrence>(`/api/v1/occurrences/${encodeURIComponent(id)}/skip`, {
+      method: "POST",
+      body: "{}",
     }),
   events: async (attemptID: string, after: number): Promise<AttemptEventPage> => {
     const query = new URLSearchParams({ after: String(after), limit: "100" });

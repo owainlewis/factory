@@ -824,7 +824,7 @@ test("previews and dispatches one typed GitHub issue Automation without duplicat
   await expect(page.getByText("No durable occurrences yet.")).toBeVisible();
 
   await page.getByRole("button", { name: "Enable" }).click();
-  await page.getByRole("checkbox", { name: /factory-poller is stopped/ }).check();
+  await expect(page.getByRole("checkbox", { name: /factory-poller is stopped/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Confirm enable" }).click();
   await expect(page.locator(".automation-health").getByText("healthy", { exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(page.locator(".occurrence-list").getByText("#184 Typed Automation browser fixture", { exact: true })).toBeVisible();
@@ -888,7 +888,7 @@ test("previews and dispatches one typed GitHub pull-request Automation without d
   await expect(page.getByText("No durable occurrences yet.")).toBeVisible();
 
   await page.getByRole("button", { name: "Enable" }).click();
-  await page.getByRole("checkbox", { name: /factory-poller is stopped/ }).check();
+  await expect(page.getByRole("checkbox", { name: /factory-poller is stopped/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Confirm enable" }).click();
   await expect(page.locator(".automation-health").getByText("healthy", { exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(page.locator(".occurrence-list").getByText("#185 Typed pull-request Automation browser fixture", { exact: true })).toBeVisible();
@@ -961,6 +961,67 @@ test("previews, enables, and runs a schedule Automation through the ordinary tas
   await expect(page.getByRole("button", { name: "Open task" })).toBeVisible({ timeout: 15_000 });
   const tasks = await json<{ tasks: Array<{ request_key: string }> }>(await api.get("/api/v1/tasks?limit=200"));
   expect(tasks.tasks.filter((task) => task.request_key.includes(":schedule:run:"))).toHaveLength(1);
+  await api.dispose();
+  browser.assertClean();
+});
+
+test("migrates a locked legacy snapshot through Resume and Finalize", async ({ page }) => {
+  const browser = observeBrowser(page);
+  const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
+  const legacyRoot = `${process.cwd()}/test-results/legacy-poller`;
+  await page.goto("/automations");
+  await page.getByRole("button", { name: "Migrate legacy poller" }).click();
+  const migration = page.getByRole("dialog", { name: "Migrate legacy poller" });
+  await migration.getByLabel("Legacy poller.toml").fill(`${legacyRoot}/poller.toml`);
+  await migration.getByLabel("Legacy data home").fill(legacyRoot);
+  await migration.getByLabel("Original working directory").fill(legacyRoot);
+  await migration.getByRole("checkbox", { name: /I stopped every factory-poller process/ }).check();
+  const previewResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/api/v1/migrations/legacy-poller/preview") && response.request().method() === "POST",
+  );
+  await migration.getByRole("button", { name: "Preview locked snapshot" }).click();
+  const previewResult = await previewResponse;
+  expect(previewResult.ok(), await previewResult.text()).toBe(true);
+
+  await expect(migration.getByText("1 supported · 0 unsupported")).toBeVisible();
+  await expect(migration.getByText("0 submitted · 1 pending", { exact: true })).toBeVisible();
+  await expect(migration.getByText(`${legacyRoot}/poller/poller.sqlite3`, { exact: true })).toBeVisible();
+  await expect(migration.getByText(/Repository mapping:/)).toContainText("github.com/example/automation-fixture");
+  await migration.getByLabel("Workflow name").fill("E2E imported legacy workflow");
+  await migration.getByLabel("Automation name").fill("E2E imported legacy issues");
+  const importedResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/api/v1/migrations/legacy-poller/import") && response.request().method() === "POST",
+  );
+  await migration.getByRole("button", { name: "Import disabled Automations" }).click();
+  const status = await (await importedResponse).json() as {
+    id: string;
+    automations: Array<{ id: string }>;
+  };
+  await expect(migration.getByText("1 unresolved")).toBeVisible();
+  await expect(migration.getByRole("button", { name: "Finalize and archive" })).toBeDisabled();
+
+  const blockedEnable = await api.put(`/api/v1/automations/${status.automations[0].id}/enabled`, {
+    data: { enabled: true },
+  });
+  expect(blockedEnable.status()).toBe(409);
+  expect(await blockedEnable.text()).toContain("migration_not_finalized");
+
+  await page.reload();
+  await page.getByRole("button", { name: "Migrate legacy poller" }).click();
+  await expect(migration.getByText("1 unresolved")).toBeVisible();
+  const recoveredResume = migration.getByRole("button", { name: "Resume" });
+  await expect(recoveredResume).toBeDisabled();
+  await migration.getByRole("checkbox", { name: /I reconfirmed every factory-poller process/ }).check();
+  await expect(recoveredResume).toBeEnabled();
+  await recoveredResume.click();
+  await expect(migration.getByText("0 unresolved")).toBeVisible();
+  await migration.getByRole("button", { name: "Finalize and archive" }).click();
+  await expect(migration.getByText("Migration finalized")).toBeVisible();
+  await expect(migration.getByText(`${legacyRoot}/archive/poller/${status.id}`)).toBeVisible();
+
+  const tasks = await json<{ tasks: Array<{ request_key: string }> }>(await api.get("/api/v1/tasks?limit=200"));
+  expect(tasks.tasks.filter((task) => task.request_key === "legacy-browser-request-187")).toHaveLength(1);
+  await expect(migration.getByRole("button", { name: "Review E2E imported legacy issues" })).toBeVisible();
   await api.dispose();
   browser.assertClean();
 });

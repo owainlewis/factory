@@ -9,8 +9,25 @@ mkdir -p "$temporary/bin"
 
 cat >"$temporary/bin/factory-server" <<'EOF'
 #!/bin/sh
+resolved_listen() {
+  config=${FACTORY_SERVER_CONFIG:-${FACTORY_DATA_HOME:?}/config.toml}
+  if [ -f "$config" ]; then
+    sed -n 's/^[[:space:]]*listen[[:space:]]*=[[:space:]]*"\([^"]*\)"[[:space:]]*$/\1/p' "$config" | head -1
+  else
+    echo "127.0.0.1:7337"
+  fi
+}
+if [ "${1:-}" = "-print-listen" ]; then
+  resolved_listen
+  exit 0
+fi
 if [ -n "${FACTORY_TEST_SERVER_PID_FILE:-}" ]; then
   echo "$$" >"$FACTORY_TEST_SERVER_PID_FILE"
+fi
+if [ "${1:-}" = "-listen" ]; then
+  listen=$2
+else
+  listen=$(resolved_listen)
 fi
 exec node -e '
   const { existsSync } = require("node:fs");
@@ -39,7 +56,7 @@ exec node -e '
     }
     response.end(JSON.stringify({workers}));
   }).listen(port, "127.0.0.1");
-' "$2"
+' "$listen"
 EOF
 
 cat >"$temporary/bin/factory-worker" <<'EOF'
@@ -161,7 +178,7 @@ if [ "$status" -ne 1 ] ||
 fi
 
 node - "$root" "$temporary" "$temporary/worker.toml" <<'EOF'
-const { existsSync, readFileSync, rmSync } = require("node:fs");
+const { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { createServer } = require("node:net");
 const { spawn } = require("node:child_process");
 const { join } = require("node:path");
@@ -225,7 +242,13 @@ async function verifySignal(signal, suffix, listenVariable) {
   delete environment.FACTORY_V2_LISTEN;
   delete environment.FACTORY_SKIP_BUILD;
   delete environment.FACTORY_V2_SKIP_BUILD;
-  environment[listenVariable] = `127.0.0.1:${port}`;
+  if (listenVariable === "config.toml") {
+    mkdirSync(environment.FACTORY_DATA_HOME, { recursive: true });
+    writeFileSync(join(environment.FACTORY_DATA_HOME, "config.toml"), `listen = "127.0.0.1:${port}"\n`);
+    environment.FACTORY_SKIP_BUILD = "1";
+  } else {
+    environment[listenVariable] = `127.0.0.1:${port}`;
+  }
   if (listenVariable === "FACTORY_LISTEN") {
     environment.FACTORY_V2_LISTEN = "127.0.0.1:1";
     environment.FACTORY_SKIP_BUILD = "1";
@@ -287,10 +310,11 @@ async function verifySignal(signal, suffix, listenVariable) {
 (async () => {
   await verifySignal("SIGTERM", "term", "FACTORY_LISTEN");
   await verifySignal("SIGINT", "int", "FACTORY_V2_LISTEN");
+  await verifySignal("SIGTERM", "config", "config.toml");
 })().catch((error) => {
   console.error(error.message);
   process.exitCode = 1;
 });
 EOF
 
-echo "Factory launcher rejects unhealthy workers, retired-state writes, server loss, and stalled readiness responses; signals stop cleanly."
+echo "Factory launcher honors bootstrap listen settings, rejects unhealthy workers, retired-state writes, server loss, and stalled readiness responses; signals stop cleanly."

@@ -1,0 +1,4 @@
+# Optional control-plane bootstrap settings. Workflows, repositories, and
+# Automations are created in the Factory UI and stored in SQLite.
+listen = "127.0.0.1:7337"
+database = "server/factory.sqlite3"

@@ -2,8 +2,8 @@
 
 > **Status:** Current implementation
 >
-> **Verification basis:** Working tree including GitHub issue, pull-request,
-> and schedule Automations from issues #184 through #186
+> **Verification basis:** Working tree including Workflows, typed Automations,
+> and the offline legacy-poller migration from issues #184 through #187
 
 ## 1. Executive summary
 
@@ -16,8 +16,6 @@ It separates durable coordination from agent execution:
 - `factory-worker` has one stable identity and one agent runtime. It advertises
   runtime capacity and provider access, acquires centrally managed repositories
   on demand, and runs attempts in isolated Git worktrees.
-- `factory-poller` lists configured issue queues through provider CLIs and
-  submits matching tickets as ordinary control-plane tasks.
 - Codex or Claude Code performs the repository work as a child process of the
   worker.
 
@@ -49,12 +47,6 @@ factory-worker (one identity and one runtime)
    |-- attempt manifests and owned Git worktrees
    `-- Codex CLI or Claude Code CLI
 
-factory-poller
-   |-- GitHub through gh
-   |-- command adapters for other provider CLIs
-   `-- local dispatch ledger
-           |
-           `-- POST normal tasks to factory-server
 ```
 
 Workers initiate every connection. The server does not connect to workers, and
@@ -81,8 +73,9 @@ the system does not use WebSockets.
    remote authentication and transport security are not implemented.
 9. Operator builds embed the committed `web/dist` assets and do not require
    Node.js.
-10. Polling is read-only. A queue and issue identity creates at most one task,
-    including across poller restarts and lost HTTP responses.
+10. Automation evaluation is read-only. An Automation and provider identity
+    creates at most one Occurrence and task, including across server restarts
+    and lost HTTP responses.
 11. A Workflow has stable identity, enabled state, and immutable numbered
     Markdown revisions. The control plane alone composes Workflow instructions
     with free-text task context.
@@ -116,33 +109,28 @@ SQLite runs with foreign keys, WAL journaling, a five-second busy timeout, and
 at most eight open connections. The default database is
 `~/.factory/server/factory.sqlite3`.
 
-### Issue poller
+### Legacy poller migration
 
-`cmd/factory-poller` tests GitHub matching without mutation with `-test-github`,
-runs one submitting pass with `-once`, or polls continuously. Each configured
-queue names a source, project, native status, required labels, prompt, and
-timeout. Non-GitHub command queues also retain an explicit worker and
-repository key for compatibility.
+The retired standalone poller has no binary, startup path, command, or current
+configuration example. `internal/controlplane/legacy_poller_*` implements its
+offline migration into typed Automations. Preview, Import, and Finalize each
+resolve the selected legacy config and ledger, acquire an exclusive SQLite
+ledger lock, and hash the exact config bytes, selected paths, schema, and
+ordered observation rows together with the ledger inode and full-file SHA-256.
+A lock failure, pathname replacement, pragma change, or snapshot change aborts
+the action without partial control-plane writes.
 
-GitHub support is built in and invokes the authenticated `gh issue list`
-command. A configured GitHub queue fails at startup with installation and
-authentication guidance when `gh` is unavailable. Other source names invoke
-one configured executable without a shell. Factory appends `--project`,
-`--status`, and repeated `--label` arguments. The command returns the normalized
-issue shape documented in [docs/poller.md](docs/poller.md). This keeps provider
-credentials and API clients outside Factory.
-
-For GitHub, the poller submits the repository remote and a GitHub source-access
-requirement. In the task-creation transaction, the control plane chooses the
-healthy online cattle worker with GitHub access and the lowest `(active +
-queued) / capacity` load, breaking an exact tie by worker ID. A legacy worker
-that already advertises the checkout is also eligible. It excludes repositories
-without retained-worktree headroom and excludes a cattle worker without cache
-headroom unless that repository is already cached. It then freezes the selected
-worker and repository on the execution. The poller writes the exact task request
-to its own SQLite ledger, submits through
-`POST /api/v1/tasks`, and records the returned task ID. Its default state is
-`~/.factory/poller/poller.sqlite3`.
+Preview records stable source paths, queue mappings, counts, proposed names,
+and validation errors. Import atomically creates one Workflow and one disabled
+GitHub issue Automation per supported queue. Submitted observations retain
+their task identity or deleted-task tombstone. Pending observations retain the
+exact stored request and require explicit Resume or Skip. Imported Automations
+cannot be enabled before Finalize. The active imported migration is discoverable
+after a browser or server restart, and every imported observation remains
+visible beyond the ordinary paginated Automation history limit. Finalize
+verifies the same locked snapshot, copies the ledger through the retained locked
+file descriptor, writes and fsyncs the config and hash manifest archive, and
+then records completion. It never changes or deletes the source files.
 
 ### Worker
 
@@ -229,29 +217,33 @@ Node.js is a contributor dependency only when UI source changes.
 7. An empty response is idempotent for five minutes. A successful response is
    idempotent while its attempt remains active and its lease remains valid.
 
-### Issue polling and dispatch
+### Legacy poller migration
 
-1. The poller recovers every pending stored request before reading a source.
-2. For each queue, it asks the provider CLI for issues matching the configured
-   project, status, and labels.
-3. GitHub results and normalized command results are validated and limited to
-   100 issues.
-4. GitHub polling keeps only issue identity, URL, title, state, and labels. The
-   poller composes the trusted queue prompt followed by that clearly marked
-   untrusted context and a live-state revalidation instruction.
-5. It stores the exact task request before posting it to the control plane.
-6. The existing task request key makes a lost response safe to replay.
-7. Later polls skip the same queue, source, project, and issue key.
-
-Source polling never changes the issue. The agent prompt may tell the worker to
-use its installed provider CLI to update the issue and open a pull request.
+1. The operator stops every legacy poller and requests Preview.
+2. The server holds an exclusive legacy-ledger lock while resolving sources,
+   validating queues and pending payloads, counting observations, and storing
+   the full file identity and snapshot digest.
+3. Import reacquires the lock and accepts only that exact snapshot. One
+   transaction creates disabled typed Automations, Workflows, and deduplicating
+   Occurrences without changing tasks, workers, or source files.
+4. Submitted observations link by their stored task ID. A nonblank missing ID
+   becomes a stable deleted-task tombstone even if its request key was reused.
+   Only a blank historical ID may fall back to the request key.
+5. Each pending observation requires Resume of its exact stored request or an
+   explicit Skip. A restart recovers an interrupted Resume and deterministic
+   request keys prevent duplicate tasks.
+6. Closing the browser or restarting the server rediscovers the one active
+   imported migration. A second Preview is blocked until it is finalized.
+7. Finalize reacquires the lock, verifies the same snapshot, atomically archives
+   consistent config and ledger copies plus a manifest, and unlocks imported
+   Automations for operator review and enablement.
 
 ### Control-plane GitHub Automation
 
 1. An operator creates a disabled Automation bound to one Workflow and one
    managed GitHub repository, then previews its bounded matches.
-2. Enabling requires explicit confirmation that an equivalent standalone
-   `factory-poller` queue is stopped. The server schedules an immediate check.
+2. Enabling schedules an immediate check. A legacy-imported Automation remains
+   blocked until its migration is finalized.
 3. The evaluator runs fixed `gh issue list` or `gh pr list` arguments without a
    shell, with a 30-second timeout, bounded output, strict JSON, and
    repository-specific URL validation. Pull-request checks also validate draft
@@ -363,6 +355,13 @@ POST   /api/v1/automations/{automation_id}/test
 POST   /api/v1/automations/{automation_id}/check
 POST   /api/v1/automations/{automation_id}/run
 GET    /api/v1/automations/{automation_id}/occurrences?limit={1..200}&cursor={cursor}
+POST   /api/v1/migrations/legacy-poller/preview
+POST   /api/v1/migrations/legacy-poller/import
+GET    /api/v1/migrations/legacy-poller/active
+GET    /api/v1/migrations/legacy-poller/{migration_id}
+POST   /api/v1/migrations/legacy-poller/{migration_id}/finalize
+POST   /api/v1/occurrences/{occurrence_id}/resume
+POST   /api/v1/occurrences/{occurrence_id}/skip
 GET    /api/v1/tasks?limit={1..200}&cursor={cursor}
 POST   /api/v1/tasks
 GET    /api/v1/tasks/{task_id}
@@ -396,6 +395,8 @@ are bounded by operation-specific byte limits.
 Workflow 1 --- * WorkflowRevision 1 --- * Task
 Workflow 1 --- * Automation 1 --- * Occurrence 0..1 --- Task
 Repository 1 --- * Automation
+LegacyPollerMigration 1 --- * Automation
+LegacyPollerMigration 1 --- * imported Occurrence
 Worker   1 --- * WorkerRepository * --- 1 Repository
 Task     1 --- 1 Execution       1 --- * Attempt 1 --- * AttemptEvent
 ```
@@ -455,11 +456,11 @@ task list.
 | Cached repositories per worker | 100 |
 | Task page | 50 by default, 200 maximum |
 | Event page | 100 by default, 500 maximum |
-| Issues per queue pass | 100 |
-| Source command output | 4 MiB |
-| Source command stderr | 64 KiB |
-| Source command duration | 30 seconds |
-| Poller observations | 10,000 |
+| Provider matches per Automation check | 100 |
+| Provider command output | 4 MiB |
+| Provider command stderr | 64 KiB |
+| Provider command duration | 30 seconds |
+| Legacy config input | 1 MiB |
 
 ### Files and configuration
 
@@ -468,14 +469,15 @@ task list.
   bin/
     factory-server
     factory-worker
-    factory-poller
   server/
     factory.sqlite3
     factory.sqlite3.v2-control-plane
+  config.toml
   worker.toml
-  poller.toml
-  poller/
+  archive/poller/<migration-id>/
+    poller.toml
     poller.sqlite3
+    manifest.json
   workers/<worker>/
     worker-id
     worker.lock
@@ -488,8 +490,9 @@ task list.
 The marker filename and contents retain compatibility with the earlier Go
 preview storage format. They do not represent a second application.
 
-`FACTORY_DATA_HOME` changes the default root. `FACTORY_WORKER_CONFIG` and
-`FACTORY_POLLER_CONFIG` select worker and poller TOML files.
+`FACTORY_DATA_HOME` changes the default root. `FACTORY_SERVER_CONFIG` selects
+the optional control-plane bootstrap TOML. `FACTORY_WORKER_CONFIG` selects one
+worker TOML.
 `FACTORY_BUILD_DIR`, `FACTORY_LISTEN`, `FACTORY_SKIP_BUILD`, and
 `FACTORY_WORKER_READY_SECONDS` configure local commands. Earlier `FACTORY_V2_*`
 names remain migration aliases in code and the local launcher, but are not
@@ -499,8 +502,11 @@ When `data_directory` is omitted, a worker derives the absolute
 `<config-directory>/workers/<config-basename-without-.toml>` path. Explicit
 relative worker data paths and optional legacy repository paths are resolved
 from the directory that contains the worker TOML; explicit absolute worker data
-paths are unchanged. Managed repositories are configured by the control-plane
-API and cached below the worker data directory.
+paths are unchanged. Managed repositories, Workflows, Automations, and
+evaluation state are configured in SQLite through the control-plane API. Only
+the listen address and database path belong in `config.toml` because the server
+needs them before SQLite opens. Managed repositories are cached below the
+worker data directory.
 
 ## 7. Security and trust boundaries
 
@@ -514,15 +520,18 @@ The current trust boundary is one trusted user on one host:
 - the enabled central repository catalog controls routed assignment. Workers
   accept only canonical GitHub identities from that catalog and never clone an
   arbitrary URL supplied by a ticket. This is not a filesystem sandbox;
-- provider CLIs own their credentials; the poller does not request, store, or
-  pass provider tokens;
+- provider CLIs own their credentials; Factory does not request, store, or pass
+  provider tokens;
 - the control-plane evaluator invokes the local authenticated `gh` executable
   with fixed arguments and stores no GitHub token;
 - workers advertise GitHub source access and managed acquisition only after a
   successful local `gh auth status` probe; registrations contain no token;
-- configured source commands and queue prompts are trusted operator policy;
-- provider item fields are stored in the poller ledger or Automation Occurrence
-  and task prompt as untrusted context;
+- Workflow instructions and Automation predicates are trusted operator policy;
+- provider item fields are stored in an Automation Occurrence and task prompt
+  as untrusted context;
+- legacy migration reads only explicitly resolved regular non-symlink files,
+  binds and retains the locked ledger inode for each action, rejects pathname
+  replacement, and never deletes the sources;
 - lease tokens are random, sent over local HTTP, and stored as SHA-256 digests;
 - browser mutations must be same-origin and use JSON;
 - worker data directories, identity files, and manifests use restrictive
@@ -555,15 +564,14 @@ and a reviewed tenant model.
   tasks. Factory has no age-based automatic retention job.
 - Event storage is bounded per attempt. Results, errors, prompts, and request
   bodies also have byte limits.
-- One failed issue queue does not stop later queues in the same pass. Failed
-  source results create no observations. Failed task submissions remain pending
-  and replay before the next source poll.
-- A GitHub route with no eligible worker removes its unsubmitted pending row so
-  the next pass refetches the live issue before another routing attempt.
-- Poller observations are capped at 10,000. Submitted rows discard their stored
-  request body, but remain as deduplication records until the operator archives
-  and resets the ledger. An issue does not rearm after leaving and re-entering
-  its queue condition.
+- A failed Automation check retains actionable health and retry timing. New
+  Occurrences remain durable pending work until the ordinary dispatcher can
+  route them.
+- Legacy migration lock or snapshot failure makes no partial import or archive.
+  Archive failure leaves the migration imported and retryable. A restart
+  recovers interrupted pending Resume and already completed archive states.
+- Submitted legacy observations preserve their durable identity after import;
+  pending rows retain their exact request only until explicit Resume or Skip.
 - One unhealthy Automation does not stop control-plane APIs or other
   Automations. Missing, unauthenticated, timed-out, malformed, oversized, and
   over-limit `gh` results, plus corrupt stored schedule data, are stored as
@@ -587,8 +595,8 @@ The implementation is covered by:
 - worker identity, configuration, registration, process supervision, runtime
   output, cancellation, lease loss, restart reconciliation, and cleanup tests in
   `internal/worker`;
-- issue-source validation, durable dispatch, HTTP replay, and restart
-  deduplication tests in `internal/poller`;
+- legacy migration lock, snapshot, identity, pending resolution, archive,
+  restart, and duplicate-prevention tests in `internal/controlplane`;
 - server and worker command tests in `cmd`;
 - embedded asset tests in `web`;
 - React unit, polling, and browser tests in `web/src`;
@@ -607,19 +615,18 @@ The contributor check set is documented in [CONTRIBUTING.md](CONTRIBUTING.md).
   rescheduling are not implemented.
 - Execution scheduling is pull-based FIFO per worker. There are no priorities
   or automatic task retries.
-- GitHub is the only built-in issue source. Jira, Linear, and other providers
-  need a command adapter that implements the normalized issue JSON contract.
-- Standalone poller configuration remains file-based as a temporary migration
-  path. Control-plane GitHub issue and pull-request Automations are managed in
-  the UI. Neither path rearms a provider item automatically.
+- GitHub is the only provider implemented for typed provider Automations. Jira,
+  Linear, generic provider plugins, and command adapters are not implemented.
+- Legacy poller command queues are reviewed in Preview and preserved in the
+  archive, but are not imported. Provider items do not automatically rearm.
 - A unified `factory` CLI is proposed but not implemented.
 - Metrics do not confirm external outcomes such as merged pull requests or
   closed tickets.
 - Terminal history requires explicit deletion. There is no time-based retention
   policy.
 
-The current poller is documented in [docs/poller.md](docs/poller.md). More
-advanced behavior is described separately in the
+The legacy migration and current typed Automation operation are documented in
+the [local guide](docs/local.md). Design history is described separately in the
 [workflow](docs/workflows/design.md),
 [GitHub ingest](docs/github-ingest/design.md), and [CLI](docs/cli/design.md)
 designs.
@@ -630,13 +637,13 @@ designs.
 | --- | --- |
 | Server process and defaults | `cmd/factory-server` |
 | Worker process and commands | `cmd/factory-worker` |
-| Poller process and commands | `cmd/factory-poller` |
 | HTTP API and state machine | `internal/controlplane/http.go`, `state.go` |
 | Persistence and metrics | `internal/controlplane/store.go`, `metrics.go` |
 | Workflow identity, revisions, and listing | `internal/controlplane/workflows.go` |
 | Typed Automation store and API | `internal/controlplane/automations.go`, `automations_http.go` |
 | GitHub evaluator and occurrence dispatch | `internal/controlplane/automation_runtime.go` |
 | Schedule parsing and admission | `internal/controlplane/schedule_cron.go`, `schedule_runtime.go` |
+| Legacy poller migration and archive | `internal/controlplane/legacy_poller_*` |
 | Prompt composition and complete agent input | `internal/protocol/prompt.go` |
 | Database schema | `migrations` |
 | Shared contracts and limits | `internal/protocol` |
@@ -644,7 +651,6 @@ designs.
 | Runtime supervision | `internal/worker/supervisor.go` |
 | Repository acquisition, Git worktrees, and cleanup | `internal/worker/repository_cache.go`, `git.go`, `reconcile.go`, `cleanup.go` |
 | Durable worker state | `internal/worker/identity.go`, `manifest.go` |
-| Issue sources and dispatch ledger | `internal/poller` |
 | State path compatibility | `internal/statepath` |
 | UI source and API client | `web/src` |
 | Embedded UI serving | `web/embed.go`, `web/dist` |

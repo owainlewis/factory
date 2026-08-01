@@ -59,6 +59,57 @@ func TestDefaultDatabasePathHonorsPreviewAlias(t *testing.T) {
 	}
 }
 
+func TestServerBootstrapConfigIsOptionalAndResolvesRelativeDatabase(t *testing.T) {
+	dataRoot := t.TempDir()
+	t.Setenv("FACTORY_SERVER_CONFIG", "")
+
+	config, err := loadServerBootstrapConfig(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Listen != "" || config.Database != "" || config.path != filepath.Join(dataRoot, "config.toml") {
+		t.Fatalf("missing optional config = %#v", config)
+	}
+
+	path := filepath.Join(dataRoot, "config.toml")
+	if err := os.WriteFile(path, []byte("listen = \"127.0.0.1:7447\"\ndatabase = \"state/factory.sqlite3\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err = loadServerBootstrapConfig(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Listen != "127.0.0.1:7447" || config.Database != filepath.Join(dataRoot, "state", "factory.sqlite3") {
+		t.Fatalf("loaded config = %#v", config)
+	}
+}
+
+func TestServerBootstrapConfigRejectsUnknownFieldsAndSymlinks(t *testing.T) {
+	dataRoot := t.TempDir()
+	path := filepath.Join(dataRoot, "config.toml")
+	t.Setenv("FACTORY_SERVER_CONFIG", path)
+	if err := os.WriteFile(path, []byte("listen = \"127.0.0.1:7337\"\nprovider = \"github\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadServerBootstrapConfig(dataRoot); err == nil || !strings.Contains(err.Error(), "unknown Factory server configuration fields: provider") {
+		t.Fatalf("unknown field error = %v", err)
+	}
+
+	target := filepath.Join(dataRoot, "target.toml")
+	if err := os.WriteFile(target, []byte("listen = \"127.0.0.1:7337\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadServerBootstrapConfig(dataRoot); err == nil || !strings.Contains(err.Error(), "regular non-symlink") {
+		t.Fatalf("symlink error = %v", err)
+	}
+}
+
 func TestValidateNoLegacyServerDefaultRefusesLegacyState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

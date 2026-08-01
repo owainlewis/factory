@@ -12,29 +12,11 @@ build:
     mkdir -p "$build_directory"
     go build -o "$build_directory/factory-server" ./cmd/factory-server
     go build -o "$build_directory/factory-worker" ./cmd/factory-worker
-    go build -o "$build_directory/factory-poller" ./cmd/factory-poller
     printf 'Factory binaries built in %s\n' "$build_directory"
 
 # Start one control plane and worker. Pass a worker config path when needed.
 run config="":
     @if [[ -n "{{config}}" ]]; then ./scripts/run-local.sh "{{config}}"; else ./scripts/run-local.sh; fi
-
-# Poll configured issue queues continuously. GitHub queues require authenticated gh.
-poll config="":
-    @if [[ -n "{{config}}" ]]; then go run ./cmd/factory-poller -config "{{config}}"; else go run ./cmd/factory-poller; fi
-
-# Run one issue-queue pass and exit. GitHub queues require authenticated gh.
-poll-once config="":
-    @if [[ -n "{{config}}" ]]; then go run ./cmd/factory-poller -config "{{config}}" -once; else go run ./cmd/factory-poller -once; fi
-
-# Safely test GitHub queue matching without contacting the control plane or writing the ledger.
-poll-test config="" queue="":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    args=(-test-github)
-    if [[ -n "{{config}}" ]]; then args+=(-config "{{config}}"); fi
-    if [[ -n "{{queue}}" ]]; then args+=(-queue "{{queue}}"); fi
-    go run ./cmd/factory-poller "${args[@]}"
 
 # Install pinned UI dependencies.
 ui-install:

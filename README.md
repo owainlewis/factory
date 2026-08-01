@@ -28,10 +28,10 @@ Requirements:
 Node.js is only needed when changing the UI. Normal builds use the committed,
 embedded UI assets.
 
-GitHub issue polling and on-demand worker checkout are optional, but both depend
-on the GitHub CLI, `gh`. Factory does not include a separate GitHub API client.
-Install and authenticate [`gh`](https://cli.github.com/) on the poller host and
-each eligible worker host before configuring a GitHub queue:
+GitHub Automations and on-demand worker checkout depend on the GitHub CLI,
+`gh`. Factory does not include a separate GitHub API client. Install and
+authenticate [`gh`](https://cli.github.com/) on the control-plane host and each
+eligible worker host before enabling a GitHub Automation:
 
 ```sh
 gh --version
@@ -54,6 +54,11 @@ just run
 
 Open [http://127.0.0.1:7337](http://127.0.0.1:7337).
 
+Existing `factory-poller` users must stop it and use **Automations → Migrate
+legacy poller** before removing their old configuration. Preview, Import, and
+Finalize each verify and lock the same legacy snapshot. Import creates disabled
+typed Automations and Finalize archives copies without deleting the originals.
+
 One worker has one stable identity and one runtime. Run another worker with a
 different config and data directory when you want both Codex and Claude Code:
 
@@ -65,14 +70,6 @@ FACTORY_WORKER_CONFIG=~/.factory/claude-worker.toml \
 See the [local guide](docs/local.md) for a complete setup and the
 [worker guide](docs/worker.md) for runtime and worktree behavior.
 
-Before enabling continuous GitHub polling, safely preview the configured
-`factory:ready` queue without creating tasks:
-
-```sh
-cp examples/poller.toml ~/.factory/poller.toml
-just poll-test ~/.factory/poller.toml github-ready
-```
-
 ## Architecture
 
 ```text
@@ -80,10 +77,8 @@ Browser
    |
    | HTTP + JSON
    v
-Go control plane <--- Issue poller
-  SQLite,          normal task submissions
-  scheduler,       from GitHub CLI or a
-  embedded UI      normalized provider command
+Go control plane
+  SQLite, scheduler, typed Automation evaluators, embedded UI
    ^
    | registration, claim, heartbeat, events, completion
    |
@@ -104,8 +99,7 @@ All default state is below `~/.factory`:
 ~/.factory/
   bin/
   server/factory.sqlite3
-  poller.toml
-  poller/poller.sqlite3
+  config.toml       optional control-plane bootstrap only
   worker.toml
   workers/
 ```
@@ -120,19 +114,16 @@ Implemented:
 - Go control-plane API and embedded React UI;
 - durable tasks, executions, attempts, leases, events, and cancellation;
 - Codex and Claude Code workers;
-- configurable issue queues with GitHub CLI polling and a normalized command
-  contract for other provider CLIs;
+- reusable versioned Workflows;
+- disabled-first typed GitHub issue, GitHub pull-request, and schedule
+  Automations evaluated by the control plane;
 - a central managed-repository catalog, bounded worker caches, and isolated Git
   worktrees;
 - bounded list APIs and retained-data metrics;
 - automatic cleanup of clean unchanged or published work and preservation of
   unpublished branches.
 
-Designed but not implemented:
-
-- reusable workflows;
-- scheduled automations;
-- a unified `factory` CLI.
+Designed but not implemented: a unified `factory` CLI.
 
 See the [documentation index](docs/README.md) for current guides and proposed
 designs.

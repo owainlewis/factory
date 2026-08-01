@@ -825,7 +825,7 @@ func (service *AutomationService) evaluate(ctx context.Context, evaluation autom
 
 func (s *Store) recoverAutomationRuntime(ctx context.Context) error {
 	now := s.now().UnixMilli()
-	_, err := s.db.ExecContext(ctx, `
+	if _, err := s.db.ExecContext(ctx, `
 		UPDATE automations
 		SET evaluation_token = NULL, evaluation_started_at = NULL,
 		    next_check_at = CASE WHEN enabled = 1 THEN ? ELSE NULL END,
@@ -833,6 +833,13 @@ func (s *Store) recoverAutomationRuntime(ctx context.Context) error {
 		    health_code = CASE WHEN enabled = 1 THEN 'check_recovered' ELSE '' END,
 		    health_message = CASE WHEN enabled = 1 THEN 'Recovered an interrupted check; retrying.' ELSE 'Automation is disabled.' END
 		WHERE evaluation_token IS NOT NULL
+	`, now); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE automation_occurrences
+		SET state = 'pending', diagnostic = 'legacy_resume_recovered', updated_at = ?
+		WHERE state = 'dispatching' AND legacy_task_request_json IS NOT NULL
 	`, now)
 	return err
 }

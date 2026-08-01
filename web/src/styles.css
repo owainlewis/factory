@@ -336,6 +336,30 @@ button { color: inherit; }
 .occurrence-identity strong { font-size: 13px; font-weight: 500; }
 .occurrence-identity small { margin-top: 3px; color: var(--fg-3); font-size: 12px; }
 .automation-modal { width: min(680px, 100%); }
+.migration-modal { width: min(880px, 100%); max-height: min(92vh, 900px); }
+.migration-modal .modal-header { height: auto; min-height: 64px; padding-block: 10px; }
+.migration-modal .modal-header p { margin: 4px 0 0; font-size: 12px; }
+.migration-body { display: grid; gap: 16px; }
+.migration-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
+.migration-grid .migration-confirm { grid-column: 1 / -1; margin: 2px 0 16px; }
+.migration-grid > .button { grid-column: 1 / -1; justify-self: start; }
+.migration-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; border: 1px solid var(--line); background: var(--line); }
+.migration-summary > div { min-width: 0; padding: 10px; background: var(--panel); }
+.migration-summary span, .migration-summary strong { display: block; }
+.migration-summary span { margin-bottom: 5px; color: var(--fg-3); font-family: var(--mono); font-size: 11px; }
+.migration-summary strong { overflow-wrap: anywhere; font-size: 12px; font-weight: 500; }
+.migration-paths { margin: 0; }
+.migration-paths > div { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 12px; padding: 4px 0; }
+.migration-paths dt { color: var(--fg-3); font-size: 12px; }
+.migration-paths dd { margin: 0; overflow-wrap: anywhere; color: var(--fg-2); font-size: 12px; }
+.migration-queue-list { display: grid; gap: 10px; }
+.migration-queue { margin: 0; }
+.migration-queue > p { margin: 6px 0; font-size: 12px; }
+.migration-name-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 12px; }
+.migration-name-grid .field { margin-bottom: 0; }
+.migration-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 14px; }
+.migration-actions p { margin: 0 auto 0 0; }
+.migration-complete p { overflow-wrap: anywhere; }
 .automation-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
 .automation-form-grid .field:last-of-type { grid-column: 1 / -1; }
 .automation-form-grid .inline-error { grid-column: 1 / -1; }
@@ -1178,6 +1202,10 @@ button { color: inherit; }
   .automation-metrics { grid-template-columns: 1fr 1fr; }
   .occurrence-row { grid-template-columns: 80px minmax(0, 1fr); }
   .occurrence-row .button { grid-column: 2; justify-self: start; }
+  .migration-grid, .migration-name-grid, .migration-summary { grid-template-columns: 1fr; }
+  .migration-paths > div { grid-template-columns: 1fr; gap: 2px; }
+  .migration-actions { align-items: stretch; flex-direction: column; }
+  .migration-actions .button { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -31,13 +31,30 @@ func run() (returnErr error) {
 	if err != nil {
 		return err
 	}
-	listen := flag.String("listen", "127.0.0.1:7337", "loopback HTTP listen address")
-	database := flag.String("database", defaultDatabase, "Factory SQLite database path")
+	bootstrap, err := loadServerBootstrapConfig(dataRoot)
+	if err != nil {
+		return err
+	}
+	defaultListen := "127.0.0.1:7337"
+	if bootstrap.Listen != "" {
+		defaultListen = bootstrap.Listen
+	}
+	selectedDatabase := defaultDatabase
+	if bootstrap.Database != "" {
+		selectedDatabase = bootstrap.Database
+	}
+	listen := flag.String("listen", defaultListen, "loopback HTTP listen address")
+	database := flag.String("database", selectedDatabase, "Factory SQLite database path")
+	printListen := flag.Bool("print-listen", false, "print the resolved listen address and exit")
 	flag.Parse()
 
 	listenAddress, err := controlplane.ResolveListenAddress(*listen)
 	if err != nil {
 		return err
+	}
+	if *printListen {
+		fmt.Println(listenAddress.String())
+		return nil
 	}
 	databaseExplicit := false
 	flag.Visit(func(value *flag.Flag) {
@@ -47,7 +64,7 @@ func run() (returnErr error) {
 	})
 	if err := validateLegacyServerSelection(
 		factoryDataHome(),
-		databaseExplicit,
+		databaseExplicit || bootstrap.Database != "",
 		dataRoot,
 	); err != nil {
 		return err
@@ -85,6 +102,22 @@ func run() (returnErr error) {
 			"execution_id", lease.ExecutionID,
 			"new_state", "lost",
 		)
+	}
+	githubDiagnostic, err := store.DiagnoseGitHubCLI(rootContext)
+	if err != nil {
+		return fmt.Errorf("startup GitHub provider diagnostic: %w", err)
+	}
+	if githubDiagnostic.Required {
+		attributes := []any{
+			"installed", githubDiagnostic.Installed,
+			"authenticated", githubDiagnostic.Authenticated,
+			"message", githubDiagnostic.Message,
+		}
+		if githubDiagnostic.Code == "" {
+			logger.Info("github_provider_ready", attributes...)
+		} else {
+			logger.Error("github_provider_unavailable", append(attributes, "error_class", githubDiagnostic.Code)...)
+		}
 	}
 	sweepContext, cancelSweep := context.WithCancel(rootContext)
 	sweeperDone := make(chan struct{})

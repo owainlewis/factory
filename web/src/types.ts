@@ -211,7 +211,7 @@ export interface AutomationOccurrence {
 	id: string;
 	automation_id: string;
 	automation_version: number;
-	state: "pending" | "dispatched" | "failed" | "task_deleted";
+	state: "pending" | "dispatching" | "dispatched" | "failed" | "task_deleted" | "skipped";
 	issue_number?: number;
 	issue_url?: string;
 	issue_title?: string;
@@ -232,6 +232,58 @@ export interface AutomationOccurrence {
 	task?: AutomationTaskSummary;
 	task_id_snapshot?: string;
 	diagnostic?: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface LegacyPollerSelection {
+	config_path?: string;
+	data_home?: string;
+	working_directory?: string;
+	confirm_stopped: boolean;
+}
+
+export interface LegacyPollerQueue {
+	queue_id: string;
+	name: string;
+	source: string;
+	project: string;
+	state: string;
+	required_labels: string[];
+	poll_interval_seconds: number;
+	timeout_seconds: number;
+	repository_id?: string;
+	repository_identity?: string;
+	workflow_name: string;
+	automation_name: string;
+	pending_observations: number;
+	submitted_observations: number;
+	supported: boolean;
+	errors: string[];
+}
+
+export interface LegacyPollerMigration {
+	id: string;
+	snapshot_digest: string;
+	status: "previewed" | "imported" | "finalized";
+	config_path: string;
+	data_home: string;
+	working_directory: string;
+	data_directory: string;
+	ledger_path: string;
+	archive_root: string;
+	archive_path?: string;
+	counts: {
+		queues: number;
+		supported_queues: number;
+		unsupported_queues: number;
+		pending_observations: number;
+		submitted_observations: number;
+	};
+	queues: LegacyPollerQueue[];
+	automations: Automation[];
+	occurrences: AutomationOccurrence[];
+	errors: string[];
 	created_at: string;
 	updated_at: string;
 }

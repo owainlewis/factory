@@ -4,6 +4,7 @@ import {
   Bot,
   ChevronRight,
   CirclePlay,
+  DatabaseBackup,
   FlaskConical,
   LoaderCircle,
   Pencil,
@@ -23,6 +24,8 @@ import type {
   AutomationOccurrence,
   AutomationTrigger,
   CreateAutomationInput,
+  LegacyPollerMigration,
+  LegacyPollerSelection,
   TestAutomationResult,
 } from "./types";
 import {
@@ -37,6 +40,7 @@ import {
 
 export function AutomationsView({ onAutomation }: { onAutomation: (id: string) => void }) {
   const [createOpen, setCreateOpen] = useState(false);
+  const [migrationOpen, setMigrationOpen] = useState(false);
   const [history, setHistory] = useState<Automation[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>();
   const previousHeadCursor = useRef<string | null | undefined>(undefined);
@@ -76,9 +80,14 @@ export function AutomationsView({ onAutomation }: { onAutomation: (id: string) =
       {query.error && <StaleBanner error={query.error} />}
       <div className="view-toolbar">
         <p>Typed GitHub issue, pull-request, and schedule triggers evaluated by the local control plane.</p>
-        <button className="button button-primary" onClick={() => setCreateOpen(true)}>
-          <Plus size={15} /> Create Automation
-        </button>
+        <div className="detail-actions">
+          <button className="button button-secondary" onClick={() => setMigrationOpen(true)}>
+            <DatabaseBackup size={15} /> Migrate legacy poller
+          </button>
+          <button className="button button-primary" onClick={() => setCreateOpen(true)}>
+            <Plus size={15} /> Create Automation
+          </button>
+        </div>
       </div>
       {items.length === 0 ? (
         <EmptyState
@@ -129,6 +138,12 @@ export function AutomationsView({ onAutomation }: { onAutomation: (id: string) =
           }}
         />
       )}
+      {migrationOpen && (
+        <LegacyPollerMigrationDialog
+          onClose={() => setMigrationOpen(false)}
+          onAutomation={onAutomation}
+        />
+      )}
     </div>
   );
 }
@@ -146,7 +161,6 @@ export function AutomationDetail({
   const interval = useVisibleInterval(3_000);
   const [editing, setEditing] = useState(false);
   const [confirmEnabled, setConfirmEnabled] = useState<boolean>();
-  const [pollerConfirmed, setPollerConfirmed] = useState(false);
   const [preview, setPreview] = useState<TestAutomationResult>();
   const [occurrenceHistory, setOccurrenceHistory] = useState<AutomationOccurrence[]>([]);
   const [nextOccurrenceCursor, setNextOccurrenceCursor] = useState<string | null>();
@@ -180,7 +194,6 @@ export function AutomationDetail({
     onSuccess: async (next) => {
       queryClient.setQueryData(["automation", id], next);
       setConfirmEnabled(undefined);
-      setPollerConfirmed(false);
       await invalidateControlPlane(queryClient);
     },
   });
@@ -264,20 +277,10 @@ export function AutomationDetail({
             <p>{confirmEnabled
               ? `${automation.workflow_name} · ${automation.repository_identity} · ${triggerSummary(automation)}`
               : "Future checks and pending dispatches stop. Existing tasks continue."}</p>
-            {confirmEnabled && automation.trigger.type !== "schedule" && (
-              <label className="confirmation-check">
-                <input
-                  type="checkbox"
-                  checked={pollerConfirmed}
-                  onChange={(event) => setPollerConfirmed(event.target.checked)}
-                />
-                I confirm factory-poller is stopped for any equivalent queue.
-              </label>
-            )}
           </div>
           <button
             className={confirmEnabled ? "button button-primary" : "button button-danger"}
-            disabled={setEnabled.isPending || (confirmEnabled && automation.trigger.type !== "schedule" && !pollerConfirmed)}
+            disabled={setEnabled.isPending}
             onClick={() => setEnabled.mutate(confirmEnabled)}
           >
             {setEnabled.isPending ? "Saving…" : `Confirm ${confirmEnabled ? "enable" : "disable"}`}
@@ -398,6 +401,232 @@ export function AutomationDetail({
           }}
         />
       )}
+    </div>
+  );
+}
+
+function LegacyPollerMigrationDialog({
+  onClose,
+  onAutomation,
+}: {
+  onClose: () => void;
+  onAutomation: (id: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [selection, setSelection] = useState<LegacyPollerSelection>({ confirm_stopped: false });
+  const [migrationState, setMigration] = useState<LegacyPollerMigration>();
+  const [reviewQueues, setReviewQueues] = useState<LegacyPollerMigration["queues"]>([]);
+  const activeMigration = useQuery({
+    queryKey: ["legacy-poller-migration", "active"],
+    queryFn: api.activeLegacyPollerMigration,
+  });
+  const migration = migrationState ?? activeMigration.data?.migration ?? undefined;
+  const actionSelection = migration?.status === "imported" ? {
+    config_path: migration.config_path,
+    data_home: migration.data_home,
+    working_directory: migration.working_directory,
+    confirm_stopped: selection.confirm_stopped,
+  } : selection;
+  const preview = useMutation({
+    mutationFn: () => api.previewLegacyPoller(selection),
+    onSuccess: (result) => {
+      setMigration(result);
+      setReviewQueues(result.queues);
+    },
+  });
+  const importMigration = useMutation({
+    mutationFn: (mappings: Array<{ queue_id: string; workflow_name: string; automation_name: string }>) =>
+      api.importLegacyPoller({ migration: migration!, selection, mappings }),
+    onSuccess: async (result) => {
+      setMigration(result);
+      await invalidateControlPlane(queryClient);
+    },
+  });
+  const resolveOccurrence = useMutation({
+    mutationFn: ({ id, action }: { id: string; action: "resume" | "skip" }) =>
+      action === "resume" ? api.resumeLegacyOccurrence(id) : api.skipLegacyOccurrence(id),
+    onSuccess: async () => {
+      setMigration(await api.legacyPollerMigration(migration!.id));
+      await invalidateControlPlane(queryClient);
+    },
+  });
+  const finalize = useMutation({
+    mutationFn: () => api.finalizeLegacyPoller({ migration: migration!, selection: actionSelection }),
+    onSuccess: async (result) => {
+      setMigration(result);
+      await invalidateControlPlane(queryClient);
+    },
+  });
+  const unresolved = migration?.occurrences.filter((occurrence) =>
+    occurrence.state === "pending" || occurrence.state === "dispatching" || occurrence.state === "failed") ?? [];
+  const operationError = activeMigration.error || preview.error || importMigration.error || resolveOccurrence.error || finalize.error;
+  const setPath = (field: "config_path" | "data_home" | "working_directory", value: string) =>
+    setSelection((current) => ({ ...current, [field]: value || undefined }));
+  const submitImport = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const mappings = reviewQueues.filter((queue) => queue.supported).map((queue) => ({
+      queue_id: queue.queue_id,
+      workflow_name: String(form.get(`workflow-${queue.queue_id}`) ?? "").trim(),
+      automation_name: String(form.get(`automation-${queue.queue_id}`) ?? "").trim(),
+    }));
+    importMigration.mutate(mappings);
+  };
+
+  return (
+    <div className="modal-layer">
+      <button className="modal-scrim" aria-label="Close legacy poller migration" onClick={onClose} />
+      <div className="modal migration-modal" role="dialog" aria-modal="true" aria-labelledby="legacy-migration-heading">
+        <div className="modal-header">
+          <div>
+            <h2 id="legacy-migration-heading">Migrate legacy poller</h2>
+            <p className="muted">Stop poller → Preview → Import disabled → Resume or Skip pending → Finalize → Enable</p>
+          </div>
+          <button className="icon-button" aria-label="Close" onClick={onClose}><X size={19} /></button>
+        </div>
+        <div className="modal-body migration-body">
+          {!migration && activeMigration.isPending && <LoadingState label="Checking for an active migration" />}
+          {!migration && !activeMigration.isPending && (
+            <div className="migration-grid">
+              <Field label="Legacy poller.toml" htmlFor="migration-config" hint="Optional absolute override. Default: ~/.factory/poller.toml">
+                <input id="migration-config" value={selection.config_path ?? ""} onChange={(event) => setPath("config_path", event.target.value)} placeholder="/absolute/path/poller.toml" />
+              </Field>
+              <Field label="Legacy data home" htmlFor="migration-home" hint="Optional absolute override. Default: FACTORY_DATA_HOME or ~/.factory">
+                <input id="migration-home" value={selection.data_home ?? ""} onChange={(event) => setPath("data_home", event.target.value)} placeholder="/absolute/path/.factory" />
+              </Field>
+              <Field label="Original working directory" htmlFor="migration-cwd" hint="Needed only when the old environment selected a relative path.">
+                <input id="migration-cwd" value={selection.working_directory ?? ""} onChange={(event) => setPath("working_directory", event.target.value)} placeholder="/absolute/path" />
+              </Field>
+              <label className="confirmation-check migration-confirm">
+                <input
+                  type="checkbox"
+                  checked={selection.confirm_stopped}
+                  onChange={(event) => setSelection((current) => ({ ...current, confirm_stopped: event.target.checked }))}
+                />
+                I stopped every factory-poller process. Factory may hold an exclusive lock during each migration action.
+              </label>
+              <button className="button button-primary" disabled={!selection.confirm_stopped || preview.isPending} onClick={() => preview.mutate()}>
+                {preview.isPending ? <LoaderCircle size={15} className="spin" /> : <DatabaseBackup size={15} />} Preview locked snapshot
+              </button>
+            </div>
+          )}
+
+          {migration && (
+            <>
+              <section className="migration-summary">
+                <div><span>Status</span><strong>{migration.status}</strong></div>
+                <div><span>Queues</span><strong>{migration.counts.supported_queues} supported · {migration.counts.unsupported_queues} unsupported</strong></div>
+                <div><span>Observations</span><strong>{migration.counts.submitted_observations} submitted · {migration.counts.pending_observations} pending</strong></div>
+                <div><span>Snapshot</span><strong className="mono">{migration.snapshot_digest.slice(0, 16)}…</strong></div>
+              </section>
+              <dl className="migration-paths">
+                <div><dt>Config</dt><dd className="mono">{migration.config_path}</dd></div>
+                <div><dt>Data home</dt><dd className="mono">{migration.data_home}</dd></div>
+                <div><dt>Original working directory</dt><dd className="mono">{migration.working_directory}</dd></div>
+                <div><dt>Legacy data directory</dt><dd className="mono">{migration.data_directory}</dd></div>
+                <div><dt>Ledger</dt><dd className="mono">{migration.ledger_path}</dd></div>
+                <div><dt>Archive root</dt><dd className="mono">{migration.archive_root}</dd></div>
+              </dl>
+            </>
+          )}
+
+          {migration?.status === "previewed" && (
+            <form onSubmit={submitImport}>
+              <div className="migration-queue-list">
+                {reviewQueues.map((queue) => (
+                  <section className="panel migration-queue" key={queue.queue_id}>
+                    <PanelHeading title={queue.name} aside={queue.supported ? "GitHub issue" : "Not imported"} />
+                    <p>{queue.project} · {queue.state} · labels {queue.required_labels.join(", ") || "none"}</p>
+                    {queue.supported && <p className="muted">Repository mapping: <span className="mono">{queue.repository_identity}</span> · <span className="mono">{queue.repository_id}</span></p>}
+                    <p className="muted">{queue.submitted_observations} submitted · {queue.pending_observations} pending · every {queue.poll_interval_seconds}s</p>
+                    {queue.errors.map((message) => <p className="field-error" key={message}>{message}</p>)}
+                    {queue.supported && (
+                      <div className="migration-name-grid">
+                        <Field label="Workflow name" htmlFor={`workflow-${queue.queue_id}`}>
+                          <input id={`workflow-${queue.queue_id}`} name={`workflow-${queue.queue_id}`} defaultValue={queue.workflow_name} required />
+                        </Field>
+                        <Field label="Automation name" htmlFor={`automation-${queue.queue_id}`}>
+                          <input id={`automation-${queue.queue_id}`} name={`automation-${queue.queue_id}`} defaultValue={queue.automation_name} required />
+                        </Field>
+                      </div>
+                    )}
+                  </section>
+                ))}
+              </div>
+              <div className="migration-actions">
+                <button type="button" className="button button-secondary" onClick={() => { setMigration(undefined); setReviewQueues([]); }}>Run a new Preview</button>
+                <button type="submit" className="button button-primary" disabled={importMigration.isPending}>
+                  {importMigration.isPending ? "Importing…" : migration.counts.supported_queues === 0 ? "Continue to archive" : "Import disabled Automations"}
+                </button>
+              </div>
+            </form>
+          )}
+
+          {migration && migration.status !== "previewed" && (
+            <>
+              {migration.status === "imported" && (
+                <label className="confirmation-check migration-confirm">
+                  <input
+                    type="checkbox"
+                    checked={selection.confirm_stopped}
+                    onChange={(event) => setSelection((current) => ({ ...current, confirm_stopped: event.target.checked }))}
+                  />
+                  I reconfirmed every factory-poller process is stopped before continuing.
+                </label>
+              )}
+              {migration.occurrences.length > 0 && (
+                <section className="panel">
+                  <PanelHeading title="Imported observations" aside={`${unresolved.length} unresolved`} />
+                  <div className="occurrence-list">
+                    {migration.occurrences.map((occurrence) => (
+                      <div className="occurrence-row" key={occurrence.id}>
+                        <span className={`status-badge status-${occurrence.state}`}><span className="status-dot" />{occurrence.state}</span>
+                        <span className="occurrence-identity">
+                          <strong>{occurrenceIdentity(occurrence)}</strong>
+                          <small>{occurrence.diagnostic || occurrence.task_request_key}</small>
+                        </span>
+                        {(occurrence.state === "pending" || occurrence.state === "failed") && (
+                          <div className="detail-actions">
+                            {occurrence.state === "pending" && <button className="button button-secondary" disabled={!selection.confirm_stopped || resolveOccurrence.isPending} onClick={() => resolveOccurrence.mutate({ id: occurrence.id, action: "resume" })}>Resume</button>}
+                            <button className="button button-danger-secondary" disabled={!selection.confirm_stopped || resolveOccurrence.isPending} onClick={() => resolveOccurrence.mutate({ id: occurrence.id, action: "skip" })}>Skip</button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+              {migration.status === "imported" && (
+                <div className="migration-actions">
+                  <p className="muted">Finalize verifies the same locked snapshot and archives copies. It never deletes the source files.</p>
+                  <button className="button button-primary" disabled={!selection.confirm_stopped || unresolved.length > 0 || finalize.isPending} onClick={() => finalize.mutate()}>
+                    {finalize.isPending ? "Finalizing…" : "Finalize and archive"}
+                  </button>
+                </div>
+              )}
+              {migration.status === "finalized" && (
+                <section className="panel migration-complete">
+                  <PanelHeading title="Migration finalized" aside="Ready for review" />
+                  <p>Archive: <span className="mono">{migration.archive_path}</span></p>
+                  <p className="muted">Review each imported Automation, test its trigger, then enable it. The retired poller must remain stopped.</p>
+                  <div className="detail-actions">
+                    {migration.automations.map((automation) => (
+                      <button className="button button-secondary" key={automation.id} onClick={() => onAutomation(automation.id)}>
+                        Review {automation.name}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
+            </>
+          )}
+          {operationError && <InlineError error={operationError as Error} />}
+        </div>
+        <div className="modal-footer">
+          <span className="disabled-first-note"><Activity size={14} /> Imported Automations stay disabled until Finalize.</span>
+          <button className="button button-secondary" onClick={onClose}>Close</button>
+        </div>
+      </div>
     </div>
   );
 }

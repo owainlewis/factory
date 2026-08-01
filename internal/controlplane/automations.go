@@ -670,7 +670,7 @@ func (s *Store) setAutomationEnabled(
 	ctx context.Context,
 	automationID string,
 	enabled bool,
-	confirmLegacyPollerStopped bool,
+	_ bool,
 ) (protocol.AutomationDetail, string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -702,13 +702,23 @@ func (s *Store) setAutomationEnabled(
 		detail, err := s.Automation(ctx, automationID)
 		return detail, "", err
 	}
-	if enabled && triggerType != protocol.AutomationTriggerSchedule && !confirmLegacyPollerStopped {
-		return protocol.AutomationDetail{}, "", invalid(
-			"legacy_poller_confirmation_required",
-			"confirm that factory-poller is stopped for any equivalent queue before enabling this Automation",
-		)
-	}
 	if enabled {
+		var migrationStatus string
+		err := tx.QueryRowContext(ctx, `
+			SELECT migration.status
+			FROM legacy_poller_imports imported
+			JOIN legacy_poller_migrations migration ON migration.id = imported.migration_id
+			WHERE imported.automation_id = ?
+		`, automationID).Scan(&migrationStatus)
+		if err == nil && migrationStatus != "finalized" {
+			return protocol.AutomationDetail{}, "", conflict(
+				"migration_not_finalized",
+				"Finalize the locked legacy poller snapshot before enabling this imported Automation",
+			)
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return protocol.AutomationDetail{}, "", unavailable(err)
+		}
 		if err := validateAutomationDependencies(ctx, tx, workflowID, repositoryID, true); err != nil {
 			return protocol.AutomationDetail{}, "", err
 		}
@@ -813,6 +823,16 @@ func (s *Store) AutomationOccurrencesPage(
 	limit int,
 	cursor *protocol.AutomationOccurrenceCursor,
 ) (protocol.AutomationOccurrencePage, error) {
+	return s.automationOccurrencesPage(ctx, automationID, limit, cursor, "")
+}
+
+func (s *Store) automationOccurrencesPage(
+	ctx context.Context,
+	automationID string,
+	limit int,
+	cursor *protocol.AutomationOccurrenceCursor,
+	occurrenceID string,
+) (protocol.AutomationOccurrencePage, error) {
 	if limit < 1 || limit > protocol.MaxAutomationPageSize {
 		return protocol.AutomationOccurrencePage{}, invalid("invalid_limit", "limit must be between 1 and 200")
 	}
@@ -837,8 +857,12 @@ func (s *Store) AutomationOccurrencesPage(
 		LEFT JOIN automation_schedule_occurrences schedule ON schedule.occurrence_id = occurrence.id
 		LEFT JOIN tasks task ON task.id = occurrence.task_id
 		LEFT JOIN executions execution ON execution.task_id = task.id
-		WHERE occurrence.automation_id = ?`
+	WHERE occurrence.automation_id = ?`
 	args := []any{strings.TrimSpace(automationID)}
+	if occurrenceID != "" {
+		query += ` AND occurrence.id = ?`
+		args = append(args, strings.TrimSpace(occurrenceID))
+	}
 	if cursor != nil {
 		query += ` AND (occurrence.created_at < ? OR (occurrence.created_at = ? AND occurrence.id < ?))`
 		args = append(args, cursor.CreatedAtMillis, cursor.CreatedAtMillis, cursor.ID)

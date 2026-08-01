@@ -233,9 +233,10 @@ func TestAutomationStoreLifecycleIsTypedDisabledFirstAndOptimistic(t *testing.T)
 		TimeoutSeconds: 60, Trigger: protocol.AutomationTrigger{Type: "github_issue", State: "open", PollIntervalSeconds: 10},
 	})
 	assertErrorCode(t, err, "automation_version_conflict")
-	_, err = store.SetAutomationEnabled(context.Background(), detail.Automation.ID, true, false)
-	assertErrorCode(t, err, "legacy_poller_confirmation_required")
-	enabled := enableAutomation(t, store, detail.Automation.ID)
+	enabled, err := store.SetAutomationEnabled(context.Background(), detail.Automation.ID, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !enabled.Automation.Enabled || enabled.Automation.NextCheckAt == nil {
 		t.Fatalf("enabled Automation = %#v", enabled.Automation)
 	}
@@ -1226,11 +1227,6 @@ func TestHTTPAutomationLifecycleAndPreview(t *testing.T) {
 		t.Fatalf("preview = %#v", preview)
 	}
 	response = postJSON(http.MethodPut, "/api/v1/automations/"+created.Automation.ID+"/enabled", map[string]any{"enabled": true})
-	if response.StatusCode != http.StatusBadRequest {
-		t.Fatalf("enable without poller confirmation status = %d", response.StatusCode)
-	}
-	response.Body.Close()
-	response = postJSON(http.MethodPut, "/api/v1/automations/"+created.Automation.ID+"/enabled", map[string]any{"enabled": true, "confirm_legacy_poller_stopped": true})
 	requireStatus(t, response, http.StatusOK)
 	enabled := decodeResponse[protocol.AutomationDetail](t, response)
 	if !enabled.Automation.Enabled {

@@ -7,8 +7,8 @@ The Phase proposal was never implemented and is no longer an active Factory
 design. The accepted product term is **Workflow**: versioned Markdown
 instructions that can be selected for an ordinary Task. A Workflow is not a
 pipeline stage and does not imply ordering, transitions, or approval state.
-The Workflow library and Task snapshot contract are implemented; typed
-Automations remain the follow-on work.
+The Workflow library, Task snapshot contract, and typed Automations are
+implemented.
 
 Typed Automations are defined in the replacement design. One Automation binds
 one Workflow to one managed repository and exactly one `github_issue`,

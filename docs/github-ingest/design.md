@@ -3,18 +3,19 @@
 > **Status:** Superseded. Do not implement this external-ingest architecture.
 > GitHub polling, scheduling, typed Trigger configuration, and durable
 > deduplication belong to the control plane in the
-> [Workflow and Automation design](../workflows/design.md). The standalone MVP
-> remains documented only for migration in the [poller guide](../poller.md).
+> [Workflow and Automation design](../workflows/design.md). The retired
+> standalone MVP is preserved only as migration history.
 
 The material below is retained as historical context for the rejected
 `factory ingest github` process and must not be used for implementation.
 
 ## 1. Executive summary
 
-Factory now has a simple `factory-poller` process that submits a matching issue
-once and keeps a local dispatch ledger. It does not support workflow revisions,
-trigger rearming, or the proposed unified CLI. This design describes that more
-advanced model through the future process role `factory ingest github`.
+Factory previously had a simple `factory-poller` process that submitted a
+matching issue once and kept a local dispatch ledger. It did not support
+workflow revisions, trigger rearming, or the proposed unified CLI. This design
+described that more advanced model through the rejected process role
+`factory ingest github`.
 
 The process uses the authenticated `gh` CLI and the control-plane HTTP API. It
 keeps its own small SQLite database so restarts and repeated polls do not
@@ -31,10 +32,9 @@ from the UI or API. The proposed workflow extension adds an optional immutable
 Claude Code. They do not know whether a task came from a human, GitHub, or a
 future scheduler.
 
-Source polling is outside the control plane and workers. The current poller
-implements one-time dispatch. Trigger episode rearming, workflow revision
-pinning, live revalidation, and provider updates remain future ingest and
-workflow responsibilities.
+This rejected design placed source polling outside the control plane and
+workers. Current Factory instead runs typed GitHub Automation evaluation and
+durable deduplication inside the one control-plane process.
 
 This design extends the current GitHub issue path:
 
