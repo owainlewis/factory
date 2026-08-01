@@ -96,12 +96,23 @@ func run() (returnErr error) {
 		cancelSweep()
 		<-sweeperDone
 	}()
+	automationService := controlplane.NewAutomationService(store, logger)
+	automationContext, cancelAutomations := context.WithCancel(rootContext)
+	automationsDone := make(chan struct{})
+	go func() {
+		defer close(automationsDone)
+		automationService.Run(automationContext)
+	}()
+	defer func() {
+		cancelAutomations()
+		<-automationsDone
+	}()
 
 	listener, err := net.ListenTCP("tcp", listenAddress)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	handler := factoryweb.NewHandler(controlplane.NewHandler(store, logger))
+	handler := factoryweb.NewHandler(controlplane.NewHandlerWithAutomation(store, logger, automationService))
 	server := controlplane.NewHTTPServer(*listen, handler)
 	serverErrors := make(chan error, 1)
 	go func() {
@@ -116,11 +127,15 @@ func run() (returnErr error) {
 	select {
 	case err := <-serverErrors:
 		if !errors.Is(err, http.ErrServerClosed) {
+			cancelAutomations()
+			<-automationsDone
 			cancelSweep()
 			<-sweeperDone
 			return fmt.Errorf("serve HTTP: %w", err)
 		}
 	case <-rootContext.Done():
+		cancelAutomations()
+		<-automationsDone
 		cancelSweep()
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -133,6 +148,8 @@ func run() (returnErr error) {
 	}
 	cancelSweep()
 	<-sweeperDone
+	cancelAutomations()
+	<-automationsDone
 	logger.Info("server_stopped")
 	return nil
 }

@@ -7,5 +7,6 @@ export function invalidateControlPlane(queryClient: QueryClient) {
     queryClient.invalidateQueries({ queryKey: ["workers"] }),
     queryClient.invalidateQueries({ queryKey: ["repositories"] }),
     queryClient.invalidateQueries({ queryKey: ["workflows"] }),
+    queryClient.invalidateQueries({ queryKey: ["automations"] }),
   ]);
 }

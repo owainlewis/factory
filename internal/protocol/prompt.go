@@ -1,6 +1,9 @@
 package protocol
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 const (
 	MaxWorkflowInstructionsBytes = 48 << 10
@@ -11,6 +14,39 @@ const (
 
 func ResolveWorkflowPrompt(instructions, context string) string {
 	return "Workflow instructions:\n\n" + instructions + "\n\nTask context:\n\n" + context
+}
+
+func ResolveGitHubIssueAutomationPrompt(
+	instructions, context, state string,
+	requiredLabels []string,
+	issue GitHubIssueMatch,
+) (string, error) {
+	conditions, err := json.Marshal(struct {
+		Type           string   `json:"type"`
+		State          string   `json:"state"`
+		RequiredLabels []string `json:"required_labels"`
+	}{AutomationTriggerGitHubIssue, state, requiredLabels})
+	if err != nil {
+		return "", err
+	}
+	observation, err := json.Marshal(struct {
+		Type   string   `json:"type"`
+		Number int      `json:"number"`
+		URL    string   `json:"url"`
+		Title  string   `json:"title"`
+		State  string   `json:"state"`
+		Labels []string `json:"labels"`
+	}{AutomationTriggerGitHubIssue, issue.Number, issue.URL, issue.Title, issue.State, issue.Labels})
+	if err != nil {
+		return "", err
+	}
+	return "Workflow instructions:\n\n" + instructions +
+		"\n\nAutomation context:\n\n" + context +
+		"\n\nTrusted trigger conditions:\n\n" + string(conditions) +
+		"\n\nProvider instruction:\n\n" +
+		"Use gh to fetch the live GitHub item identified below and revalidate every trusted trigger condition before any mutation. " +
+		"If it no longer matches, stop without changing the repository or item." +
+		"\n\nUntrusted trigger observation:\n\n" + string(observation), nil
 }
 
 func FormatAgentPrompt(title, repository, workingBranch, targetBaseBranch, resolvedPrompt string) string {

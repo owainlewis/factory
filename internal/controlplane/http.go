@@ -20,8 +20,9 @@ import (
 )
 
 type API struct {
-	store  *Store
-	logger *slog.Logger
+	store       *Store
+	logger      *slog.Logger
+	automations *AutomationService
 }
 
 type workerRegistrationRequest struct {
@@ -61,10 +62,14 @@ type legacyWorkerResponse struct {
 }
 
 func NewHandler(store *Store, logger *slog.Logger) http.Handler {
+	return NewHandlerWithAutomation(store, logger, NewAutomationService(store, logger))
+}
+
+func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *AutomationService) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	api := &API{store: store, logger: logger}
+	api := &API{store: store, logger: logger, automations: automations}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", api.health)
 	mux.HandleFunc("PUT /api/v1/workers/{worker_id}", api.registerWorker)
@@ -81,6 +86,14 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /api/v1/workflows/{workflow_id}", api.getWorkflow)
 	mux.HandleFunc("POST /api/v1/workflows/{workflow_id}/revisions", api.createWorkflowRevision)
 	mux.HandleFunc("PUT /api/v1/workflows/{workflow_id}/enabled", api.setWorkflowEnabled)
+	mux.HandleFunc("GET /api/v1/automations", api.listAutomations)
+	mux.HandleFunc("POST /api/v1/automations", api.createAutomation)
+	mux.HandleFunc("GET /api/v1/automations/{automation_id}", api.getAutomation)
+	mux.HandleFunc("PUT /api/v1/automations/{automation_id}", api.updateAutomation)
+	mux.HandleFunc("PUT /api/v1/automations/{automation_id}/enabled", api.setAutomationEnabled)
+	mux.HandleFunc("POST /api/v1/automations/{automation_id}/test", api.testAutomation)
+	mux.HandleFunc("POST /api/v1/automations/{automation_id}/check", api.checkAutomation)
+	mux.HandleFunc("GET /api/v1/automations/{automation_id}/occurrences", api.listAutomationOccurrences)
 	mux.HandleFunc("GET /api/v1/metrics/summary", api.getMetrics)
 	mux.HandleFunc("GET /api/v1/tasks", api.listTasks)
 	mux.HandleFunc("POST /api/v1/tasks", api.createTask)

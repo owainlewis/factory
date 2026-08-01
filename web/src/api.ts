@@ -13,6 +13,12 @@ import type {
   WorkflowPage,
   CreateWorkflowInput,
   CreateWorkflowRevisionInput,
+  AutomationDetail,
+  AutomationOccurrencePage,
+  AutomationPage,
+  CreateAutomationInput,
+  UpdateAutomationInput,
+  TestAutomationResult,
 } from "./types";
 
 export class APIError extends Error {
@@ -128,6 +134,54 @@ export const api = {
     request<WorkflowDetail>(`/api/v1/workflows/${encodeURIComponent(id)}/enabled`, {
       method: "PUT",
       body: JSON.stringify({ enabled }),
+    }),
+  automations: async (cursor = "") => {
+    const query = new URLSearchParams({ limit: "200" });
+    if (cursor) query.set("cursor", cursor);
+    const page = await request<{
+      automations: AutomationPage["automations"] | null;
+      next_cursor: string | null;
+    }>(`/api/v1/automations?${query}`);
+    return { automations: page.automations ?? [], next_cursor: page.next_cursor };
+  },
+  automation: (id: string) =>
+    request<AutomationDetail>(`/api/v1/automations/${encodeURIComponent(id)}`),
+  automationOccurrences: async (id: string, cursor = "") => {
+    const query = new URLSearchParams({ limit: "50" });
+    if (cursor) query.set("cursor", cursor);
+    const page = await request<{
+      occurrences: AutomationOccurrencePage["occurrences"] | null;
+      next_cursor: string | null;
+    }>(`/api/v1/automations/${encodeURIComponent(id)}/occurrences?${query}`);
+    return { occurrences: page.occurrences ?? [], next_cursor: page.next_cursor };
+  },
+  createAutomation: (input: CreateAutomationInput) =>
+    request<AutomationDetail>("/api/v1/automations", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateAutomation: ({ id, input }: { id: string; input: UpdateAutomationInput }) =>
+    request<AutomationDetail>(`/api/v1/automations/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+  setAutomationEnabled: ({ id, enabled }: { id: string; enabled: boolean }) =>
+    request<AutomationDetail>(`/api/v1/automations/${encodeURIComponent(id)}/enabled`, {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled,
+        confirm_legacy_poller_stopped: enabled,
+      }),
+    }),
+  testAutomation: (id: string) =>
+    request<TestAutomationResult>(`/api/v1/automations/${encodeURIComponent(id)}/test`, {
+      method: "POST",
+      body: "{}",
+    }),
+  checkAutomation: (id: string) =>
+    request<AutomationDetail>(`/api/v1/automations/${encodeURIComponent(id)}/check`, {
+      method: "POST",
+      body: "{}",
     }),
   events: async (attemptID: string, after: number): Promise<AttemptEventPage> => {
     const query = new URLSearchParams({ after: String(after), limit: "100" });

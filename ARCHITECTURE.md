@@ -2,15 +2,16 @@
 
 > **Status:** Current implementation
 >
-> **Verification basis:** Working tree including versioned Workflows from issue #183
+> **Verification basis:** Working tree including GitHub issue Automations from issue #184
 
 ## 1. Executive summary
 
 Factory is a local control plane for running coding agents in Git repositories.
 It separates durable coordination from agent execution:
 
-- `factory-server` stores work, assigns it, exposes the HTTP API, and serves the
-  embedded browser UI.
+- `factory-server` stores work, assigns it, evaluates typed GitHub issue
+  Automations through `gh`, exposes the HTTP API, and serves the embedded
+  browser UI.
 - `factory-worker` has one stable identity and one agent runtime. It advertises
   runtime capacity and provider access, acquires centrally managed repositories
   on demand, and runs attempts in isolated Git worktrees.
@@ -87,6 +88,8 @@ the system does not use WebSockets.
 12. Tasks snapshot their Workflow name, revision, context, and resolved prompt.
     Workers remain generic and receive the resolved prompt through the existing
     claim task description.
+13. A typed GitHub issue Automation is created disabled. One issue creates at
+    most one durable Occurrence and one ordinary Task per Automation.
 
 ## 4. Components and dependencies
 
@@ -102,7 +105,8 @@ the system does not use WebSockets.
 - allows ten seconds for HTTP shutdown.
 
 `internal/controlplane` owns the API, validation, state transitions, scheduling,
-metrics, pagination, Workflow revisions, prompt composition, and persistence.
+metrics, pagination, Workflow revisions, typed GitHub issue Automations,
+provider health, prompt composition, and persistence.
 Claim selection is transactional and FIFO by execution creation time for the
 requesting worker.
 
@@ -240,6 +244,23 @@ Node.js is a contributor dependency only when UI source changes.
 Source polling never changes the issue. The agent prompt may tell the worker to
 use its installed provider CLI to update the issue and open a pull request.
 
+### Control-plane GitHub issue Automation
+
+1. An operator creates a disabled Automation bound to one Workflow and one
+   managed GitHub repository, then previews its bounded matches.
+2. Enabling requires explicit confirmation that an equivalent standalone
+   `factory-poller` queue is stopped. The server schedules an immediate check.
+3. The evaluator runs fixed `gh issue list` arguments without a shell, with a
+   30-second timeout, bounded output, strict JSON, and repository-specific URL
+   validation.
+4. One transaction validates the evaluation token and enabled dependencies,
+   stores every new typed Occurrence, updates health and counters, and advances
+   the next check. Repeated issues reuse the existing Occurrence identity.
+5. A later transaction routes the pending Occurrence, creates or exactly
+   recovers its deterministic Task, and links the Task to the Occurrence.
+6. The prompt separates trusted configured conditions from bounded untrusted
+   issue metadata and requires `gh` live-state revalidation before mutation.
+
 ### Attempt execution
 
 1. The worker validates the claim identity, assignment, runtime, repository ID,
@@ -311,6 +332,14 @@ POST   /api/v1/workflows
 GET    /api/v1/workflows/{workflow_id}
 POST   /api/v1/workflows/{workflow_id}/revisions
 PUT    /api/v1/workflows/{workflow_id}/enabled
+GET    /api/v1/automations?limit={1..200}&cursor={cursor}
+POST   /api/v1/automations
+GET    /api/v1/automations/{automation_id}
+PUT    /api/v1/automations/{automation_id}
+PUT    /api/v1/automations/{automation_id}/enabled
+POST   /api/v1/automations/{automation_id}/test
+POST   /api/v1/automations/{automation_id}/check
+GET    /api/v1/automations/{automation_id}/occurrences?limit={1..200}&cursor={cursor}
 GET    /api/v1/tasks?limit={1..200}&cursor={cursor}
 POST   /api/v1/tasks
 GET    /api/v1/tasks/{task_id}
@@ -341,8 +370,9 @@ are bounded by operation-specific byte limits.
 ### Persistent model
 
 ```text
-Workflow 1 --- * WorkflowRevision
-WorkflowRevision 1 --- * Task
+Workflow 1 --- * WorkflowRevision 1 --- * Task
+Workflow 1 --- * Automation 1 --- * Occurrence 0..1 --- Task
+Repository 1 --- * Automation
 Worker   1 --- * WorkerRepository * --- 1 Repository
 Task     1 --- 1 Execution       1 --- * Attempt 1 --- * AttemptEvent
 ```
@@ -354,6 +384,12 @@ Task     1 --- 1 Execution       1 --- * Attempt 1 --- * AttemptEvent
   snapshot, and its exact resolved prompt in the existing description field.
 - A repository is the central fleet record. Its enabled flag gates new routed
   work but does not rewrite existing assignments.
+- An Automation stores one concrete `github_issue` Trigger, health and polling
+  cursor, counters, and disabled-first state. Its Occurrences snapshot the
+  Workflow revision, repository, predicate, observation, prompt, and
+  deterministic Task request key before dispatch.
+- Automation and Occurrence collection APIs use opaque descending cursors, so
+  every supported record remains reachable beyond the first bounded page.
 - A worker-repository row may be a legacy static advertisement or the dynamic
   association frozen when a cattle worker is selected.
 - An execution stores its assigned worker, required runtime, state,
@@ -378,6 +414,10 @@ task list.
 | Workflows | 500 |
 | Workflow revisions per Workflow | 100 |
 | Workflow page | 50 by default, 200 maximum |
+| Automations | 500 |
+| Automation occurrences | 100,000 |
+| Automation context | 8 KiB |
+| Automation page | 50 by default, 200 maximum |
 | Default task timeout | 2 hours |
 | Maximum task timeout | 8 hours |
 | Lease duration | 30 seconds |
@@ -452,6 +492,8 @@ The current trust boundary is one trusted user on one host:
   arbitrary URL supplied by a ticket. This is not a filesystem sandbox;
 - provider CLIs own their credentials; the poller does not request, store, or
   pass provider tokens;
+- the control-plane evaluator invokes the local authenticated `gh` executable
+  with fixed arguments and stores no GitHub token;
 - workers advertise GitHub source access and managed acquisition only after a
   successful local `gh auth status` probe; registrations contain no token;
 - configured source commands and queue prompts are trusted operator policy;
@@ -498,6 +540,11 @@ and a reviewed tenant model.
   request body, but remain as deduplication records until the operator archives
   and resets the ledger. An issue does not rearm after leaving and re-entering
   its queue condition.
+- One unhealthy Automation does not stop control-plane APIs or other
+  Automations. Missing, unauthenticated, timed-out, malformed, oversized, and
+  over-limit `gh` results are stored as actionable per-Automation health.
+- Normal server shutdown stops Automation admission, cancels active `gh`
+  processes, waits for evaluator work to finish, and then closes SQLite.
 
 Summary metrics are derived only from retained control-plane facts: execution
 counts and outcomes, queue and running counts, success and retry rates, median
@@ -532,11 +579,12 @@ The contributor check set is documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 - A task has one execution assigned to one worker. Fan-out and cross-worker
   rescheduling are not implemented.
 - Execution scheduling is pull-based FIFO per worker. There are no priorities,
-  cron triggers, or automatic retries.
+  cron triggers, pull-request Automations, or automatic task retries.
 - GitHub is the only built-in issue source. Jira, Linear, and other providers
   need a command adapter that implements the normalized issue JSON contract.
-- Poller configuration is file-based and has no UI. Issue observations do not
-  rearm or expire automatically.
+- Standalone poller configuration remains file-based as a temporary migration
+  path. Control-plane GitHub issue Automations are managed in the UI. Neither
+  path rearms an issue automatically.
 - Scheduled Automations and a unified `factory` CLI are proposed but not
   implemented.
 - Metrics do not confirm external outcomes such as merged pull requests or
@@ -560,6 +608,8 @@ designs.
 | HTTP API and state machine | `internal/controlplane/http.go`, `state.go` |
 | Persistence and metrics | `internal/controlplane/store.go`, `metrics.go` |
 | Workflow identity, revisions, and listing | `internal/controlplane/workflows.go` |
+| Typed Automation store and API | `internal/controlplane/automations.go`, `automations_http.go` |
+| GitHub evaluator and occurrence dispatch | `internal/controlplane/automation_runtime.go` |
 | Prompt composition and complete agent input | `internal/protocol/prompt.go` |
 | Database schema | `migrations` |
 | Shared contracts and limits | `internal/protocol` |

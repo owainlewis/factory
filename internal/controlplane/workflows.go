@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/owainlewis/factory/internal/protocol"
@@ -364,7 +365,12 @@ func (s *Store) Workflows(ctx context.Context, request protocol.WorkflowPageRequ
 
 func (s *Store) SetWorkflowEnabled(ctx context.Context, workflowID string, enabled bool) (protocol.WorkflowDetail, error) {
 	now := s.now().UnixMilli()
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.WorkflowDetail{}, unavailable(err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
 		UPDATE workflows
 		SET enabled = ?, updated_at = CASE WHEN enabled != ? THEN ? ELSE updated_at END
 		WHERE id = ?
@@ -378,6 +384,33 @@ func (s *Store) SetWorkflowEnabled(ctx context.Context, workflowID string, enabl
 	}
 	if changed == 0 {
 		return protocol.WorkflowDetail{}, ErrNotFound
+	}
+	if enabled {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE automations
+			SET evaluation_token = NULL, evaluation_started_at = NULL,
+			    next_check_at = CASE WHEN enabled = 1 THEN ? ELSE NULL END,
+			    health_status = CASE WHEN enabled = 1 THEN 'pending' ELSE health_status END,
+			    health_code = CASE WHEN enabled = 1 THEN '' ELSE health_code END,
+			    health_message = CASE WHEN enabled = 1 THEN 'Workflow enabled; waiting for a GitHub check.' ELSE health_message END
+			WHERE workflow_id = ?
+		`, now, strings.TrimSpace(workflowID))
+	} else {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE automations
+			SET evaluation_token = NULL, evaluation_started_at = NULL,
+			    next_check_at = CASE WHEN enabled = 1 THEN ? ELSE NULL END,
+			    health_status = CASE WHEN enabled = 1 THEN 'blocked' ELSE health_status END,
+			    health_code = CASE WHEN enabled = 1 THEN 'workflow_disabled' ELSE health_code END,
+			    health_message = CASE WHEN enabled = 1 THEN 'Enable the selected Workflow before checks can run.' ELSE health_message END
+			WHERE workflow_id = ?
+		`, now+time.Minute.Milliseconds(), strings.TrimSpace(workflowID))
+	}
+	if err != nil {
+		return protocol.WorkflowDetail{}, unavailable(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return protocol.WorkflowDetail{}, unavailable(err)
 	}
 	return s.Workflow(ctx, workflowID)
 }

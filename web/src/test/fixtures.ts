@@ -1,4 +1,4 @@
-import type { ManagedRepository, MetricsSummary, Task, Worker, Workflow, WorkflowDetail } from "../types";
+import type { AutomationDetail, AutomationOccurrence, ManagedRepository, MetricsSummary, Task, Worker, Workflow, WorkflowDetail } from "../types";
 import { vi } from "vitest";
 
 export const worker: Worker = {
@@ -119,6 +119,35 @@ const historicalWorkflow: Workflow = {
   updated_at: "2026-07-31T08:00:00Z",
 };
 
+const initialAutomationDetail: AutomationDetail = {
+  automation: {
+    id: "automation-ready",
+    name: "Ready issues",
+    workflow_id: "workflow-implement",
+    workflow_name: "Implement",
+    workflow_revision: 1,
+    repository_id: "repo-factory",
+    repository_identity: "github.com/example/factory",
+    context: "Implement the issue and open a reviewed pull request.",
+    timeout_seconds: 7200,
+    enabled: false,
+    version: 1,
+    trigger: {
+      type: "github_issue",
+      state: "open",
+      required_labels: ["factory:ready"],
+      poll_interval_seconds: 30,
+    },
+    health: { status: "disabled", message: "Automation is disabled." },
+    matched_count: 0,
+    skipped_count: 0,
+    dispatched_count: 0,
+    created_at: "2026-08-01T08:00:00Z",
+    updated_at: "2026-08-01T08:00:00Z",
+  },
+  occurrences: [],
+};
+
 export function mockControlPlane(
   options: {
     createFailures?: number;
@@ -126,6 +155,8 @@ export function mockControlPlane(
     eventFailuresAfter?: number;
     growingTaskHistory?: boolean;
     incrementalEvents?: boolean;
+    paginatedAutomations?: boolean;
+    paginatedAutomationOccurrences?: boolean;
     paginatedTasks?: boolean;
     refreshesHistoricalWorkflow?: boolean;
     shiftingWorkflowBoundary?: boolean;
@@ -161,6 +192,21 @@ export function mockControlPlane(
   };
   let repositoryItems = managedRepositories.map((repository) => ({ ...repository }));
   let workflowDetail = structuredClone(initialWorkflowDetail);
+  let automationDetail = structuredClone(initialAutomationDetail);
+  const automationOccurrence = (id: string, issue: number, createdAt: string): AutomationOccurrence => ({
+    id,
+    automation_id: automationDetail.automation.id,
+    automation_version: 1,
+    state: "pending",
+    issue_number: issue,
+    issue_url: `https://github.com/example/factory/issues/${issue}`,
+    issue_title: `Paged issue ${issue}`,
+    observed_state: "open",
+    observed_labels: ["factory:ready"],
+    task_request_key: `automation:${automationDetail.automation.id}:github_issue:${issue}`,
+    created_at: createdAt,
+    updated_at: createdAt,
+  });
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const path =
       typeof input === "string"
@@ -354,6 +400,103 @@ export function mockControlPlane(
       const body = JSON.parse(String(init.body)) as { enabled: boolean };
       workflowDetail = { workflow: { ...workflowDetail.workflow, enabled: body.enabled }, revisions: workflowDetail.revisions };
       return Response.json(workflowDetail);
+    }
+    if (path === "/api/v1/automations?limit=200") {
+      return Response.json({
+        automations: [automationDetail.automation],
+        next_cursor: options.paginatedAutomations ? "automation-history" : null,
+      });
+    }
+    if (path === "/api/v1/automations?limit=200&cursor=automation-history") {
+      return Response.json({
+        automations: [{
+          ...automationDetail.automation,
+          id: "automation-history",
+          name: "Historical Automation",
+          updated_at: "2026-07-01T08:00:00Z",
+        }],
+        next_cursor: null,
+      });
+    }
+    if (path === "/api/v1/automations" && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      const trigger = body.trigger as AutomationDetail["automation"]["trigger"];
+      automationDetail = {
+        automation: {
+          ...automationDetail.automation,
+          id: "automation-created",
+          name: String(body.name),
+          workflow_id: String(body.workflow_id),
+          repository_id: String(body.repository_id),
+          context: String(body.context),
+          timeout_seconds: Number(body.timeout_seconds),
+          trigger,
+          updated_at: new Date().toISOString(),
+        },
+        occurrences: [],
+      };
+      return Response.json(automationDetail, { status: 201 });
+    }
+    if (path === `/api/v1/automations/${automationDetail.automation.id}`) {
+      if (init?.method === "PUT") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        automationDetail = {
+          ...automationDetail,
+          automation: {
+            ...automationDetail.automation,
+            name: String(body.name),
+            workflow_id: String(body.workflow_id),
+            context: String(body.context),
+            timeout_seconds: Number(body.timeout_seconds),
+            trigger: body.trigger as AutomationDetail["automation"]["trigger"],
+            version: automationDetail.automation.version + 1,
+            updated_at: new Date().toISOString(),
+          },
+        };
+      }
+      return Response.json(automationDetail);
+    }
+    if (path === `/api/v1/automations/${automationDetail.automation.id}/occurrences?limit=50`) {
+      return Response.json({
+        occurrences: options.paginatedAutomationOccurrences
+          ? [automationOccurrence("occurrence-head", 184, "2026-08-01T08:00:00Z")]
+          : automationDetail.occurrences,
+        next_cursor: options.paginatedAutomationOccurrences ? "occurrence-history" : null,
+      });
+    }
+    if (path === `/api/v1/automations/${automationDetail.automation.id}/occurrences?limit=50&cursor=occurrence-history`) {
+      return Response.json({
+        occurrences: [automationOccurrence("occurrence-history", 183, "2026-07-01T08:00:00Z")],
+        next_cursor: null,
+      });
+    }
+    if (path === `/api/v1/automations/${automationDetail.automation.id}/test` && init?.method === "POST") {
+      return Response.json({ matches: [{ number: 184, title: "Typed Automations", url: "https://github.com/example/factory/issues/184", state: "open", labels: ["factory:ready"] }] });
+    }
+    if (path === `/api/v1/automations/${automationDetail.automation.id}/enabled` && init?.method === "PUT") {
+      const body = JSON.parse(String(init.body)) as { enabled: boolean };
+      automationDetail = {
+        ...automationDetail,
+        automation: {
+          ...automationDetail.automation,
+          enabled: body.enabled,
+          health: body.enabled
+            ? { status: "pending", message: "Waiting for the next GitHub check." }
+            : { status: "disabled", message: "Automation is disabled." },
+          next_check_at: body.enabled ? new Date().toISOString() : undefined,
+        },
+      };
+      return Response.json(automationDetail);
+    }
+    if (path === `/api/v1/automations/${automationDetail.automation.id}/check` && init?.method === "POST") {
+      automationDetail = {
+        ...automationDetail,
+        automation: {
+          ...automationDetail.automation,
+          health: { status: "checking", message: "Checking GitHub now." },
+        },
+      };
+      return Response.json(automationDetail, { status: 202 });
     }
     if (path === "/api/v1/tasks") {
       if (init?.method === "POST") {

@@ -1,4 +1,4 @@
-import { BookOpenText, Bot, Boxes, Gauge, GitBranch, ListChecks, Menu, Plus, X } from "lucide-react";
+import { BookOpenText, Bot, Boxes, Gauge, GitBranch, ListChecks, Menu, Plus, Workflow as AutomationIcon, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
@@ -12,6 +12,7 @@ import type { Task, TaskPage } from "./types";
 import { WorkersView, WorkerDetail } from "./Workers";
 import { WorkView } from "./Work";
 import { WorkflowDetail, WorkflowsView } from "./Workflows";
+import { AutomationDetail, AutomationsView } from "./Automations";
 
 type Route =
   | { page: "overview" }
@@ -22,7 +23,9 @@ type Route =
   | { page: "worker"; id: string }
   | { page: "repository"; id: string }
   | { page: "workflows" }
-  | { page: "workflow"; id: string };
+  | { page: "workflow"; id: string }
+  | { page: "automations" }
+  | { page: "automation"; id: string };
 
 function readRoute(): Route {
   const parts = window.location.pathname.split("/").filter(Boolean);
@@ -30,6 +33,8 @@ function readRoute(): Route {
   if (parts[0] === "workers" && parts[1]) return { page: "worker", id: parts[1] };
   if (parts[0] === "workflows" && parts[1]) return { page: "workflow", id: parts[1] };
   if (parts[0] === "workflows") return { page: "workflows" };
+  if (parts[0] === "automations" && parts[1]) return { page: "automation", id: parts[1] };
+  if (parts[0] === "automations") return { page: "automations" };
   if (parts[0] === "workers") return { page: "workers" };
   if (parts[0] === "repositories" && parts[1]) return { page: "repository", id: parts[1] };
   if (parts[0] === "repositories") return { page: "repositories" };
@@ -42,6 +47,8 @@ function routePath(route: Route): string {
   if (route.page === "worker") return `/workers/${route.id}`;
   if (route.page === "workflow") return `/workflows/${route.id}`;
   if (route.page === "workflows") return "/workflows";
+  if (route.page === "automation") return `/automations/${route.id}`;
+  if (route.page === "automations") return "/automations";
   if (route.page === "workers") return "/workers";
   if (route.page === "repository") return `/repositories/${route.id}`;
   if (route.page === "repositories") return "/repositories";
@@ -163,6 +170,13 @@ export function App() {
             <BookOpenText size={17} /> Workflows
           </button>
           <button
+            className={`nav-item ${route.page === "automations" || route.page === "automation" ? "active" : ""}`}
+            aria-current={route.page === "automations" ? "page" : undefined}
+            onClick={() => navigate({ page: "automations" })}
+          >
+            <AutomationIcon size={17} /> Automations
+          </button>
+          <button
             className={`nav-item ${route.page === "workers" || route.page === "worker" ? "active" : ""}`}
             aria-current={route.page === "workers" ? "page" : undefined}
             onClick={() => navigate({ page: "workers" })}
@@ -203,6 +217,8 @@ export function App() {
             {route.page === "repository" && "Repository detail"}
             {route.page === "workflows" && "Workflows"}
             {route.page === "workflow" && "Workflow detail"}
+            {route.page === "automations" && "Automations"}
+            {route.page === "automation" && "Automation detail"}
           </div>
           <button className="button button-primary" onClick={() => openDelegate()}>
             <Plus size={16} /> Delegate task
@@ -283,6 +299,16 @@ export function App() {
           )}
           {route.page === "workflow" && (
             <WorkflowDetail id={route.id} onBack={() => navigate({ page: "workflows" })} />
+          )}
+          {route.page === "automations" && (
+            <AutomationsView onAutomation={(id) => navigate({ page: "automation", id })} />
+          )}
+          {route.page === "automation" && (
+            <AutomationDetail
+              id={route.id}
+              onBack={() => navigate({ page: "automations" })}
+              onTask={(taskID) => navigate({ page: "task", id: taskID })}
+            />
           )}
         </main>
       </div>

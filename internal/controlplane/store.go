@@ -681,7 +681,12 @@ func (s *Store) SetManagedRepositoryEnabled(
 ) (protocol.ManagedRepository, error) {
 	repositoryID = strings.TrimSpace(repositoryID)
 	now := s.now().UnixMilli()
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.ManagedRepository{}, unavailable(err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
 		UPDATE repositories
 		SET enabled = ?, centrally_managed = 1, updated_at = ?
 		WHERE id = ?
@@ -695,6 +700,33 @@ func (s *Store) SetManagedRepositoryEnabled(
 	}
 	if affected == 0 {
 		return protocol.ManagedRepository{}, ErrNotFound
+	}
+	if enabled {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE automations
+			SET evaluation_token = NULL, evaluation_started_at = NULL,
+			    next_check_at = CASE WHEN enabled = 1 THEN ? ELSE NULL END,
+			    health_status = CASE WHEN enabled = 1 THEN 'pending' ELSE health_status END,
+			    health_code = CASE WHEN enabled = 1 THEN '' ELSE health_code END,
+			    health_message = CASE WHEN enabled = 1 THEN 'Repository enabled; waiting for a GitHub check.' ELSE health_message END
+			WHERE repository_id = ?
+		`, now, repositoryID)
+	} else {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE automations
+			SET evaluation_token = NULL, evaluation_started_at = NULL,
+			    next_check_at = CASE WHEN enabled = 1 THEN ? ELSE NULL END,
+			    health_status = CASE WHEN enabled = 1 THEN 'blocked' ELSE health_status END,
+			    health_code = CASE WHEN enabled = 1 THEN 'repository_disabled' ELSE health_code END,
+			    health_message = CASE WHEN enabled = 1 THEN 'Enable the selected repository before checks can run.' ELSE health_message END
+			WHERE repository_id = ?
+		`, now+time.Minute.Milliseconds(), repositoryID)
+	}
+	if err != nil {
+		return protocol.ManagedRepository{}, unavailable(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return protocol.ManagedRepository{}, unavailable(err)
 	}
 	return s.ManagedRepository(ctx, repositoryID)
 }
@@ -1631,6 +1663,12 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	if !errors.Is(err, sql.ErrNoRows) {
 		return protocol.TaskDetail{}, false, unavailable(err)
 	}
+	if strings.HasPrefix(input.RequestKey, "automation:") {
+		return protocol.TaskDetail{}, false, invalid(
+			"reserved_request_key_prefix",
+			"request_key values beginning with automation: are reserved for control-plane Automations",
+		)
+	}
 	resolvedPrompt := taskContext
 	var workflowID, workflowName string
 	var workflowRevisionNumber int
@@ -1977,6 +2015,14 @@ func (s *Store) DeleteTask(ctx context.Context, taskID string) error {
 		return unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM executions WHERE id = ?`, executionID); err != nil {
+		return unavailable(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE automation_occurrences
+		SET state = 'task_deleted', task_id = NULL, context = '', resolved_prompt = NULL,
+		    diagnostic = 'linked_task_deleted', updated_at = ?
+		WHERE task_id = ? AND state = 'dispatched'
+	`, s.now().UnixMilli(), taskID); err != nil {
 		return unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE id = ?`, taskID); err != nil {

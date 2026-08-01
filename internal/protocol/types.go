@@ -33,6 +33,12 @@ const (
 	MaxWorkflowPageSize       = 200
 	MaxWorkflows              = 500
 	MaxWorkflowRevisions      = 100
+	DefaultAutomationPageSize = 50
+	MaxAutomationPageSize     = 200
+	MaxAutomations            = 500
+	MaxAutomationOccurrences  = 100000
+	MaxAutomationContextBytes = 8 << 10
+	MaxAutomationMatches      = 100
 )
 
 func SupportedRuntime(value string) bool {
@@ -301,6 +307,130 @@ type WorkflowPageRequest struct {
 type WorkflowPage struct {
 	Workflows  []Workflow
 	NextCursor *WorkflowCursor
+}
+
+const AutomationTriggerGitHubIssue = "github_issue"
+
+type GitHubIssueTrigger struct {
+	Type                string   `json:"type"`
+	State               string   `json:"state"`
+	RequiredLabels      []string `json:"required_labels"`
+	PollIntervalSeconds int      `json:"poll_interval_seconds"`
+}
+
+type AutomationHealth struct {
+	Status  string `json:"status"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+type Automation struct {
+	ID                 string                 `json:"id"`
+	Name               string                 `json:"name"`
+	WorkflowID         string                 `json:"workflow_id"`
+	WorkflowName       string                 `json:"workflow_name"`
+	WorkflowRevision   int                    `json:"workflow_revision"`
+	RepositoryID       string                 `json:"repository_id"`
+	RepositoryIdentity string                 `json:"repository_identity"`
+	Context            string                 `json:"context"`
+	TimeoutSeconds     int                    `json:"timeout_seconds"`
+	Enabled            bool                   `json:"enabled"`
+	Version            int                    `json:"version"`
+	Trigger            GitHubIssueTrigger     `json:"trigger"`
+	Health             AutomationHealth       `json:"health"`
+	LastCheckedAt      *time.Time             `json:"last_checked_at,omitempty"`
+	NextCheckAt        *time.Time             `json:"next_check_at,omitempty"`
+	MatchedCount       int64                  `json:"matched_count"`
+	SkippedCount       int64                  `json:"skipped_count"`
+	DispatchedCount    int64                  `json:"dispatched_count"`
+	LatestTask         *AutomationTaskSummary `json:"latest_task,omitempty"`
+	CreatedAt          time.Time              `json:"created_at"`
+	UpdatedAt          time.Time              `json:"updated_at"`
+}
+
+type AutomationTaskSummary struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	State string `json:"state"`
+}
+
+type AutomationOccurrence struct {
+	ID                string                 `json:"id"`
+	AutomationID      string                 `json:"automation_id"`
+	AutomationVersion int                    `json:"automation_version"`
+	State             string                 `json:"state"`
+	IssueNumber       int                    `json:"issue_number"`
+	IssueURL          string                 `json:"issue_url"`
+	IssueTitle        string                 `json:"issue_title"`
+	ObservedState     string                 `json:"observed_state"`
+	ObservedLabels    []string               `json:"observed_labels"`
+	TaskRequestKey    string                 `json:"task_request_key"`
+	Task              *AutomationTaskSummary `json:"task,omitempty"`
+	TaskIDSnapshot    string                 `json:"task_id_snapshot,omitempty"`
+	Diagnostic        string                 `json:"diagnostic,omitempty"`
+	CreatedAt         time.Time              `json:"created_at"`
+	UpdatedAt         time.Time              `json:"updated_at"`
+}
+
+type AutomationDetail struct {
+	Automation  Automation             `json:"automation"`
+	Occurrences []AutomationOccurrence `json:"occurrences"`
+}
+
+type AutomationPage struct {
+	Automations []Automation      `json:"automations"`
+	NextCursor  *AutomationCursor `json:"-"`
+}
+
+type AutomationCursor struct {
+	UpdatedAtMillis int64
+	ID              string
+}
+
+type AutomationOccurrencePage struct {
+	Occurrences []AutomationOccurrence      `json:"occurrences"`
+	NextCursor  *AutomationOccurrenceCursor `json:"-"`
+}
+
+type AutomationOccurrenceCursor struct {
+	CreatedAtMillis int64
+	ID              string
+}
+
+type CreateAutomationRequest struct {
+	RequestKey     string             `json:"request_key"`
+	Name           string             `json:"name"`
+	WorkflowID     string             `json:"workflow_id"`
+	RepositoryID   string             `json:"repository_id"`
+	Context        string             `json:"context"`
+	TimeoutSeconds int                `json:"timeout_seconds"`
+	Trigger        GitHubIssueTrigger `json:"trigger"`
+}
+
+type UpdateAutomationRequest struct {
+	ExpectedVersion int                `json:"expected_version"`
+	Name            string             `json:"name"`
+	WorkflowID      string             `json:"workflow_id"`
+	Context         string             `json:"context"`
+	TimeoutSeconds  int                `json:"timeout_seconds"`
+	Trigger         GitHubIssueTrigger `json:"trigger"`
+}
+
+type SetAutomationEnabledRequest struct {
+	Enabled                    *bool `json:"enabled"`
+	ConfirmLegacyPollerStopped bool  `json:"confirm_legacy_poller_stopped,omitempty"`
+}
+
+type GitHubIssueMatch struct {
+	Number int      `json:"number"`
+	Title  string   `json:"title"`
+	URL    string   `json:"url"`
+	State  string   `json:"state"`
+	Labels []string `json:"labels"`
+}
+
+type TestAutomationResult struct {
+	Matches []GitHubIssueMatch `json:"matches"`
 }
 
 type MetricsSummary struct {

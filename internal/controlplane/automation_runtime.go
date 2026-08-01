@@ -1,0 +1,887 @@
+package controlplane
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/url"
+	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"github.com/owainlewis/factory/internal/protocol"
+)
+
+const (
+	automationCommandTimeout  = 30 * time.Second
+	automationStdoutLimit     = 4 << 20
+	automationStderrLimit     = 64 << 10
+	automationDiagnosticLimit = 4 << 10
+	maxObservationBytes       = 16 << 10
+)
+
+type automationCheckError struct {
+	code    string
+	message string
+}
+
+func (e *automationCheckError) Error() string { return e.message }
+
+type githubIssueLister interface {
+	ListIssues(context.Context, string, protocol.GitHubIssueTrigger) ([]protocol.GitHubIssueMatch, error)
+}
+
+type githubIssueRunner struct {
+	lookPath func(string) (string, error)
+	run      func(context.Context, string, ...string) ([]byte, []byte, bool, bool, error)
+}
+
+func newGitHubIssueRunner() githubIssueRunner {
+	return githubIssueRunner{lookPath: exec.LookPath, run: runAutomationCommand}
+}
+
+func (runner githubIssueRunner) ListIssues(
+	ctx context.Context,
+	repository string,
+	trigger protocol.GitHubIssueTrigger,
+) ([]protocol.GitHubIssueMatch, error) {
+	if _, err := runner.lookPath("gh"); err != nil {
+		return nil, &automationCheckError{
+			code:    "gh_not_found",
+			message: "GitHub CLI (gh) was not found on PATH. Install gh, then run `gh auth login`.",
+		}
+	}
+	project := strings.TrimPrefix(repository, "github.com/")
+	arguments := []string{
+		"issue", "list", "--repo", project, "--state", trigger.State,
+		"--limit", strconv.Itoa(protocol.MaxAutomationMatches + 1),
+		"--json", "number,title,url,labels,state",
+	}
+	for _, label := range trigger.RequiredLabels {
+		arguments = append(arguments, "--label", label)
+	}
+	stdout, stderr, stdoutTooLarge, stderrTooLarge, err := runner.run(ctx, "gh", arguments...)
+	if stdoutTooLarge {
+		return nil, &automationCheckError{code: "gh_output_too_large", message: "gh output exceeded 4 MiB. Narrow the issue state or required labels."}
+	}
+	if stderrTooLarge {
+		return nil, &automationCheckError{code: "gh_error_output_too_large", message: "gh error output exceeded 64 KiB. Run `gh auth status` and retry the check."}
+	}
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, &automationCheckError{code: "gh_timed_out", message: "gh did not finish within 30 seconds. Check GitHub connectivity and narrow the match."}
+		}
+		if errors.Is(err, context.Canceled) {
+			return nil, &automationCheckError{code: "gh_cancelled", message: "The GitHub check was cancelled before completion."}
+		}
+		message := strings.TrimSpace(string(stderr))
+		lower := strings.ToLower(message)
+		if strings.Contains(lower, "auth") || strings.Contains(lower, "login") || strings.Contains(lower, "not logged") || strings.Contains(lower, "authentication") {
+			return nil, &automationCheckError{code: "gh_unauthenticated", message: "gh is not authenticated for github.com. Run `gh auth login` and verify with `gh auth status`."}
+		}
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, &automationCheckError{code: "gh_failed", message: truncateAutomationDiagnostic("gh issue list failed: " + message + ". Run `gh auth status` and verify repository access.")}
+	}
+	var values []struct {
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		URL    string `json:"url"`
+		State  string `json:"state"`
+		Labels []struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Color       string `json:"color"`
+		} `json:"labels"`
+	}
+	if err := decodeAutomationJSON(stdout, &values); err != nil {
+		return nil, &automationCheckError{code: "gh_malformed_output", message: "gh returned malformed or unexpected JSON: " + truncateAutomationDiagnostic(err.Error())}
+	}
+	if len(values) > protocol.MaxAutomationMatches {
+		return nil, &automationCheckError{code: "gh_match_limit", message: "gh returned more than 100 issues. Add required labels or narrow the issue state."}
+	}
+	matches := make([]protocol.GitHubIssueMatch, 0, len(values))
+	seen := make(map[int]protocol.GitHubIssueMatch, len(values))
+	for index, value := range values {
+		labels := make([]string, 0, len(value.Labels))
+		for _, label := range value.Labels {
+			labels = append(labels, label.Name)
+		}
+		match := protocol.GitHubIssueMatch{
+			Number: value.Number, Title: strings.TrimSpace(value.Title),
+			URL: strings.TrimSpace(value.URL), State: strings.ToLower(strings.TrimSpace(value.State)),
+			Labels: labels,
+		}
+		if err := validateGitHubIssueMatch(repository, trigger, match); err != nil {
+			return nil, &automationCheckError{code: "gh_invalid_output", message: fmt.Sprintf("gh result %d is invalid: %s", index+1, err)}
+		}
+		if previous, exists := seen[match.Number]; exists {
+			if !equalGitHubIssueMatch(previous, match) {
+				return nil, &automationCheckError{code: "gh_conflicting_duplicate", message: fmt.Sprintf("gh returned conflicting entries for issue #%d", match.Number)}
+			}
+			continue
+		}
+		seen[match.Number] = match
+		matches = append(matches, match)
+	}
+	return matches, nil
+}
+
+func runAutomationCommand(
+	ctx context.Context,
+	executable string,
+	arguments ...string,
+) ([]byte, []byte, bool, bool, error) {
+	return runAutomationCommandWithLimits(
+		ctx, automationCommandTimeout, automationStdoutLimit, automationStderrLimit,
+		executable, arguments...,
+	)
+}
+
+func runAutomationCommandWithLimits(
+	ctx context.Context,
+	timeout time.Duration,
+	stdoutLimit, stderrLimit int,
+	executable string,
+	arguments ...string,
+) ([]byte, []byte, bool, bool, error) {
+	commandContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	command := exec.CommandContext(commandContext, executable, arguments...)
+	stdout := &automationLimitBuffer{limit: stdoutLimit}
+	stderr := &automationLimitBuffer{limit: stderrLimit}
+	command.Stdout = stdout
+	command.Stderr = stderr
+	err := command.Run()
+	if commandContext.Err() != nil {
+		err = commandContext.Err()
+	}
+	return stdout.Bytes(), stderr.Bytes(), stdout.truncated, stderr.truncated, err
+}
+
+type automationLimitBuffer struct {
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (buffer *automationLimitBuffer) Write(value []byte) (int, error) {
+	original := len(value)
+	remaining := buffer.limit - buffer.buffer.Len()
+	if remaining > 0 {
+		if len(value) > remaining {
+			value = value[:remaining]
+		}
+		_, _ = buffer.buffer.Write(value)
+	}
+	if original > remaining {
+		buffer.truncated = true
+	}
+	return original, nil
+}
+
+func (buffer *automationLimitBuffer) Bytes() []byte { return buffer.buffer.Bytes() }
+
+func decodeAutomationJSON(body []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err == nil {
+		return errors.New("multiple JSON values")
+	} else if !errors.Is(err, io.EOF) {
+		return fmt.Errorf("trailing JSON data: %w", err)
+	}
+	return nil
+}
+
+func validateGitHubIssueMatch(
+	repository string,
+	trigger protocol.GitHubIssueTrigger,
+	match protocol.GitHubIssueMatch,
+) error {
+	if match.Number < 1 || int64(match.Number) > int64(1<<31-1) {
+		return errors.New("issue number must be a positive 32-bit integer")
+	}
+	if match.Title == "" || utf8.RuneCountInString(match.Title) > 500 || len([]byte(match.Title)) > 2<<10 {
+		return errors.New("title must be nonblank, at most 500 characters, and at most 2 KiB")
+	}
+	if match.State != trigger.State {
+		return fmt.Errorf("state %q does not match configured state %q", match.State, trigger.State)
+	}
+	parsed, err := url.Parse(match.URL)
+	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Host, "github.com") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("URL must be an HTTPS github.com issue URL without query or fragment")
+	}
+	expectedPath := "/" + strings.TrimPrefix(repository, "github.com/") + "/issues/" + strconv.Itoa(match.Number)
+	if !strings.EqualFold(strings.TrimSuffix(parsed.Path, "/"), expectedPath) || len([]byte(match.URL)) > 2048 {
+		return errors.New("URL does not identify the configured repository and issue number")
+	}
+	if len(match.Labels) > 100 {
+		return errors.New("issue has more than 100 labels")
+	}
+	labelBytes := 0
+	for _, label := range match.Labels {
+		labelBytes += len([]byte(label))
+		if label == "" || label != strings.TrimSpace(label) || len([]byte(label)) > 200 {
+			return errors.New("issue contains an invalid label")
+		}
+	}
+	if labelBytes > 8<<10 {
+		return errors.New("issue labels exceed 8 KiB")
+	}
+	for _, required := range trigger.RequiredLabels {
+		found := false
+		for _, label := range match.Labels {
+			if strings.EqualFold(required, label) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("issue is missing required label %q", required)
+		}
+	}
+	encoded, err := json.Marshal(match)
+	if err != nil || len(encoded) > maxObservationBytes {
+		return errors.New("canonical issue metadata exceeds 16 KiB")
+	}
+	return nil
+}
+
+func equalGitHubIssueMatch(left, right protocol.GitHubIssueMatch) bool {
+	leftJSON, _ := json.Marshal(left)
+	rightJSON, _ := json.Marshal(right)
+	return bytes.Equal(leftJSON, rightJSON)
+}
+
+func truncateAutomationDiagnostic(value string) string {
+	if len([]byte(value)) <= automationDiagnosticLimit {
+		return value
+	}
+	return string([]byte(value)[:automationDiagnosticLimit])
+}
+
+type automationEvaluation struct {
+	Automation           protocol.Automation
+	WorkflowRevisionID   string
+	WorkflowInstructions string
+	Token                string
+}
+
+type AutomationService struct {
+	store  *Store
+	runner githubIssueLister
+	logger *slog.Logger
+	wake   chan struct{}
+	mu     sync.Mutex
+	cancel map[string]automationCancellation
+}
+
+type automationCancellation struct {
+	token  string
+	cancel context.CancelFunc
+}
+
+func NewAutomationService(store *Store, logger *slog.Logger) *AutomationService {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return newAutomationService(store, logger, newGitHubIssueRunner())
+}
+
+func newAutomationService(store *Store, logger *slog.Logger, runner githubIssueLister) *AutomationService {
+	return &AutomationService{
+		store: store, runner: runner, logger: logger,
+		wake: make(chan struct{}, 1), cancel: make(map[string]automationCancellation),
+	}
+}
+
+func (service *AutomationService) Wake() {
+	select {
+	case service.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (service *AutomationService) Cancel(automationID, token string) {
+	if token == "" {
+		return
+	}
+	service.mu.Lock()
+	cancellation := service.cancel[automationID]
+	service.mu.Unlock()
+	if cancellation.token == token && cancellation.cancel != nil {
+		cancellation.cancel()
+	}
+}
+
+func (service *AutomationService) Test(
+	ctx context.Context,
+	automationID string,
+) (protocol.TestAutomationResult, error) {
+	detail, err := service.store.Automation(ctx, automationID)
+	if err != nil {
+		return protocol.TestAutomationResult{}, err
+	}
+	matches, err := service.runner.ListIssues(ctx, detail.Automation.RepositoryIdentity, detail.Automation.Trigger)
+	if err != nil {
+		var checkErr *automationCheckError
+		if errors.As(err, &checkErr) {
+			return protocol.TestAutomationResult{}, &ServiceError{Code: checkErr.code, Message: checkErr.message, Status: 503}
+		}
+		return protocol.TestAutomationResult{}, unavailable(err)
+	}
+	return protocol.TestAutomationResult{Matches: matches}, nil
+}
+
+func (service *AutomationService) Run(ctx context.Context) {
+	if err := service.store.recoverAutomationRuntime(ctx); err != nil {
+		service.logger.Error("automation_recovery_failed", "error_class", "storage_unavailable")
+	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	var checks sync.WaitGroup
+	slots := make(chan struct{}, 4)
+	runPass := func() {
+		for len(slots) < cap(slots) {
+			if ctx.Err() != nil {
+				break
+			}
+			evaluation, found, err := service.store.reserveDueAutomation(ctx)
+			if err != nil {
+				if ctx.Err() == nil {
+					service.logger.Error("automation_reserve_failed", "error_class", "storage_unavailable")
+				}
+				break
+			}
+			if !found {
+				break
+			}
+			slots <- struct{}{}
+			checks.Add(1)
+			go func(evaluation automationEvaluation) {
+				defer checks.Done()
+				defer func() { <-slots }()
+				service.evaluate(ctx, evaluation)
+			}(evaluation)
+		}
+		if ctx.Err() == nil {
+			if err := service.store.dispatchPendingOccurrences(ctx, protocol.MaxAutomationMatches); err != nil {
+				service.logger.Error("automation_dispatch_failed", "error_class", "storage_unavailable")
+			}
+		}
+	}
+	runPass()
+	for {
+		select {
+		case <-ctx.Done():
+			service.mu.Lock()
+			for _, cancellation := range service.cancel {
+				cancellation.cancel()
+			}
+			service.mu.Unlock()
+			checks.Wait()
+			return
+		case <-service.wake:
+			runPass()
+		case <-ticker.C:
+			runPass()
+		}
+	}
+}
+
+func (service *AutomationService) evaluate(ctx context.Context, evaluation automationEvaluation) {
+	checkContext, cancel := context.WithCancel(ctx)
+	service.mu.Lock()
+	service.cancel[evaluation.Automation.ID] = automationCancellation{token: evaluation.Token, cancel: cancel}
+	service.mu.Unlock()
+	defer func() {
+		cancel()
+		service.mu.Lock()
+		if current := service.cancel[evaluation.Automation.ID]; current.token == evaluation.Token {
+			delete(service.cancel, evaluation.Automation.ID)
+		}
+		service.mu.Unlock()
+	}()
+	matches, err := service.runner.ListIssues(checkContext, evaluation.Automation.RepositoryIdentity, evaluation.Automation.Trigger)
+	if checkContext.Err() != nil {
+		return
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		var checkErr *automationCheckError
+		if !errors.As(err, &checkErr) {
+			checkErr = &automationCheckError{code: "gh_failed", message: truncateAutomationDiagnostic(err.Error())}
+		}
+		_ = service.store.completeAutomationFailure(context.Background(), evaluation, checkErr)
+		return
+	}
+	if err := service.store.completeAutomationSuccess(context.Background(), evaluation, matches); err != nil && ctx.Err() == nil {
+		service.logger.Error("automation_check_commit_failed", "automation_id", evaluation.Automation.ID, "error_class", "storage_unavailable")
+	}
+}
+
+func (s *Store) recoverAutomationRuntime(ctx context.Context) error {
+	now := s.now().UnixMilli()
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE automations
+		SET evaluation_token = NULL, evaluation_started_at = NULL,
+		    next_check_at = CASE WHEN enabled = 1 THEN ? ELSE NULL END,
+		    health_status = CASE WHEN enabled = 1 THEN 'pending' ELSE 'disabled' END,
+		    health_code = CASE WHEN enabled = 1 THEN 'check_recovered' ELSE '' END,
+		    health_message = CASE WHEN enabled = 1 THEN 'Recovered an interrupted check; retrying.' ELSE 'Automation is disabled.' END
+		WHERE evaluation_token IS NOT NULL
+	`, now)
+	return err
+}
+
+func (s *Store) reserveDueAutomation(ctx context.Context) (automationEvaluation, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return automationEvaluation{}, false, unavailable(err)
+	}
+	defer tx.Rollback()
+	now := s.now().UnixMilli()
+	var id string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id FROM automations
+		WHERE enabled = 1 AND evaluation_token IS NULL
+		  AND next_check_at IS NOT NULL AND next_check_at <= ?
+		ORDER BY next_check_at, id LIMIT 1
+	`, now).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return automationEvaluation{}, false, nil
+	}
+	if err != nil {
+		return automationEvaluation{}, false, unavailable(err)
+	}
+	token, err := newID()
+	if err != nil {
+		return automationEvaluation{}, false, unavailable(err)
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE automations
+		SET evaluation_token = ?, evaluation_started_at = ?, health_status = 'checking',
+		    health_code = '', health_message = 'Checking GitHub now.'
+		WHERE id = ? AND enabled = 1 AND evaluation_token IS NULL
+	`, token, now, id)
+	if err != nil {
+		return automationEvaluation{}, false, unavailable(err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		return automationEvaluation{}, false, err
+	}
+	var evaluation automationEvaluation
+	evaluation.Token = token
+	var enabled int
+	var labels []byte
+	var createdAt, updatedAt int64
+	var lastChecked, nextCheck sql.NullInt64
+	err = tx.QueryRowContext(ctx, automationSelect+`
+		WHERE automation.id = ?`, id).Scan(
+		&evaluation.Automation.ID, &evaluation.Automation.Name, &evaluation.Automation.WorkflowID,
+		&evaluation.Automation.WorkflowName, &evaluation.Automation.WorkflowRevision,
+		&evaluation.Automation.RepositoryID, &evaluation.Automation.RepositoryIdentity,
+		&evaluation.Automation.Context, &evaluation.Automation.TimeoutSeconds, &enabled,
+		&evaluation.Automation.Version, &evaluation.Automation.Trigger.State, &labels,
+		&evaluation.Automation.Trigger.PollIntervalSeconds, &evaluation.Automation.Health.Status,
+		&evaluation.Automation.Health.Code, &evaluation.Automation.Health.Message,
+		&lastChecked, &nextCheck, &evaluation.Automation.MatchedCount,
+		&evaluation.Automation.SkippedCount, &evaluation.Automation.DispatchedCount,
+		&createdAt, &updatedAt,
+	)
+	if err != nil {
+		return automationEvaluation{}, false, unavailable(err)
+	}
+	evaluation.Automation.Enabled = enabled != 0
+	evaluation.Automation.Trigger.Type = protocol.AutomationTriggerGitHubIssue
+	if err := json.Unmarshal(labels, &evaluation.Automation.Trigger.RequiredLabels); err != nil {
+		return automationEvaluation{}, false, unavailable(err)
+	}
+	err = tx.QueryRowContext(ctx, `
+		SELECT revision.id, revision.instructions
+		FROM workflows workflow
+		JOIN workflow_revisions revision ON revision.id = workflow.current_revision_id
+		WHERE workflow.id = ? AND workflow.enabled = 1
+	`, evaluation.Automation.WorkflowID).Scan(&evaluation.WorkflowRevisionID, &evaluation.WorkflowInstructions)
+	if errors.Is(err, sql.ErrNoRows) {
+		_, _ = tx.ExecContext(ctx, `
+			UPDATE automations SET evaluation_token = NULL, evaluation_started_at = NULL,
+			    health_status = 'blocked', health_code = 'workflow_disabled',
+			    health_message = 'Enable the selected Workflow before checks can run.', next_check_at = ?
+			WHERE id = ? AND evaluation_token = ?
+		`, now+time.Minute.Milliseconds(), id, token)
+		if err := tx.Commit(); err != nil {
+			return automationEvaluation{}, false, unavailable(err)
+		}
+		return automationEvaluation{}, false, nil
+	}
+	if err != nil {
+		return automationEvaluation{}, false, unavailable(err)
+	}
+	var repositoryEnabled int
+	if err := tx.QueryRowContext(ctx, `SELECT enabled FROM repositories WHERE id = ?`, evaluation.Automation.RepositoryID).Scan(&repositoryEnabled); err != nil {
+		return automationEvaluation{}, false, unavailable(err)
+	}
+	if repositoryEnabled == 0 {
+		_, _ = tx.ExecContext(ctx, `
+			UPDATE automations SET evaluation_token = NULL, evaluation_started_at = NULL,
+			    health_status = 'blocked', health_code = 'repository_disabled',
+			    health_message = 'Enable the selected repository before checks can run.', next_check_at = ?
+			WHERE id = ? AND evaluation_token = ?
+		`, now+time.Minute.Milliseconds(), id, token)
+		if err := tx.Commit(); err != nil {
+			return automationEvaluation{}, false, unavailable(err)
+		}
+		return automationEvaluation{}, false, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return automationEvaluation{}, false, unavailable(err)
+	}
+	return evaluation, true, nil
+}
+
+func (s *Store) completeAutomationFailure(
+	ctx context.Context,
+	evaluation automationEvaluation,
+	checkErr *automationCheckError,
+) error {
+	now := s.now().UnixMilli()
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE automations
+		SET evaluation_token = NULL, evaluation_started_at = NULL,
+		    last_checked_at = ?, next_check_at = ?, health_status = 'error',
+		    health_code = ?, health_message = ?
+		WHERE id = ? AND enabled = 1 AND evaluation_token = ?
+	`, now, now+int64(evaluation.Automation.Trigger.PollIntervalSeconds)*1000,
+		checkErr.code, truncateAutomationDiagnostic(checkErr.message),
+		evaluation.Automation.ID, evaluation.Token)
+	return err
+}
+
+func (s *Store) completeAutomationSuccess(
+	ctx context.Context,
+	evaluation automationEvaluation,
+	matches []protocol.GitHubIssueMatch,
+) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return unavailable(err)
+	}
+	defer tx.Rollback()
+	var eligible int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM automations automation
+		JOIN workflows workflow ON workflow.id = automation.workflow_id AND workflow.enabled = 1
+		JOIN repositories repository ON repository.id = automation.repository_id AND repository.enabled = 1
+		WHERE automation.id = ? AND automation.enabled = 1 AND automation.evaluation_token = ?
+	`, evaluation.Automation.ID, evaluation.Token).Scan(&eligible); err != nil {
+		return unavailable(err)
+	}
+	if eligible == 0 {
+		return nil
+	}
+	newMatches := make([]protocol.GitHubIssueMatch, 0, len(matches))
+	for _, match := range matches {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM automation_github_issue_occurrences
+			WHERE automation_id = ? AND issue_number = ?
+		`, evaluation.Automation.ID, match.Number).Scan(&exists); err != nil {
+			return unavailable(err)
+		}
+		if exists == 0 {
+			newMatches = append(newMatches, match)
+		}
+	}
+	var occurrenceCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM automation_occurrences`).Scan(&occurrenceCount); err != nil {
+		return unavailable(err)
+	}
+	if occurrenceCount+len(newMatches) > protocol.MaxAutomationOccurrences {
+		return s.completeAutomationFailureTx(ctx, tx, evaluation, &automationCheckError{
+			code: "occurrence_limit_reached", message: "The durable Occurrence limit has been reached. Archive history before retrying.",
+		})
+	}
+	now := s.now().UnixMilli()
+	requiredLabels, _ := json.Marshal(evaluation.Automation.Trigger.RequiredLabels)
+	for _, match := range newMatches {
+		occurrenceID, err := newID()
+		if err != nil {
+			return unavailable(err)
+		}
+		observedLabels, err := json.Marshal(match.Labels)
+		if err != nil {
+			return unavailable(err)
+		}
+		prompt, err := protocol.ResolveGitHubIssueAutomationPrompt(
+			evaluation.WorkflowInstructions, evaluation.Automation.Context,
+			evaluation.Automation.Trigger.State, evaluation.Automation.Trigger.RequiredLabels, match,
+		)
+		state, diagnostic := "pending", ""
+		var storedPrompt any = prompt
+		if err != nil || len([]byte(prompt)) > protocol.MaxResolvedPromptBytes ||
+			!protocol.AgentPromptFits(evaluation.Automation.Name+": GitHub issue #"+strconv.Itoa(match.Number), evaluation.Automation.RepositoryIdentity, prompt) {
+			state, diagnostic, storedPrompt = "failed", "resolved_prompt_too_large", nil
+		}
+		requestKey := "automation:" + evaluation.Automation.ID + ":github_issue:" + strconv.Itoa(match.Number)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO automation_occurrences(
+				id, automation_id, automation_version, automation_name,
+				workflow_revision_id, repository_id, repository_identity,
+				context, timeout_seconds, state, resolved_prompt, task_request_key,
+				diagnostic, retry_at, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, occurrenceID, evaluation.Automation.ID, evaluation.Automation.Version,
+			evaluation.Automation.Name, evaluation.WorkflowRevisionID,
+			evaluation.Automation.RepositoryID, evaluation.Automation.RepositoryIdentity,
+			evaluation.Automation.Context, evaluation.Automation.TimeoutSeconds,
+			state, storedPrompt, requestKey, diagnostic, now, now, now); err != nil {
+			return unavailable(err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO automation_github_issue_occurrences(
+				occurrence_id, automation_id, issue_number, issue_url, issue_title,
+				observed_state, observed_labels_json, configured_state, required_labels_json
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, occurrenceID, evaluation.Automation.ID, match.Number, match.URL, match.Title,
+			match.State, observedLabels, evaluation.Automation.Trigger.State, requiredLabels); err != nil {
+			return unavailable(err)
+		}
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE automations
+		SET evaluation_token = NULL, evaluation_started_at = NULL,
+		    last_checked_at = ?, next_check_at = ?, health_status = 'healthy',
+		    health_code = '', health_message = ?, matched_count = matched_count + ?,
+		    skipped_count = skipped_count + ?
+		WHERE id = ? AND enabled = 1 AND evaluation_token = ?
+	`, now, now+int64(evaluation.Automation.Trigger.PollIntervalSeconds)*1000,
+		fmt.Sprintf("GitHub check completed with %d matching issue(s).", len(matches)),
+		len(matches), len(matches)-len(newMatches), evaluation.Automation.ID, evaluation.Token)
+	if err != nil {
+		return unavailable(err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return unavailable(err)
+	}
+	if changed != 1 {
+		return nil
+	}
+	return tx.Commit()
+}
+
+func (s *Store) completeAutomationFailureTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	evaluation automationEvaluation,
+	checkErr *automationCheckError,
+) error {
+	now := s.now().UnixMilli()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE automations
+		SET evaluation_token = NULL, evaluation_started_at = NULL,
+		    last_checked_at = ?, next_check_at = ?, health_status = 'error',
+		    health_code = ?, health_message = ?
+		WHERE id = ? AND enabled = 1 AND evaluation_token = ?
+	`, now, now+int64(evaluation.Automation.Trigger.PollIntervalSeconds)*1000,
+		checkErr.code, checkErr.message, evaluation.Automation.ID, evaluation.Token); err != nil {
+		return unavailable(err)
+	}
+	return tx.Commit()
+}
+
+func (s *Store) dispatchPendingOccurrences(ctx context.Context, limit int) error {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT occurrence.id
+		FROM automation_occurrences occurrence
+		JOIN automations automation ON automation.id = occurrence.automation_id
+		WHERE occurrence.state = 'pending' AND automation.enabled = 1
+		  AND (occurrence.retry_at IS NULL OR occurrence.retry_at <= ?)
+		ORDER BY occurrence.created_at, occurrence.id LIMIT ?
+	`, s.now().UnixMilli(), limit)
+	if err != nil {
+		return unavailable(err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return unavailable(err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return unavailable(err)
+	}
+	var result error
+	for _, id := range ids {
+		if err := s.dispatchOccurrence(ctx, id); err != nil {
+			result = errors.Join(result, err)
+		}
+	}
+	return result
+}
+
+func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return unavailable(err)
+	}
+	defer tx.Rollback()
+	var automationID, automationName, workflowRevisionID, repositoryID, repositoryIdentity string
+	var contextValue, prompt, requestKey string
+	var timeoutSeconds, issueNumber int
+	var workflowID, workflowName string
+	var workflowRevisionNumber, automationEnabled, workflowEnabled, repositoryEnabled int
+	err = tx.QueryRowContext(ctx, `
+		SELECT occurrence.automation_id, occurrence.automation_name,
+		       occurrence.workflow_revision_id, occurrence.repository_id,
+		       occurrence.repository_identity, occurrence.context,
+		       occurrence.timeout_seconds, occurrence.resolved_prompt,
+		       occurrence.task_request_key, issue.issue_number,
+		       revision.workflow_id, revision.name, revision.revision_number,
+		       automation.enabled, workflow.enabled, repository.enabled
+		FROM automation_occurrences occurrence
+		JOIN automation_github_issue_occurrences issue ON issue.occurrence_id = occurrence.id
+		JOIN automations automation ON automation.id = occurrence.automation_id
+		JOIN workflow_revisions revision ON revision.id = occurrence.workflow_revision_id
+		JOIN workflows workflow ON workflow.id = revision.workflow_id
+		JOIN repositories repository ON repository.id = occurrence.repository_id
+		WHERE occurrence.id = ? AND occurrence.state = 'pending'
+	`, occurrenceID).Scan(
+		&automationID, &automationName, &workflowRevisionID, &repositoryID,
+		&repositoryIdentity, &contextValue, &timeoutSeconds, &prompt, &requestKey,
+		&issueNumber, &workflowID, &workflowName, &workflowRevisionNumber,
+		&automationEnabled, &workflowEnabled, &repositoryEnabled,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return unavailable(err)
+	}
+	if automationEnabled == 0 || workflowEnabled == 0 || repositoryEnabled == 0 {
+		return nil
+	}
+	title := automationName + ": GitHub issue #" + strconv.Itoa(issueNumber)
+	route := protocol.TaskRoute{
+		RepositoryRemoteIdentity: repositoryIdentity,
+		SourceAccess:             protocol.SourceAccess{Provider: "github", Hostname: "github.com"},
+	}
+	now := s.now().UnixMilli()
+	selection, err := s.selectTaskRoute(ctx, tx, route, now)
+	if err != nil {
+		var serviceErr *ServiceError
+		if errors.As(err, &serviceErr) && serviceErr.Code == "no_eligible_worker" {
+			_, updateErr := tx.ExecContext(ctx, `
+				UPDATE automation_occurrences
+				SET diagnostic = ?, retry_at = ?, updated_at = ?
+				WHERE id = ? AND state = 'pending'
+			`, serviceErr.Message, now+5000, now, occurrenceID)
+			if updateErr != nil {
+				return unavailable(updateErr)
+			}
+			return tx.Commit()
+		}
+		return err
+	}
+	if selection.repositoryID != repositoryID {
+		return unavailable(errors.New("Automation route selected a different repository"))
+	}
+	var taskID, existingTitle, existingDescription, existingRepositoryID string
+	var existingTimeout int
+	var existingWorkflowRevisionID, existingContext sql.NullString
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, title, description, repository_id, timeout_seconds,
+		       workflow_revision_id, context
+		FROM tasks WHERE request_key = ?
+	`, requestKey).Scan(&taskID, &existingTitle, &existingDescription, &existingRepositoryID,
+		&existingTimeout, &existingWorkflowRevisionID, &existingContext)
+	if err == nil {
+		if existingTitle != title || existingDescription != prompt || existingRepositoryID != repositoryID ||
+			existingTimeout != timeoutSeconds || existingWorkflowRevisionID.String != workflowRevisionID ||
+			existingContext.String != contextValue {
+			return unavailable(errors.New("Automation task request key conflicts with stored task data"))
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return unavailable(err)
+	} else {
+		if !protocol.AgentPromptFits(title, repositoryIdentity, prompt) {
+			_, updateErr := tx.ExecContext(ctx, `
+				UPDATE automation_occurrences
+				SET state = 'failed', resolved_prompt = NULL,
+				    diagnostic = 'agent_prompt_too_large', retry_at = NULL, updated_at = ?
+				WHERE id = ? AND state = 'pending'
+			`, now, occurrenceID)
+			if updateErr != nil {
+				return unavailable(updateErr)
+			}
+			return tx.Commit()
+		}
+		taskID, err = newID()
+		if err != nil {
+			return unavailable(err)
+		}
+		executionID, err := newID()
+		if err != nil {
+			return unavailable(err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO tasks(
+				id, request_key, title, description, repository_id, timeout_seconds,
+				created_at, workflow_id, workflow_revision_id, workflow_name,
+				workflow_revision_number, context
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, taskID, requestKey, title, prompt, repositoryID, timeoutSeconds, now,
+			workflowID, workflowRevisionID, workflowName, workflowRevisionNumber, contextValue); err != nil {
+			return unavailable(err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO executions(id, task_id, assigned_worker_id, required_runtime, state, created_at, updated_at)
+			VALUES (?, ?, ?, ?, 'queued', ?, ?)
+		`, executionID, taskID, selection.workerID, selection.runtime, now, now); err != nil {
+			return unavailable(err)
+		}
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE automation_occurrences
+		SET state = 'dispatched', task_id = ?, task_id_snapshot = ?,
+		    diagnostic = '', retry_at = NULL, updated_at = ?
+		WHERE id = ? AND state = 'pending'
+	`, taskID, taskID, now, occurrenceID)
+	if err != nil {
+		return unavailable(err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return unavailable(err)
+	}
+	if changed != 1 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE automations SET dispatched_count = dispatched_count + 1 WHERE id = ?
+	`, automationID); err != nil {
+		return unavailable(err)
+	}
+	return tx.Commit()
+}

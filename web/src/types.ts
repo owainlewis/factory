@@ -146,6 +146,106 @@ export interface WorkflowPage {
   next_cursor: string | null;
 }
 
+export interface GitHubIssueTrigger {
+	type: "github_issue";
+	state: "open" | "closed";
+	required_labels: string[];
+	poll_interval_seconds: number;
+}
+
+export interface AutomationTaskSummary {
+	id: string;
+	title: string;
+	state: string;
+}
+
+export interface AutomationHealth {
+	status: "disabled" | "pending" | "checking" | "healthy" | "blocked" | "error";
+	code?: string;
+	message?: string;
+}
+
+export interface Automation {
+	id: string;
+	name: string;
+	workflow_id: string;
+	workflow_name: string;
+	workflow_revision: number;
+	repository_id: string;
+	repository_identity: string;
+	context: string;
+	timeout_seconds: number;
+	enabled: boolean;
+	version: number;
+	trigger: GitHubIssueTrigger;
+	health: AutomationHealth;
+	last_checked_at?: string;
+	next_check_at?: string;
+	matched_count: number;
+	skipped_count: number;
+	dispatched_count: number;
+	latest_task?: AutomationTaskSummary;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface AutomationOccurrence {
+	id: string;
+	automation_id: string;
+	automation_version: number;
+	state: "pending" | "dispatched" | "failed" | "task_deleted";
+	issue_number: number;
+	issue_url: string;
+	issue_title: string;
+	observed_state: string;
+	observed_labels: string[];
+	task_request_key: string;
+	task?: AutomationTaskSummary;
+	task_id_snapshot?: string;
+	diagnostic?: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface AutomationDetail {
+	automation: Automation;
+	occurrences: AutomationOccurrence[];
+}
+
+export interface AutomationPage {
+	automations: Automation[];
+	next_cursor: string | null;
+}
+
+export interface AutomationOccurrencePage {
+	occurrences: AutomationOccurrence[];
+	next_cursor: string | null;
+}
+
+export interface CreateAutomationInput {
+	request_key: string;
+	name: string;
+	workflow_id: string;
+	repository_id: string;
+	context: string;
+	timeout_seconds: number;
+	trigger: GitHubIssueTrigger;
+}
+
+export interface UpdateAutomationInput extends Omit<CreateAutomationInput, "request_key" | "repository_id"> {
+	expected_version: number;
+}
+
+export interface TestAutomationResult {
+	matches: Array<{
+		number: number;
+		title: string;
+		url: string;
+		state: string;
+		labels: string[];
+	}>;
+}
+
 export type MetricsWindow = "24h" | "7d" | "30d" | "all";
 
 export interface MetricsSummary {

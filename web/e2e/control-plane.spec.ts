@@ -12,6 +12,7 @@ test.setTimeout(120_000);
 const workerOnline = "worker-online-e2e";
 const workerOffline = "worker-offline-e2e";
 const managedWorker = "worker-managed-e2e";
+const automationWorker = "worker-automation-e2e";
 const realWorker = "11111111-1111-4111-8111-111111111111";
 const onlineRepositories = [
   { key: "factory", remote_identity: "github.com/example/factory", retained_count: 1 },
@@ -47,6 +48,7 @@ async function registerWorker(
   activeCount = 0,
   disposedAttemptIDs: string[] = [],
   runtime: "codex" | "claude-code" = "codex",
+  sourceAccess: Array<{ provider: "github"; hostname: string }> = [],
 ) {
   return json<{
     repositories: Array<{ id: string; key: string }>;
@@ -60,6 +62,7 @@ async function registerWorker(
         capacity: 2,
         active_count: activeCount,
         health: "healthy",
+        source_access: sourceAccess,
         capacity_handoff_version: 1,
         disposed_attempt_ids: disposedAttemptIDs,
         repositories,
@@ -210,6 +213,29 @@ test.beforeAll(async () => {
   const online = await registerWorker(api, workerOnline, "Build Mac", onlineRepositories);
   identifiers.factoryRepository = online.repositories.find((repo) => repo.key === "factory")!.id;
   identifiers.handbookRepository = online.repositories.find((repo) => repo.key === "handbook")!.id;
+  const automation = await registerWorker(
+    api,
+    automationWorker,
+    "Automation fixture",
+    [
+      {
+        key: "automation-fixture",
+        remote_identity: "github.com/example/automation-fixture",
+        retained_count: 0,
+      },
+    ],
+    0,
+    [],
+    "codex",
+    [{ provider: "github", hostname: "github.com" }],
+  );
+  const managedAutomationRepository = await json<{ id: string }>(
+    await api.post("/api/v1/repositories", {
+      data: { remote_identity: "github.com/example/automation-fixture" },
+    }),
+  );
+  expect(managedAutomationRepository.id).toBe(automation.repositories[0].id);
+  identifiers.automationRepository = managedAutomationRepository.id;
 
   const queued = await createTask(
     api,
@@ -750,6 +776,69 @@ test("manages repository routing end to end and preserves add input while pollin
   expect(enabledRoute.status()).toBe(201);
   const enabledTask = await enabledRoute.json() as { execution: { assigned_worker_id: string } };
   expect([managedWorker, realWorker]).toContain(enabledTask.execution.assigned_worker_id);
+  await api.dispose();
+  browser.assertClean();
+});
+
+test("previews and dispatches one typed GitHub issue Automation without duplication", async ({ page }) => {
+  const browser = observeBrowser(page);
+  const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
+  await registerWorker(
+    api,
+    automationWorker,
+    "Automation fixture",
+    [
+      {
+        key: "automation-fixture",
+        remote_identity: "github.com/example/automation-fixture",
+        retained_count: 0,
+      },
+    ],
+    0,
+    [],
+    "codex",
+    [{ provider: "github", hostname: "github.com" }],
+  );
+  await page.goto("/workflows");
+  await page.getByRole("button", { name: "Create workflow" }).first().click();
+  const workflow = page.getByRole("dialog", { name: "Create workflow" });
+  await workflow.getByLabel("Name").fill("E2E issue Automation");
+  await workflow.getByLabel("Summary").fill("Dispatch the safe issue fixture.");
+  await workflow.getByLabel("Markdown instructions").fill("Fetch the live issue, implement it, and verify the result.");
+  await workflow.getByRole("button", { name: "Create workflow" }).click();
+  await expect(page.getByRole("heading", { name: "E2E issue Automation" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Automations", exact: true }).click();
+  await page.getByRole("button", { name: "Create Automation" }).first().click();
+  const automation = page.getByRole("dialog", { name: "Create Automation" });
+  await automation.getByLabel("Name").fill("E2E ready issues");
+  await automation.getByLabel("Workflow").selectOption({ label: "E2E issue Automation" });
+  await automation.getByLabel("Managed repository").selectOption(identifiers.automationRepository);
+  await automation.getByLabel("Trusted Automation context").fill("Use only the safe browser fixture repository.");
+  await automation.getByRole("button", { name: "Create Automation" }).click();
+  await expect(page.getByRole("heading", { name: "E2E ready issues" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Test trigger" }).click();
+  await expect(page.getByText("#184 Typed Automation browser fixture")).toBeVisible();
+  await expect(page.getByText("Testing creates no task or durable occurrence.")).toBeVisible();
+  await expect(page.getByText("No durable occurrences yet.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Enable" }).click();
+  await page.getByRole("checkbox", { name: /factory-poller is stopped/ }).check();
+  await page.getByRole("button", { name: "Confirm enable" }).click();
+  await expect(page.locator(".automation-health").getByText("healthy", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".occurrence-list").getByText("#184 Typed Automation browser fixture", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open task" })).toBeVisible();
+
+  const before = await json<{ tasks: Array<{ request_key: string }> }>(await api.get("/api/v1/tasks?limit=200"));
+  const automationTasksBefore = before.tasks.filter((task) => task.request_key.includes(":github_issue:184"));
+  expect(automationTasksBefore).toHaveLength(1);
+
+  await page.getByRole("button", { name: "Run now" }).click();
+  await expect(page.locator(".automation-metrics > div").filter({ hasText: "Matched" }).locator("strong")).toHaveText("2", { timeout: 15_000 });
+  const after = await json<{ tasks: Array<{ request_key: string }> }>(await api.get("/api/v1/tasks?limit=200"));
+  const automationTasksAfter = after.tasks.filter((task) => task.request_key.includes(":github_issue:184"));
+  expect(automationTasksAfter).toHaveLength(1);
   await api.dispose();
   browser.assertClean();
 });

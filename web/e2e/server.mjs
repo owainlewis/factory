@@ -113,10 +113,36 @@ printf '%s\\n' '{"type":"progress","message":"Created deterministic worktree evi
   await chmod(executable, 0o755);
 }
 
+async function createFakeGH() {
+  await mkdir(fakeBin, { recursive: true });
+  const executable = join(fakeBin, "gh");
+  await writeFile(
+    executable,
+    `#!/bin/sh
+set -eu
+
+if [ "\${1:-}" = "auth" ] && [ "\${2:-}" = "status" ]; then
+  echo "Logged in to github.com for deterministic Factory browser tests"
+  exit 0
+fi
+
+if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "list" ]; then
+  printf '%s\n' '[{"number":184,"title":"Typed Automation browser fixture","url":"https://github.com/example/automation-fixture/issues/184","state":"OPEN","labels":[{"id":"label-ready","name":"factory:ready","description":"","color":"ffffff"}]}]'
+  exit 0
+fi
+
+echo "unexpected fake gh arguments: $*" >&2
+exit 2
+`,
+  );
+  await chmod(executable, 0o755);
+}
+
 await Promise.all([
   run("go", ["build", "-o", serverBinary, "./cmd/factory-server"]),
   run("go", ["build", "-o", workerBinary, "./cmd/factory-worker"]),
   createFakeCodex(),
+  createFakeGH(),
 ]);
 const [factoryRepository, handbookRepository] = await Promise.all([
   createRepository("factory-demo"),
@@ -143,7 +169,11 @@ path = ${JSON.stringify(handbookRepository)}
 const server = spawn(
   serverBinary,
   ["-listen", "127.0.0.1:17437", "-database", database],
-  { cwd: root, stdio: "inherit" },
+  {
+    cwd: root,
+    env: { ...process.env, PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}` },
+    stdio: "inherit",
+  },
 );
 const worker = spawn(
   workerBinary,

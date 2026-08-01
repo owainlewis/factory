@@ -251,6 +251,93 @@ describe("App", () => {
     })).toBe(true);
   });
 
+  it("creates, tests, enables, runs, and disables a typed GitHub issue Automation", async () => {
+    window.history.replaceState({}, "", "/automations");
+    const fetch = mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: "Automations" })).toBeVisible();
+    const existingRow = screen.getByRole("button", { name: /Ready issues/ });
+    expect(existingRow).toHaveTextContent("Automation is disabled.");
+    expect(existingRow).toHaveTextContent("0 matched");
+    expect(existingRow).toHaveTextContent("Next Never");
+    expect(existingRow).toHaveTextContent("No task yet");
+    await user.click(screen.getByRole("button", { name: "Create Automation" }));
+    const dialog = screen.getByRole("dialog", { name: "Create Automation" });
+    await user.type(within(dialog).getByLabelText("Name"), "Factory ready issues");
+    await user.selectOptions(within(dialog).getByLabelText("Workflow"), "workflow-implement");
+    await user.selectOptions(within(dialog).getByLabelText("Managed repository"), "repo-factory");
+    await user.type(within(dialog).getByLabelText("Trusted Automation context"), "Fetch and revalidate live state.");
+    await user.click(within(dialog).getByRole("button", { name: "Create Automation" }));
+
+    expect(await screen.findByRole("heading", { name: "Factory ready issues" })).toBeVisible();
+    expect(screen.getByText("Automation is disabled.")).toBeVisible();
+    expect(screen.getByText("No task has been dispatched.")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const editDialog = screen.getByRole("dialog", { name: "Edit Automation" });
+    const editName = within(editDialog).getByLabelText("Name");
+    await user.clear(editName);
+    await user.type(editName, "Edited ready issues");
+    await user.click(within(editDialog).getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByRole("heading", { name: "Edited ready issues" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Test trigger" }));
+    expect(await screen.findByText("#184 Typed Automations")).toBeVisible();
+    expect(screen.getByText("Testing creates no task or durable occurrence.")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Enable" }));
+    const confirmation = screen.getByRole("checkbox", { name: /factory-poller is stopped/ });
+    expect(screen.getByRole("button", { name: "Confirm enable" })).toBeDisabled();
+    await user.click(confirmation);
+    await user.click(screen.getByRole("button", { name: "Confirm enable" }));
+    expect(await screen.findByRole("button", { name: "Disable" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText("Checking GitHub now.")).toBeVisible();
+    expect(fetch.mock.calls.some(([input, init]) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return path.endsWith("/check") && init?.method === "POST";
+    })).toBe(true);
+  });
+
+  it("preserves Automation form focus and typed input during background refresh", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      window.history.replaceState({}, "", "/automations");
+      mockControlPlane();
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderApp();
+
+      await user.click(await screen.findByRole("button", { name: "Create Automation" }));
+      const input = screen.getByLabelText("Trusted Automation context");
+      await user.type(input, "In progress Automation context");
+      expect(input).toHaveFocus();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+
+      expect(input).toHaveValue("In progress Automation context");
+      expect(input).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("loads additional Automation and Occurrence pages", async () => {
+    window.history.replaceState({}, "", "/automations");
+    mockControlPlane({ paginatedAutomations: true, paginatedAutomationOccurrences: true });
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Load more Automations" }));
+    expect(await screen.findByText("Historical Automation")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: /Ready issues/ }));
+    expect(await screen.findByText("#184 Paged issue 184")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Load more occurrences" }));
+    expect(await screen.findByText("#183 Paged issue 183")).toBeVisible();
+  });
+
   it("keeps a refreshed Workflow head entry over its stale loaded history copy", async () => {
     window.history.replaceState({}, "", "/workflows");
     mockControlPlane({ refreshesHistoricalWorkflow: true });
