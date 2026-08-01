@@ -212,6 +212,64 @@ describe("App", () => {
     }
   });
 
+  it("creates, revises, and disables a Workflow through its bounded views", async () => {
+    const fetch = mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: /^Workflows$/ }));
+    expect(await screen.findByRole("heading", { name: "Workflows" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Create workflow" }));
+    const createDialog = screen.getByRole("dialog", { name: "Create workflow" });
+    await user.type(within(createDialog).getByLabelText("Name"), "Security review");
+    await user.type(within(createDialog).getByLabelText("Summary"), "Review trust boundaries.");
+    await user.type(within(createDialog).getByLabelText("Markdown instructions"), "Inspect inputs and permissions.");
+    await user.click(within(createDialog).getByRole("button", { name: "Create workflow" }));
+
+    expect(await screen.findByRole("heading", { name: "Security review" })).toBeVisible();
+    expect(screen.getByText("Inspect inputs and permissions.", { selector: ".long-copy" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "New revision" }));
+    const revisionDialog = screen.getByRole("dialog", { name: "Create revision" });
+    const instructions = within(revisionDialog).getByLabelText("Markdown instructions");
+    await user.clear(instructions);
+    await user.type(instructions, "Inspect inputs, permissions, and recovery.");
+    await user.click(within(revisionDialog).getByRole("button", { name: "Create revision" }));
+    expect(await screen.findByText("Revision 2", { selector: ".panel-heading span" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Disable" }));
+    await user.click(screen.getByRole("button", { name: "Confirm disable" }));
+    expect(await screen.findByRole("button", { name: "Enable" })).toBeVisible();
+    expect(fetch.mock.calls.some(([input, init]) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return path.endsWith("/enabled") && init?.method === "PUT";
+    })).toBe(true);
+  });
+
+  it("pins an enabled Workflow revision while preserving free-text context", async () => {
+    const fetch = mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Delegate task" }));
+    const dialog = screen.getByRole("dialog", { name: "Delegate task" });
+    await user.type(within(dialog).getByLabelText("Title"), "Implement #183");
+    await user.selectOptions(within(dialog).getByLabelText("Workflow"), "workflow-revision-1");
+    await user.type(within(dialog).getByLabelText("Context"), "Issue #183 remains ordinary text.");
+    await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
+    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
+    await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));
+
+    expect(await screen.findByRole("heading", { name: "Implement #183" })).toBeVisible();
+    expect(screen.getAllByText("Implement · revision 1")).toHaveLength(2);
+    expect(screen.getByText("Issue #183 remains ordinary text.", { selector: ".long-copy" })).toBeVisible();
+    expect(screen.getByText(/Workflow instructions:/)).toBeVisible();
+    const taskCreate = fetch.mock.calls.find(([input, init]) => input === "/api/v1/tasks" && init?.method === "POST");
+    expect(JSON.parse(String(taskCreate?.[1]?.body))).toMatchObject({
+      context: "Issue #183 remains ordinary text.",
+      workflow_revision_id: "workflow-revision-1",
+    });
+  });
+
   it("renders every task status in the operational board", async () => {
     mockControlPlane();
     renderApp();
@@ -433,10 +491,10 @@ describe("App", () => {
     const dialog = screen.getByRole("dialog", { name: "Delegate task" });
     await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));
     expect(within(dialog).getByText("Enter a task title.")).toBeVisible();
-    expect(within(dialog).getByText("Enter a task description.")).toBeVisible();
+    expect(within(dialog).getByText("Enter task context.")).toBeVisible();
 
     await user.type(within(dialog).getByLabelText("Title"), "Ship the UI");
-    await user.type(within(dialog).getByLabelText("Description"), "Build and verify the real interface.");
+    await user.type(within(dialog).getByLabelText("Context"), "Build and verify the real interface.");
     await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
     await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
     await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));
@@ -492,7 +550,7 @@ describe("App", () => {
       renderApp();
 
       await user.click(await screen.findByRole("button", { name: "Delegate task" }));
-      const description = screen.getByLabelText("Description");
+      const description = screen.getByLabelText("Context");
       await user.type(description, "Keep typing here.");
       expect(description).toHaveFocus();
 
@@ -516,7 +574,7 @@ describe("App", () => {
     const dialog = screen.getByRole("dialog", { name: "Delegate task" });
     const validUnicodeTitle = "😀".repeat(200);
     fireEvent.change(within(dialog).getByLabelText("Title"), { target: { value: validUnicodeTitle } });
-    await user.type(within(dialog).getByLabelText("Description"), "Prove idempotent browser retries.");
+    await user.type(within(dialog).getByLabelText("Context"), "Prove idempotent browser retries.");
     await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
     await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
 
@@ -540,7 +598,7 @@ describe("App", () => {
     await user.click(await screen.findByRole("button", { name: "Delegate task" }));
     const dialog = screen.getByRole("dialog", { name: "Delegate task" });
     fireEvent.change(within(dialog).getByLabelText("Title"), { target: { value: "😀".repeat(201) } });
-    await user.type(within(dialog).getByLabelText("Description"), "This should not submit.");
+    await user.type(within(dialog).getByLabelText("Context"), "This should not submit.");
     await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
     await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
     await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));

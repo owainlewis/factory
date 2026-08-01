@@ -124,6 +124,14 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		manager.finishWithWorktree(claim, token, handle, repository, value, "failed", "", err.Error())
 		return
 	}
+	prompt := buildPrompt(claim, value)
+	if len([]byte(value.Branch)) > protocol.MaxAgentBranchBytes ||
+		len([]byte(value.BaseBranch)) > protocol.MaxAgentBranchBytes ||
+		len([]byte(prompt)) > protocol.MaxAgentPromptBytes {
+		err := errors.New("worktree branch metadata makes the agent prompt exceed its 72 KiB bound")
+		manager.finishWithWorktree(claim, token, handle, repository, value, "failed", "", err.Error())
+		return
+	}
 
 	path, err := resultPath(manager.dataDirectory, claim.Attempt.ID)
 	if err != nil {
@@ -136,7 +144,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		RuntimeExecutable: manager.options.RuntimeExecutable,
 		Worktree:          value.Path,
 		ResultPath:        path,
-		Prompt:            buildPrompt(claim, value),
+		Prompt:            prompt,
 		TimeoutSeconds:    remainingTimeoutSeconds(taskDeadline),
 	}, os.Stderr)
 	if err != nil {
@@ -229,6 +237,9 @@ func (manager *Manager) validateClaim(claim protocol.Claim) error {
 	}
 	if claim.Task.TimeoutSeconds < 1 || claim.Task.TimeoutSeconds > int(protocol.MaxTimeout/time.Second) {
 		return errors.New("claim timeout is outside the supported range")
+	}
+	if !protocol.AgentPromptFits(claim.Task.Title, claim.Repository.RemoteIdentity, claim.Task.Description) {
+		return errors.New("claim agent prompt exceeds 72 KiB")
 	}
 	return nil
 }
@@ -619,14 +630,13 @@ func terminalState(message supervisorMessage) string {
 }
 
 func buildPrompt(claim protocol.Claim, value worktree) string {
-	return "You are running in a Factory managed Git worktree.\n" +
-		"Work only on the assigned task and repository. Preserve unrelated changes and do not touch Factory state or unrelated worktrees. " +
-		"Do not switch, create, rename, or delete branches or worktrees. Complete and verify the task before returning a concise result.\n\n" +
-		"Task title: " + claim.Task.Title + "\n" +
-		"Repository: " + claim.Repository.RemoteIdentity + "\n" +
-		"Working branch: " + value.Branch + "\n" +
-		"Target base branch: " + value.BaseBranch + "\n\n" +
-		claim.Task.Description
+	return protocol.FormatAgentPrompt(
+		claim.Task.Title,
+		claim.Repository.RemoteIdentity,
+		value.Branch,
+		value.BaseBranch,
+		claim.Task.Description,
+	)
 }
 
 func apiErrorClass(err error) string {

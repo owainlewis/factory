@@ -23,10 +23,13 @@ const offlineRepositories = [
 const identifiers: Record<string, string> = {};
 
 interface TaskDetail {
-  task: { id: string; title: string; state?: string };
+  task: { id: string; title: string; description?: string; state?: string };
+  context?: string;
   execution: { id: string };
   repository: { id: string };
   attempts: Array<{ id: string; state?: string; result?: string; error?: string }>;
+  workflow?: { id: string; revision_id: string; name: string; revision_number: number };
+  resolved_prompt?: string;
 }
 
 async function json<T>(response: Awaited<ReturnType<APIRequestContext["get"]>>): Promise<T> {
@@ -351,6 +354,57 @@ test("shows retained Factory metrics and saves the overview", async ({ page }) =
   browser.assertClean();
 });
 
+test("creates, pins, revises, and disables a reusable Workflow", async ({ page }) => {
+  const browser = observeBrowser(page);
+  await page.goto("/workflows");
+  await expect(page.getByRole("heading", { name: "Workflows", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Create workflow" }).first().click();
+  const create = page.getByRole("dialog", { name: "Create workflow" });
+  await create.getByLabel("Name").fill("E2E pinned review");
+  await create.getByLabel("Summary").fill("Prove immutable prompt snapshots.");
+  await create.getByLabel("Markdown instructions").fill("Use revision one instructions exactly.");
+  await create.getByRole("button", { name: "Create workflow" }).click();
+  await expect(page.getByRole("heading", { name: "E2E pinned review" })).toBeVisible();
+  const workflowURL = page.url();
+
+  await page.getByRole("button", { name: "Delegate task" }).click();
+  const delegate = page.getByRole("dialog", { name: "Delegate task" });
+  await delegate.getByLabel("Workflow").selectOption({ label: "E2E pinned review · revision 1" });
+  await delegate.getByLabel("Title").fill("Pinned Workflow browser task");
+  await delegate.getByLabel("Context").fill("JIRA-183 stays free text.");
+  await delegate.getByLabel("Worker").selectOption(workerOffline);
+  await delegate.getByLabel("Repository").selectOption(identifiers.offlineRepository);
+  await delegate.getByRole("button", { name: "Delegate task" }).click();
+  await expect(page.getByRole("heading", { name: "Pinned Workflow browser task" })).toBeVisible();
+  await expect(page.getByText("JIRA-183 stays free text.", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Use revision one instructions exactly/)).toBeVisible();
+  const taskID = new URL(page.url()).pathname.split("/").at(-1)!;
+
+  await page.goto(workflowURL);
+  await page.getByRole("button", { name: "New revision" }).click();
+  const revise = page.getByRole("dialog", { name: "Create revision" });
+  await revise.getByLabel("Markdown instructions").fill("Use revision two instructions instead.");
+  await revise.getByRole("button", { name: "Create revision" }).click();
+  await expect(page.getByText("Revision 2", { exact: true }).first()).toBeVisible();
+
+  const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
+  const pinned = await json<TaskDetail>(await api.get(`/api/v1/tasks/${taskID}`));
+  expect(pinned.context).toBe("JIRA-183 stays free text.");
+  expect(pinned.task.description).toBe(pinned.resolved_prompt);
+  expect(pinned.workflow?.revision_number).toBe(1);
+  expect(pinned.resolved_prompt).toContain("Use revision one instructions exactly.");
+  expect(pinned.resolved_prompt).not.toContain("Use revision two instructions instead.");
+  await api.dispose();
+
+  await page.getByRole("button", { name: "Disable" }).click();
+  await page.getByRole("button", { name: "Confirm disable" }).click();
+  await expect(page.getByRole("button", { name: "Enable" })).toBeVisible();
+  await page.getByRole("button", { name: "Delegate task" }).click();
+  await expect(page.getByRole("dialog").getByLabel("Workflow").getByRole("option", { name: /E2E pinned review/ })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  browser.assertClean();
+});
+
 test("runs the complete UI to real-worker and Git-worktree workflow", async ({ page }) => {
   const browser = observeBrowser(page);
   await page.goto("/");
@@ -365,7 +419,7 @@ test("runs the complete UI to real-worker and Git-worktree workflow", async ({ p
   ).toHaveCount(1);
   await dialog.getByLabel("Title").fill("Prove the complete local workflow");
   await dialog
-    .getByLabel("Description")
+    .getByLabel("Context")
     .fill("Create deterministic evidence in the assigned real Git worktree.");
   await dialog.getByLabel("Repository").selectOption(identifiers.realFactoryRepository);
   await page.screenshot({
@@ -416,7 +470,7 @@ test("cancels active work running in the real worker", async ({ page }) => {
   await dialog.getByLabel("Worker").selectOption(realWorker);
   await dialog.getByLabel("Title").fill("Cancel a real active Codex process");
   await dialog
-    .getByLabel("Description")
+    .getByLabel("Context")
     .fill("FACTORY_E2E_WAIT until the operator cancels this task.");
   await dialog.getByLabel("Repository").selectOption(identifiers.realHandbookRepository);
   await dialog.getByRole("button", { name: "Delegate task" }).click();
@@ -505,7 +559,7 @@ test("delegates with worker-specific repositories and preserves the task on refr
   await expect(dialog.getByLabel("Repository").getByRole("option", { name: /archive/ })).toHaveCount(1);
   await expect(dialog.getByLabel("Repository").getByRole("option", { name: /factory/ })).toHaveCount(0);
   await dialog.getByLabel("Title").fill("Durable delegated browser task");
-  await dialog.getByLabel("Description").fill("Created in the real UI and stored by the real Go server.");
+  await dialog.getByLabel("Context").fill("Created in the real UI and stored by the real Go server.");
   await dialog.getByLabel("Repository").selectOption(identifiers.offlineRepository);
   await dialog.getByRole("button", { name: "Delegate task" }).click();
   await expect(page.getByRole("heading", { name: "Durable delegated browser task" })).toBeVisible();
@@ -553,7 +607,10 @@ test("shows ordered progress and long task detail", async ({ page }) => {
   await expect.poll(() => eventAfters, { timeout: 8_000 }).toContain("3");
 
   await page.goto(`/tasks/${identifiers.longTask}`);
-  await expect(page.getByText("End of description.")).toBeVisible();
+  const contextPanel = page.locator("section.panel").filter({
+    has: page.getByRole("heading", { name: "Context", exact: true }),
+  });
+  await expect(contextPanel.getByText("End of description.")).toBeVisible();
   browser.assertClean();
 });
 
@@ -589,7 +646,7 @@ test("supports narrow grouped layouts and saves narrow screenshots", async ({ pa
   const dialog = page.getByRole("dialog", { name: "Delegate task" });
   await dialog.getByLabel("Worker").selectOption(realWorker);
   await dialog.getByLabel("Title").fill("Narrow viewport delegation");
-  await dialog.getByLabel("Description").fill("Review the complete narrow task form.");
+  await dialog.getByLabel("Context").fill("Review the complete narrow task form.");
   await dialog.getByLabel("Repository").selectOption(identifiers.realFactoryRepository);
   await page.screenshot({ path: "test-results/screenshots/delegate-narrow.png", fullPage: true });
   await page.keyboard.press("Escape");

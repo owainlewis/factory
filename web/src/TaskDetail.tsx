@@ -229,8 +229,8 @@ export function TaskDetail({
 
       <div className="detail-grid">
         <section className="panel detail-main">
-          <PanelHeading title="Description" />
-          <div className="long-copy">{data.task.description}</div>
+          <PanelHeading title="Context" />
+          <div className="long-copy">{data.context}</div>
         </section>
         <section className="panel">
           <PanelHeading title="Assignment" />
@@ -241,9 +241,15 @@ export function TaskDetail({
             <div><dt>Remote</dt><dd className="break-anywhere">{data.repository.remote_identity}</dd></div>
             <div><dt>Timeout</dt><dd>{formatTimeout(data.task.timeout_seconds)}</dd></div>
             <div><dt>Elapsed</dt><dd>{taskElapsed(data)}</dd></div>
+            <div><dt>Workflow</dt><dd>{data.workflow ? `${data.workflow.name} · revision ${data.workflow.revision_number}` : "Blank task"}</dd></div>
           </dl>
         </section>
       </div>
+
+      <section className="panel">
+        <PanelHeading title="Resolved prompt" aside={data.workflow ? `${data.workflow.name} · revision ${data.workflow.revision_number}` : "Blank task"} />
+        <div className="long-copy">{data.resolved_prompt}</div>
+      </section>
 
       <section className="panel progress-panel">
         <PanelHeading title="Progress" aside={`${progress.length} updates`} />

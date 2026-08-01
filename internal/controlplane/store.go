@@ -1554,14 +1554,40 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	input.Title = strings.TrimSpace(input.Title)
 	input.WorkerID = strings.TrimSpace(input.WorkerID)
 	input.RepositoryID = strings.TrimSpace(input.RepositoryID)
+	input.WorkflowRevisionID = strings.TrimSpace(input.WorkflowRevisionID)
 	if input.RequestKey == "" || len(input.RequestKey) > 200 {
 		return protocol.TaskDetail{}, false, invalid("invalid_request_key", "request_key is required")
 	}
 	if input.Title == "" || utf8.RuneCountInString(input.Title) > 200 {
 		return protocol.TaskDetail{}, false, invalid("invalid_title", "title is required and limited to 200 Unicode characters")
 	}
-	if strings.TrimSpace(input.Description) == "" || len([]byte(input.Description)) > protocol.MaxDescriptionBytes {
-		return protocol.TaskDetail{}, false, invalid("invalid_description", "description is required and limited to 64 KiB")
+	descriptionForm := input.DescriptionProvided || input.Description != ""
+	workflowPrompt := input.WorkflowRevisionIDProvided || input.ContextProvided ||
+		input.WorkflowRevisionID != "" || input.Context != ""
+	if descriptionForm && workflowPrompt {
+		return protocol.TaskDetail{}, false, invalid(
+			"ambiguous_task_prompt",
+			"send description for a blank task or workflow_revision_id with context, not both",
+		)
+	}
+	if workflowPrompt && input.WorkflowRevisionID == "" {
+		return protocol.TaskDetail{}, false, invalid(
+			"workflow_revision_required",
+			"context requires workflow_revision_id",
+		)
+	}
+	taskContext := input.Description
+	if workflowPrompt {
+		taskContext = input.Context
+	}
+	if strings.TrimSpace(taskContext) == "" || len([]byte(taskContext)) > protocol.MaxDescriptionBytes {
+		field := "description"
+		code := "invalid_description"
+		if workflowPrompt {
+			field = "context"
+			code = "invalid_context"
+		}
+		return protocol.TaskDetail{}, false, invalid(code, field+" is required and limited to 64 KiB")
 	}
 	if input.TimeoutSeconds == 0 {
 		input.TimeoutSeconds = int(protocol.DefaultTimeout.Seconds())
@@ -1605,6 +1631,35 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	if !errors.Is(err, sql.ErrNoRows) {
 		return protocol.TaskDetail{}, false, unavailable(err)
 	}
+	resolvedPrompt := taskContext
+	var workflowID, workflowName string
+	var workflowRevisionNumber int
+	if input.WorkflowRevisionID != "" {
+		var enabled int
+		var instructions string
+		err := tx.QueryRowContext(ctx, `
+			SELECT workflow.id, workflow.enabled, revision.name,
+			       revision.revision_number, revision.instructions
+			FROM workflow_revisions revision
+			JOIN workflows workflow ON workflow.id = revision.workflow_id
+			WHERE revision.id = ?
+		`, input.WorkflowRevisionID).Scan(
+			&workflowID, &enabled, &workflowName, &workflowRevisionNumber, &instructions,
+		)
+		if errors.Is(err, sql.ErrNoRows) {
+			return protocol.TaskDetail{}, false, invalid("workflow_revision_not_found", "workflow revision was not found")
+		}
+		if err != nil {
+			return protocol.TaskDetail{}, false, unavailable(err)
+		}
+		if enabled == 0 {
+			return protocol.TaskDetail{}, false, conflict("workflow_disabled", "the selected workflow is disabled")
+		}
+		resolvedPrompt = protocol.ResolveWorkflowPrompt(instructions, taskContext)
+		if len([]byte(resolvedPrompt)) > protocol.MaxResolvedPromptBytes {
+			return protocol.TaskDetail{}, false, invalid("resolved_prompt_too_large", "the resolved prompt exceeds 64 KiB")
+		}
+	}
 	var runtime string
 	if input.Route != nil {
 		selection, routeErr := s.selectTaskRoute(ctx, tx, *input.Route, now)
@@ -1628,6 +1683,19 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 			return protocol.TaskDetail{}, false, invalid("repository_not_advertised", "repository is not advertised by the assigned worker")
 		}
 	}
+	var repositoryRemoteIdentity string
+	err = tx.QueryRowContext(ctx, `
+		SELECT COALESCE(NULLIF(worker_repository.worker_remote_identity, ''), repository.remote_identity)
+		FROM repositories repository
+		JOIN worker_repositories worker_repository ON worker_repository.repository_id = repository.id
+		WHERE repository.id = ? AND worker_repository.worker_id = ?
+	`, input.RepositoryID, input.WorkerID).Scan(&repositoryRemoteIdentity)
+	if err != nil {
+		return protocol.TaskDetail{}, false, unavailable(err)
+	}
+	if !protocol.AgentPromptFits(input.Title, repositoryRemoteIdentity, resolvedPrompt) {
+		return protocol.TaskDetail{}, false, invalid("agent_prompt_too_large", "the complete agent prompt exceeds 72 KiB")
+	}
 	taskID, err := newID()
 	if err != nil {
 		return protocol.TaskDetail{}, false, unavailable(err)
@@ -1637,9 +1705,15 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 		return protocol.TaskDetail{}, false, unavailable(err)
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO tasks(id, request_key, title, description, repository_id, timeout_seconds, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, taskID, input.RequestKey, input.Title, input.Description, input.RepositoryID, input.TimeoutSeconds, now)
+		INSERT INTO tasks(
+			id, request_key, title, description, repository_id, timeout_seconds, created_at,
+			workflow_id, workflow_revision_id, workflow_name, workflow_revision_number,
+			context
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, taskID, input.RequestKey, input.Title, resolvedPrompt, input.RepositoryID,
+		input.TimeoutSeconds, now, nullableString(workflowID), nullableString(input.WorkflowRevisionID),
+		nullableString(workflowName), nullableInt(workflowRevisionNumber), taskContext)
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO executions(id, task_id, assigned_worker_id, required_runtime, state, created_at, updated_at)
@@ -1718,6 +1792,20 @@ func scanTask(row scanner, detail bool) (protocol.Task, error) {
 	return task, err
 }
 
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func nullableInt(value int) any {
+	if value == 0 {
+		return nil
+	}
+	return value
+}
+
 func (s *Store) Task(ctx context.Context, id string) (protocol.TaskDetail, error) {
 	var detail protocol.TaskDetail
 	row := s.db.QueryRowContext(ctx, `
@@ -1733,6 +1821,26 @@ func (s *Store) Task(ctx context.Context, id string) (protocol.TaskDetail, error
 		return detail, unavailable(err)
 	}
 	detail.Task = task
+	var contextValue, workflowID, workflowRevisionID, workflowName sql.NullString
+	var workflowRevisionNumber sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT context, workflow_id, workflow_revision_id,
+		       workflow_name, workflow_revision_number
+		FROM tasks WHERE id = ?
+	`, id).Scan(&contextValue, &workflowID, &workflowRevisionID,
+		&workflowName, &workflowRevisionNumber); err != nil {
+		return detail, unavailable(err)
+	}
+	detail.ResolvedPrompt = detail.Task.Description
+	if contextValue.Valid {
+		detail.Context = contextValue.String
+	}
+	if workflowID.Valid {
+		detail.Workflow = &protocol.TaskWorkflowSnapshot{
+			ID: workflowID.String, RevisionID: workflowRevisionID.String,
+			Name: workflowName.String, RevisionNumber: int(workflowRevisionNumber.Int64),
+		}
+	}
 	row = s.db.QueryRowContext(ctx, `
 		SELECT id, task_id, assigned_worker_id, required_runtime, state,
 		       cancellation_requested, created_at, updated_at

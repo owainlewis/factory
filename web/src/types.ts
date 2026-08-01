@@ -102,10 +102,48 @@ export interface Attempt {
 
 export interface TaskDetail {
   task: Task & { description: string };
+  context: string;
   execution: Execution;
   repository: Repository;
   repository_available: boolean;
   attempts: Attempt[] | null;
+  workflow?: TaskWorkflowSnapshot;
+  resolved_prompt: string;
+}
+
+export interface TaskWorkflowSnapshot {
+  id: string;
+  revision_id: string;
+  name: string;
+  revision_number: number;
+}
+
+export interface WorkflowRevision {
+  id: string;
+  workflow_id: string;
+  revision_number: number;
+  name: string;
+  summary: string;
+  instructions?: string;
+  created_at: string;
+}
+
+export interface Workflow {
+  id: string;
+  enabled: boolean;
+  current_revision: WorkflowRevision;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkflowDetail {
+  workflow: Workflow;
+  revisions: WorkflowRevision[];
+}
+
+export interface WorkflowPage {
+  workflows: Workflow[];
+  next_cursor: string | null;
 }
 
 export type MetricsWindow = "24h" | "7d" | "30d" | "all";
@@ -144,11 +182,26 @@ export interface APIErrorBody {
   error: { code: string; message: string };
 }
 
-export interface CreateTaskInput {
+interface CreateTaskBaseInput {
   request_key: string;
   title: string;
-  description: string;
   worker_id: string;
   repository_id: string;
   timeout_seconds: number;
+}
+
+export type CreateTaskInput = CreateTaskBaseInput & (
+  | { description: string; context?: never; workflow_revision_id?: never }
+  | { description?: never; context: string; workflow_revision_id: string }
+);
+
+export interface CreateWorkflowInput {
+  request_key: string;
+  name: string;
+  summary: string;
+  instructions: string;
+}
+
+export interface CreateWorkflowRevisionInput extends CreateWorkflowInput {
+  expected_revision_id: string;
 }

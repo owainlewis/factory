@@ -1,4 +1,4 @@
-import type { ManagedRepository, MetricsSummary, Task, Worker } from "../types";
+import type { ManagedRepository, MetricsSummary, Task, Worker, WorkflowDetail } from "../types";
 import { vi } from "vitest";
 
 export const worker: Worker = {
@@ -83,6 +83,26 @@ export const metrics: MetricsSummary = {
   workers_total: 4,
 };
 
+const initialWorkflowDetail: WorkflowDetail = {
+  workflow: {
+    id: "workflow-implement",
+    enabled: true,
+    current_revision: {
+      id: "workflow-revision-1",
+      workflow_id: "workflow-implement",
+      revision_number: 1,
+      name: "Implement",
+      summary: "Implement and verify one change.",
+      instructions: "Implement the change and run the required checks.",
+      created_at: "2026-08-01T08:00:00Z",
+    },
+    created_at: "2026-08-01T08:00:00Z",
+    updated_at: "2026-08-01T08:00:00Z",
+  },
+  revisions: [],
+};
+initialWorkflowDetail.revisions = [initialWorkflowDetail.workflow.current_revision];
+
 export function mockControlPlane(
   options: {
     createFailures?: number;
@@ -108,11 +128,19 @@ export function mockControlPlane(
   let taskDetailRequests = 0;
   const deletedTaskIDs = new Set<string>();
   let resolveStaleHistory: (() => void) | undefined;
-  let createdTask: { title: string; description: string } = {
+  let createdTask: {
+    title: string;
+    context: string;
+    description: string;
+    workflow?: { id: string; revision_id: string; name: string; revision_number: number };
+    resolvedPrompt?: string;
+  } = {
     title: "Ship the UI",
+    context: "Build and verify the real interface.",
     description: "Build and verify the real interface.",
   };
   let repositoryItems = managedRepositories.map((repository) => ({ ...repository }));
+  let workflowDetail = structuredClone(initialWorkflowDetail);
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const path =
       typeof input === "string"
@@ -198,6 +226,63 @@ export function mockControlPlane(
       }
       return Response.json(existing);
     }
+    if (path.startsWith("/api/v1/workflows?limit=200")) {
+      const enabled = new URL(path, "http://factory.test").searchParams.get("enabled");
+      return Response.json({
+        workflows: enabled === "true" && !workflowDetail.workflow.enabled ? [] : [workflowDetail.workflow],
+        next_cursor: null,
+      });
+    }
+    if (path === "/api/v1/workflows") {
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        workflowDetail = {
+          workflow: {
+            id: "workflow-created",
+            enabled: true,
+            current_revision: {
+              id: "workflow-created-revision-1",
+              workflow_id: "workflow-created",
+              revision_number: 1,
+              name: String(body.name),
+              summary: String(body.summary),
+              instructions: String(body.instructions),
+              created_at: new Date().toISOString(),
+            },
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          revisions: [],
+        };
+        workflowDetail.revisions = [workflowDetail.workflow.current_revision];
+        return Response.json(workflowDetail, { status: 201 });
+      }
+    }
+    if (path === `/api/v1/workflows/${workflowDetail.workflow.id}`) {
+      return Response.json(workflowDetail);
+    }
+    if (path === `/api/v1/workflows/${workflowDetail.workflow.id}/revisions` && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      const revision = {
+        id: "workflow-revision-2",
+        workflow_id: workflowDetail.workflow.id,
+        revision_number: workflowDetail.workflow.current_revision.revision_number + 1,
+        name: String(body.name),
+        summary: String(body.summary),
+        instructions: String(body.instructions),
+        created_at: new Date().toISOString(),
+      };
+      workflowDetail = {
+        workflow: { ...workflowDetail.workflow, current_revision: revision, updated_at: revision.created_at },
+        revisions: [revision, ...workflowDetail.revisions],
+      };
+      return Response.json(workflowDetail, { status: 201 });
+    }
+    if (path === `/api/v1/workflows/${workflowDetail.workflow.id}/enabled` && init?.method === "PUT") {
+      const body = JSON.parse(String(init.body)) as { enabled: boolean };
+      workflowDetail = { workflow: { ...workflowDetail.workflow, enabled: body.enabled }, revisions: workflowDetail.revisions };
+      return Response.json(workflowDetail);
+    }
     if (path === "/api/v1/tasks") {
       if (init?.method === "POST") {
         if (createFailures > 0) {
@@ -205,16 +290,34 @@ export function mockControlPlane(
           throw new Error("connection lost after submit");
         }
         const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        const selectedWorkflow = body.workflow_revision_id
+          ? {
+              id: workflowDetail.workflow.id,
+              revision_id: workflowDetail.workflow.current_revision.id,
+              name: workflowDetail.workflow.current_revision.name,
+              revision_number: workflowDetail.workflow.current_revision.revision_number,
+            }
+          : undefined;
+        const context = selectedWorkflow ? String(body.context) : String(body.description);
+        const resolvedPrompt = selectedWorkflow
+          ? `Workflow instructions:\n\n${workflowDetail.workflow.current_revision.instructions}\n\nTask context:\n\n${context}`
+          : context;
         createdTask = {
           title: String(body.title),
-          description: String(body.description),
+          context,
+          description: resolvedPrompt,
+          workflow: selectedWorkflow,
+          resolvedPrompt,
         };
         return Response.json({
-          task: { ...tasks[0], id: "created-task", title: body.title, description: body.description },
+          task: { ...tasks[0], id: "created-task", title: body.title, description: resolvedPrompt },
+          context,
           execution: { id: "execution-created", state: "queued" },
           repository: worker.repositories[0],
           repository_available: true,
           attempts: [],
+          workflow: selectedWorkflow,
+          resolved_prompt: resolvedPrompt,
         }, { status: 201 });
       }
     }
@@ -298,6 +401,9 @@ export function mockControlPlane(
         repository: worker.repositories[0],
         repository_available: true,
         attempts: [],
+        workflow: createdTask.workflow,
+        context: createdTask.context,
+        resolved_prompt: createdTask.resolvedPrompt ?? createdTask.description,
       });
     }
     if (path.startsWith("/api/v1/attempts/attempt-succeeded/events?")) {
@@ -332,6 +438,7 @@ export function mockControlPlane(
         },
         repository: worker.repositories[0],
         repository_available: true,
+        context: "Terminal history can be deleted explicitly.",
         attempts: [{
           id: "attempt-succeeded",
           execution_id: "execution-succeeded",
@@ -344,6 +451,7 @@ export function mockControlPlane(
           completed_at: tasks[2].created_at,
           created_at: tasks[2].created_at,
         }],
+        resolved_prompt: "Terminal history can be deleted explicitly.",
       });
     }
     if (path === "/api/v1/tasks/task-running") {
@@ -383,6 +491,7 @@ export function mockControlPlane(
         },
         repository: worker.repositories[0],
         repository_available: true,
+        context: "Cached task detail remains available.",
         attempts: [
           {
             id: attemptID,
@@ -395,6 +504,7 @@ export function mockControlPlane(
             created_at: tasks[1].created_at,
           },
         ],
+        resolved_prompt: "Cached task detail remains available.",
       });
     }
     if (path.startsWith("/api/v1/attempts/attempt-next/events?")) {

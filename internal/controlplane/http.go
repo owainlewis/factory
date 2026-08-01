@@ -76,6 +76,11 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /api/v1/repositories/{repository_id}", api.getManagedRepository)
 	mux.HandleFunc("GET /api/v1/repositories/{repository_id}/readiness", api.getManagedRepositoryReadiness)
 	mux.HandleFunc("PUT /api/v1/repositories/{repository_id}/enabled", api.setManagedRepositoryEnabled)
+	mux.HandleFunc("GET /api/v1/workflows", api.listWorkflows)
+	mux.HandleFunc("POST /api/v1/workflows", api.createWorkflow)
+	mux.HandleFunc("GET /api/v1/workflows/{workflow_id}", api.getWorkflow)
+	mux.HandleFunc("POST /api/v1/workflows/{workflow_id}/revisions", api.createWorkflowRevision)
+	mux.HandleFunc("PUT /api/v1/workflows/{workflow_id}/enabled", api.setWorkflowEnabled)
 	mux.HandleFunc("GET /api/v1/metrics/summary", api.getMetrics)
 	mux.HandleFunc("GET /api/v1/tasks", api.listTasks)
 	mux.HandleFunc("POST /api/v1/tasks", api.createTask)
@@ -90,6 +95,145 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/events", api.appendEvents)
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/complete", api.completeAttempt)
 	return api.requestLog(mux)
+}
+
+func (a *API) listWorkflows(w http.ResponseWriter, r *http.Request) {
+	limit, err := pageLimit(r, protocol.DefaultWorkflowPageSize, protocol.MaxWorkflowPageSize)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var cursor *protocol.WorkflowCursor
+	if encoded := r.URL.Query().Get("cursor"); encoded != "" {
+		decoded, err := decodeWorkflowCursor(encoded)
+		if err != nil {
+			writeError(w, invalid("invalid_cursor", "cursor is invalid"))
+			return
+		}
+		cursor = &decoded
+	}
+	var enabled *bool
+	if values, exists := r.URL.Query()["enabled"]; exists {
+		if len(values) != 1 {
+			writeError(w, invalid("invalid_enabled", "enabled may be provided once"))
+			return
+		}
+		value, err := strconv.ParseBool(values[0])
+		if err != nil {
+			writeError(w, invalid("invalid_enabled", "enabled must be true or false"))
+			return
+		}
+		enabled = &value
+	}
+	if len(r.URL.Query()["name"]) > 1 || len(r.URL.Query()["cursor"]) > 1 || len(r.URL.Query()["limit"]) > 1 {
+		writeError(w, invalid("invalid_query", "workflow query parameters may be provided once"))
+		return
+	}
+	page, err := a.store.Workflows(r.Context(), protocol.WorkflowPageRequest{
+		Limit: limit, Cursor: cursor, Name: r.URL.Query().Get("name"), Enabled: enabled,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var nextCursor *string
+	if page.NextCursor != nil {
+		value, err := encodeWorkflowCursor(*page.NextCursor)
+		if err != nil {
+			writeError(w, unavailable(err))
+			return
+		}
+		nextCursor = &value
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workflows": page.Workflows, "next_cursor": nextCursor})
+}
+
+func (a *API) createWorkflow(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input protocol.CreateWorkflowRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	detail, created, err := a.store.CreateWorkflow(r.Context(), input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, detail)
+}
+
+func (a *API) getWorkflow(w http.ResponseWriter, r *http.Request) {
+	detail, err := a.store.Workflow(r.Context(), r.PathValue("workflow_id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+func (a *API) createWorkflowRevision(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input protocol.CreateWorkflowRevisionRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	detail, created, err := a.store.CreateWorkflowRevision(r.Context(), r.PathValue("workflow_id"), input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, detail)
+}
+
+func (a *API) setWorkflowEnabled(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input protocol.SetWorkflowEnabledRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	detail, err := a.store.SetWorkflowEnabled(r.Context(), r.PathValue("workflow_id"), input.Enabled)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+func encodeWorkflowCursor(cursor protocol.WorkflowCursor) (string, error) {
+	body, err := json.Marshal(cursor)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(body), nil
+}
+
+func decodeWorkflowCursor(encoded string) (protocol.WorkflowCursor, error) {
+	var cursor protocol.WorkflowCursor
+	body, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return cursor, err
+	}
+	if err := json.Unmarshal(body, &cursor); err != nil {
+		return cursor, err
+	}
+	if cursor.UpdatedAtMillis <= 0 || strings.TrimSpace(cursor.ID) == "" {
+		return cursor, errors.New("invalid workflow cursor")
+	}
+	return cursor, nil
 }
 
 func (a *API) getMetrics(w http.ResponseWriter, r *http.Request) {

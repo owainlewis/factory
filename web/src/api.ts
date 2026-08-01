@@ -9,6 +9,10 @@ import type {
   TaskPage,
   TaskDetail,
   Worker,
+  WorkflowDetail,
+  WorkflowPage,
+  CreateWorkflowInput,
+  CreateWorkflowRevisionInput,
 } from "./types";
 
 export class APIError extends Error {
@@ -89,6 +93,39 @@ export const api = {
   },
   setRepositoryEnabled: (id: string, enabled: boolean) =>
     request<ManagedRepository>(`/api/v1/repositories/${encodeURIComponent(id)}/enabled`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+  workflows: async (cursor = "", enabled?: boolean) => {
+    const query = new URLSearchParams({ limit: "200" });
+    if (cursor) query.set("cursor", cursor);
+    if (enabled !== undefined) query.set("enabled", String(enabled));
+    const page = await request<{
+      workflows: WorkflowPage["workflows"] | null;
+      next_cursor: string | null;
+    }>(`/api/v1/workflows?${query}`);
+    return { workflows: page.workflows ?? [], next_cursor: page.next_cursor };
+  },
+  allEnabledWorkflows: async () => {
+    const workflows: WorkflowPage["workflows"] = [];
+    let cursor = "";
+    do {
+      const page = await api.workflows(cursor, true);
+      workflows.push(...page.workflows);
+      cursor = page.next_cursor ?? "";
+    } while (cursor);
+    return workflows;
+  },
+  workflow: (id: string) => request<WorkflowDetail>(`/api/v1/workflows/${encodeURIComponent(id)}`),
+  createWorkflow: (input: CreateWorkflowInput) =>
+    request<WorkflowDetail>("/api/v1/workflows", { method: "POST", body: JSON.stringify(input) }),
+  reviseWorkflow: ({ id, input }: { id: string; input: CreateWorkflowRevisionInput }) =>
+    request<WorkflowDetail>(`/api/v1/workflows/${encodeURIComponent(id)}/revisions`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  setWorkflowEnabled: ({ id, enabled }: { id: string; enabled: boolean }) =>
+    request<WorkflowDetail>(`/api/v1/workflows/${encodeURIComponent(id)}/enabled`, {
       method: "PUT",
       body: JSON.stringify({ enabled }),
     }),

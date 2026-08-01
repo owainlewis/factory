@@ -236,7 +236,7 @@ func TestCapacityMigrationDerivesOnlyAttributableLegacyRetainedCounts(t *testing
 		) VALUES ('worker-c', 'malformed', 'malformed-repository', 0, 1, 1);
 		INSERT INTO tasks(
 			id, request_key, title, description, repository_id, timeout_seconds, created_at
-		) VALUES ('historical-task', 'historical-task', 'historical', '', 'legacy-repository', 60, 1);
+		) VALUES ('historical-task', 'historical-task', 'historical', 'legacy prompt', 'legacy-repository', 60, 1);
 		INSERT INTO tasks(
 			id, request_key, title, description, repository_id, timeout_seconds, created_at
 		) VALUES ('case-alias-task', 'case-alias-task', 'case alias', '', 'case-alias-repository', 60, 2);
@@ -341,6 +341,17 @@ func TestCapacityMigrationDerivesOnlyAttributableLegacyRetainedCounts(t *testing
 			"managed repository migration = enabled %d, updated %d, accepts %d, dynamic %d",
 			enabled, updatedAt, acceptsManagedRepositories, dynamic,
 		)
+	}
+	var historicalResolvedPrompt, historicalContext string
+	var historicalWorkflowID sql.NullString
+	if err := database.QueryRow(`
+		SELECT description, context, workflow_id FROM tasks WHERE id = 'historical-task'
+	`).Scan(&historicalResolvedPrompt, &historicalContext, &historicalWorkflowID); err != nil {
+		t.Fatal(err)
+	}
+	if historicalResolvedPrompt != "legacy prompt" || historicalContext != historicalResolvedPrompt || historicalWorkflowID.Valid {
+		t.Fatalf("historical task workflow backfill = context %q, prompt %q, workflow %#v",
+			historicalContext, historicalResolvedPrompt, historicalWorkflowID)
 	}
 	var canonicalCount, aliasMappings, canonicalTasks int
 	if err := database.QueryRow(`

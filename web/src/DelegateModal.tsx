@@ -1,5 +1,5 @@
 import { AlertCircle, LoaderCircle, Plus, X } from "lucide-react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useEffect,
   useId,
@@ -30,15 +30,21 @@ export function DelegateModal({
   const queryClient = useQueryClient();
   const titleID = useId();
   const descriptionID = useId();
+  const workflowID = useId();
   const titleRef = useRef<HTMLInputElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   const requestRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
   const [workerID, setWorkerID] = useState(initialWorkerID ?? "");
   const [repositoryID, setRepositoryID] = useState("");
   const [timeout, setTimeout] = useState("7200");
+  const [workflowRevisionID, setWorkflowRevisionID] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const selectedWorker = workers.find((worker) => worker.id === workerID);
   const repositories = selectedWorker?.repositories ?? [];
+  const workflows = useQuery({
+    queryKey: ["workflows", "enabled"],
+    queryFn: api.allEnabledWorkflows,
+  });
 
   useEffect(() => {
     titleRef.current?.focus();
@@ -78,11 +84,11 @@ export function DelegateModal({
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const title = String(form.get("title") ?? "").trim();
-    const description = String(form.get("description") ?? "");
+    const context = String(form.get("description") ?? "");
     const nextErrors: Record<string, string> = {};
     if (!title) nextErrors.title = "Enter a task title.";
     else if (Array.from(title).length > 200) nextErrors.title = "Keep the title to 200 characters.";
-    if (!description.trim()) nextErrors.description = "Enter a task description.";
+    if (!context.trim()) nextErrors.description = "Enter task context.";
     if (!workerID) nextErrors.worker = "Choose a worker.";
     if (!repositoryID) nextErrors.repository = "Choose a repository.";
     const timeoutSeconds = Number(timeout);
@@ -93,19 +99,21 @@ export function DelegateModal({
     if (Object.keys(nextErrors).length) return;
     const payload = {
       title,
-      description,
       worker_id: workerID,
       repository_id: repositoryID,
       timeout_seconds: timeoutSeconds,
+      ...(workflowRevisionID
+        ? { context, workflow_revision_id: workflowRevisionID }
+        : { description: context }),
     };
     const fingerprint = JSON.stringify(payload);
     if (requestRef.current?.fingerprint !== fingerprint) {
       requestRef.current = { fingerprint, key: crypto.randomUUID() };
     }
-    const input: CreateTaskInput = {
+    const input = {
       request_key: requestRef.current.key,
       ...payload,
-    };
+    } as CreateTaskInput;
     create.mutate(input);
   };
 
@@ -125,12 +133,36 @@ export function DelegateModal({
               <input ref={titleRef} id={titleID} name="title" aria-invalid={Boolean(errors.title)} placeholder="Fix stale worker status" />
             </Field>
             <Field
-              label="Description"
+              label="Workflow"
+              htmlFor={workflowID}
+              hint="Blank task uses the context as the complete prompt."
+            >
+              <select
+                id={workflowID}
+                value={workflowRevisionID}
+                onChange={(event) => setWorkflowRevisionID(event.target.value)}
+                disabled={workflows.isPending}
+              >
+                <option value="">Blank task</option>
+                {(workflows.data ?? []).map((workflow) => (
+                  <option key={workflow.id} value={workflow.current_revision.id}>
+                    {workflow.current_revision.name} · revision {workflow.current_revision.revision_number}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {workflows.error && <InlineError error={workflows.error} />}
+            <Field
+              label="Context"
               htmlFor={descriptionID}
               error={errors.description}
               hint={selectedWorker
-                ? `This becomes the ${runtimeLabel(selectedWorker.runtime)} prompt.`
-                : "This becomes the selected worker runtime prompt."}
+                ? workflowRevisionID
+                  ? `Factory combines this with the selected Workflow for ${runtimeLabel(selectedWorker.runtime)}.`
+                  : `This becomes the ${runtimeLabel(selectedWorker.runtime)} prompt.`
+                : workflowRevisionID
+                  ? "Factory combines this with the selected Workflow."
+                  : "This becomes the selected worker runtime prompt."}
             >
               <textarea id={descriptionID} name="description" rows={6} aria-invalid={Boolean(errors.description)} placeholder="Describe the outcome, constraints, and checks…" />
             </Field>

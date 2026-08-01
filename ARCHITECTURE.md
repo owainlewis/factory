@@ -2,7 +2,7 @@
 
 > **Status:** Current implementation
 >
-> **Verification basis:** Working tree based on commit `2d732ec`
+> **Verification basis:** Working tree including versioned Workflows from issue #183
 
 ## 1. Executive summary
 
@@ -19,10 +19,13 @@ It separates durable coordination from agent execution:
 - Codex or Claude Code performs the repository work as a child process of the
   worker.
 
-The current task contract is a title, prompt, assigned worker, repository, and
-timeout. Callers may name the assignment directly or ask the control-plane
-scheduler to choose from cattle workers. The deployment is limited to a trusted
-user and loopback HTTP on one host.
+The current task contract is a title, either a legacy free-text description or
+a pinned Workflow revision plus free-text context, assigned worker, repository,
+and timeout. The control plane snapshots one resolved prompt in the existing
+task description field before creating the task. Callers may name the
+assignment directly or ask the control-plane scheduler to choose from cattle
+workers. The deployment is limited to a trusted user and loopback HTTP on one
+host.
 
 ## 2. System context
 
@@ -78,6 +81,12 @@ the system does not use WebSockets.
    Node.js.
 10. Polling is read-only. A queue and issue identity creates at most one task,
     including across poller restarts and lost HTTP responses.
+11. A Workflow has stable identity, enabled state, and immutable numbered
+    Markdown revisions. The control plane alone composes Workflow instructions
+    with free-text task context.
+12. Tasks snapshot their Workflow name, revision, context, and resolved prompt.
+    Workers remain generic and receive the resolved prompt through the existing
+    claim task description.
 
 ## 4. Components and dependencies
 
@@ -93,8 +102,9 @@ the system does not use WebSockets.
 - allows ten seconds for HTTP shutdown.
 
 `internal/controlplane` owns the API, validation, state transitions, scheduling,
-metrics, pagination, and persistence. Claim selection is transactional and FIFO
-by execution creation time for the requesting worker.
+metrics, pagination, Workflow revisions, prompt composition, and persistence.
+Claim selection is transactional and FIFO by execution creation time for the
+requesting worker.
 
 SQLite runs with foreign keys, WAL journaling, a five-second busy timeout, and
 at most eight open connections. The default database is
@@ -164,9 +174,9 @@ event and completion contract.
 ### Browser UI
 
 `web/src` is a React and TypeScript application with Overview, Work, Workers,
-managed Repositories, Task detail, and Delegate task views. Repository detail
-combines the central catalog with the control plane's current routing and
-acquisition readiness facts. It polls the same-origin API.
+managed Repositories, Workflows, Task detail, and Delegate task views.
+Repository detail combines the central catalog with the control plane's current
+routing and acquisition readiness facts. It polls the same-origin API.
 
 `web/dist` is generated, committed, and embedded by `web/embed.go`. The server
 uses an SPA fallback for application routes, immutable caching for versioned
@@ -191,20 +201,26 @@ Node.js is a contributor dependency only when UI source changes.
 
 ### Task creation and claiming
 
-1. A caller submits a unique `request_key`, title, description, optional timeout,
-   and either an explicit worker/repository pair or a repository remote plus
-   source-access route.
-2. For a route, the control plane requires an enabled managed repository,
+1. A caller submits a unique `request_key`, title, either a free-text
+   `description` or a pinned Workflow revision with free-text `context`, an
+   optional timeout, and either an explicit worker/repository pair or a
+   repository remote plus source-access route. The two prompt forms are
+   exclusive.
+2. The control plane returns an existing task before rechecking mutable
+   Workflow state when the request key is a replay. For a new task it validates
+   the selected revision and enabled Workflow, then composes and bounds the
+   resolved prompt.
+3. For a route, the control plane requires an enabled managed repository,
    chooses an eligible worker by fair load, and freezes both IDs. It then
-   creates one task and one queued execution. Reusing the request key returns
-   the original task.
-3. The assigned worker polls its claim endpoint with a unique request ID and
+   snapshots the context, Workflow identity, revision, and resolved prompt while
+   creating one task and one queued execution.
+4. The assigned worker polls its claim endpoint with a unique request ID and
    lease token.
-4. The control plane verifies worker health, recency, capacity, runtime,
+5. The control plane verifies worker health, recency, capacity, runtime,
    repository advertisement, and repository retention capacity.
-5. It selects the oldest eligible queued execution, creates a preparing
+6. It selects the oldest eligible queued execution, creates a preparing
    attempt, stores only a digest of the lease token, and returns the claim.
-6. An empty response is idempotent for five minutes. A successful response is
+7. An empty response is idempotent for five minutes. A successful response is
    idempotent while its attempt remains active and its lease remains valid.
 
 ### Issue polling and dispatch
@@ -257,8 +273,9 @@ contain the prepared worktree without changing task or execution identity.
 - An expired preparing or running lease moves the attempt to `lost` and its
   execution to `failed`.
 - Retrying is an explicit operator action available only for failed or cancelled
-  executions. It returns the existing execution to `queued` and increments its
-  retry count.
+  executions. It returns the existing execution to `queued`, increments its
+  retry count, and reuses the task's original resolved prompt even if its
+  Workflow was revised or disabled.
 
 ### Completion and cleanup
 
@@ -289,6 +306,11 @@ GET    /api/v1/repositories
 POST   /api/v1/repositories
 GET    /api/v1/repositories/{repository_id}
 PUT    /api/v1/repositories/{repository_id}/enabled
+GET    /api/v1/workflows?name={name}&enabled={bool}&limit={1..200}&cursor={cursor}
+POST   /api/v1/workflows
+GET    /api/v1/workflows/{workflow_id}
+POST   /api/v1/workflows/{workflow_id}/revisions
+PUT    /api/v1/workflows/{workflow_id}/enabled
 GET    /api/v1/tasks?limit={1..200}&cursor={cursor}
 POST   /api/v1/tasks
 GET    /api/v1/tasks/{task_id}
@@ -319,11 +341,17 @@ are bounded by operation-specific byte limits.
 ### Persistent model
 
 ```text
-Worker 1 --- * WorkerRepository * --- 1 Repository
-Task   1 --- 1 Execution       1 --- * Attempt 1 --- * AttemptEvent
+Workflow 1 --- * WorkflowRevision
+WorkflowRevision 1 --- * Task
+Worker   1 --- * WorkerRepository * --- 1 Repository
+Task     1 --- 1 Execution       1 --- * Attempt 1 --- * AttemptEvent
 ```
 
-- A task stores the operator request and repository.
+- A Workflow stores stable identity, enabled state, and a pointer to its current
+  immutable revision. The control plane stores at most 500 Workflows and each
+  retains at most 100 revisions.
+- A task stores nullable operator context, repository, optional Workflow
+  snapshot, and its exact resolved prompt in the existing description field.
 - A repository is the central fleet record. Its enabled flag gates new routed
   work but does not rewrite existing assignments.
 - A worker-repository row may be a legacy static advertisement or the dynamic
@@ -344,6 +372,12 @@ task list.
 | --- | ---: |
 | Worker concurrency | 1 to 4 |
 | Task description | 64 KiB |
+| Workflow instructions | 48 KiB |
+| Resolved prompt | 64 KiB |
+| Complete agent prompt | 72 KiB |
+| Workflows | 500 |
+| Workflow revisions per Workflow | 100 |
+| Workflow page | 50 by default, 200 maximum |
 | Default task timeout | 2 hours |
 | Maximum task timeout | 8 hours |
 | Lease duration | 30 seconds |
@@ -503,8 +537,8 @@ The contributor check set is documented in [CONTRIBUTING.md](CONTRIBUTING.md).
   need a command adapter that implements the normalized issue JSON contract.
 - Poller configuration is file-based and has no UI. Issue observations do not
   rearm or expire automatically.
-- Reusable workflows, scheduled automations, and a unified `factory` CLI are
-  proposed but not implemented.
+- Scheduled Automations and a unified `factory` CLI are proposed but not
+  implemented.
 - Metrics do not confirm external outcomes such as merged pull requests or
   closed tickets.
 - Terminal history requires explicit deletion. There is no time-based retention
@@ -525,6 +559,8 @@ designs.
 | Poller process and commands | `cmd/factory-poller` |
 | HTTP API and state machine | `internal/controlplane/http.go`, `state.go` |
 | Persistence and metrics | `internal/controlplane/store.go`, `metrics.go` |
+| Workflow identity, revisions, and listing | `internal/controlplane/workflows.go` |
+| Prompt composition and complete agent input | `internal/protocol/prompt.go` |
 | Database schema | `migrations` |
 | Shared contracts and limits | `internal/protocol` |
 | Worker orchestration | `internal/worker/manager.go`, `registration.go`, `claiming.go`, `attempt_lifecycle.go` |

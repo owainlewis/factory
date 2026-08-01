@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"time"
 )
@@ -28,6 +29,10 @@ const (
 	MaxTaskPageSize           = 200
 	DefaultEventPageSize      = 100
 	MaxEventPageSize          = 500
+	DefaultWorkflowPageSize   = 50
+	MaxWorkflowPageSize       = 200
+	MaxWorkflows              = 500
+	MaxWorkflowRevisions      = 100
 )
 
 func SupportedRuntime(value string) bool {
@@ -128,13 +133,37 @@ type Worker struct {
 }
 
 type CreateTaskRequest struct {
-	RequestKey     string     `json:"request_key"`
-	Title          string     `json:"title"`
-	Description    string     `json:"description"`
-	WorkerID       string     `json:"worker_id,omitempty"`
-	RepositoryID   string     `json:"repository_id,omitempty"`
-	Route          *TaskRoute `json:"route,omitempty"`
-	TimeoutSeconds int        `json:"timeout_seconds"`
+	RequestKey                 string     `json:"request_key"`
+	Title                      string     `json:"title"`
+	Description                string     `json:"description,omitempty"`
+	Context                    string     `json:"context,omitempty"`
+	WorkerID                   string     `json:"worker_id,omitempty"`
+	RepositoryID               string     `json:"repository_id,omitempty"`
+	Route                      *TaskRoute `json:"route,omitempty"`
+	TimeoutSeconds             int        `json:"timeout_seconds"`
+	WorkflowRevisionID         string     `json:"workflow_revision_id,omitempty"`
+	DescriptionProvided        bool       `json:"-"`
+	ContextProvided            bool       `json:"-"`
+	WorkflowRevisionIDProvided bool       `json:"-"`
+}
+
+func (request *CreateTaskRequest) UnmarshalJSON(data []byte) error {
+	type wireRequest CreateTaskRequest
+	var decoded wireRequest
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*request = CreateTaskRequest(decoded)
+	_, request.DescriptionProvided = fields["description"]
+	_, request.ContextProvided = fields["context"]
+	_, request.WorkflowRevisionIDProvided = fields["workflow_revision_id"]
+	return nil
 }
 
 type TaskRoute struct {
@@ -198,11 +227,80 @@ type Attempt struct {
 }
 
 type TaskDetail struct {
-	Task                Task       `json:"task"`
-	Execution           Execution  `json:"execution"`
-	Repository          Repository `json:"repository"`
-	RepositoryAvailable bool       `json:"repository_available"`
-	Attempts            []Attempt  `json:"attempts"`
+	Task                Task                  `json:"task"`
+	Context             string                `json:"context"`
+	Execution           Execution             `json:"execution"`
+	Repository          Repository            `json:"repository"`
+	RepositoryAvailable bool                  `json:"repository_available"`
+	Attempts            []Attempt             `json:"attempts"`
+	Workflow            *TaskWorkflowSnapshot `json:"workflow,omitempty"`
+	ResolvedPrompt      string                `json:"resolved_prompt"`
+}
+
+type TaskWorkflowSnapshot struct {
+	ID             string `json:"id"`
+	RevisionID     string `json:"revision_id"`
+	Name           string `json:"name"`
+	RevisionNumber int    `json:"revision_number"`
+}
+
+type Workflow struct {
+	ID              string           `json:"id"`
+	Enabled         bool             `json:"enabled"`
+	CurrentRevision WorkflowRevision `json:"current_revision"`
+	CreatedAt       time.Time        `json:"created_at"`
+	UpdatedAt       time.Time        `json:"updated_at"`
+}
+
+type WorkflowRevision struct {
+	ID             string    `json:"id"`
+	WorkflowID     string    `json:"workflow_id"`
+	RevisionNumber int       `json:"revision_number"`
+	Name           string    `json:"name"`
+	Summary        string    `json:"summary"`
+	Instructions   string    `json:"instructions,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+type WorkflowDetail struct {
+	Workflow  Workflow           `json:"workflow"`
+	Revisions []WorkflowRevision `json:"revisions"`
+}
+
+type CreateWorkflowRequest struct {
+	RequestKey   string `json:"request_key"`
+	Name         string `json:"name"`
+	Summary      string `json:"summary"`
+	Instructions string `json:"instructions"`
+}
+
+type CreateWorkflowRevisionRequest struct {
+	RequestKey         string `json:"request_key"`
+	ExpectedRevisionID string `json:"expected_revision_id"`
+	Name               string `json:"name"`
+	Summary            string `json:"summary"`
+	Instructions       string `json:"instructions"`
+}
+
+type SetWorkflowEnabledRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+type WorkflowCursor struct {
+	UpdatedAtMillis int64
+	ID              string
+}
+
+type WorkflowPageRequest struct {
+	Limit   int
+	Cursor  *WorkflowCursor
+	Name    string
+	Enabled *bool
+}
+
+type WorkflowPage struct {
+	Workflows  []Workflow
+	NextCursor *WorkflowCursor
 }
 
 type MetricsSummary struct {

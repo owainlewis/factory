@@ -1,4 +1,4 @@
-import { Bot, Boxes, Gauge, GitBranch, ListChecks, Menu, Plus, X } from "lucide-react";
+import { BookOpenText, Bot, Boxes, Gauge, GitBranch, ListChecks, Menu, Plus, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
@@ -11,6 +11,7 @@ import { useVisibleInterval } from "./polling";
 import type { Task, TaskPage } from "./types";
 import { WorkersView, WorkerDetail } from "./Workers";
 import { WorkView } from "./Work";
+import { WorkflowDetail, WorkflowsView } from "./Workflows";
 
 type Route =
   | { page: "overview" }
@@ -19,12 +20,16 @@ type Route =
   | { page: "repositories" }
   | { page: "task"; id: string }
   | { page: "worker"; id: string }
-  | { page: "repository"; id: string };
+  | { page: "repository"; id: string }
+  | { page: "workflows" }
+  | { page: "workflow"; id: string };
 
 function readRoute(): Route {
   const parts = window.location.pathname.split("/").filter(Boolean);
   if (parts[0] === "tasks" && parts[1]) return { page: "task", id: parts[1] };
   if (parts[0] === "workers" && parts[1]) return { page: "worker", id: parts[1] };
+  if (parts[0] === "workflows" && parts[1]) return { page: "workflow", id: parts[1] };
+  if (parts[0] === "workflows") return { page: "workflows" };
   if (parts[0] === "workers") return { page: "workers" };
   if (parts[0] === "repositories" && parts[1]) return { page: "repository", id: parts[1] };
   if (parts[0] === "repositories") return { page: "repositories" };
@@ -35,6 +40,8 @@ function readRoute(): Route {
 function routePath(route: Route): string {
   if (route.page === "task") return `/tasks/${route.id}`;
   if (route.page === "worker") return `/workers/${route.id}`;
+  if (route.page === "workflow") return `/workflows/${route.id}`;
+  if (route.page === "workflows") return "/workflows";
   if (route.page === "workers") return "/workers";
   if (route.page === "repository") return `/repositories/${route.id}`;
   if (route.page === "repositories") return "/repositories";
@@ -149,6 +156,13 @@ export function App() {
             <ListChecks size={17} /> Work
           </button>
           <button
+            className={`nav-item ${route.page === "workflows" || route.page === "workflow" ? "active" : ""}`}
+            aria-current={route.page === "workflows" ? "page" : undefined}
+            onClick={() => navigate({ page: "workflows" })}
+          >
+            <BookOpenText size={17} /> Workflows
+          </button>
+          <button
             className={`nav-item ${route.page === "workers" || route.page === "worker" ? "active" : ""}`}
             aria-current={route.page === "workers" ? "page" : undefined}
             onClick={() => navigate({ page: "workers" })}
@@ -187,6 +201,8 @@ export function App() {
             {route.page === "worker" && "Worker detail"}
             {route.page === "repositories" && "Repositories"}
             {route.page === "repository" && "Repository detail"}
+            {route.page === "workflows" && "Workflows"}
+            {route.page === "workflow" && "Workflow detail"}
           </div>
           <button className="button button-primary" onClick={() => openDelegate()}>
             <Plus size={16} /> Delegate task
@@ -261,6 +277,12 @@ export function App() {
               id={route.id}
               onBack={() => navigate({ page: "repositories" })}
             />
+          )}
+          {route.page === "workflows" && (
+            <WorkflowsView onWorkflow={(id) => navigate({ page: "workflow", id })} />
+          )}
+          {route.page === "workflow" && (
+            <WorkflowDetail id={route.id} onBack={() => navigate({ page: "workflows" })} />
           )}
         </main>
       </div>

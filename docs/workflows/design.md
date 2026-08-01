@@ -1,6 +1,6 @@
 # Reusable workflows for Factory
 
-> **Status:** Proposed, not implemented
+> **Status:** Workflow slice implemented by issue #183. Automations remain separate work.
 
 ## 1. Executive summary
 
@@ -78,18 +78,19 @@ prompt, and creates the task and execution. The resolved prompt has stable
 sections:
 
 ```text
-Follow this workflow:
+Workflow instructions:
 
 <workflow instructions>
 
-Work on this context:
+Task context:
 
 <free-text context>
 ```
 
-The worker adds its existing fixed Factory safety preamble, title, and
-repository identity, then runs the resolved prompt. Task detail shows the
-workflow name and revision, the original context, and the resolved prompt.
+The worker adds its existing fixed Factory safety preamble, title, repository
+identity, working branch, and target base branch, then runs the resolved prompt.
+Task detail shows the workflow name and revision, the original context, and the
+resolved prompt.
 
 Choosing `Blank task` stores no workflow reference. In that case the context is
 also the resolved prompt, preserving current behavior.
@@ -186,12 +187,15 @@ small runtime-specific data plane.
 - Manual context is required and remains limited to 64 KiB.
 - The complete resolved prompt is limited to 64 KiB after UTF-8 composition.
 - The final agent input, including the safety preamble, title, repository
-  identity, and resolved prompt, is limited to 72 KiB and is validated by the
-  control plane before task creation.
+  identity, bounded working and target-base branch metadata, and resolved
+  prompt, is limited to 72 KiB and is validated by the control plane before
+  task creation.
 - Editing a workflow's name, summary, or instructions creates the next integer
   revision rather than updating text in place.
 - Workflow lists are paginated with the existing task-list limits: 50 by
   default and 200 at most.
+- The control plane stores at most 500 Workflows. Creating another Workflow at
+  that limit is rejected atomically.
 - A workflow retains at most 100 revisions. Creating another revision at that
   limit is rejected; revisions are not pruned while external requests may
   still refer to them.
@@ -215,14 +219,16 @@ The API adds:
   Its body includes a client mutation key and the expected current revision ID.
 - `PUT /api/v1/workflows/{id}/enabled` idempotently enables or disables use.
 
-Task creation keeps `description` as the free-text context for API
-compatibility and adds an optional pinned `workflow_revision_id`:
+Task creation accepts two exclusive forms. Existing clients keep sending
+`description` for a blank task. Workflow-aware clients omit `description` and
+send a pinned `workflow_revision_id` with free-text `context`. Sending both
+forms returns `ambiguous_task_prompt` and creates no task:
 
 ```json
 {
   "request_key": "4a11cc72-2bb7-4f5e-92d6-e1d2087f6d94",
   "title": "Implement JIRA-123",
-  "description": "Work on JIRA-123: https://jira.example.com/browse/JIRA-123",
+  "context": "Work on JIRA-123: https://jira.example.com/browse/JIRA-123",
   "workflow_revision_id": "9ec13fe1-4f41-49e2-94c9-5bb4b7f3c807",
   "worker_id": "3f441724-98c3-43ac-97f7-f87c92cbb9a8",
   "repository_id": "b3195042-65f3-47b8-80e2-a5d09db33a31",
@@ -256,9 +262,10 @@ after which the key may be reused. Tombstones retain no task, prompt, result,
 event, or workflow content.
 
 The stored task adds nullable workflow ID and revision ID, workflow-name and
-revision-number snapshots, and a required resolved prompt. Browser list and
-detail projections keep `task.description` as the original free-text context;
-task detail also returns `resolved_prompt`.
+revision-number snapshots, and a nullable original context. The existing
+`tasks.description` field stores the resolved prompt so claim compatibility is
+structural rather than projection-specific. Task detail returns the original
+`context` and exposes the same resolved bytes as `resolved_prompt`.
 
 The claim projection deliberately keeps the existing worker contract:
 `claim.task.description` contains the resolved prompt. Current worker binaries
@@ -270,9 +277,10 @@ The canonical fixed prompt formatting and 72 KiB limit live in the shared
 protocol package used by the control plane and updated workers. The package
 does not read workflow storage or execute a runtime.
 
-Existing task rows are migrated with no workflow, their current description as
-context, and the same description as their resolved prompt. Existing API
-clients that omit `workflow_revision_id` therefore keep current behavior.
+Existing task rows are migrated with no workflow and their current description
+copied to context. Their description is already the resolved prompt. Existing
+API clients that continue sending `description` therefore keep current
+behavior.
 
 Optional source provenance is a later additive task field. It may hold a
 provider, external key, URL, and revision for deduplication, but it does not
@@ -394,7 +402,8 @@ version adds no worker capability matching.
   task's claim payload.
 - A Codex worker and a Claude Code worker both run workflow tasks without
   workflow-specific worker code.
-- Existing clients that create tasks without `workflow_revision_id` behave as
+- Existing clients that create tasks with `description` and no
+  `workflow_revision_id` behave as
   before, and already registered worker binaries receive the resolved prompt
   through their existing claim field.
 - Invalid, disabled, duplicate, and oversized workflow operations return stable
@@ -410,7 +419,8 @@ Store and HTTP tests will cover name normalization, immutable revision
 increments, lost-response replay, mutation-key conflict, concurrent edit
 conflict, enable and disable behavior, pinned prompt composition, UTF-8 byte
 limits, atomic task snapshots, migration backfill, enabled-filtered pagination,
-the revision limit, and stable errors.
+the Workflow and revision limits, exclusive task prompt forms, and stable
+errors.
 
 Worker protocol tests will prove that claims carry the stored resolved prompt
 in `task.description` for blank and workflow tasks, including a worker built
