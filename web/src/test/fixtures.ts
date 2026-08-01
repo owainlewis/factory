@@ -478,6 +478,18 @@ export function mockControlPlane(
       });
     }
     if (path === `/api/v1/automations/${automationDetail.automation.id}/test` && init?.method === "POST") {
+      if (automationDetail.automation.trigger.type === "github_pull_request") {
+        return Response.json({ matches: [{
+          number: 185,
+          title: "Typed pull-request Automations",
+          url: "https://github.com/example/factory/pull/185",
+          state: "open",
+          labels: ["factory:review"],
+          is_draft: false,
+          base_branch: "main",
+          head_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        }] });
+      }
       return Response.json({ matches: [{ number: 184, title: "Typed Automations", url: "https://github.com/example/factory/issues/184", state: "open", labels: ["factory:ready"] }] });
     }
     if (path === `/api/v1/automations/${automationDetail.automation.id}/enabled` && init?.method === "PUT") {

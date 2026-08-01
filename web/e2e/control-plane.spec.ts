@@ -842,3 +842,65 @@ test("previews and dispatches one typed GitHub issue Automation without duplicat
   await api.dispose();
   browser.assertClean();
 });
+
+test("previews and dispatches one typed GitHub pull-request Automation without duplication", async ({ page }) => {
+  const browser = observeBrowser(page);
+  const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
+  await registerWorker(
+    api,
+    automationWorker,
+    "Automation fixture",
+    [{
+      key: "automation-fixture",
+      remote_identity: "github.com/example/automation-fixture",
+      retained_count: 0,
+    }],
+    0,
+    [],
+    "codex",
+    [{ provider: "github", hostname: "github.com" }],
+  );
+  await page.goto("/workflows");
+  await page.getByRole("button", { name: "Create workflow" }).first().click();
+  const workflow = page.getByRole("dialog", { name: "Create workflow" });
+  await workflow.getByLabel("Name").fill("E2E pull-request review");
+  await workflow.getByLabel("Summary").fill("Review the safe pull-request fixture.");
+  await workflow.getByLabel("Markdown instructions").fill("Fetch and revalidate the live pull request, review it, and do not merge it.");
+  await workflow.getByRole("button", { name: "Create workflow" }).click();
+  await expect(page.getByRole("heading", { name: "E2E pull-request review" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Automations", exact: true }).click();
+  await page.getByRole("button", { name: "Create Automation" }).first().click();
+  const automation = page.getByRole("dialog", { name: "Create Automation" });
+  await automation.getByLabel("Name").fill("E2E pull-request Automation");
+  await automation.getByLabel("Workflow").selectOption({ label: "E2E pull-request review" });
+  await automation.getByLabel("Managed repository").selectOption(identifiers.automationRepository);
+  await automation.getByLabel("Trigger type").selectOption("github_pull_request");
+  await automation.getByLabel("Required labels").fill("factory:review");
+  await automation.getByLabel("Base branches").fill("main");
+  await automation.getByLabel("Trusted Automation context").fill("Review only the safe synthetic pull request and never merge it.");
+  await automation.getByRole("button", { name: "Create Automation" }).click();
+  await expect(page.getByRole("heading", { name: "E2E pull-request Automation" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Test trigger" }).click();
+  await expect(page.getByText("#185 Typed pull-request Automation browser fixture")).toBeVisible();
+  await expect(page.getByText("Testing creates no task or durable occurrence.")).toBeVisible();
+  await expect(page.getByText("No durable occurrences yet.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Enable" }).click();
+  await page.getByRole("checkbox", { name: /factory-poller is stopped/ }).check();
+  await page.getByRole("button", { name: "Confirm enable" }).click();
+  await expect(page.locator(".automation-health").getByText("healthy", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".occurrence-list").getByText("#185 Typed pull-request Automation browser fixture", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open task" })).toBeVisible();
+
+  const before = await json<{ tasks: Array<{ request_key: string }> }>(await api.get("/api/v1/tasks?limit=200"));
+  expect(before.tasks.filter((task) => task.request_key.includes(":github_pull_request:185"))).toHaveLength(1);
+
+  await page.getByRole("button", { name: "Run now" }).click();
+  await expect(page.locator(".automation-metrics > div").filter({ hasText: "Matched" }).locator("strong")).toHaveText("2", { timeout: 15_000 });
+  const after = await json<{ tasks: Array<{ request_key: string }> }>(await api.get("/api/v1/tasks?limit=200"));
+  expect(after.tasks.filter((task) => task.request_key.includes(":github_pull_request:185"))).toHaveLength(1);
+  await api.dispose();
+  browser.assertClean();
+});

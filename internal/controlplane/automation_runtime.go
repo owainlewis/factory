@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +39,10 @@ func (e *automationCheckError) Error() string { return e.message }
 
 type githubIssueLister interface {
 	ListIssues(context.Context, string, protocol.GitHubIssueTrigger) ([]protocol.GitHubIssueMatch, error)
+}
+
+type githubPullRequestLister interface {
+	ListPullRequests(context.Context, string, protocol.GitHubPullRequestTrigger) ([]protocol.GitHubPullRequestMatch, error)
 }
 
 type githubIssueRunner struct {
@@ -133,6 +138,142 @@ func (runner githubIssueRunner) ListIssues(
 			continue
 		}
 		seen[match.Number] = match
+		matches = append(matches, match)
+	}
+	return matches, nil
+}
+
+func (runner githubIssueRunner) ListPullRequests(
+	ctx context.Context,
+	repository string,
+	trigger protocol.GitHubPullRequestTrigger,
+) ([]protocol.GitHubPullRequestMatch, error) {
+	if _, err := runner.lookPath("gh"); err != nil {
+		return nil, &automationCheckError{
+			code:    "gh_not_found",
+			message: "GitHub CLI (gh) was not found on PATH. Install gh, then run `gh auth login`.",
+		}
+	}
+	checkContext, cancel := context.WithTimeout(ctx, automationCommandTimeout)
+	defer cancel()
+	branches := trigger.BaseBranches
+	if len(branches) == 0 {
+		branches = []string{""}
+	}
+	matches := make([]protocol.GitHubPullRequestMatch, 0)
+	seen := make(map[int]protocol.GitHubPullRequestMatch)
+	for _, branch := range branches {
+		values, err := runner.listPullRequestsForBase(checkContext, repository, trigger, branch)
+		if err != nil {
+			return nil, err
+		}
+		for _, match := range values {
+			if previous, exists := seen[match.Number]; exists {
+				if !equalGitHubPullRequestMatch(previous, match) {
+					return nil, &automationCheckError{code: "gh_conflicting_duplicate", message: fmt.Sprintf("gh returned conflicting entries for pull request #%d", match.Number)}
+				}
+				continue
+			}
+			seen[match.Number] = match
+			matches = append(matches, match)
+			if len(matches) > protocol.MaxAutomationMatches {
+				return nil, &automationCheckError{code: "gh_match_limit", message: "gh returned more than 100 pull requests. Add required labels, base branches, or narrow the pull-request state."}
+			}
+		}
+	}
+	return matches, nil
+}
+
+func (runner githubIssueRunner) listPullRequestsForBase(
+	ctx context.Context,
+	repository string,
+	trigger protocol.GitHubPullRequestTrigger,
+	baseBranch string,
+) ([]protocol.GitHubPullRequestMatch, error) {
+	project := strings.TrimPrefix(repository, "github.com/")
+	arguments := []string{
+		"pr", "list", "--repo", project, "--state", trigger.State,
+		"--limit", strconv.Itoa(protocol.MaxAutomationMatches + 1),
+		"--json", "number,title,url,labels,state,isDraft,baseRefName,headRefOid",
+	}
+	if !trigger.IncludeDrafts {
+		arguments = append(arguments, "--search", "draft:false")
+	}
+	if baseBranch != "" {
+		arguments = append(arguments, "--base", baseBranch)
+	}
+	for _, label := range trigger.RequiredLabels {
+		arguments = append(arguments, "--label", label)
+	}
+	stdout, stderr, stdoutTooLarge, stderrTooLarge, err := runner.run(ctx, "gh", arguments...)
+	if stdoutTooLarge {
+		return nil, &automationCheckError{code: "gh_output_too_large", message: "gh output exceeded 4 MiB. Narrow the pull-request state, labels, or base branches."}
+	}
+	if stderrTooLarge {
+		return nil, &automationCheckError{code: "gh_error_output_too_large", message: "gh error output exceeded 64 KiB. Run `gh auth status` and retry the check."}
+	}
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, &automationCheckError{code: "gh_timed_out", message: "gh did not finish the pull-request check within 30 seconds. Check GitHub connectivity and narrow the match."}
+		}
+		if errors.Is(err, context.Canceled) {
+			return nil, &automationCheckError{code: "gh_cancelled", message: "The GitHub pull-request check was cancelled before completion."}
+		}
+		message := strings.TrimSpace(string(stderr))
+		lower := strings.ToLower(message)
+		if strings.Contains(lower, "auth") || strings.Contains(lower, "login") || strings.Contains(lower, "not logged") || strings.Contains(lower, "authentication") {
+			return nil, &automationCheckError{code: "gh_unauthenticated", message: "gh is not authenticated for github.com. Run `gh auth login` and verify with `gh auth status`."}
+		}
+		if strings.Contains(lower, "permission") || strings.Contains(lower, "forbidden") || strings.Contains(lower, "resource not accessible") || strings.Contains(lower, "could not resolve to a repository") || strings.Contains(lower, "not found") {
+			return nil, &automationCheckError{code: "gh_permission_denied", message: "gh cannot access this repository or its pull requests. Verify private-repository access and token permissions with `gh auth status`."}
+		}
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, &automationCheckError{code: "gh_failed", message: truncateAutomationDiagnostic("gh pr list failed: " + message + ". Run `gh auth status` and verify repository access.")}
+	}
+	var values []struct {
+		Number      int    `json:"number"`
+		Title       string `json:"title"`
+		URL         string `json:"url"`
+		State       string `json:"state"`
+		IsDraft     *bool  `json:"isDraft"`
+		BaseRefName string `json:"baseRefName"`
+		HeadRefOID  string `json:"headRefOid"`
+		Labels      []struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Color       string `json:"color"`
+		} `json:"labels"`
+	}
+	if err := decodeAutomationJSON(stdout, &values); err != nil {
+		return nil, &automationCheckError{code: "gh_malformed_output", message: "gh returned malformed or unexpected pull-request JSON: " + truncateAutomationDiagnostic(err.Error())}
+	}
+	if values == nil {
+		return nil, &automationCheckError{code: "gh_malformed_output", message: "gh returned null instead of a pull-request JSON array"}
+	}
+	if len(values) > protocol.MaxAutomationMatches {
+		return nil, &automationCheckError{code: "gh_match_limit", message: "gh returned more than 100 pull requests for one base branch. Add required labels or narrow the pull-request state."}
+	}
+	matches := make([]protocol.GitHubPullRequestMatch, 0, len(values))
+	for index, value := range values {
+		if value.IsDraft == nil {
+			return nil, &automationCheckError{code: "gh_malformed_output", message: fmt.Sprintf("gh pull-request result %d is missing isDraft", index+1)}
+		}
+		labels := make([]string, 0, len(value.Labels))
+		for _, label := range value.Labels {
+			labels = append(labels, label.Name)
+		}
+		match := protocol.GitHubPullRequestMatch{
+			Number: value.Number, Title: strings.TrimSpace(value.Title), URL: strings.TrimSpace(value.URL),
+			State: strings.ToLower(strings.TrimSpace(value.State)), IsDraft: *value.IsDraft,
+			BaseBranch: strings.TrimSpace(value.BaseRefName), HeadCommit: strings.TrimSpace(value.HeadRefOID),
+			Labels: labels,
+		}
+		if err := validateGitHubPullRequestMatch(repository, trigger, match); err != nil {
+			return nil, &automationCheckError{code: "gh_invalid_output", message: fmt.Sprintf("gh pull-request result %d is invalid: %s", index+1, err)}
+		}
 		matches = append(matches, match)
 	}
 	return matches, nil
@@ -267,6 +408,89 @@ func equalGitHubIssueMatch(left, right protocol.GitHubIssueMatch) bool {
 	return bytes.Equal(leftJSON, rightJSON)
 }
 
+var githubHeadCommitPattern = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
+
+func validateGitHubPullRequestMatch(
+	repository string,
+	trigger protocol.GitHubPullRequestTrigger,
+	match protocol.GitHubPullRequestMatch,
+) error {
+	if match.Number < 1 || int64(match.Number) > int64(1<<31-1) {
+		return errors.New("pull-request number must be a positive 32-bit integer")
+	}
+	if match.Title == "" || utf8.RuneCountInString(match.Title) > 500 || len([]byte(match.Title)) > 2<<10 {
+		return errors.New("title must be nonblank, at most 500 characters, and at most 2 KiB")
+	}
+	if match.State != trigger.State {
+		return fmt.Errorf("state %q does not match configured state %q", match.State, trigger.State)
+	}
+	if match.IsDraft && !trigger.IncludeDrafts {
+		return errors.New("draft pull request does not match include_drafts=false")
+	}
+	parsed, err := url.Parse(match.URL)
+	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Host, "github.com") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("URL must be an HTTPS github.com pull-request URL without query or fragment")
+	}
+	expectedPath := "/" + strings.TrimPrefix(repository, "github.com/") + "/pull/" + strconv.Itoa(match.Number)
+	if !strings.EqualFold(strings.TrimSuffix(parsed.Path, "/"), expectedPath) || len([]byte(match.URL)) > 2048 {
+		return errors.New("URL does not identify the configured repository and pull-request number")
+	}
+	if match.BaseBranch == "" || match.BaseBranch != strings.TrimSpace(match.BaseBranch) || len([]byte(match.BaseBranch)) > 255 {
+		return errors.New("base branch must be nonblank and at most 255 bytes")
+	}
+	if len(trigger.BaseBranches) > 0 {
+		found := false
+		for _, configured := range trigger.BaseBranches {
+			if configured == match.BaseBranch {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("base branch %q does not match configured base branches", match.BaseBranch)
+		}
+	}
+	if !githubHeadCommitPattern.MatchString(match.HeadCommit) {
+		return errors.New("head commit must contain 40 through 64 lowercase hexadecimal characters")
+	}
+	if len(match.Labels) > 100 {
+		return errors.New("pull request has more than 100 labels")
+	}
+	labelBytes := 0
+	for _, label := range match.Labels {
+		labelBytes += len([]byte(label))
+		if label == "" || label != strings.TrimSpace(label) || len([]byte(label)) > 200 {
+			return errors.New("pull request contains an invalid label")
+		}
+	}
+	if labelBytes > 8<<10 {
+		return errors.New("pull-request labels exceed 8 KiB")
+	}
+	for _, required := range trigger.RequiredLabels {
+		found := false
+		for _, label := range match.Labels {
+			if strings.EqualFold(required, label) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("pull request is missing required label %q", required)
+		}
+	}
+	encoded, err := json.Marshal(match)
+	if err != nil || len(encoded) > maxObservationBytes {
+		return errors.New("canonical pull-request metadata exceeds 16 KiB")
+	}
+	return nil
+}
+
+func equalGitHubPullRequestMatch(left, right protocol.GitHubPullRequestMatch) bool {
+	leftJSON, _ := json.Marshal(left)
+	rightJSON, _ := json.Marshal(right)
+	return bytes.Equal(leftJSON, rightJSON)
+}
+
 func truncateAutomationDiagnostic(value string) string {
 	if len([]byte(value)) <= automationDiagnosticLimit {
 		return value
@@ -364,7 +588,33 @@ func (service *AutomationService) Test(
 		}
 	}
 	defer service.releaseSlot()
-	matches, err := service.runner.ListIssues(ctx, detail.Automation.RepositoryIdentity, detail.Automation.Trigger)
+	var result protocol.TestAutomationResult
+	switch detail.Automation.Trigger.Type {
+	case protocol.AutomationTriggerGitHubIssue:
+		var matches []protocol.GitHubIssueMatch
+		matches, err = service.runner.ListIssues(ctx, detail.Automation.RepositoryIdentity, detail.Automation.Trigger.GitHubIssue())
+		for _, match := range matches {
+			result.Matches = append(result.Matches, protocol.AutomationMatch{
+				Number: match.Number, Title: match.Title, URL: match.URL, State: match.State, Labels: match.Labels,
+			})
+		}
+	case protocol.AutomationTriggerGitHubPullRequest:
+		lister, ok := service.runner.(githubPullRequestLister)
+		if !ok {
+			return protocol.TestAutomationResult{}, unavailable(errors.New("GitHub pull-request evaluator is unavailable"))
+		}
+		var matches []protocol.GitHubPullRequestMatch
+		matches, err = lister.ListPullRequests(ctx, detail.Automation.RepositoryIdentity, detail.Automation.Trigger.GitHubPullRequest())
+		for _, match := range matches {
+			draft := match.IsDraft
+			result.Matches = append(result.Matches, protocol.AutomationMatch{
+				Number: match.Number, Title: match.Title, URL: match.URL, State: match.State,
+				Labels: match.Labels, IsDraft: &draft, BaseBranch: match.BaseBranch, HeadCommit: match.HeadCommit,
+			})
+		}
+	default:
+		return protocol.TestAutomationResult{}, unavailable(errors.New("Automation has an unsupported trigger type"))
+	}
 	if err != nil {
 		var checkErr *automationCheckError
 		if errors.As(err, &checkErr) {
@@ -372,7 +622,7 @@ func (service *AutomationService) Test(
 		}
 		return protocol.TestAutomationResult{}, unavailable(err)
 	}
-	return protocol.TestAutomationResult{Matches: matches}, nil
+	return result, nil
 }
 
 func (service *AutomationService) Run(ctx context.Context) {
@@ -457,7 +707,21 @@ func (service *AutomationService) evaluate(ctx context.Context, evaluation autom
 	if !current || checkContext.Err() != nil {
 		return
 	}
-	matches, err := service.runner.ListIssues(checkContext, evaluation.Automation.RepositoryIdentity, evaluation.Automation.Trigger)
+	var issueMatches []protocol.GitHubIssueMatch
+	var pullRequestMatches []protocol.GitHubPullRequestMatch
+	switch evaluation.Automation.Trigger.Type {
+	case protocol.AutomationTriggerGitHubIssue:
+		issueMatches, err = service.runner.ListIssues(checkContext, evaluation.Automation.RepositoryIdentity, evaluation.Automation.Trigger.GitHubIssue())
+	case protocol.AutomationTriggerGitHubPullRequest:
+		lister, ok := service.runner.(githubPullRequestLister)
+		if !ok {
+			err = errors.New("GitHub pull-request evaluator is unavailable")
+		} else {
+			pullRequestMatches, err = lister.ListPullRequests(checkContext, evaluation.Automation.RepositoryIdentity, evaluation.Automation.Trigger.GitHubPullRequest())
+		}
+	default:
+		err = errors.New("Automation has an unsupported trigger type")
+	}
 	if checkContext.Err() != nil {
 		return
 	}
@@ -472,7 +736,12 @@ func (service *AutomationService) evaluate(ctx context.Context, evaluation autom
 		_ = service.store.completeAutomationFailure(context.Background(), evaluation, checkErr)
 		return
 	}
-	if err := service.store.completeAutomationSuccess(context.Background(), evaluation, matches); err != nil && ctx.Err() == nil {
+	if evaluation.Automation.Trigger.Type == protocol.AutomationTriggerGitHubIssue {
+		err = service.store.completeAutomationSuccess(context.Background(), evaluation, issueMatches)
+	} else {
+		err = service.store.completePullRequestAutomationSuccess(context.Background(), evaluation, pullRequestMatches)
+	}
+	if err != nil && ctx.Err() == nil {
 		service.logger.Error("automation_check_commit_failed", "automation_id", evaluation.Automation.ID, "error_class", "storage_unavailable")
 	}
 }
@@ -530,8 +799,8 @@ func (s *Store) reserveDueAutomation(ctx context.Context) (automationEvaluation,
 	}
 	var evaluation automationEvaluation
 	evaluation.Token = token
-	var enabled int
-	var labels []byte
+	var enabled, includeDrafts, issueTriggerCount, pullRequestTriggerCount int
+	var labels, baseBranches []byte
 	var createdAt, updatedAt int64
 	var lastChecked, nextCheck sql.NullInt64
 	err = tx.QueryRowContext(ctx, automationSelect+`
@@ -540,7 +809,9 @@ func (s *Store) reserveDueAutomation(ctx context.Context) (automationEvaluation,
 		&evaluation.Automation.WorkflowName, &evaluation.Automation.WorkflowRevision,
 		&evaluation.Automation.RepositoryID, &evaluation.Automation.RepositoryIdentity,
 		&evaluation.Automation.Context, &evaluation.Automation.TimeoutSeconds, &enabled,
-		&evaluation.Automation.Version, &evaluation.Automation.Trigger.State, &labels,
+		&evaluation.Automation.Version, &evaluation.Automation.Trigger.Type,
+		&issueTriggerCount, &pullRequestTriggerCount, &evaluation.Automation.Trigger.State,
+		&includeDrafts, &labels, &baseBranches,
 		&evaluation.Automation.Trigger.PollIntervalSeconds, &evaluation.Automation.Health.Status,
 		&evaluation.Automation.Health.Code, &evaluation.Automation.Health.Message,
 		&lastChecked, &nextCheck, &evaluation.Automation.MatchedCount,
@@ -551,8 +822,15 @@ func (s *Store) reserveDueAutomation(ctx context.Context) (automationEvaluation,
 		return automationEvaluation{}, false, unavailable(err)
 	}
 	evaluation.Automation.Enabled = enabled != 0
-	evaluation.Automation.Trigger.Type = protocol.AutomationTriggerGitHubIssue
+	if (evaluation.Automation.Trigger.Type == protocol.AutomationTriggerGitHubIssue && (issueTriggerCount != 1 || pullRequestTriggerCount != 0)) ||
+		(evaluation.Automation.Trigger.Type == protocol.AutomationTriggerGitHubPullRequest && (pullRequestTriggerCount != 1 || issueTriggerCount != 0)) {
+		return automationEvaluation{}, false, unavailable(errors.New("Automation typed trigger rows do not match its trigger type"))
+	}
+	evaluation.Automation.Trigger.IncludeDrafts = includeDrafts != 0
 	if err := json.Unmarshal(labels, &evaluation.Automation.Trigger.RequiredLabels); err != nil {
+		return automationEvaluation{}, false, unavailable(err)
+	}
+	if err := json.Unmarshal(baseBranches, &evaluation.Automation.Trigger.BaseBranches); err != nil {
 		return automationEvaluation{}, false, unavailable(err)
 	}
 	err = tx.QueryRowContext(ctx, `
@@ -744,6 +1022,128 @@ func (s *Store) completeAutomationSuccess(
 	return tx.Commit()
 }
 
+func (s *Store) completePullRequestAutomationSuccess(
+	ctx context.Context,
+	evaluation automationEvaluation,
+	matches []protocol.GitHubPullRequestMatch,
+) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return unavailable(err)
+	}
+	defer tx.Rollback()
+	var eligible int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM automations automation
+		JOIN workflows workflow ON workflow.id = automation.workflow_id AND workflow.enabled = 1
+		JOIN repositories repository ON repository.id = automation.repository_id AND repository.enabled = 1
+		WHERE automation.id = ? AND automation.enabled = 1 AND automation.evaluation_token = ?
+		  AND automation.trigger_type = 'github_pull_request'
+	`, evaluation.Automation.ID, evaluation.Token).Scan(&eligible); err != nil {
+		return unavailable(err)
+	}
+	if eligible == 0 {
+		return nil
+	}
+	newMatches := make([]protocol.GitHubPullRequestMatch, 0, len(matches))
+	for _, match := range matches {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM automation_github_pull_request_occurrences
+			WHERE automation_id = ? AND pull_request_number = ?
+		`, evaluation.Automation.ID, match.Number).Scan(&exists); err != nil {
+			return unavailable(err)
+		}
+		if exists == 0 {
+			newMatches = append(newMatches, match)
+		}
+	}
+	var occurrenceCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM automation_occurrences`).Scan(&occurrenceCount); err != nil {
+		return unavailable(err)
+	}
+	if occurrenceCount+len(newMatches) > protocol.MaxAutomationOccurrences {
+		return s.completeAutomationFailureTx(ctx, tx, evaluation, &automationCheckError{
+			code: "occurrence_limit_reached", message: "The durable Occurrence limit has been reached. Archive history before retrying.",
+		})
+	}
+	now := s.now().UnixMilli()
+	requiredLabels, _ := json.Marshal(evaluation.Automation.Trigger.RequiredLabels)
+	baseBranches, _ := json.Marshal(evaluation.Automation.Trigger.BaseBranches)
+	for _, match := range newMatches {
+		occurrenceID, err := newID()
+		if err != nil {
+			return unavailable(err)
+		}
+		observedLabels, err := json.Marshal(match.Labels)
+		if err != nil {
+			return unavailable(err)
+		}
+		prompt, err := protocol.ResolveGitHubPullRequestAutomationPrompt(
+			evaluation.WorkflowInstructions, evaluation.Automation.Context,
+			evaluation.Automation.Trigger.State, evaluation.Automation.Trigger.IncludeDrafts,
+			evaluation.Automation.Trigger.RequiredLabels, evaluation.Automation.Trigger.BaseBranches, match,
+		)
+		state, diagnostic := "pending", ""
+		var storedPrompt any = prompt
+		title := evaluation.Automation.Name + ": GitHub pull request #" + strconv.Itoa(match.Number)
+		if err != nil || len([]byte(prompt)) > protocol.MaxResolvedPromptBytes ||
+			!protocol.AgentPromptFits(title, evaluation.Automation.RepositoryIdentity, prompt) {
+			state, diagnostic, storedPrompt = "failed", "resolved_prompt_too_large", nil
+		}
+		requestKey := "automation:" + evaluation.Automation.ID + ":github_pull_request:" + strconv.Itoa(match.Number)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO automation_occurrences(
+				id, automation_id, automation_version, automation_name,
+				workflow_revision_id, repository_id, repository_identity,
+				context, timeout_seconds, state, resolved_prompt, task_request_key,
+				diagnostic, retry_at, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, occurrenceID, evaluation.Automation.ID, evaluation.Automation.Version,
+			evaluation.Automation.Name, evaluation.WorkflowRevisionID,
+			evaluation.Automation.RepositoryID, evaluation.Automation.RepositoryIdentity,
+			evaluation.Automation.Context, evaluation.Automation.TimeoutSeconds,
+			state, storedPrompt, requestKey, diagnostic, now, now, now); err != nil {
+			return unavailable(err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO automation_github_pull_request_occurrences(
+				occurrence_id, automation_id, pull_request_number, pull_request_url,
+				pull_request_title, observed_state, observed_draft, observed_base_branch,
+				observed_head_commit, observed_labels_json, configured_state,
+				include_drafts, required_labels_json, base_branches_json
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, occurrenceID, evaluation.Automation.ID, match.Number, match.URL, match.Title,
+			match.State, match.IsDraft, match.BaseBranch, match.HeadCommit, observedLabels,
+			evaluation.Automation.Trigger.State, evaluation.Automation.Trigger.IncludeDrafts,
+			requiredLabels, baseBranches); err != nil {
+			return unavailable(err)
+		}
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE automations
+		SET evaluation_token = NULL, evaluation_started_at = NULL,
+		    last_checked_at = ?, next_check_at = ?, health_status = 'healthy',
+		    health_code = '', health_message = ?, matched_count = matched_count + ?,
+		    skipped_count = skipped_count + ?
+		WHERE id = ? AND enabled = 1 AND evaluation_token = ?
+	`, now, now+int64(evaluation.Automation.Trigger.PollIntervalSeconds)*1000,
+		fmt.Sprintf("GitHub check completed with %d matching pull request(s).", len(matches)),
+		len(matches), len(matches)-len(newMatches), evaluation.Automation.ID, evaluation.Token)
+	if err != nil {
+		return unavailable(err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return unavailable(err)
+	}
+	if changed != 1 {
+		return nil
+	}
+	return tx.Commit()
+}
+
 func (s *Store) completeAutomationFailureTx(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -803,30 +1203,34 @@ func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) err
 		return unavailable(err)
 	}
 	defer tx.Rollback()
-	var automationID, automationName, workflowRevisionID, repositoryID, repositoryIdentity string
+	var automationID, automationName, triggerType, workflowRevisionID, repositoryID, repositoryIdentity string
 	var contextValue, prompt, requestKey string
-	var timeoutSeconds, issueNumber int
+	var timeoutSeconds, itemNumber int
 	var workflowID, workflowName string
 	var workflowRevisionNumber, automationEnabled, workflowEnabled, repositoryEnabled int
 	err = tx.QueryRowContext(ctx, `
-		SELECT occurrence.automation_id, occurrence.automation_name,
+		SELECT occurrence.automation_id, occurrence.automation_name, automation.trigger_type,
 		       occurrence.workflow_revision_id, occurrence.repository_id,
 		       occurrence.repository_identity, occurrence.context,
 		       occurrence.timeout_seconds, occurrence.resolved_prompt,
-		       occurrence.task_request_key, issue.issue_number,
+		       occurrence.task_request_key,
+		       COALESCE(issue.issue_number, pull_request.pull_request_number),
 		       revision.workflow_id, revision.name, revision.revision_number,
 		       automation.enabled, workflow.enabled, repository.enabled
 		FROM automation_occurrences occurrence
-		JOIN automation_github_issue_occurrences issue ON issue.occurrence_id = occurrence.id
 		JOIN automations automation ON automation.id = occurrence.automation_id
+		LEFT JOIN automation_github_issue_occurrences issue
+		  ON issue.occurrence_id = occurrence.id AND automation.trigger_type = 'github_issue'
+		LEFT JOIN automation_github_pull_request_occurrences pull_request
+		  ON pull_request.occurrence_id = occurrence.id AND automation.trigger_type = 'github_pull_request'
 		JOIN workflow_revisions revision ON revision.id = occurrence.workflow_revision_id
 		JOIN workflows workflow ON workflow.id = revision.workflow_id
 		JOIN repositories repository ON repository.id = occurrence.repository_id
 		WHERE occurrence.id = ? AND occurrence.state = 'pending'
 	`, occurrenceID).Scan(
-		&automationID, &automationName, &workflowRevisionID, &repositoryID,
+		&automationID, &automationName, &triggerType, &workflowRevisionID, &repositoryID,
 		&repositoryIdentity, &contextValue, &timeoutSeconds, &prompt, &requestKey,
-		&issueNumber, &workflowID, &workflowName, &workflowRevisionNumber,
+		&itemNumber, &workflowID, &workflowName, &workflowRevisionNumber,
 		&automationEnabled, &workflowEnabled, &repositoryEnabled,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -838,7 +1242,15 @@ func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) err
 	if automationEnabled == 0 || workflowEnabled == 0 || repositoryEnabled == 0 {
 		return nil
 	}
-	title := automationName + ": GitHub issue #" + strconv.Itoa(issueNumber)
+	var title string
+	switch triggerType {
+	case protocol.AutomationTriggerGitHubIssue:
+		title = automationName + ": GitHub issue #" + strconv.Itoa(itemNumber)
+	case protocol.AutomationTriggerGitHubPullRequest:
+		title = automationName + ": GitHub pull request #" + strconv.Itoa(itemNumber)
+	default:
+		return unavailable(errors.New("Automation Occurrence has an invalid trigger type"))
+	}
 	route := protocol.TaskRoute{
 		RepositoryRemoteIdentity: repositoryIdentity,
 		SourceAccess:             protocol.SourceAccess{Provider: "github", Hostname: "github.com"},

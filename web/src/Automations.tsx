@@ -21,6 +21,7 @@ import type {
   Automation,
   AutomationDetail as AutomationDetailType,
   AutomationOccurrence,
+  AutomationTrigger,
   CreateAutomationInput,
   TestAutomationResult,
 } from "./types";
@@ -74,7 +75,7 @@ export function AutomationsView({ onAutomation }: { onAutomation: (id: string) =
       />
       {query.error && <StaleBanner error={query.error} />}
       <div className="view-toolbar">
-        <p>Typed GitHub issue triggers evaluated by the local control plane.</p>
+        <p>Typed GitHub issue and pull-request triggers evaluated by the local control plane.</p>
         <button className="button button-primary" onClick={() => setCreateOpen(true)}>
           <Plus size={15} /> Create Automation
         </button>
@@ -83,7 +84,7 @@ export function AutomationsView({ onAutomation }: { onAutomation: (id: string) =
         <EmptyState
           icon={<Bot size={22} />}
           title="No Automations yet"
-          description="Create a disabled GitHub issue trigger, preview its matches, then enable it."
+          description="Create a disabled GitHub trigger, preview its matches, then enable it."
           action={<button className="button button-primary" onClick={() => setCreateOpen(true)}>Create Automation</button>}
         />
       ) : (
@@ -287,10 +288,10 @@ export function AutomationDetail({
         <section className="panel preview-panel" aria-live="polite">
           <PanelHeading title="Test results" aside={`${preview.matches.length} bounded match${preview.matches.length === 1 ? "" : "es"}`} />
           <p className="muted">Testing creates no task or durable occurrence.</p>
-          {preview.matches.length === 0 ? <p>No issues matched.</p> : preview.matches.map((match) => (
+          {preview.matches.length === 0 ? <p>No GitHub items matched.</p> : preview.matches.map((match) => (
             <a key={match.number} href={match.url} target="_blank" rel="noreferrer" className="preview-match">
               <strong>#{match.number} {match.title}</strong>
-              <span>{match.state} · {match.labels.join(", ") || "no labels"}</span>
+              <span>{match.state}{match.base_branch ? ` · base ${match.base_branch}` : ""}{match.is_draft ? " · draft" : ""} · {match.labels.join(", ") || "no labels"}</span>
             </a>
           ))}
         </section>
@@ -302,7 +303,11 @@ export function AutomationDetail({
           <dl className="metadata">
             <div><dt>Workflow</dt><dd>{automation.workflow_name} · revision {automation.workflow_revision}</dd></div>
             <div><dt>Repository</dt><dd className="mono">{automation.repository_identity}</dd></div>
-            <div><dt>Issue state</dt><dd>{automation.trigger.state}</dd></div>
+            <div><dt>{automation.trigger.type === "github_pull_request" ? "Pull request state" : "Issue state"}</dt><dd>{automation.trigger.state}</dd></div>
+            {automation.trigger.type === "github_pull_request" && <>
+              <div><dt>Drafts</dt><dd>{automation.trigger.include_drafts ? "Included" : "Excluded"}</dd></div>
+              <div><dt>Base branches</dt><dd>{automation.trigger.base_branches.join(", ") || "Any"}</dd></div>
+            </>}
             <div><dt>Required labels</dt><dd>{automation.trigger.required_labels.join(", ") || "None"}</dd></div>
             <div><dt>Polling</dt><dd>Every {automation.trigger.poll_interval_seconds} seconds</dd></div>
             <div><dt>Timeout</dt><dd>{automation.timeout_seconds} seconds</dd></div>
@@ -324,7 +329,7 @@ export function AutomationDetail({
               <div className="occurrence-row" key={occurrence.id}>
                 <span className={`status-badge status-${occurrence.state}`}><span className="status-dot" />{occurrence.state}</span>
                 <span className="occurrence-identity">
-                  <strong>#{occurrence.issue_number} {occurrence.issue_title}</strong>
+                  <strong>#{occurrenceNumber(occurrence)} {occurrenceTitle(occurrence)}</strong>
                   <small>{formatTimestamp(occurrence.created_at)}{occurrence.diagnostic ? ` · ${occurrence.diagnostic}` : ""}</small>
                 </span>
                 {occurrence.task ? (
@@ -385,8 +390,11 @@ function AutomationForm({
   const nameID = useId();
   const workflowID = useId();
   const repositoryID = useId();
+  const triggerTypeID = useId();
   const stateID = useId();
   const labelsID = useId();
+  const draftsID = useId();
+  const branchesID = useId();
   const intervalID = useId();
   const timeoutID = useId();
   const contextID = useId();
@@ -397,6 +405,8 @@ function AutomationForm({
   const workflows = useQuery({ queryKey: ["workflows", "automation-form"], queryFn: api.allWorkflows });
   const repositories = useQuery({ queryKey: ["repositories"], queryFn: api.repositories });
   const current = detail?.automation;
+  const [triggerType, setTriggerType] = useState<AutomationTrigger["type"]>(current?.trigger.type ?? "github_issue");
+  const isPullRequest = triggerType === "github_pull_request";
   useEffect(() => {
     closeRef.current = onClose;
   }, [onClose]);
@@ -435,29 +445,39 @@ function AutomationForm({
     const timeout = Number(form.get("timeout_seconds"));
     const pollInterval = Number(form.get("poll_interval_seconds"));
     const labels = String(form.get("required_labels") ?? "").split(",").map((label) => label.trim()).filter(Boolean);
+    const baseBranches = String(form.get("base_branches") ?? "").split(",").map((branch) => branch.trim()).filter(Boolean);
     const nextErrors: Record<string, string> = {};
     if (!name) nextErrors.name = "Enter an Automation name.";
     else if (Array.from(name).length > 100) nextErrors.name = "Keep the name to 100 characters.";
     if (!workflow) nextErrors.workflow = "Choose a Workflow.";
     if (!repository) nextErrors.repository = "Choose a repository.";
     if (labels.length > 20 || labels.some((label) => new TextEncoder().encode(label).length > 200)) nextErrors.labels = "Use at most 20 labels of 200 bytes each.";
+    if (isPullRequest && (baseBranches.length > 20 || baseBranches.some((branch) => new TextEncoder().encode(branch).length > 255))) nextErrors.branches = "Use at most 20 base branches of 255 bytes each.";
     if (!Number.isInteger(pollInterval) || pollInterval < 10 || pollInterval > 86_400) nextErrors.interval = "Use 10 to 86,400 seconds.";
     if (!Number.isInteger(timeout) || timeout < 1 || timeout > 28_800) nextErrors.timeout = "Use 1 to 28,800 seconds.";
     if (new TextEncoder().encode(context).length > 8 * 1024) nextErrors.context = "Keep context to 8 KiB.";
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) return;
+    const trigger: AutomationTrigger = isPullRequest ? {
+      type: "github_pull_request",
+      state: String(form.get("state")) as "open" | "closed" | "merged",
+      include_drafts: form.get("include_drafts") === "on",
+      required_labels: labels,
+      base_branches: baseBranches,
+      poll_interval_seconds: pollInterval,
+    } : {
+      type: "github_issue",
+      state: String(form.get("state")) as "open" | "closed",
+      required_labels: labels,
+      poll_interval_seconds: pollInterval,
+    };
     const payload = {
       name,
       workflow_id: workflow,
       repository_id: repository,
       context,
       timeout_seconds: timeout,
-      trigger: {
-        type: "github_issue" as const,
-        state: String(form.get("state")) as "open" | "closed",
-        required_labels: labels,
-        poll_interval_seconds: pollInterval,
-      },
+      trigger,
     };
     const fingerprint = JSON.stringify(payload);
     if (requestRef.current?.fingerprint !== fingerprint) {
@@ -504,9 +524,35 @@ function AutomationForm({
                 {repositoryItems.filter((repository) => repository.id !== current?.repository_id).map((repository) => <option key={repository.id} value={repository.id}>{repository.remote_identity}{repository.enabled ? "" : " (disabled)"}</option>)}
               </select>
             </Field>
-            <Field label="Issue state" htmlFor={stateID}>
-              <select id={stateID} name="state" defaultValue={current?.trigger.state ?? "open"}><option value="open">Open</option><option value="closed">Closed</option></select>
+            <Field label="Trigger type" htmlFor={triggerTypeID} hint={mode === "edit" ? "Trigger type is immutable." : undefined}>
+              <select
+                id={triggerTypeID}
+                name="trigger_type"
+                value={triggerType}
+                disabled={mode === "edit"}
+                onChange={(event) => setTriggerType(event.target.value as AutomationTrigger["type"])}
+              >
+                <option value="github_issue">GitHub issue</option>
+                <option value="github_pull_request">GitHub pull request</option>
+              </select>
             </Field>
+            <Field label={isPullRequest ? "Pull request state" : "Issue state"} htmlFor={stateID}>
+              <select id={stateID} name="state" defaultValue={current?.trigger.state ?? "open"}>
+                <option value="open">Open</option><option value="closed">Closed</option>
+                {isPullRequest && <option value="merged">Merged</option>}
+              </select>
+            </Field>
+            {isPullRequest && <>
+              <Field label="Draft pull requests" htmlFor={draftsID} hint="Include drafts that match every other condition.">
+                <label className="confirmation-check" htmlFor={draftsID}>
+                  <input id={draftsID} name="include_drafts" type="checkbox" defaultChecked={current?.trigger.type === "github_pull_request" && current.trigger.include_drafts} />
+                  Include drafts
+                </label>
+              </Field>
+              <Field label="Base branches" htmlFor={branchesID} error={errors.branches} hint="Comma separated · optional · up to 20">
+                <input id={branchesID} name="base_branches" defaultValue={current?.trigger.type === "github_pull_request" ? current.trigger.base_branches.join(", ") : ""} aria-invalid={Boolean(errors.branches)} />
+              </Field>
+            </>}
             <Field label="Required labels" htmlFor={labelsID} error={errors.labels} hint="Comma separated · up to 20">
               <input id={labelsID} name="required_labels" defaultValue={current?.trigger.required_labels.join(", ") ?? "factory:ready"} aria-invalid={Boolean(errors.labels)} />
             </Field>
@@ -553,7 +599,22 @@ function triggerSummary(automation: Automation): string {
   const labels = automation.trigger.required_labels.length
     ? ` · labels ${automation.trigger.required_labels.join(", ")}`
     : "";
+  if (automation.trigger.type === "github_pull_request") {
+    const drafts = automation.trigger.include_drafts ? " · including drafts" : " · excluding drafts";
+    const bases = automation.trigger.base_branches.length
+      ? ` · bases ${automation.trigger.base_branches.join(", ")}`
+      : "";
+    return `GitHub pull requests · ${automation.trigger.state}${drafts}${labels}${bases}`;
+  }
   return `GitHub issues · ${automation.trigger.state}${labels}`;
+}
+
+function occurrenceNumber(occurrence: AutomationOccurrence): number {
+  return occurrence.pull_request_number ?? occurrence.issue_number ?? 0;
+}
+
+function occurrenceTitle(occurrence: AutomationOccurrence): string {
+  return occurrence.pull_request_title ?? occurrence.issue_title ?? "Unknown GitHub item";
 }
 
 function formatTimestamp(value?: string): string {

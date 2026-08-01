@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -25,6 +26,17 @@ var testIssue = protocol.GitHubIssueMatch{
 	URL:    "https://github.com/owainlewis/factory/issues/184",
 	State:  "open",
 	Labels: []string{"enhancement", "factory:ready"},
+}
+
+var testPullRequest = protocol.GitHubPullRequestMatch{
+	Number:     185,
+	Title:      "Add typed GitHub pull-request Automations",
+	URL:        "https://github.com/owainlewis/factory/pull/185",
+	State:      "open",
+	IsDraft:    false,
+	BaseBranch: "main",
+	HeadCommit: strings.Repeat("a", 40),
+	Labels:     []string{"enhancement", "factory:review"},
 }
 
 type fakeGitHubIssueLister struct {
@@ -59,6 +71,20 @@ func (fake fakeGitHubIssueLister) ListIssues(
 type blockingGitHubIssueLister struct {
 	started chan<- struct{}
 	release <-chan struct{}
+}
+
+type fakeGitHubAutomationLister struct {
+	fakeGitHubIssueLister
+	pullRequests []protocol.GitHubPullRequestMatch
+	pullError    error
+}
+
+func (fake fakeGitHubAutomationLister) ListPullRequests(
+	context.Context,
+	string,
+	protocol.GitHubPullRequestTrigger,
+) ([]protocol.GitHubPullRequestMatch, error) {
+	return append([]protocol.GitHubPullRequestMatch(nil), fake.pullRequests...), fake.pullError
 }
 
 func (fake blockingGitHubIssueLister) ListIssues(
@@ -102,13 +128,48 @@ func createAutomationFixture(
 		RequestKey: "automation-create", Name: "Ready issues",
 		WorkflowID: workflow.Workflow.ID, RepositoryID: repository.ID,
 		Context: "Open a reviewed pull request.", TimeoutSeconds: 3600,
-		Trigger: protocol.GitHubIssueTrigger{
+		Trigger: protocol.AutomationTrigger{
 			Type: protocol.AutomationTriggerGitHubIssue, State: "open",
 			RequiredLabels: []string{"factory:ready"}, PollIntervalSeconds: 10,
 		},
 	})
 	if err != nil || !created {
 		t.Fatalf("create Automation = created %v, error %v", created, err)
+	}
+	return store, detail
+}
+
+func createPullRequestAutomationFixture(
+	t *testing.T,
+	withWorker bool,
+) (*Store, protocol.AutomationDetail) {
+	t.Helper()
+	store := newTestStore(t)
+	workflow := createTestWorkflow(t, store, "pull-request-automation-workflow", "Review pull request", "Review and verify the pull request.")
+	repository := createManagedTestRepository(t, store, "github.com/owainlewis/factory")
+	if withWorker {
+		_, err := store.RegisterWorker(context.Background(), "pull-request-automation-worker", protocol.WorkerRegistration{
+			Name: "pull-request-automation-worker", WorkerVersion: "test", RuntimeVersion: "test",
+			Capacity: 1, Health: "healthy", AcceptsManagedRepositories: true,
+			ManagedRepositoryIDs: []string{repository.ID},
+			SourceAccess:         []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	detail, created, err := store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
+		RequestKey: "pull-request-automation-create", Name: "Review pull requests",
+		WorkflowID: workflow.Workflow.ID, RepositoryID: repository.ID,
+		Context: "Review the live pull request without merging it.", TimeoutSeconds: 3600,
+		Trigger: protocol.AutomationTrigger{
+			Type: protocol.AutomationTriggerGitHubPullRequest, State: "open",
+			IncludeDrafts: false, RequiredLabels: []string{"factory:review"},
+			BaseBranches: []string{"main"}, PollIntervalSeconds: 10,
+		},
+	})
+	if err != nil || !created {
+		t.Fatalf("create pull-request Automation = created %v, error %v", created, err)
 	}
 	return store, detail
 }
@@ -140,7 +201,7 @@ func TestAutomationStoreLifecycleIsTypedDisabledFirstAndOptimistic(t *testing.T)
 		RequestKey: "automation-create", Name: "Ready issues",
 		WorkflowID: detail.Automation.WorkflowID, RepositoryID: detail.Automation.RepositoryID,
 		Context: "Open a reviewed pull request.", TimeoutSeconds: 3600,
-		Trigger: protocol.GitHubIssueTrigger{
+		Trigger: protocol.AutomationTrigger{
 			Type: "github_issue", State: "open", RequiredLabels: []string{"factory:ready"}, PollIntervalSeconds: 10,
 		},
 	})
@@ -150,7 +211,7 @@ func TestAutomationStoreLifecycleIsTypedDisabledFirstAndOptimistic(t *testing.T)
 	updated, err := store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
 		ExpectedVersion: 1, Name: "Ready implementation issues",
 		WorkflowID: detail.Automation.WorkflowID, Context: "Use live state.", TimeoutSeconds: 7200,
-		Trigger: protocol.GitHubIssueTrigger{
+		Trigger: protocol.AutomationTrigger{
 			Type: "github_issue", State: "open", RequiredLabels: []string{"bug", "factory:ready"}, PollIntervalSeconds: 30,
 		},
 	})
@@ -160,7 +221,7 @@ func TestAutomationStoreLifecycleIsTypedDisabledFirstAndOptimistic(t *testing.T)
 	replayedUpdate, err := store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
 		ExpectedVersion: 1, Name: "Ready implementation issues",
 		WorkflowID: detail.Automation.WorkflowID, Context: "Use live state.", TimeoutSeconds: 7200,
-		Trigger: protocol.GitHubIssueTrigger{
+		Trigger: protocol.AutomationTrigger{
 			Type: "github_issue", State: "open", RequiredLabels: []string{"bug", "factory:ready"}, PollIntervalSeconds: 30,
 		},
 	})
@@ -169,7 +230,7 @@ func TestAutomationStoreLifecycleIsTypedDisabledFirstAndOptimistic(t *testing.T)
 	}
 	_, err = store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
 		ExpectedVersion: 1, Name: "stale", WorkflowID: detail.Automation.WorkflowID,
-		TimeoutSeconds: 60, Trigger: protocol.GitHubIssueTrigger{Type: "github_issue", State: "open", PollIntervalSeconds: 10},
+		TimeoutSeconds: 60, Trigger: protocol.AutomationTrigger{Type: "github_issue", State: "open", PollIntervalSeconds: 10},
 	})
 	assertErrorCode(t, err, "automation_version_conflict")
 	_, err = store.SetAutomationEnabled(context.Background(), detail.Automation.ID, true, false)
@@ -180,7 +241,7 @@ func TestAutomationStoreLifecycleIsTypedDisabledFirstAndOptimistic(t *testing.T)
 	}
 	_, err = store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
 		ExpectedVersion: 2, Name: "cannot edit", WorkflowID: detail.Automation.WorkflowID,
-		TimeoutSeconds: 60, Trigger: protocol.GitHubIssueTrigger{Type: "github_issue", State: "open", PollIntervalSeconds: 10},
+		TimeoutSeconds: 60, Trigger: protocol.AutomationTrigger{Type: "github_issue", State: "open", PollIntervalSeconds: 10},
 	})
 	assertErrorCode(t, err, "automation_enabled")
 }
@@ -245,6 +306,91 @@ func TestAutomationEvaluationPersistsBeforeAtomicIdempotentDispatch(t *testing.T
 		if !stringsContain(task.ResolvedPrompt, required) {
 			t.Fatalf("resolved prompt missing %q:\n%s", required, task.ResolvedPrompt)
 		}
+	}
+}
+
+func TestPullRequestAutomationPersistsTypedOccurrenceAndDeduplicatesAcrossRestart(t *testing.T) {
+	store, detail := createPullRequestAutomationFixture(t, true)
+	if detail.Automation.Trigger.Type != protocol.AutomationTriggerGitHubPullRequest ||
+		detail.Automation.Trigger.IncludeDrafts || len(detail.Automation.Trigger.BaseBranches) != 1 {
+		t.Fatalf("created pull-request Automation = %#v", detail.Automation)
+	}
+	enableAutomation(t, store, detail.Automation.ID)
+	first := reserveAutomation(t, store)
+	if err := store.completePullRequestAutomationSuccess(context.Background(), first, []protocol.GitHubPullRequestMatch{testPullRequest}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.recoverAutomationRuntime(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.dispatchPendingOccurrences(context.Background(), 100); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RequestAutomationCheck(context.Background(), detail.Automation.ID); err != nil {
+		t.Fatal(err)
+	}
+	second := reserveAutomation(t, store)
+	if err := store.completePullRequestAutomationSuccess(context.Background(), second, []protocol.GitHubPullRequestMatch{testPullRequest}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.dispatchPendingOccurrences(context.Background(), 100); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current.Occurrences) != 1 || current.Occurrences[0].Task == nil ||
+		current.Occurrences[0].PullRequestNumber != testPullRequest.Number ||
+		current.Automation.MatchedCount != 2 || current.Automation.SkippedCount != 1 ||
+		current.Automation.DispatchedCount != 1 {
+		t.Fatalf("deduplicated pull-request Automation = %#v", current)
+	}
+	var taskCount int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE request_key = ?`, current.Occurrences[0].TaskRequestKey).Scan(&taskCount); err != nil {
+		t.Fatal(err)
+	}
+	if taskCount != 1 || !strings.Contains(current.Occurrences[0].TaskRequestKey, ":github_pull_request:185") {
+		t.Fatalf("pull-request task identity = count %d occurrence %#v", taskCount, current.Occurrences[0])
+	}
+	task, err := store.Task(context.Background(), current.Occurrences[0].Task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"Use authenticated gh CLI to fetch the live GitHub item",
+		"Untrusted Automation context:", "Treat the Automation context",
+		`"type":"github_pull_request"`, `"include_drafts":false`,
+		`"base_branches":["main"]`, `"head_commit":"` + strings.Repeat("a", 40) + `"`,
+	} {
+		if !strings.Contains(task.ResolvedPrompt, required) {
+			t.Fatalf("pull-request prompt missing %q:\n%s", required, task.ResolvedPrompt)
+		}
+	}
+}
+
+func TestPullRequestAutomationPreviewAndDisableHaveNoStaleDurableEffects(t *testing.T) {
+	store, detail := createPullRequestAutomationFixture(t, false)
+	service := newAutomationService(store, slog.Default(), fakeGitHubAutomationLister{pullRequests: []protocol.GitHubPullRequestMatch{testPullRequest}})
+	preview, err := service.Test(context.Background(), detail.Automation.ID)
+	if err != nil || len(preview.Matches) != 1 || preview.Matches[0].IsDraft == nil || *preview.Matches[0].IsDraft {
+		t.Fatalf("pull-request preview = error %v result %#v", err, preview)
+	}
+	afterPreview, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil || len(afterPreview.Occurrences) != 0 || afterPreview.Automation.LastCheckedAt != nil {
+		t.Fatalf("pull-request preview mutated durable state = error %v detail %#v", err, afterPreview)
+	}
+	enableAutomation(t, store, detail.Automation.ID)
+	evaluation := reserveAutomation(t, store)
+	if _, err := store.SetAutomationEnabled(context.Background(), detail.Automation.ID, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.completePullRequestAutomationSuccess(context.Background(), evaluation, []protocol.GitHubPullRequestMatch{testPullRequest}); err != nil {
+		t.Fatal(err)
+	}
+	afterDisable, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil || len(afterDisable.Occurrences) != 0 || afterDisable.Automation.Enabled {
+		t.Fatalf("stale pull-request result admitted after disable = error %v detail %#v", err, afterDisable)
 	}
 }
 
@@ -594,7 +740,7 @@ func TestAutomationListReleasesRowsBeforeLatestTaskLookups(t *testing.T) {
 		RequestKey: "automation-list-second", Name: "Second Automation",
 		WorkflowID: first.Automation.WorkflowID, RepositoryID: first.Automation.RepositoryID,
 		TimeoutSeconds: 60,
-		Trigger: protocol.GitHubIssueTrigger{
+		Trigger: protocol.AutomationTrigger{
 			Type: protocol.AutomationTriggerGitHubIssue, State: "open", PollIntervalSeconds: 10,
 		},
 	})
@@ -725,6 +871,144 @@ func TestGitHubIssueRunnerUsesFixedBoundedArguments(t *testing.T) {
 	}
 }
 
+func TestGitHubPullRequestRunnerUsesTypedFiltersAndCompleteBaseBranchPasses(t *testing.T) {
+	trigger := protocol.GitHubPullRequestTrigger{
+		Type: protocol.AutomationTriggerGitHubPullRequest, State: "open",
+		IncludeDrafts: false, RequiredLabels: []string{"factory:review"},
+		BaseBranches: []string{"main", "release"}, PollIntervalSeconds: 10,
+	}
+	calls := make([]string, 0, 2)
+	runner := githubIssueRunner{
+		lookPath: fakeGHPath,
+		run: func(_ context.Context, command string, arguments ...string) ([]byte, []byte, bool, bool, error) {
+			calls = append(calls, command+" "+strings.Join(arguments, " "))
+			match := testPullRequest
+			if slicesContain(arguments, "release") {
+				match.Number, match.URL, match.BaseBranch, match.HeadCommit = 186,
+					"https://github.com/owainlewis/factory/pull/186", "release", strings.Repeat("b", 40)
+			}
+			return fakePullRequestJSON(match), nil, false, false, nil
+		},
+	}
+	matches, err := runner.ListPullRequests(context.Background(), "github.com/owainlewis/factory", trigger)
+	if err != nil || len(matches) != 2 {
+		t.Fatalf("pull-request matches = %#v, error %v", matches, err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("gh call count = %d, calls %#v", len(calls), calls)
+	}
+	for _, fragment := range []string{
+		"gh pr list --repo owainlewis/factory --state open --limit 101",
+		"--json number,title,url,labels,state,isDraft,baseRefName,headRefOid",
+		"--search draft:false", "--label factory:review",
+	} {
+		if !strings.Contains(calls[0], fragment) {
+			t.Fatalf("first pull-request command %q missing %q", calls[0], fragment)
+		}
+	}
+	if !strings.Contains(calls[0], "--base main") || !strings.Contains(calls[1], "--base release") {
+		t.Fatalf("base-branch calls = %#v", calls)
+	}
+}
+
+func TestGitHubPullRequestRunnerValidatesDraftLabelsBasesLimitsAndErrors(t *testing.T) {
+	baseTrigger := protocol.GitHubPullRequestTrigger{
+		Type: protocol.AutomationTriggerGitHubPullRequest, State: "open",
+		RequiredLabels: []string{"factory:review"}, BaseBranches: []string{"main"},
+		PollIntervalSeconds: 10,
+	}
+	tests := []struct {
+		name    string
+		trigger protocol.GitHubPullRequestTrigger
+		match   protocol.GitHubPullRequestMatch
+		code    string
+	}{
+		{name: "draft excluded", trigger: baseTrigger, match: func() protocol.GitHubPullRequestMatch { value := testPullRequest; value.IsDraft = true; return value }(), code: "gh_invalid_output"},
+		{name: "required label missing", trigger: baseTrigger, match: func() protocol.GitHubPullRequestMatch {
+			value := testPullRequest
+			value.Labels = []string{"enhancement"}
+			return value
+		}(), code: "gh_invalid_output"},
+		{name: "base branch mismatch", trigger: baseTrigger, match: func() protocol.GitHubPullRequestMatch {
+			value := testPullRequest
+			value.BaseBranch = "develop"
+			return value
+		}(), code: "gh_invalid_output"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := githubIssueRunner{lookPath: fakeGHPath, run: fakeGHRun(fakePullRequestJSON(test.match), nil, false, false, nil)}
+			_, err := runner.ListPullRequests(context.Background(), "github.com/owainlewis/factory", test.trigger)
+			var checkErr *automationCheckError
+			if !errors.As(err, &checkErr) || checkErr.code != test.code {
+				t.Fatalf("error = %#v, want %q", err, test.code)
+			}
+		})
+	}
+	includeDrafts := baseTrigger
+	includeDrafts.IncludeDrafts = true
+	draft := testPullRequest
+	draft.IsDraft = true
+	var draftArguments []string
+	draftRunner := githubIssueRunner{lookPath: fakeGHPath, run: func(_ context.Context, _ string, arguments ...string) ([]byte, []byte, bool, bool, error) {
+		draftArguments = append([]string(nil), arguments...)
+		return fakePullRequestJSON(draft), nil, false, false, nil
+	}}
+	if matches, err := draftRunner.ListPullRequests(context.Background(), "github.com/owainlewis/factory", includeDrafts); err != nil || len(matches) != 1 || !matches[0].IsDraft {
+		t.Fatalf("included draft = %#v, error %v", matches, err)
+	}
+	if slicesContain(draftArguments, "draft:false") {
+		t.Fatalf("include-drafts command unexpectedly filters drafts: %#v", draftArguments)
+	}
+
+	for _, test := range []struct {
+		name   string
+		runner githubIssueRunner
+		code   string
+	}{
+		{name: "malformed", runner: githubIssueRunner{lookPath: fakeGHPath, run: fakeGHRun([]byte("{"), nil, false, false, nil)}, code: "gh_malformed_output"},
+		{name: "null array", runner: githubIssueRunner{lookPath: fakeGHPath, run: fakeGHRun([]byte("null"), nil, false, false, nil)}, code: "gh_malformed_output"},
+		{name: "missing draft field", runner: githubIssueRunner{lookPath: fakeGHPath, run: fakeGHRun([]byte(`[{"number":185,"title":"Pull request","url":"https://github.com/owainlewis/factory/pull/185","state":"OPEN","baseRefName":"main","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[{"id":"1","name":"factory:review","description":"","color":"ffffff"}]}]`), nil, false, false, nil)}, code: "gh_malformed_output"},
+		{name: "permission", runner: githubIssueRunner{lookPath: fakeGHPath, run: fakeGHRun(nil, []byte("GraphQL: Resource not accessible by personal access token"), false, false, errors.New("exit 1"))}, code: "gh_permission_denied"},
+		{name: "oversized", runner: githubIssueRunner{lookPath: fakeGHPath, run: fakeGHRun(nil, nil, true, false, nil)}, code: "gh_output_too_large"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := test.runner.ListPullRequests(context.Background(), "github.com/owainlewis/factory", baseTrigger)
+			var checkErr *automationCheckError
+			if !errors.As(err, &checkErr) || checkErr.code != test.code || checkErr.message == "" {
+				t.Fatalf("error = %#v, want actionable %q", err, test.code)
+			}
+		})
+	}
+
+	manyTrigger := baseTrigger
+	manyTrigger.BaseBranches = []string{"main", "release"}
+	manyRunner := githubIssueRunner{lookPath: fakeGHPath, run: func(_ context.Context, _ string, arguments ...string) ([]byte, []byte, bool, bool, error) {
+		branch := "main"
+		if slicesContain(arguments, "release") {
+			branch = "release"
+		}
+		matches := make([]protocol.GitHubPullRequestMatch, 51)
+		for index := range matches {
+			number := index + 1
+			if branch == "release" {
+				number += 1000
+			}
+			matches[index] = testPullRequest
+			matches[index].Number = number
+			matches[index].URL = "https://github.com/owainlewis/factory/pull/" + strconv.Itoa(number)
+			matches[index].BaseBranch = branch
+			matches[index].HeadCommit = fmt.Sprintf("%040x", number)
+		}
+		return fakePullRequestJSON(matches...), nil, false, false, nil
+	}}
+	_, err := manyRunner.ListPullRequests(context.Background(), "github.com/owainlewis/factory", manyTrigger)
+	var limitErr *automationCheckError
+	if !errors.As(err, &limitErr) || limitErr.code != "gh_match_limit" {
+		t.Fatalf("cross-base match limit error = %#v", err)
+	}
+}
+
 func TestRunAutomationCommandEnforcesTimeoutAndOutputLimits(t *testing.T) {
 	started := time.Now()
 	_, _, _, _, err := runAutomationCommandWithLimits(
@@ -770,7 +1054,7 @@ func TestAutomationAndOccurrencePagesUseStableCursors(t *testing.T) {
 			RequestKey: "automation-page-" + strconv.Itoa(index), Name: "Ready issues " + strconv.Itoa(index),
 			WorkflowID: first.Automation.WorkflowID, RepositoryID: first.Automation.RepositoryID,
 			TimeoutSeconds: 60,
-			Trigger: protocol.GitHubIssueTrigger{
+			Trigger: protocol.AutomationTrigger{
 				Type: protocol.AutomationTriggerGitHubIssue, State: "open",
 				RequiredLabels: []string{"factory:ready"}, PollIntervalSeconds: 10,
 			},
@@ -878,6 +1162,35 @@ func fakeGHRun(
 	}
 }
 
+func fakePullRequestJSON(matches ...protocol.GitHubPullRequestMatch) []byte {
+	values := make([]map[string]any, 0, len(matches))
+	for _, match := range matches {
+		labels := make([]map[string]string, 0, len(match.Labels))
+		for index, label := range match.Labels {
+			labels = append(labels, map[string]string{
+				"id": strconv.Itoa(index + 1), "name": label, "description": "", "color": "ffffff",
+			})
+		}
+		values = append(values, map[string]any{
+			"number": match.Number, "title": match.Title, "url": match.URL,
+			"state": strings.ToUpper(match.State), "isDraft": match.IsDraft,
+			"baseRefName": match.BaseBranch, "headRefOid": match.HeadCommit,
+			"labels": labels,
+		})
+	}
+	body, _ := json.Marshal(values)
+	return body
+}
+
+func slicesContain(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
 func stringsContain(value, fragment string) bool { return strings.Contains(value, fragment) }
 func strconvItoa(value int) string               { return strconv.Itoa(value) }
 
@@ -902,7 +1215,7 @@ func TestHTTPAutomationLifecycleAndPreview(t *testing.T) {
 	response := postJSON(http.MethodPost, "/api/v1/automations", protocol.CreateAutomationRequest{
 		RequestKey: "http-create", Name: "HTTP ready issues", WorkflowID: workflow.Workflow.ID,
 		RepositoryID: repository.ID, Context: "Use live state.", TimeoutSeconds: 60,
-		Trigger: protocol.GitHubIssueTrigger{Type: "github_issue", State: "open", RequiredLabels: []string{"factory:ready"}, PollIntervalSeconds: 10},
+		Trigger: protocol.AutomationTrigger{Type: "github_issue", State: "open", RequiredLabels: []string{"factory:ready"}, PollIntervalSeconds: 10},
 	})
 	requireStatus(t, response, http.StatusCreated)
 	created := decodeResponse[protocol.AutomationDetail](t, response)
@@ -931,5 +1244,60 @@ func TestHTTPAutomationLifecycleAndPreview(t *testing.T) {
 	page := decodeResponse[protocol.AutomationPage](t, response)
 	if len(page.Automations) != 1 {
 		t.Fatalf("Automation list = %#v", page)
+	}
+}
+
+func TestHTTPPullRequestAutomationUsesStrictTypedTrigger(t *testing.T) {
+	store := newTestStore(t)
+	workflow := createTestWorkflow(t, store, "http-pull-request-workflow", "Review", "Review safely.")
+	repository := createManagedTestRepository(t, store, "github.com/owainlewis/factory")
+	service := newAutomationService(store, slog.Default(), fakeGitHubAutomationLister{pullRequests: []protocol.GitHubPullRequestMatch{testPullRequest}})
+	server := httptest.NewServer(NewHandlerWithAutomation(store, slog.Default(), service))
+	defer server.Close()
+	post := func(body string) *http.Response {
+		request, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/automations", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		response, err := server.Client().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	invalidBody := fmt.Sprintf(`{
+		"request_key":"invalid-mixed-trigger","name":"Invalid mixed trigger",
+		"workflow_id":%q,"repository_id":%q,"context":"","timeout_seconds":60,
+		"trigger":{"type":"github_issue","state":"open","required_labels":[],"base_branches":["main"],"poll_interval_seconds":10}
+	}`, workflow.Workflow.ID, repository.ID)
+	response := post(invalidBody)
+	if response.StatusCode != http.StatusBadRequest {
+		body := decodeResponse[protocol.ErrorBody](t, response)
+		t.Fatalf("mixed typed trigger status = %d body %#v", response.StatusCode, body)
+	}
+	response.Body.Close()
+	validBody := fmt.Sprintf(`{
+		"request_key":"http-pull-request-create","name":"HTTP pull requests",
+		"workflow_id":%q,"repository_id":%q,"context":"Review only.","timeout_seconds":60,
+		"trigger":{"type":"github_pull_request","state":"open","include_drafts":false,
+		"required_labels":["factory:review"],"base_branches":["main"],"poll_interval_seconds":10}
+	}`, workflow.Workflow.ID, repository.ID)
+	response = post(validBody)
+	requireStatus(t, response, http.StatusCreated)
+	created := decodeResponse[protocol.AutomationDetail](t, response)
+	if created.Automation.Trigger.Type != protocol.AutomationTriggerGitHubPullRequest || created.Automation.Trigger.BaseBranches[0] != "main" {
+		t.Fatalf("HTTP pull-request Automation = %#v", created.Automation)
+	}
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/automations/"+created.Automation.ID+"/test", strings.NewReader(`{}`))
+	request.Header.Set("Content-Type", "application/json")
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireStatus(t, response, http.StatusOK)
+	preview := decodeResponse[protocol.TestAutomationResult](t, response)
+	if len(preview.Matches) != 1 || preview.Matches[0].BaseBranch != "main" {
+		t.Fatalf("HTTP pull-request preview = %#v", preview)
 	}
 }

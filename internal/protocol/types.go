@@ -3,6 +3,7 @@ package protocol
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -309,13 +310,108 @@ type WorkflowPage struct {
 	NextCursor *WorkflowCursor
 }
 
-const AutomationTriggerGitHubIssue = "github_issue"
+const (
+	AutomationTriggerGitHubIssue       = "github_issue"
+	AutomationTriggerGitHubPullRequest = "github_pull_request"
+)
 
 type GitHubIssueTrigger struct {
 	Type                string   `json:"type"`
 	State               string   `json:"state"`
 	RequiredLabels      []string `json:"required_labels"`
 	PollIntervalSeconds int      `json:"poll_interval_seconds"`
+}
+
+type GitHubPullRequestTrigger struct {
+	Type                string   `json:"type"`
+	State               string   `json:"state"`
+	IncludeDrafts       bool     `json:"include_drafts"`
+	RequiredLabels      []string `json:"required_labels"`
+	BaseBranches        []string `json:"base_branches"`
+	PollIntervalSeconds int      `json:"poll_interval_seconds"`
+}
+
+// AutomationTrigger is a strict flat tagged union. UnmarshalJSON rejects fields
+// that do not belong to the selected concrete trigger type.
+type AutomationTrigger struct {
+	Type                string
+	State               string
+	IncludeDrafts       bool
+	RequiredLabels      []string
+	BaseBranches        []string
+	PollIntervalSeconds int
+}
+
+func (trigger *AutomationTrigger) UnmarshalJSON(body []byte) error {
+	var discriminator struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(body, &discriminator); err != nil {
+		return err
+	}
+	decode := func(target any) error {
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		return decoder.Decode(target)
+	}
+	switch discriminator.Type {
+	case AutomationTriggerGitHubIssue:
+		var value GitHubIssueTrigger
+		if err := decode(&value); err != nil {
+			return err
+		}
+		*trigger = AutomationTrigger{
+			Type: value.Type, State: value.State, RequiredLabels: value.RequiredLabels,
+			PollIntervalSeconds: value.PollIntervalSeconds,
+		}
+		return nil
+	case AutomationTriggerGitHubPullRequest:
+		var value GitHubPullRequestTrigger
+		if err := decode(&value); err != nil {
+			return err
+		}
+		*trigger = AutomationTrigger{
+			Type: value.Type, State: value.State, IncludeDrafts: value.IncludeDrafts,
+			RequiredLabels: value.RequiredLabels, BaseBranches: value.BaseBranches,
+			PollIntervalSeconds: value.PollIntervalSeconds,
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported Automation trigger type %q", discriminator.Type)
+	}
+}
+
+func (trigger AutomationTrigger) MarshalJSON() ([]byte, error) {
+	switch trigger.Type {
+	case AutomationTriggerGitHubIssue:
+		return json.Marshal(GitHubIssueTrigger{
+			Type: trigger.Type, State: trigger.State, RequiredLabels: trigger.RequiredLabels,
+			PollIntervalSeconds: trigger.PollIntervalSeconds,
+		})
+	case AutomationTriggerGitHubPullRequest:
+		return json.Marshal(GitHubPullRequestTrigger{
+			Type: trigger.Type, State: trigger.State, IncludeDrafts: trigger.IncludeDrafts,
+			RequiredLabels: trigger.RequiredLabels, BaseBranches: trigger.BaseBranches,
+			PollIntervalSeconds: trigger.PollIntervalSeconds,
+		})
+	default:
+		return nil, fmt.Errorf("unsupported Automation trigger type %q", trigger.Type)
+	}
+}
+
+func (trigger AutomationTrigger) GitHubIssue() GitHubIssueTrigger {
+	return GitHubIssueTrigger{
+		Type: trigger.Type, State: trigger.State, RequiredLabels: trigger.RequiredLabels,
+		PollIntervalSeconds: trigger.PollIntervalSeconds,
+	}
+}
+
+func (trigger AutomationTrigger) GitHubPullRequest() GitHubPullRequestTrigger {
+	return GitHubPullRequestTrigger{
+		Type: trigger.Type, State: trigger.State, IncludeDrafts: trigger.IncludeDrafts,
+		RequiredLabels: trigger.RequiredLabels, BaseBranches: trigger.BaseBranches,
+		PollIntervalSeconds: trigger.PollIntervalSeconds,
+	}
 }
 
 type AutomationHealth struct {
@@ -336,7 +432,7 @@ type Automation struct {
 	TimeoutSeconds     int                    `json:"timeout_seconds"`
 	Enabled            bool                   `json:"enabled"`
 	Version            int                    `json:"version"`
-	Trigger            GitHubIssueTrigger     `json:"trigger"`
+	Trigger            AutomationTrigger      `json:"trigger"`
 	Health             AutomationHealth       `json:"health"`
 	LastCheckedAt      *time.Time             `json:"last_checked_at,omitempty"`
 	NextCheckAt        *time.Time             `json:"next_check_at,omitempty"`
@@ -355,21 +451,27 @@ type AutomationTaskSummary struct {
 }
 
 type AutomationOccurrence struct {
-	ID                string                 `json:"id"`
-	AutomationID      string                 `json:"automation_id"`
-	AutomationVersion int                    `json:"automation_version"`
-	State             string                 `json:"state"`
-	IssueNumber       int                    `json:"issue_number"`
-	IssueURL          string                 `json:"issue_url"`
-	IssueTitle        string                 `json:"issue_title"`
-	ObservedState     string                 `json:"observed_state"`
-	ObservedLabels    []string               `json:"observed_labels"`
-	TaskRequestKey    string                 `json:"task_request_key"`
-	Task              *AutomationTaskSummary `json:"task,omitempty"`
-	TaskIDSnapshot    string                 `json:"task_id_snapshot,omitempty"`
-	Diagnostic        string                 `json:"diagnostic,omitempty"`
-	CreatedAt         time.Time              `json:"created_at"`
-	UpdatedAt         time.Time              `json:"updated_at"`
+	ID                 string                 `json:"id"`
+	AutomationID       string                 `json:"automation_id"`
+	AutomationVersion  int                    `json:"automation_version"`
+	State              string                 `json:"state"`
+	IssueNumber        int                    `json:"issue_number,omitempty"`
+	IssueURL           string                 `json:"issue_url,omitempty"`
+	IssueTitle         string                 `json:"issue_title,omitempty"`
+	ObservedState      string                 `json:"observed_state"`
+	ObservedLabels     []string               `json:"observed_labels"`
+	PullRequestNumber  int                    `json:"pull_request_number,omitempty"`
+	PullRequestURL     string                 `json:"pull_request_url,omitempty"`
+	PullRequestTitle   string                 `json:"pull_request_title,omitempty"`
+	ObservedDraft      *bool                  `json:"observed_draft,omitempty"`
+	ObservedBaseBranch string                 `json:"observed_base_branch,omitempty"`
+	ObservedHeadCommit string                 `json:"observed_head_commit,omitempty"`
+	TaskRequestKey     string                 `json:"task_request_key"`
+	Task               *AutomationTaskSummary `json:"task,omitempty"`
+	TaskIDSnapshot     string                 `json:"task_id_snapshot,omitempty"`
+	Diagnostic         string                 `json:"diagnostic,omitempty"`
+	CreatedAt          time.Time              `json:"created_at"`
+	UpdatedAt          time.Time              `json:"updated_at"`
 }
 
 type AutomationDetail struct {
@@ -398,22 +500,22 @@ type AutomationOccurrenceCursor struct {
 }
 
 type CreateAutomationRequest struct {
-	RequestKey     string             `json:"request_key"`
-	Name           string             `json:"name"`
-	WorkflowID     string             `json:"workflow_id"`
-	RepositoryID   string             `json:"repository_id"`
-	Context        string             `json:"context"`
-	TimeoutSeconds int                `json:"timeout_seconds"`
-	Trigger        GitHubIssueTrigger `json:"trigger"`
+	RequestKey     string            `json:"request_key"`
+	Name           string            `json:"name"`
+	WorkflowID     string            `json:"workflow_id"`
+	RepositoryID   string            `json:"repository_id"`
+	Context        string            `json:"context"`
+	TimeoutSeconds int               `json:"timeout_seconds"`
+	Trigger        AutomationTrigger `json:"trigger"`
 }
 
 type UpdateAutomationRequest struct {
-	ExpectedVersion int                `json:"expected_version"`
-	Name            string             `json:"name"`
-	WorkflowID      string             `json:"workflow_id"`
-	Context         string             `json:"context"`
-	TimeoutSeconds  int                `json:"timeout_seconds"`
-	Trigger         GitHubIssueTrigger `json:"trigger"`
+	ExpectedVersion int               `json:"expected_version"`
+	Name            string            `json:"name"`
+	WorkflowID      string            `json:"workflow_id"`
+	Context         string            `json:"context"`
+	TimeoutSeconds  int               `json:"timeout_seconds"`
+	Trigger         AutomationTrigger `json:"trigger"`
 }
 
 type SetAutomationEnabledRequest struct {
@@ -429,8 +531,30 @@ type GitHubIssueMatch struct {
 	Labels []string `json:"labels"`
 }
 
+type GitHubPullRequestMatch struct {
+	Number     int      `json:"number"`
+	Title      string   `json:"title"`
+	URL        string   `json:"url"`
+	State      string   `json:"state"`
+	IsDraft    bool     `json:"is_draft"`
+	BaseBranch string   `json:"base_branch"`
+	HeadCommit string   `json:"head_commit"`
+	Labels     []string `json:"labels"`
+}
+
+type AutomationMatch struct {
+	Number     int      `json:"number"`
+	Title      string   `json:"title"`
+	URL        string   `json:"url"`
+	State      string   `json:"state"`
+	Labels     []string `json:"labels"`
+	IsDraft    *bool    `json:"is_draft,omitempty"`
+	BaseBranch string   `json:"base_branch,omitempty"`
+	HeadCommit string   `json:"head_commit,omitempty"`
+}
+
 type TestAutomationResult struct {
-	Matches []GitHubIssueMatch `json:"matches"`
+	Matches []AutomationMatch `json:"matches"`
 }
 
 type MetricsSummary struct {

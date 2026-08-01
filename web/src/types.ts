@@ -153,6 +153,17 @@ export interface GitHubIssueTrigger {
 	poll_interval_seconds: number;
 }
 
+export interface GitHubPullRequestTrigger {
+	type: "github_pull_request";
+	state: "open" | "closed" | "merged";
+	include_drafts: boolean;
+	required_labels: string[];
+	base_branches: string[];
+	poll_interval_seconds: number;
+}
+
+export type AutomationTrigger = GitHubIssueTrigger | GitHubPullRequestTrigger;
+
 export interface AutomationTaskSummary {
 	id: string;
 	title: string;
@@ -177,7 +188,7 @@ export interface Automation {
 	timeout_seconds: number;
 	enabled: boolean;
 	version: number;
-	trigger: GitHubIssueTrigger;
+	trigger: AutomationTrigger;
 	health: AutomationHealth;
 	last_checked_at?: string;
 	next_check_at?: string;
@@ -194,11 +205,17 @@ export interface AutomationOccurrence {
 	automation_id: string;
 	automation_version: number;
 	state: "pending" | "dispatched" | "failed" | "task_deleted";
-	issue_number: number;
-	issue_url: string;
-	issue_title: string;
+	issue_number?: number;
+	issue_url?: string;
+	issue_title?: string;
 	observed_state: string;
 	observed_labels: string[];
+	pull_request_number?: number;
+	pull_request_url?: string;
+	pull_request_title?: string;
+	observed_draft?: boolean;
+	observed_base_branch?: string;
+	observed_head_commit?: string;
 	task_request_key: string;
 	task?: AutomationTaskSummary;
 	task_id_snapshot?: string;
@@ -229,7 +246,7 @@ export interface CreateAutomationInput {
 	repository_id: string;
 	context: string;
 	timeout_seconds: number;
-	trigger: GitHubIssueTrigger;
+	trigger: AutomationTrigger;
 }
 
 export interface UpdateAutomationInput extends Omit<CreateAutomationInput, "request_key" | "repository_id"> {
@@ -243,6 +260,9 @@ export interface TestAutomationResult {
 		url: string;
 		state: string;
 		labels: string[];
+		is_draft?: boolean;
+		base_branch?: string;
+		head_commit?: string;
 	}>;
 }
 

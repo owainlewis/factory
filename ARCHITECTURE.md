@@ -2,16 +2,17 @@
 
 > **Status:** Current implementation
 >
-> **Verification basis:** Working tree including GitHub issue Automations from issue #184
+> **Verification basis:** Working tree including GitHub issue and pull-request
+> Automations from issues #184 and #185
 
 ## 1. Executive summary
 
 Factory is a local control plane for running coding agents in Git repositories.
 It separates durable coordination from agent execution:
 
-- `factory-server` stores work, assigns it, evaluates typed GitHub issue
-  Automations through `gh`, exposes the HTTP API, and serves the embedded
-  browser UI.
+- `factory-server` stores work, assigns it, evaluates typed GitHub issue and
+  pull-request Automations through `gh`, exposes the HTTP API, and serves the
+  embedded browser UI.
 - `factory-worker` has one stable identity and one agent runtime. It advertises
   runtime capacity and provider access, acquires centrally managed repositories
   on demand, and runs attempts in isolated Git worktrees.
@@ -88,8 +89,8 @@ the system does not use WebSockets.
 12. Tasks snapshot their Workflow name, revision, context, and resolved prompt.
     Workers remain generic and receive the resolved prompt through the existing
     claim task description.
-13. A typed GitHub issue Automation is created disabled. One issue creates at
-    most one durable Occurrence and one ordinary Task per Automation.
+13. A typed GitHub Automation is created disabled. One issue or pull request
+    creates at most one durable Occurrence and one ordinary Task per Automation.
 
 ## 4. Components and dependencies
 
@@ -105,7 +106,7 @@ the system does not use WebSockets.
 - allows ten seconds for HTTP shutdown.
 
 `internal/controlplane` owns the API, validation, state transitions, scheduling,
-metrics, pagination, Workflow revisions, typed GitHub issue Automations,
+metrics, pagination, Workflow revisions, typed GitHub Automations,
 provider health, prompt composition, and persistence.
 Claim selection is transactional and FIFO by execution creation time for the
 requesting worker.
@@ -244,22 +245,24 @@ Node.js is a contributor dependency only when UI source changes.
 Source polling never changes the issue. The agent prompt may tell the worker to
 use its installed provider CLI to update the issue and open a pull request.
 
-### Control-plane GitHub issue Automation
+### Control-plane GitHub Automation
 
 1. An operator creates a disabled Automation bound to one Workflow and one
    managed GitHub repository, then previews its bounded matches.
 2. Enabling requires explicit confirmation that an equivalent standalone
    `factory-poller` queue is stopped. The server schedules an immediate check.
-3. The evaluator runs fixed `gh issue list` arguments without a shell, with a
-   30-second timeout, bounded output, strict JSON, and repository-specific URL
-   validation.
+3. The evaluator runs fixed `gh issue list` or `gh pr list` arguments without a
+   shell, with a 30-second timeout, bounded output, strict JSON, and
+   repository-specific URL validation. Pull-request checks also validate draft
+   inclusion, labels, optional base branches, and head-commit identity.
 4. One transaction validates the evaluation token and enabled dependencies,
    stores every new typed Occurrence, updates health and counters, and advances
    the next check. Repeated issues reuse the existing Occurrence identity.
 5. A later transaction routes the pending Occurrence, creates or exactly
    recovers its deterministic Task, and links the Task to the Occurrence.
 6. The prompt separates trusted configured conditions from bounded untrusted
-   issue metadata and requires `gh` live-state revalidation before mutation.
+   GitHub metadata and requires authenticated `gh` live-state revalidation
+   before mutation.
 
 ### Attempt execution
 
@@ -384,10 +387,10 @@ Task     1 --- 1 Execution       1 --- * Attempt 1 --- * AttemptEvent
   snapshot, and its exact resolved prompt in the existing description field.
 - A repository is the central fleet record. Its enabled flag gates new routed
   work but does not rewrite existing assignments.
-- An Automation stores one concrete `github_issue` Trigger, health and polling
-  cursor, counters, and disabled-first state. Its Occurrences snapshot the
-  Workflow revision, repository, predicate, observation, prompt, and
-  deterministic Task request key before dispatch.
+- An Automation stores one concrete `github_issue` or `github_pull_request`
+  Trigger, health and polling cursor, counters, and disabled-first state. Its
+  Occurrences snapshot the Workflow revision, repository, predicate,
+  observation, prompt, and deterministic Task request key before dispatch.
 - Automation and Occurrence collection APIs use opaque descending cursors, so
   every supported record remains reachable beyond the first bounded page.
 - A worker-repository row may be a legacy static advertisement or the dynamic
@@ -497,8 +500,8 @@ The current trust boundary is one trusted user on one host:
 - workers advertise GitHub source access and managed acquisition only after a
   successful local `gh auth status` probe; registrations contain no token;
 - configured source commands and queue prompts are trusted operator policy;
-- issue fields are stored in the poller ledger and task prompt as untrusted
-  context;
+- provider item fields are stored in the poller ledger or Automation Occurrence
+  and task prompt as untrusted context;
 - lease tokens are random, sent over local HTTP, and stored as SHA-256 digests;
 - browser mutations must be same-origin and use JSON;
 - worker data directories, identity files, and manifests use restrictive
@@ -579,12 +582,12 @@ The contributor check set is documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 - A task has one execution assigned to one worker. Fan-out and cross-worker
   rescheduling are not implemented.
 - Execution scheduling is pull-based FIFO per worker. There are no priorities,
-  cron triggers, pull-request Automations, or automatic task retries.
+  cron triggers, or automatic task retries.
 - GitHub is the only built-in issue source. Jira, Linear, and other providers
   need a command adapter that implements the normalized issue JSON contract.
 - Standalone poller configuration remains file-based as a temporary migration
-  path. Control-plane GitHub issue Automations are managed in the UI. Neither
-  path rearms an issue automatically.
+  path. Control-plane GitHub issue and pull-request Automations are managed in
+  the UI. Neither path rearms a provider item automatically.
 - Scheduled Automations and a unified `factory` CLI are proposed but not
   implemented.
 - Metrics do not confirm external outcomes such as merged pull requests or

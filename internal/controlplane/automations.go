@@ -16,19 +16,26 @@ import (
 )
 
 type normalizedAutomation struct {
-	RequestKey     string                      `json:"request_key,omitempty"`
-	Name           string                      `json:"name"`
-	WorkflowID     string                      `json:"workflow_id"`
-	RepositoryID   string                      `json:"repository_id,omitempty"`
-	Context        string                      `json:"context"`
-	TimeoutSeconds int                         `json:"timeout_seconds"`
-	Trigger        protocol.GitHubIssueTrigger `json:"trigger"`
+	RequestKey     string                     `json:"request_key,omitempty"`
+	Name           string                     `json:"name"`
+	WorkflowID     string                     `json:"workflow_id"`
+	RepositoryID   string                     `json:"repository_id,omitempty"`
+	Context        string                     `json:"context"`
+	TimeoutSeconds int                        `json:"timeout_seconds"`
+	Trigger        protocol.AutomationTrigger `json:"trigger"`
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func normalizeAutomation(
 	requestKey, name, workflowID, repositoryID, contextValue string,
 	timeoutSeconds int,
-	trigger protocol.GitHubIssueTrigger,
+	trigger protocol.AutomationTrigger,
 	requireRequestKey bool,
 ) (normalizedAutomation, string, error) {
 	value := normalizedAutomation{
@@ -57,11 +64,14 @@ func normalizeAutomation(
 	}
 	value.Trigger.Type = strings.TrimSpace(value.Trigger.Type)
 	value.Trigger.State = strings.ToLower(strings.TrimSpace(value.Trigger.State))
-	if value.Trigger.Type != protocol.AutomationTriggerGitHubIssue {
-		return value, "", invalid("invalid_trigger_type", "trigger.type must be github_issue")
+	if value.Trigger.Type != protocol.AutomationTriggerGitHubIssue && value.Trigger.Type != protocol.AutomationTriggerGitHubPullRequest {
+		return value, "", invalid("invalid_trigger_type", "trigger.type must be github_issue or github_pull_request")
 	}
-	if value.Trigger.State != "open" && value.Trigger.State != "closed" {
+	if value.Trigger.Type == protocol.AutomationTriggerGitHubIssue && value.Trigger.State != "open" && value.Trigger.State != "closed" {
 		return value, "", invalid("invalid_issue_state", "trigger.state must be open or closed")
+	}
+	if value.Trigger.Type == protocol.AutomationTriggerGitHubPullRequest && value.Trigger.State != "open" && value.Trigger.State != "closed" && value.Trigger.State != "merged" {
+		return value, "", invalid("invalid_pull_request_state", "trigger.state must be open, closed, or merged")
 	}
 	if value.Trigger.PollIntervalSeconds < 10 || value.Trigger.PollIntervalSeconds > 86400 {
 		return value, "", invalid("invalid_poll_interval", "poll_interval_seconds must be between 10 and 86400")
@@ -91,6 +101,29 @@ func normalizeAutomation(
 		return left < right
 	})
 	value.Trigger.RequiredLabels = labels
+	if value.Trigger.Type == protocol.AutomationTriggerGitHubIssue {
+		value.Trigger.IncludeDrafts = false
+		value.Trigger.BaseBranches = []string{}
+		return value, normalizeWorkflowName(value.Name), nil
+	}
+	if len(value.Trigger.BaseBranches) > 20 {
+		return value, "", invalid("invalid_base_branches", "base_branches may contain at most 20 branches")
+	}
+	seenBranches := make(map[string]struct{}, len(value.Trigger.BaseBranches))
+	branches := make([]string, 0, len(value.Trigger.BaseBranches))
+	for _, branch := range value.Trigger.BaseBranches {
+		branch = strings.TrimSpace(branch)
+		if branch == "" || len([]byte(branch)) > 255 {
+			return value, "", invalid("invalid_base_branches", "base branches must be nonblank and at most 255 bytes")
+		}
+		if _, exists := seenBranches[branch]; exists {
+			return value, "", invalid("invalid_base_branches", "base branches must be unique")
+		}
+		seenBranches[branch] = struct{}{}
+		branches = append(branches, branch)
+	}
+	sort.Strings(branches)
+	value.Trigger.BaseBranches = branches
 	return value, normalizeWorkflowName(value.Name), nil
 }
 
@@ -119,6 +152,10 @@ func (s *Store) CreateAutomation(
 		return protocol.AutomationDetail{}, false, unavailable(err)
 	}
 	labels, err := json.Marshal(value.Trigger.RequiredLabels)
+	if err != nil {
+		return protocol.AutomationDetail{}, false, unavailable(err)
+	}
+	baseBranches, err := json.Marshal(value.Trigger.BaseBranches)
 	if err != nil {
 		return protocol.AutomationDetail{}, false, unavailable(err)
 	}
@@ -171,17 +208,29 @@ func (s *Store) CreateAutomation(
 		INSERT INTO automations(
 			id, request_key, request_digest, name, name_key, workflow_id,
 			repository_id, context, timeout_seconds, trigger_type, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'github_issue', ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, automationID, value.RequestKey, digest, value.Name, nameKey, value.WorkflowID,
-		value.RepositoryID, value.Context, value.TimeoutSeconds, now, now); err != nil {
+		value.RepositoryID, value.Context, value.TimeoutSeconds, value.Trigger.Type, now, now); err != nil {
 		return protocol.AutomationDetail{}, false, unavailable(err)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO automation_github_issue_triggers(
-			automation_id, issue_state, required_labels_json, poll_interval_seconds
-		) VALUES (?, ?, ?, ?)
-	`, automationID, value.Trigger.State, labels, value.Trigger.PollIntervalSeconds); err != nil {
-		return protocol.AutomationDetail{}, false, unavailable(err)
+	if value.Trigger.Type == protocol.AutomationTriggerGitHubIssue {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO automation_github_issue_triggers(
+				automation_id, issue_state, required_labels_json, poll_interval_seconds
+			) VALUES (?, ?, ?, ?)
+		`, automationID, value.Trigger.State, labels, value.Trigger.PollIntervalSeconds); err != nil {
+			return protocol.AutomationDetail{}, false, unavailable(err)
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO automation_github_pull_request_triggers(
+				automation_id, pull_request_state, include_drafts, required_labels_json,
+				base_branches_json, poll_interval_seconds
+			) VALUES (?, ?, ?, ?, ?, ?)
+		`, automationID, value.Trigger.State, value.Trigger.IncludeDrafts, labels,
+			baseBranches, value.Trigger.PollIntervalSeconds); err != nil {
+			return protocol.AutomationDetail{}, false, unavailable(err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return protocol.AutomationDetail{}, false, unavailable(err)
@@ -247,8 +296,15 @@ const automationSelect = `
 	       workflow_revision.name, workflow_revision.revision_number,
 	       automation.repository_id, repository.remote_identity,
 	       automation.context, automation.timeout_seconds, automation.enabled,
-	       automation.version, trigger.issue_state, trigger.required_labels_json,
-	       trigger.poll_interval_seconds, automation.health_status,
+	       automation.version, automation.trigger_type,
+	       (SELECT COUNT(*) FROM automation_github_issue_triggers typed_issue WHERE typed_issue.automation_id = automation.id),
+	       (SELECT COUNT(*) FROM automation_github_pull_request_triggers typed_pull_request WHERE typed_pull_request.automation_id = automation.id),
+	       COALESCE(issue_trigger.issue_state, pull_request_trigger.pull_request_state),
+	       COALESCE(pull_request_trigger.include_drafts, 0),
+	       COALESCE(issue_trigger.required_labels_json, pull_request_trigger.required_labels_json),
+	       COALESCE(pull_request_trigger.base_branches_json, '[]'),
+	       COALESCE(issue_trigger.poll_interval_seconds, pull_request_trigger.poll_interval_seconds),
+	       automation.health_status,
 	       automation.health_code, automation.health_message,
 	       automation.last_checked_at, automation.next_check_at,
 	       automation.matched_count, automation.skipped_count,
@@ -257,13 +313,15 @@ const automationSelect = `
 	JOIN workflows workflow ON workflow.id = automation.workflow_id
 	JOIN workflow_revisions workflow_revision ON workflow_revision.id = workflow.current_revision_id
 	JOIN repositories repository ON repository.id = automation.repository_id
-	JOIN automation_github_issue_triggers trigger ON trigger.automation_id = automation.id
+	LEFT JOIN automation_github_issue_triggers issue_trigger ON issue_trigger.automation_id = automation.id
+	LEFT JOIN automation_github_pull_request_triggers pull_request_trigger ON pull_request_trigger.automation_id = automation.id
 `
 
 func scanAutomation(row scanner) (protocol.Automation, error) {
 	var automation protocol.Automation
-	var enabled int
-	var labels []byte
+	var enabled, issueTriggerCount, pullRequestTriggerCount int
+	var includeDrafts int
+	var labels, baseBranches []byte
 	var lastChecked, nextCheck sql.NullInt64
 	var createdAt, updatedAt int64
 	err := row.Scan(
@@ -271,7 +329,9 @@ func scanAutomation(row scanner) (protocol.Automation, error) {
 		&automation.WorkflowName, &automation.WorkflowRevision,
 		&automation.RepositoryID, &automation.RepositoryIdentity,
 		&automation.Context, &automation.TimeoutSeconds, &enabled,
-		&automation.Version, &automation.Trigger.State, &labels,
+		&automation.Version, &automation.Trigger.Type, &issueTriggerCount, &pullRequestTriggerCount,
+		&automation.Trigger.State,
+		&includeDrafts, &labels, &baseBranches,
 		&automation.Trigger.PollIntervalSeconds, &automation.Health.Status,
 		&automation.Health.Code, &automation.Health.Message,
 		&lastChecked, &nextCheck, &automation.MatchedCount,
@@ -282,8 +342,18 @@ func scanAutomation(row scanner) (protocol.Automation, error) {
 		return automation, err
 	}
 	automation.Enabled = enabled != 0
-	automation.Trigger.Type = protocol.AutomationTriggerGitHubIssue
+	if automation.Trigger.Type != protocol.AutomationTriggerGitHubIssue && automation.Trigger.Type != protocol.AutomationTriggerGitHubPullRequest {
+		return automation, errors.New("Automation has an invalid trigger type")
+	}
+	if (automation.Trigger.Type == protocol.AutomationTriggerGitHubIssue && (issueTriggerCount != 1 || pullRequestTriggerCount != 0)) ||
+		(automation.Trigger.Type == protocol.AutomationTriggerGitHubPullRequest && (pullRequestTriggerCount != 1 || issueTriggerCount != 0)) {
+		return automation, errors.New("Automation typed trigger rows do not match its trigger type")
+	}
+	automation.Trigger.IncludeDrafts = includeDrafts != 0
 	if err := json.Unmarshal(labels, &automation.Trigger.RequiredLabels); err != nil {
+		return automation, err
+	}
+	if err := json.Unmarshal(baseBranches, &automation.Trigger.BaseBranches); err != nil {
 		return automation, err
 	}
 	if lastChecked.Valid {
@@ -409,24 +479,39 @@ func (s *Store) UpdateAutomation(
 	if err != nil {
 		return protocol.AutomationDetail{}, unavailable(err)
 	}
+	baseBranches, err := json.Marshal(value.Trigger.BaseBranches)
+	if err != nil {
+		return protocol.AutomationDetail{}, unavailable(err)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return protocol.AutomationDetail{}, unavailable(err)
 	}
 	defer tx.Rollback()
-	var currentVersion, enabled, currentTimeout, currentInterval int
-	var currentName, currentNameKey, currentWorkflowID, currentContext, currentState string
-	var currentLabels []byte
+	var currentVersion, enabled, currentTimeout, currentInterval, currentIncludeDrafts int
+	var issueTriggerCount, pullRequestTriggerCount int
+	var currentName, currentNameKey, currentWorkflowID, currentContext, currentType, currentState string
+	var currentLabels, currentBaseBranches []byte
 	err = tx.QueryRowContext(ctx, `
 		SELECT automation.version, automation.enabled, automation.name, automation.name_key,
 		       automation.workflow_id, automation.context, automation.timeout_seconds,
-		       trigger.issue_state, trigger.required_labels_json, trigger.poll_interval_seconds
+		       automation.trigger_type,
+		       (SELECT COUNT(*) FROM automation_github_issue_triggers typed_issue WHERE typed_issue.automation_id = automation.id),
+		       (SELECT COUNT(*) FROM automation_github_pull_request_triggers typed_pull_request WHERE typed_pull_request.automation_id = automation.id),
+		       COALESCE(issue_trigger.issue_state, pull_request_trigger.pull_request_state),
+		       COALESCE(pull_request_trigger.include_drafts, 0),
+		       COALESCE(issue_trigger.required_labels_json, pull_request_trigger.required_labels_json),
+		       COALESCE(pull_request_trigger.base_branches_json, '[]'),
+		       COALESCE(issue_trigger.poll_interval_seconds, pull_request_trigger.poll_interval_seconds)
 		FROM automations automation
-		JOIN automation_github_issue_triggers trigger ON trigger.automation_id = automation.id
+		LEFT JOIN automation_github_issue_triggers issue_trigger ON issue_trigger.automation_id = automation.id
+		LEFT JOIN automation_github_pull_request_triggers pull_request_trigger ON pull_request_trigger.automation_id = automation.id
 		WHERE automation.id = ?
 	`, strings.TrimSpace(automationID)).Scan(
 		&currentVersion, &enabled, &currentName, &currentNameKey, &currentWorkflowID,
-		&currentContext, &currentTimeout, &currentState, &currentLabels, &currentInterval,
+		&currentContext, &currentTimeout, &currentType, &issueTriggerCount, &pullRequestTriggerCount,
+		&currentState, &currentIncludeDrafts,
+		&currentLabels, &currentBaseBranches, &currentInterval,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.AutomationDetail{}, ErrNotFound
@@ -434,10 +519,18 @@ func (s *Store) UpdateAutomation(
 	if err != nil {
 		return protocol.AutomationDetail{}, unavailable(err)
 	}
+	if currentType != value.Trigger.Type {
+		return protocol.AutomationDetail{}, conflict("automation_trigger_type_immutable", "trigger type is immutable; create a new Automation")
+	}
+	if (currentType == protocol.AutomationTriggerGitHubIssue && (issueTriggerCount != 1 || pullRequestTriggerCount != 0)) ||
+		(currentType == protocol.AutomationTriggerGitHubPullRequest && (pullRequestTriggerCount != 1 || issueTriggerCount != 0)) {
+		return protocol.AutomationDetail{}, unavailable(errors.New("Automation typed trigger rows do not match its trigger type"))
+	}
 	exactReplay := currentVersion == input.ExpectedVersion+1 &&
 		currentName == value.Name && currentNameKey == nameKey && currentWorkflowID == value.WorkflowID &&
 		currentContext == value.Context && currentTimeout == value.TimeoutSeconds &&
-		currentState == value.Trigger.State && bytes.Equal(currentLabels, labels) &&
+		currentState == value.Trigger.State && currentIncludeDrafts == boolInt(value.Trigger.IncludeDrafts) &&
+		bytes.Equal(currentLabels, labels) && bytes.Equal(currentBaseBranches, baseBranches) &&
 		currentInterval == value.Trigger.PollIntervalSeconds
 	if exactReplay {
 		if err := tx.Commit(); err != nil {
@@ -484,12 +577,24 @@ func (s *Store) UpdateAutomation(
 	if changed != 1 {
 		return protocol.AutomationDetail{}, conflict("automation_version_conflict", "the Automation has a newer configuration version")
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE automation_github_issue_triggers
-		SET issue_state = ?, required_labels_json = ?, poll_interval_seconds = ?
-		WHERE automation_id = ?
-	`, value.Trigger.State, labels, value.Trigger.PollIntervalSeconds, automationID); err != nil {
-		return protocol.AutomationDetail{}, unavailable(err)
+	if value.Trigger.Type == protocol.AutomationTriggerGitHubIssue {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE automation_github_issue_triggers
+			SET issue_state = ?, required_labels_json = ?, poll_interval_seconds = ?
+			WHERE automation_id = ?
+		`, value.Trigger.State, labels, value.Trigger.PollIntervalSeconds, automationID); err != nil {
+			return protocol.AutomationDetail{}, unavailable(err)
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE automation_github_pull_request_triggers
+			SET pull_request_state = ?, include_drafts = ?, required_labels_json = ?,
+			    base_branches_json = ?, poll_interval_seconds = ?
+			WHERE automation_id = ?
+		`, value.Trigger.State, value.Trigger.IncludeDrafts, labels, baseBranches,
+			value.Trigger.PollIntervalSeconds, automationID); err != nil {
+			return protocol.AutomationDetail{}, unavailable(err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return protocol.AutomationDetail{}, unavailable(err)
@@ -624,13 +729,20 @@ func (s *Store) AutomationOccurrencesPage(
 	}
 	query := `
 		SELECT occurrence.id, occurrence.automation_id, occurrence.automation_version,
-		       occurrence.state, issue.issue_number, issue.issue_url, issue.issue_title,
+		       occurrence.state, automation.trigger_type,
+		       issue.issue_number, issue.issue_url, issue.issue_title,
 		       issue.observed_state, issue.observed_labels_json,
+		       pull_request.pull_request_number, pull_request.pull_request_url,
+		       pull_request.pull_request_title, pull_request.observed_state,
+		       pull_request.observed_draft, pull_request.observed_base_branch,
+		       pull_request.observed_head_commit, pull_request.observed_labels_json,
 		       occurrence.task_request_key, occurrence.task_id_snapshot,
 		       occurrence.diagnostic, occurrence.created_at, occurrence.updated_at,
 		       task.id, task.title, execution.state
 		FROM automation_occurrences occurrence
-		JOIN automation_github_issue_occurrences issue ON issue.occurrence_id = occurrence.id
+		JOIN automations automation ON automation.id = occurrence.automation_id
+		LEFT JOIN automation_github_issue_occurrences issue ON issue.occurrence_id = occurrence.id
+		LEFT JOIN automation_github_pull_request_occurrences pull_request ON pull_request.occurrence_id = occurrence.id
 		LEFT JOIN tasks task ON task.id = occurrence.task_id
 		LEFT JOIN executions execution ON execution.task_id = task.id
 		WHERE occurrence.automation_id = ?`
@@ -649,21 +761,51 @@ func (s *Store) AutomationOccurrencesPage(
 	occurrences := make([]protocol.AutomationOccurrence, 0, limit+1)
 	for rows.Next() {
 		var occurrence protocol.AutomationOccurrence
-		var labels []byte
+		var triggerType string
+		var issueNumber, pullRequestNumber, observedDraft sql.NullInt64
+		var issueURL, issueTitle, issueState, pullRequestURL, pullRequestTitle sql.NullString
+		var pullRequestState, baseBranch, headCommit sql.NullString
+		var issueLabels, pullRequestLabels []byte
 		var taskID, taskTitle, taskState sql.NullString
 		var createdAt, updatedAt int64
 		if err := rows.Scan(
 			&occurrence.ID, &occurrence.AutomationID, &occurrence.AutomationVersion,
-			&occurrence.State, &occurrence.IssueNumber, &occurrence.IssueURL,
-			&occurrence.IssueTitle, &occurrence.ObservedState, &labels,
+			&occurrence.State, &triggerType, &issueNumber, &issueURL,
+			&issueTitle, &issueState, &issueLabels, &pullRequestNumber,
+			&pullRequestURL, &pullRequestTitle, &pullRequestState, &observedDraft,
+			&baseBranch, &headCommit, &pullRequestLabels,
 			&occurrence.TaskRequestKey, &occurrence.TaskIDSnapshot,
 			&occurrence.Diagnostic, &createdAt, &updatedAt,
 			&taskID, &taskTitle, &taskState,
 		); err != nil {
 			return protocol.AutomationOccurrencePage{}, unavailable(err)
 		}
-		if err := json.Unmarshal(labels, &occurrence.ObservedLabels); err != nil {
-			return protocol.AutomationOccurrencePage{}, unavailable(err)
+		switch triggerType {
+		case protocol.AutomationTriggerGitHubIssue:
+			if !issueNumber.Valid || !issueURL.Valid || !issueTitle.Valid || !issueState.Valid || issueLabels == nil || pullRequestNumber.Valid {
+				return protocol.AutomationOccurrencePage{}, unavailable(errors.New("GitHub issue Occurrence is missing typed metadata"))
+			}
+			occurrence.IssueNumber, occurrence.IssueURL = int(issueNumber.Int64), issueURL.String
+			occurrence.IssueTitle, occurrence.ObservedState = issueTitle.String, issueState.String
+			if err := json.Unmarshal(issueLabels, &occurrence.ObservedLabels); err != nil {
+				return protocol.AutomationOccurrencePage{}, unavailable(err)
+			}
+		case protocol.AutomationTriggerGitHubPullRequest:
+			if !pullRequestNumber.Valid || !pullRequestURL.Valid || !pullRequestTitle.Valid ||
+				!pullRequestState.Valid || !observedDraft.Valid || !baseBranch.Valid || !headCommit.Valid || pullRequestLabels == nil || issueNumber.Valid {
+				return protocol.AutomationOccurrencePage{}, unavailable(errors.New("GitHub pull request Occurrence is missing typed metadata"))
+			}
+			occurrence.PullRequestNumber = int(pullRequestNumber.Int64)
+			occurrence.PullRequestURL, occurrence.PullRequestTitle = pullRequestURL.String, pullRequestTitle.String
+			occurrence.ObservedState = pullRequestState.String
+			draft := observedDraft.Int64 != 0
+			occurrence.ObservedDraft = &draft
+			occurrence.ObservedBaseBranch, occurrence.ObservedHeadCommit = baseBranch.String, headCommit.String
+			if err := json.Unmarshal(pullRequestLabels, &occurrence.ObservedLabels); err != nil {
+				return protocol.AutomationOccurrencePage{}, unavailable(err)
+			}
+		default:
+			return protocol.AutomationOccurrencePage{}, unavailable(errors.New("Occurrence has an invalid trigger type"))
 		}
 		if taskID.Valid {
 			occurrence.Task = &protocol.AutomationTaskSummary{ID: taskID.String, Title: taskTitle.String, State: taskState.String}

@@ -70,6 +70,145 @@ func TestTaskPaginationMigrationProvidesTheOrderingIndex(t *testing.T) {
 	}
 }
 
+func TestPullRequestAutomationMigrationPreservesGitHubIssueAutomations(t *testing.T) {
+	database, err := sql.Open("sqlite", t.TempDir()+"/pull-request-automation-migration.sqlite3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for _, name := range []string{
+		"001_controlplane.sql", "002_attempt_capacity_handoff.sql", "003_task_list_pagination.sql",
+		"004_worker_runtime.sql", "005_metrics_indexes.sql", "006_execution_retries.sql",
+		"007_worker_source_access.sql", "008_managed_repositories.sql", "009_workflows.sql",
+		"010_github_issue_automations.sql",
+	} {
+		body, err := migrations.Files.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.Exec(string(body)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+	}
+	if _, err := database.Exec(`
+		INSERT INTO repositories(id, remote_identity, created_at, enabled, updated_at, centrally_managed)
+		VALUES ('repository', 'github.com/example/repository', 1, 1, 1, 1);
+		INSERT INTO workflows(id, enabled, current_revision_id, current_name_key, created_at, updated_at)
+		VALUES ('workflow', 1, 'revision', 'workflow', 1, 1);
+		INSERT INTO workflow_revisions(
+			id, workflow_id, revision_number, request_key, request_digest,
+			name, summary, instructions, created_at
+		) VALUES ('revision', 'workflow', 1, 'revision-request', X'00', 'Workflow', '', 'Review.', 1);
+		INSERT INTO automations(
+			id, request_key, request_digest, name, name_key, workflow_id, repository_id,
+			context, timeout_seconds, trigger_type, created_at, updated_at
+		) VALUES ('automation', 'automation-request', X'00', 'Issues', 'issues', 'workflow',
+			'repository', '', 60, 'github_issue', 1, 1);
+		INSERT INTO automation_github_issue_triggers(
+			automation_id, issue_state, required_labels_json, poll_interval_seconds
+		) VALUES ('automation', 'open', '["factory:ready"]', 10);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := migrations.Files.ReadFile("011_github_pull_request_automations.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(string(migration)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatal(err)
+	}
+	var triggerType, state, labels string
+	if err := database.QueryRow(`
+		SELECT automation.trigger_type, trigger.issue_state, trigger.required_labels_json
+		FROM automations automation
+		JOIN automation_github_issue_triggers trigger ON trigger.automation_id = automation.id
+		WHERE automation.id = 'automation'
+	`).Scan(&triggerType, &state, &labels); err != nil {
+		t.Fatal(err)
+	}
+	if triggerType != "github_issue" || state != "open" || labels != `["factory:ready"]` {
+		t.Fatalf("migrated issue Automation = type %q state %q labels %q", triggerType, state, labels)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO automation_github_pull_request_triggers(
+			automation_id, pull_request_state, include_drafts, required_labels_json,
+			base_branches_json, poll_interval_seconds
+		) VALUES ('automation', 'open', 0, '[]', '[]', 10)
+	`); err == nil {
+		t.Fatal("inserted a pull-request Trigger for a GitHub issue Automation")
+	}
+	if _, err := database.Exec(`UPDATE automations SET trigger_type = 'github_pull_request' WHERE id = 'automation'`); err == nil {
+		t.Fatal("changed an Automation trigger type after creation")
+	}
+	if _, err := database.Exec(`
+		INSERT INTO automations(
+			id, request_key, request_digest, name, name_key, workflow_id, repository_id,
+			context, timeout_seconds, trigger_type, created_at, updated_at
+		) VALUES
+			('issue-other', 'issue-other-request', X'00', 'Other issues', 'other issues',
+			 'workflow', 'repository', '', 60, 'github_issue', 1, 1),
+			('pr-a', 'pr-a-request', X'00', 'PR A', 'pr a',
+			 'workflow', 'repository', '', 60, 'github_pull_request', 1, 1),
+			('pr-b', 'pr-b-request', X'00', 'PR B', 'pr b',
+			 'workflow', 'repository', '', 60, 'github_pull_request', 1, 1);
+		INSERT INTO automation_github_issue_triggers(
+			automation_id, issue_state, required_labels_json, poll_interval_seconds
+		) VALUES ('issue-other', 'open', '[]', 10);
+		INSERT INTO automation_github_pull_request_triggers(
+			automation_id, pull_request_state, include_drafts, required_labels_json,
+			base_branches_json, poll_interval_seconds
+		) VALUES
+			('pr-a', 'open', 0, '[]', '[]', 10),
+			('pr-b', 'open', 0, '[]', '[]', 10);
+		INSERT INTO automation_occurrences(
+			id, automation_id, automation_version, automation_name, workflow_revision_id,
+			repository_id, repository_identity, context, timeout_seconds, state,
+			resolved_prompt, task_request_key, created_at, updated_at
+		) VALUES
+			('issue-occurrence', 'automation', 1, 'Issues', 'revision', 'repository',
+			 'github.com/example/repository', '', 60, 'pending', 'prompt', 'issue-occurrence-key', 1, 1),
+			('pr-occurrence', 'pr-a', 1, 'PR A', 'revision', 'repository',
+			 'github.com/example/repository', '', 60, 'pending', 'prompt', 'pr-occurrence-key', 1, 1);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO automation_github_issue_occurrences(
+			occurrence_id, automation_id, issue_number, issue_url, issue_title,
+			observed_state, observed_labels_json, configured_state, required_labels_json
+		) VALUES ('issue-occurrence', 'issue-other', 1, 'https://github.com/example/repository/issues/1',
+			'Issue', 'open', '[]', 'open', '[]')
+	`); err == nil {
+		t.Fatal("inserted GitHub issue metadata for a different Automation than its parent Occurrence")
+	}
+	if _, err := database.Exec(`UPDATE automation_occurrences SET automation_id = 'pr-b' WHERE id = 'pr-occurrence'`); err == nil {
+		t.Fatal("changed an Occurrence Automation identity after creation")
+	}
+	if _, err := database.Exec(`
+		INSERT INTO automation_github_pull_request_occurrences(
+			occurrence_id, automation_id, pull_request_number, pull_request_url,
+			pull_request_title, observed_state, observed_draft, observed_base_branch,
+			observed_head_commit, observed_labels_json, configured_state,
+			include_drafts, required_labels_json, base_branches_json
+		) VALUES ('pr-occurrence', 'pr-b', 1, 'https://github.com/example/repository/pull/1',
+			'PR', 'open', 0, 'main', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+			'[]', 'open', 0, '[]', '[]')
+	`); err == nil {
+		t.Fatal("inserted GitHub pull-request metadata for a different Automation than its parent Occurrence")
+	}
+	rows, err := database.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("pull-request Automation migration left a foreign-key violation")
+	}
+}
+
 func TestRetryCountMigrationBackfillsHistoricalAttempts(t *testing.T) {
 	database, err := sql.Open("sqlite", t.TempDir()+"/retry-migration.sqlite3")
 	if err != nil {

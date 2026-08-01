@@ -131,6 +131,11 @@ if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "list" ]; then
   exit 0
 fi
 
+if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "list" ]; then
+  printf '%s\n' '[{"number":185,"title":"Typed pull-request Automation browser fixture","url":"https://github.com/example/automation-fixture/pull/185","state":"OPEN","isDraft":false,"baseRefName":"main","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[{"id":"label-review","name":"factory:review","description":"","color":"ffffff"}]}]'
+  exit 0
+fi
+
 echo "unexpected fake gh arguments: $*" >&2
 exit 2
 `,

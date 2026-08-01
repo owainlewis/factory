@@ -323,6 +323,33 @@ describe("App", () => {
     }
   });
 
+  it("creates and previews a typed GitHub pull-request Automation", async () => {
+    window.history.replaceState({}, "", "/automations");
+    mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Create Automation" }));
+    const dialog = screen.getByRole("dialog", { name: "Create Automation" });
+    await user.type(within(dialog).getByLabelText("Name"), "Factory pull request reviews");
+    await user.selectOptions(within(dialog).getByLabelText("Workflow"), "workflow-implement");
+    await user.selectOptions(within(dialog).getByLabelText("Managed repository"), "repo-factory");
+    await user.selectOptions(within(dialog).getByLabelText("Trigger type"), "github_pull_request");
+    await user.selectOptions(within(dialog).getByLabelText("Pull request state"), "open");
+    await user.click(within(dialog).getByLabelText("Include drafts"));
+    await user.clear(within(dialog).getByLabelText("Required labels"));
+    await user.type(within(dialog).getByLabelText("Required labels"), "factory:review");
+    await user.type(within(dialog).getByLabelText("Base branches"), "main, release");
+    await user.click(within(dialog).getByRole("button", { name: "Create Automation" }));
+
+    expect(await screen.findByRole("heading", { name: "Factory pull request reviews" })).toBeVisible();
+    expect(screen.getByText("Included")).toBeVisible();
+    expect(screen.getByText("main, release")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Test trigger" }));
+    expect(await screen.findByText("#185 Typed pull-request Automations")).toBeVisible();
+    expect(screen.getByText(/base main/)).toBeVisible();
+  });
+
   it("loads every Workflow page in the Automation form", async () => {
     window.history.replaceState({}, "", "/automations");
     mockControlPlane({ paginatedAutomationWorkflows: true });
