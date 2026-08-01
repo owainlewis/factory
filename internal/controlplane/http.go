@@ -205,7 +205,11 @@ func (a *API) setWorkflowEnabled(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	detail, err := a.store.SetWorkflowEnabled(r.Context(), r.PathValue("workflow_id"), input.Enabled)
+	if input.Enabled == nil {
+		writeError(w, invalid("invalid_workflow_enabled", "enabled is required"))
+		return
+	}
+	detail, err := a.store.SetWorkflowEnabled(r.Context(), r.PathValue("workflow_id"), *input.Enabled)
 	if err != nil {
 		writeError(w, err)
 		return

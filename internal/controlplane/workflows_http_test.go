@@ -77,12 +77,40 @@ func TestHTTPWorkflowLifecycleAndTaskSnapshot(t *testing.T) {
 		})
 	}
 
+	for name, body := range map[string]string{
+		"missing": `{}`,
+		"null":    `{"enabled":null}`,
+	} {
+		t.Run("rejects "+name+" enabled", func(t *testing.T) {
+			response := fixture.request(http.MethodPut, "/api/v1/workflows/"+created.Workflow.ID+"/enabled", "application/json", "", body)
+			requireStatus(t, response, http.StatusBadRequest)
+			errorBody := decodeResponse[protocol.ErrorBody](t, response)
+			if errorBody.Error.Code != "invalid_workflow_enabled" {
+				t.Fatalf("invalid enabled error = %#v", errorBody)
+			}
+			unchanged, err := fixture.store.Workflow(t.Context(), created.Workflow.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !unchanged.Workflow.Enabled {
+				t.Fatal("invalid enabled request disabled the Workflow")
+			}
+		})
+	}
+
 	response = fixture.request(http.MethodPut, "/api/v1/workflows/"+created.Workflow.ID+"/enabled", "application/json", "",
-		protocol.SetWorkflowEnabledRequest{Enabled: false})
+		map[string]bool{"enabled": false})
 	requireStatus(t, response, http.StatusOK)
 	disabled := decodeResponse[protocol.WorkflowDetail](t, response)
 	if disabled.Workflow.Enabled {
 		t.Fatalf("disabled workflow = %#v", disabled.Workflow)
+	}
+	response = fixture.request(http.MethodPut, "/api/v1/workflows/"+created.Workflow.ID+"/enabled", "application/json", "",
+		map[string]bool{"enabled": true})
+	requireStatus(t, response, http.StatusOK)
+	enabled := decodeResponse[protocol.WorkflowDetail](t, response)
+	if !enabled.Workflow.Enabled {
+		t.Fatalf("enabled workflow = %#v", enabled.Workflow)
 	}
 
 	response = fixture.request(http.MethodGet, "/api/v1/workflows?limit=201", "", "", nil)

@@ -283,7 +283,7 @@ type CreateWorkflowRevisionRequest struct {
 }
 
 type SetWorkflowEnabledRequest struct {
-	Enabled bool `json:"enabled"`
+	Enabled *bool `json:"enabled"`
 }
 
 type WorkflowCursor struct {
