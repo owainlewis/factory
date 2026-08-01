@@ -12,7 +12,7 @@ func TestHTTPWorkflowLifecycleAndTaskSnapshot(t *testing.T) {
 	worker := registerHTTPWorker(t, fixture, workerA, "factory", "github.com/owainlewis/factory", 1)
 	response := fixture.request(http.MethodPost, "/api/v1/workflows", "application/json", "",
 		protocol.CreateWorkflowRequest{
-			RequestKey: "http-workflow", Name: "Implement", Summary: "Ship one change",
+			RequestKey: "http-workflow", Title: "Implement", Summary: "Ship one change",
 			Instructions: "Implement, verify, review, and open a pull request.",
 		})
 	requireStatus(t, response, http.StatusCreated)
@@ -31,7 +31,7 @@ func TestHTTPWorkflowLifecycleAndTaskSnapshot(t *testing.T) {
 	response = fixture.request(http.MethodPost, "/api/v1/workflows/"+created.Workflow.ID+"/revisions", "application/json", "",
 		protocol.CreateWorkflowRevisionRequest{
 			RequestKey: "http-revision", ExpectedRevisionID: created.Workflow.CurrentRevision.ID,
-			Name: "Implement", Summary: "Ship one reviewed change",
+			Title: "Implement", Summary: "Ship one reviewed change",
 			Instructions: "Implement, verify twice, review, and open a pull request.",
 		})
 	requireStatus(t, response, http.StatusCreated)
@@ -52,7 +52,7 @@ func TestHTTPWorkflowLifecycleAndTaskSnapshot(t *testing.T) {
 		t.Fatalf("workflow task detail = %#v", task)
 	}
 
-	for name, body := range map[string]map[string]any{
+	for title, body := range map[string]map[string]any{
 		"empty legacy description": {
 			"request_key": "mixed-empty-description", "title": "Mixed task",
 			"description": "", "context": "Workflow context",
@@ -67,7 +67,7 @@ func TestHTTPWorkflowLifecycleAndTaskSnapshot(t *testing.T) {
 			"timeout_seconds": 60,
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(title, func(t *testing.T) {
 			response := fixture.request(http.MethodPost, "/api/v1/tasks", "application/json", "", body)
 			requireStatus(t, response, http.StatusBadRequest)
 			errorBody := decodeResponse[protocol.ErrorBody](t, response)
@@ -77,11 +77,11 @@ func TestHTTPWorkflowLifecycleAndTaskSnapshot(t *testing.T) {
 		})
 	}
 
-	for name, body := range map[string]string{
+	for title, body := range map[string]string{
 		"missing": `{}`,
 		"null":    `{"enabled":null}`,
 	} {
-		t.Run("rejects "+name+" enabled", func(t *testing.T) {
+		t.Run("rejects "+title+" enabled", func(t *testing.T) {
 			response := fixture.request(http.MethodPut, "/api/v1/workflows/"+created.Workflow.ID+"/enabled", "application/json", "", body)
 			requireStatus(t, response, http.StatusBadRequest)
 			errorBody := decodeResponse[protocol.ErrorBody](t, response)
@@ -118,5 +118,12 @@ func TestHTTPWorkflowLifecycleAndTaskSnapshot(t *testing.T) {
 	errorBody := decodeResponse[protocol.ErrorBody](t, response)
 	if errorBody.Error.Code != "invalid_limit" {
 		t.Fatalf("invalid limit error = %#v", errorBody)
+	}
+
+	response = fixture.request(http.MethodGet, "/api/v1/workflows?name=Implement", "", "", nil)
+	requireStatus(t, response, http.StatusBadRequest)
+	errorBody = decodeResponse[protocol.ErrorBody](t, response)
+	if errorBody.Error.Code != "invalid_query" {
+		t.Fatalf("retired workflow name filter error = %#v", errorBody)
 	}
 }

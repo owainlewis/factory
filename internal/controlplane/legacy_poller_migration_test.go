@@ -157,7 +157,7 @@ func TestLegacyPollerMigrationPendingResumeFinalizeAndDuplicatePrevention(t *tes
 	imported, err := store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
 		Mappings: []protocol.LegacyPollerQueueMapping{{
-			QueueID: queueID, WorkflowName: "Imported issue workflow", AutomationName: "Imported ready issues",
+			QueueID: queueID, WorkflowTitle: "Imported issue workflow", AutomationTitle: "Imported ready issues",
 		}},
 	})
 	if err != nil {
@@ -250,7 +250,7 @@ func TestLegacyPollerPreviewRejectsLockAndImportRejectsSnapshotChange(t *testing
 	_ = file.Close()
 	_, err = store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
-		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Workflow", AutomationName: "Automation"}},
+		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowTitle: "Workflow", AutomationTitle: "Automation"}},
 	})
 	var serviceErr *ServiceError
 	if !errors.As(err, &serviceErr) || serviceErr.Code != "migration_source_changed" {
@@ -284,7 +284,7 @@ func TestLegacyPollerResumeRecoversAfterTaskCommitAndRestart(t *testing.T) {
 	}
 	imported, err := store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
-		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Restart workflow", AutomationName: "Restart issues"}},
+		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowTitle: "Restart workflow", AutomationTitle: "Restart issues"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -346,7 +346,7 @@ func TestLegacyPollerResumeResetsAfterCanceledLinkBeginAndRestart(t *testing.T) 
 	}
 	imported, err := store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
-		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Link failure workflow", AutomationName: "Link failure issues"}},
+		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowTitle: "Link failure workflow", AutomationTitle: "Link failure issues"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -444,7 +444,7 @@ func TestLegacyPollerImportPreservesSubmittedDeletedAndBlankTaskIDIdentity(t *te
 	}
 	imported, err := store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
-		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Submitted workflow", AutomationName: "Submitted issues"}},
+		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowTitle: "Submitted workflow", AutomationTitle: "Submitted issues"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -483,7 +483,7 @@ func TestLegacyPollerSkipArchiveFailureRetryAndFinalizeSnapshotGuard(t *testing.
 	}
 	imported, err := store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
-		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Skip workflow", AutomationName: "Skip issues"}},
+		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowTitle: "Skip workflow", AutomationTitle: "Skip issues"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -531,7 +531,7 @@ func TestLegacyPollerSkipArchiveFailureRetryAndFinalizeSnapshotGuard(t *testing.
 	}
 	changedImport, err := store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 		LegacyPollerSelection: changedSelection, MigrationID: changedPreview.ID, SnapshotDigest: changedPreview.SnapshotDigest,
-		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Changed workflow", AutomationName: "Changed issues"}},
+		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowTitle: "Changed workflow", AutomationTitle: "Changed issues"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -575,7 +575,7 @@ func TestLegacyPollerFinalizeRebuildsInvalidStagingFilesAfterRestart(t *testing.
 	}
 	imported, err := store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
-		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Staging workflow", AutomationName: "Staging issues"}},
+		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowTitle: "Staging workflow", AutomationTitle: "Staging issues"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -650,7 +650,7 @@ func TestLegacyPollerFinalizeResyncsArchiveParentAfterRestart(t *testing.T) {
 	}
 	imported, err := store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
-		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Parent sync workflow", AutomationName: "Parent sync issues"}},
+		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowTitle: "Parent sync workflow", AutomationTitle: "Parent sync issues"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -721,7 +721,7 @@ func TestLegacyPollerMigrationReturnsAndResolvesMoreThanOnePage(t *testing.T) {
 	}
 	imported, err := store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
-		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Paged workflow", AutomationName: "Paged issues"}},
+		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowTitle: "Paged workflow", AutomationTitle: "Paged issues"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -756,7 +756,7 @@ func TestLegacyPollerActiveMigrationSurvivesControlPlaneRestart(t *testing.T) {
 	}
 	imported, err := store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
-		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Active workflow", AutomationName: "Active issues"}},
+		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowTitle: "Active workflow", AutomationTitle: "Active issues"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -802,7 +802,7 @@ func TestLegacyPollerPreviewReportsInvalidPendingPayload(t *testing.T) {
 	}
 	imported, err := store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 		LegacyPollerSelection: migrationSelection(fixture), MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
-		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Invalid pending workflow", AutomationName: "Invalid pending issues"}},
+		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowTitle: "Invalid pending workflow", AutomationTitle: "Invalid pending issues"}},
 	})
 	if err != nil || len(imported.Occurrences) != 1 || imported.Occurrences[0].State != "failed" {
 		t.Fatalf("invalid pending Import = %#v, error %v", imported, err)
@@ -831,7 +831,7 @@ func TestLegacyPollerImportEnforcesOccurrenceLimitAtomically(t *testing.T) {
 	t.Cleanup(func() { maxLegacyImportOccurrences = originalLimit })
 	_, err = store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
-		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Limited workflow", AutomationName: "Limited issues"}},
+		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowTitle: "Limited workflow", AutomationTitle: "Limited issues"}},
 	})
 	var serviceErr *ServiceError
 	if !errors.As(err, &serviceErr) || serviceErr.Code != "occurrence_limit_reached" {
@@ -941,7 +941,7 @@ func TestLegacyPollerBlocksImportWhenLedgerContainsRemovedQueue(t *testing.T) {
 	_, err = store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
 		Mappings: []protocol.LegacyPollerQueueMapping{{
-			QueueID: configuredQueueID, WorkflowName: "Configured workflow", AutomationName: "Configured issues",
+			QueueID: configuredQueueID, WorkflowTitle: "Configured workflow", AutomationTitle: "Configured issues",
 		}},
 	})
 	var serviceErr *ServiceError
@@ -999,7 +999,7 @@ func TestLegacyPollerSnapshotBindsPragmasAndLedgerInode(t *testing.T) {
 			test.change(t, fixture)
 			_, err = store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 				LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
-				Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Snapshot workflow", AutomationName: "Snapshot issues"}},
+				Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowTitle: "Snapshot workflow", AutomationTitle: "Snapshot issues"}},
 			})
 			var serviceErr *ServiceError
 			if !errors.As(err, &serviceErr) || serviceErr.Code != "migration_source_changed" {

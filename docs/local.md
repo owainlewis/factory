@@ -200,7 +200,7 @@ process can write the ledger.
 4. Select the legacy paths when they are not the defaults, confirm the poller is
    stopped, and choose **Preview locked snapshot**.
 5. Review every resolved source path, managed-repository identity and ID,
-   proposed Workflow and Automation name, observation count, and error.
+   proposed Workflow and Automation title, observation count, and error.
    Unsupported command queues
    remain recoverable from the later archive but are not imported. If the
    ledger contains observations for a queue removed or renamed in

@@ -146,7 +146,7 @@ export function DelegateModal({
                 <option value="">Blank task</option>
                 {(workflows.data ?? []).map((workflow) => (
                   <option key={workflow.id} value={workflow.current_revision.id}>
-                    {workflow.current_revision.name} · revision {workflow.current_revision.revision_number}
+                    {workflow.current_revision.title} · revision {workflow.current_revision.revision_number}
                   </option>
                 ))}
               </select>

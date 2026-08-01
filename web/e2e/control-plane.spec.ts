@@ -386,7 +386,7 @@ test("creates, pins, revises, and disables a reusable Workflow", async ({ page }
   await expect(page.getByRole("heading", { name: "Workflows", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Create workflow" }).first().click();
   const create = page.getByRole("dialog", { name: "Create workflow" });
-  await create.getByLabel("Name").fill("E2E pinned review");
+  await create.getByLabel("Title").fill("E2E pinned review");
   await create.getByLabel("Summary").fill("Prove immutable prompt snapshots.");
   await create.getByLabel("Markdown instructions").fill("Use revision one instructions exactly.");
   await create.getByRole("button", { name: "Create workflow" }).click();
@@ -802,7 +802,7 @@ test("previews and dispatches one typed GitHub issue Automation without duplicat
   await page.goto("/workflows");
   await page.getByRole("button", { name: "Create workflow" }).first().click();
   const workflow = page.getByRole("dialog", { name: "Create workflow" });
-  await workflow.getByLabel("Name").fill("E2E issue Automation");
+  await workflow.getByLabel("Title").fill("E2E issue Automation");
   await workflow.getByLabel("Summary").fill("Dispatch the safe issue fixture.");
   await workflow.getByLabel("Markdown instructions").fill("Fetch the live issue, implement it, and verify the result.");
   await workflow.getByRole("button", { name: "Create workflow" }).click();
@@ -811,7 +811,7 @@ test("previews and dispatches one typed GitHub issue Automation without duplicat
   await page.getByRole("button", { name: "Automations", exact: true }).click();
   await page.getByRole("button", { name: "Create Automation" }).first().click();
   const automation = page.getByRole("dialog", { name: "Create Automation" });
-  await automation.getByLabel("Name").fill("E2E ready issues");
+  await automation.getByLabel("Title").fill("E2E ready issues");
   await automation.getByLabel("Workflow").selectOption({ label: "E2E issue Automation" });
   await automation.getByLabel("Managed repository").selectOption(identifiers.automationRepository);
   await automation.getByLabel("Trusted Automation context").fill("Use only the safe browser fixture repository.");
@@ -863,7 +863,7 @@ test("previews and dispatches one typed GitHub pull-request Automation without d
   await page.goto("/workflows");
   await page.getByRole("button", { name: "Create workflow" }).first().click();
   const workflow = page.getByRole("dialog", { name: "Create workflow" });
-  await workflow.getByLabel("Name").fill("E2E pull-request review");
+  await workflow.getByLabel("Title").fill("E2E pull-request review");
   await workflow.getByLabel("Summary").fill("Review the safe pull-request fixture.");
   await workflow.getByLabel("Markdown instructions").fill("Fetch and revalidate the live pull request, review it, and do not merge it.");
   await workflow.getByRole("button", { name: "Create workflow" }).click();
@@ -872,7 +872,7 @@ test("previews and dispatches one typed GitHub pull-request Automation without d
   await page.getByRole("button", { name: "Automations", exact: true }).click();
   await page.getByRole("button", { name: "Create Automation" }).first().click();
   const automation = page.getByRole("dialog", { name: "Create Automation" });
-  await automation.getByLabel("Name").fill("E2E pull-request Automation");
+  await automation.getByLabel("Title").fill("E2E pull-request Automation");
   await automation.getByLabel("Workflow").selectOption({ label: "E2E pull-request review" });
   await automation.getByLabel("Managed repository").selectOption(identifiers.automationRepository);
   await automation.getByLabel("Trigger type").selectOption("github_pull_request");
@@ -925,7 +925,7 @@ test("previews, enables, and runs a schedule Automation through the ordinary tas
   await page.goto("/workflows");
   await page.getByRole("button", { name: "Create workflow" }).first().click();
   const workflow = page.getByRole("dialog", { name: "Create workflow" });
-  await workflow.getByLabel("Name").fill("E2E scheduled maintenance");
+  await workflow.getByLabel("Title").fill("E2E scheduled maintenance");
   await workflow.getByLabel("Summary").fill("Run safe scheduled maintenance.");
   await workflow.getByLabel("Markdown instructions").fill("Inspect the fixture repository and report the scheduled maintenance result.");
   await workflow.getByRole("button", { name: "Create workflow" }).click();
@@ -934,7 +934,7 @@ test("previews, enables, and runs a schedule Automation through the ordinary tas
   await page.getByRole("button", { name: "Automations", exact: true }).click();
   await page.getByRole("button", { name: "Create Automation" }).first().click();
   const automation = page.getByRole("dialog", { name: "Create Automation" });
-  await automation.getByLabel("Name").fill("E2E schedule Automation");
+  await automation.getByLabel("Title").fill("E2E schedule Automation");
   await automation.getByLabel("Workflow").selectOption({ label: "E2E scheduled maintenance" });
   await automation.getByLabel("Managed repository").selectOption(identifiers.automationRepository);
   await automation.getByLabel("Trigger type").selectOption("schedule");
@@ -987,8 +987,8 @@ test("migrates a locked legacy snapshot through Resume and Finalize", async ({ p
   await expect(migration.getByText("0 submitted · 1 pending", { exact: true })).toBeVisible();
   await expect(migration.getByText(`${legacyRoot}/poller/poller.sqlite3`, { exact: true })).toBeVisible();
   await expect(migration.getByText(/Repository mapping:/)).toContainText("github.com/example/automation-fixture");
-  await migration.getByLabel("Workflow name").fill("E2E imported legacy workflow");
-  await migration.getByLabel("Automation name").fill("E2E imported legacy issues");
+  await migration.getByLabel("Workflow title").fill("E2E imported legacy workflow");
+  await migration.getByLabel("Automation title").fill("E2E imported legacy issues");
   const importedResponse = page.waitForResponse((response) =>
     response.url().endsWith("/api/v1/migrations/legacy-poller/import") && response.request().method() === "POST",
   );

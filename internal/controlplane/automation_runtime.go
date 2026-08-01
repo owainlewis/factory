@@ -1026,19 +1026,19 @@ func (s *Store) completeAutomationSuccess(
 		state, diagnostic := "pending", ""
 		var storedPrompt any = prompt
 		if err != nil || len([]byte(prompt)) > protocol.MaxResolvedPromptBytes ||
-			!protocol.AgentPromptFits(evaluation.Automation.Name+": GitHub issue #"+strconv.Itoa(match.Number), evaluation.Automation.RepositoryIdentity, prompt) {
+			!protocol.AgentPromptFits(evaluation.Automation.Title+": GitHub issue #"+strconv.Itoa(match.Number), evaluation.Automation.RepositoryIdentity, prompt) {
 			state, diagnostic, storedPrompt = "failed", "resolved_prompt_too_large", nil
 		}
 		requestKey := "automation:" + evaluation.Automation.ID + ":github_issue:" + strconv.Itoa(match.Number)
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO automation_occurrences(
-				id, automation_id, automation_version, automation_name,
+				id, automation_id, automation_version, automation_title,
 				workflow_revision_id, repository_id, repository_identity,
 				context, timeout_seconds, state, resolved_prompt, task_request_key,
 				diagnostic, retry_at, created_at, updated_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, occurrenceID, evaluation.Automation.ID, evaluation.Automation.Version,
-			evaluation.Automation.Name, evaluation.WorkflowRevisionID,
+			evaluation.Automation.Title, evaluation.WorkflowRevisionID,
 			evaluation.Automation.RepositoryID, evaluation.Automation.RepositoryIdentity,
 			evaluation.Automation.Context, evaluation.Automation.TimeoutSeconds,
 			state, storedPrompt, requestKey, diagnostic, now, now, now); err != nil {
@@ -1142,7 +1142,7 @@ func (s *Store) completePullRequestAutomationSuccess(
 		)
 		state, diagnostic := "pending", ""
 		var storedPrompt any = prompt
-		title := evaluation.Automation.Name + ": GitHub pull request #" + strconv.Itoa(match.Number)
+		title := evaluation.Automation.Title + ": GitHub pull request #" + strconv.Itoa(match.Number)
 		if err != nil || len([]byte(prompt)) > protocol.MaxResolvedPromptBytes ||
 			!protocol.AgentPromptFits(title, evaluation.Automation.RepositoryIdentity, prompt) {
 			state, diagnostic, storedPrompt = "failed", "resolved_prompt_too_large", nil
@@ -1150,13 +1150,13 @@ func (s *Store) completePullRequestAutomationSuccess(
 		requestKey := "automation:" + evaluation.Automation.ID + ":github_pull_request:" + strconv.Itoa(match.Number)
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO automation_occurrences(
-				id, automation_id, automation_version, automation_name,
+				id, automation_id, automation_version, automation_title,
 				workflow_revision_id, repository_id, repository_identity,
 				context, timeout_seconds, state, resolved_prompt, task_request_key,
 				diagnostic, retry_at, created_at, updated_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, occurrenceID, evaluation.Automation.ID, evaluation.Automation.Version,
-			evaluation.Automation.Name, evaluation.WorkflowRevisionID,
+			evaluation.Automation.Title, evaluation.WorkflowRevisionID,
 			evaluation.Automation.RepositoryID, evaluation.Automation.RepositoryIdentity,
 			evaluation.Automation.Context, evaluation.Automation.TimeoutSeconds,
 			state, storedPrompt, requestKey, diagnostic, now, now, now); err != nil {
@@ -1274,22 +1274,22 @@ func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) err
 		return unavailable(err)
 	}
 	defer tx.Rollback()
-	var automationID, automationName, triggerType, workflowRevisionID, repositoryID, repositoryIdentity string
+	var automationID, automationTitle, triggerType, workflowRevisionID, repositoryID, repositoryIdentity string
 	var contextValue, prompt, requestKey string
 	var timeoutSeconds int
 	var issueNumber, pullRequestNumber, scheduledAt sql.NullInt64
 	var scheduleKind, runRequestKey sql.NullString
-	var workflowID, workflowName string
+	var workflowID, workflowTitle string
 	var workflowRevisionNumber, automationEnabled, workflowEnabled, repositoryEnabled int
 	err = tx.QueryRowContext(ctx, `
-		SELECT occurrence.automation_id, occurrence.automation_name, automation.trigger_type,
+		SELECT occurrence.automation_id, occurrence.automation_title, automation.trigger_type,
 		       occurrence.workflow_revision_id, occurrence.repository_id,
 		       occurrence.repository_identity, occurrence.context,
 		       occurrence.timeout_seconds, occurrence.resolved_prompt,
 		       occurrence.task_request_key,
 		       issue.issue_number, pull_request.pull_request_number,
 		       schedule.kind, schedule.scheduled_at, schedule.run_request_key,
-		       revision.workflow_id, revision.name, revision.revision_number,
+		       revision.workflow_id, revision.title, revision.revision_number,
 		       automation.enabled, workflow.enabled, repository.enabled
 		FROM automation_occurrences occurrence
 		JOIN automations automation ON automation.id = occurrence.automation_id
@@ -1304,10 +1304,10 @@ func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) err
 		JOIN repositories repository ON repository.id = occurrence.repository_id
 		WHERE occurrence.id = ? AND occurrence.state = 'pending'
 	`, occurrenceID).Scan(
-		&automationID, &automationName, &triggerType, &workflowRevisionID, &repositoryID,
+		&automationID, &automationTitle, &triggerType, &workflowRevisionID, &repositoryID,
 		&repositoryIdentity, &contextValue, &timeoutSeconds, &prompt, &requestKey,
 		&issueNumber, &pullRequestNumber, &scheduleKind, &scheduledAt, &runRequestKey,
-		&workflowID, &workflowName, &workflowRevisionNumber,
+		&workflowID, &workflowTitle, &workflowRevisionNumber,
 		&automationEnabled, &workflowEnabled, &repositoryEnabled,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1325,12 +1325,12 @@ func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) err
 		if !issueNumber.Valid {
 			return unavailable(errors.New("GitHub issue Occurrence is missing typed identity"))
 		}
-		title = automationName + ": GitHub issue #" + strconv.Itoa(int(issueNumber.Int64))
+		title = automationTitle + ": GitHub issue #" + strconv.Itoa(int(issueNumber.Int64))
 	case protocol.AutomationTriggerGitHubPullRequest:
 		if !pullRequestNumber.Valid {
 			return unavailable(errors.New("GitHub pull-request Occurrence is missing typed identity"))
 		}
-		title = automationName + ": GitHub pull request #" + strconv.Itoa(int(pullRequestNumber.Int64))
+		title = automationTitle + ": GitHub pull request #" + strconv.Itoa(int(pullRequestNumber.Int64))
 	case protocol.AutomationTriggerSchedule:
 		if !scheduleKind.Valid {
 			return unavailable(errors.New("schedule Occurrence is missing typed identity"))
@@ -1339,9 +1339,9 @@ func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) err
 			if !scheduledAt.Valid {
 				return unavailable(errors.New("scheduled Occurrence is missing due instant"))
 			}
-			title = automationName + ": scheduled " + fromMillis(scheduledAt.Int64).Format(time.RFC3339)
+			title = automationTitle + ": scheduled " + fromMillis(scheduledAt.Int64).Format(time.RFC3339)
 		} else if scheduleKind.String == "run_now" && runRequestKey.Valid {
-			title = automationName + ": run now"
+			title = automationTitle + ": run now"
 		} else {
 			return unavailable(errors.New("Run now Occurrence is missing request identity"))
 		}
@@ -1415,11 +1415,11 @@ func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) err
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO tasks(
 				id, request_key, title, description, repository_id, timeout_seconds,
-				created_at, workflow_id, workflow_revision_id, workflow_name,
+				created_at, workflow_id, workflow_revision_id, workflow_title,
 				workflow_revision_number, context
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, taskID, requestKey, title, prompt, repositoryID, timeoutSeconds, now,
-			workflowID, workflowRevisionID, workflowName, workflowRevisionNumber, contextValue); err != nil {
+			workflowID, workflowRevisionID, workflowTitle, workflowRevisionNumber, contextValue); err != nil {
 			return unavailable(err)
 		}
 		if _, err := tx.ExecContext(ctx, `

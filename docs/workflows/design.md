@@ -78,12 +78,12 @@ Workflow, Automation, Trigger, or Occurrence records.
 
 ### How it works
 
-An operator creates a Workflow named `Implement a ticket`. Revision 1 contains
+An operator creates a Workflow titled `Implement a ticket`. Revision 1 contains
 Markdown instructions to read the live ticket, inspect repository guidance,
 implement and verify the change, request review, and report evidence. Editing
 the Workflow creates revision 2. Both revisions remain immutable.
 
-The operator then creates an Automation named `Ready issues` by selecting that
+The operator then creates an Automation titled `Ready issues` by selecting that
 Workflow, one enabled managed repository, trusted context, a timeout, and the
 `github_issue` Trigger. The Trigger form requires issue state, required labels,
 and a polling interval. The Automation is created disabled. Test trigger runs a
@@ -118,9 +118,9 @@ readiness reasons and the dispatcher keeps its Occurrences pending.
 Dispatch uses the existing managed-repository route with the Occurrence's
 canonical remote identity and required source access `github` on `github.com`.
 The returned Task must reference the snapshotted repository or dispatch stops
-with a corruption error. Titles use the snapshotted Automation name:
-`<name>: GitHub issue #<number>`, `<name>: GitHub pull request #<number>`,
-`<name>: scheduled <UTC RFC3339>`, or `<name>: run now`. All remain below the
+with a corruption error. Titles use the snapshotted Automation title:
+`<title>: GitHub issue #<number>`, `<title>: GitHub pull request #<number>`,
+`<title>: scheduled <UTC RFC3339>`, or `<title>: run now`. All remain below the
 existing 200-character Task title limit.
 
 The `github_pull_request` Trigger follows the same path with pull-request
@@ -218,7 +218,7 @@ It follows the same compact JSON and escaping rules.
 
 The worker adds its existing fixed Factory safety preamble, title, repository
 identity, working branch, and target base branch, then runs the resolved prompt.
-Task detail shows the Workflow name and revision, original context, and resolved
+Task detail shows the Workflow title and revision, original context, and resolved
 prompt.
 
 Factory performs no interpolation, Markdown rendering, URL expansion, or
@@ -230,7 +230,7 @@ sending `description` and behave as they do now.
 #### Workflow store
 
 The Workflow store owns stable Workflow IDs, immutable numbered revisions,
-enabled state, name uniqueness, mutation replay, and size limits. It depends on
+enabled state, title uniqueness, mutation replay, and size limits. It depends on
 SQLite. It does not own repositories, Triggers, schedules, runtime selection,
 or execution state.
 
@@ -346,7 +346,7 @@ not introduce a provider SDK or credential store.
    Execution.
 7. One issue number, pull-request number, or scheduled UTC instant creates at
    most one Occurrence for one Automation.
-8. A non-migration Occurrence snapshots the Workflow revision, Automation name
+8. A non-migration Occurrence snapshots the Workflow revision, Automation title
    and version, repository, context, timeout, and Trigger metadata before Task
    dispatch. A migration Occurrence instead preserves its exact legacy ledger
    identity and, while pending, its copied Task request. Supported Task deletion
@@ -366,7 +366,7 @@ not introduce a provider SDK or credential store.
 
 ### Requirements
 
-- Workflow and Automation names are required, limited to 100 Unicode
+- Workflow and Automation titles are required, limited to 100 Unicode
   characters, and unique after trimming and ASCII case folding within their
   resource type. Other UTF-8 bytes remain exact.
 - Workflow summaries are limited to 500 Unicode characters. Markdown
@@ -380,7 +380,7 @@ not introduce a provider SDK or credential store.
 - The complete agent input, including the safety preamble, title, repository
   identity, bounded working and target-base branch metadata, and resolved
   description, is limited to 72 KiB and is validated before Task creation.
-- Editing a Workflow's name, summary, or instructions creates its next immutable
+- Editing a Workflow's title, summary, or instructions creates its next immutable
   integer revision. The UI offers Blank task and every enabled Workflow; Task
   detail keeps context separate from the Workflow snapshot, retries use the
   stored resolved description, and disabling affects only new Tasks.
@@ -453,7 +453,7 @@ GET    /api/v1/automations/{automation_id}/occurrences
 POST   /api/v1/occurrences/{occurrence_id}/skip
 ```
 
-The implemented Workflow list accepts exact normalized `name`, `enabled`,
+The implemented Workflow list accepts exact normalized `title`, `enabled`,
 `limit`, and `cursor` filters. Workflow creation starts at revision 1;
 `GET /workflows/{workflow_id}` returns the current Workflow and its immutable
 revision history; enabling and disabling are idempotent.
@@ -484,7 +484,7 @@ Automation recovery uses that internal create-or-recover behavior inside the
 atomic Occurrence-to-Task transaction; it adds no public Task lookup endpoint or
 Task request-key tombstone policy.
 
-The Task stores nullable Workflow and revision IDs, Workflow name and revision
+The Task stores nullable Workflow and revision IDs, Workflow title and revision
 number snapshots, and original context. `tasks.description` stores the immutable
 resolved prompt; Task detail returns `context` and exposes the same bytes as
 `resolved_prompt`; `claim.task.description` remains the resolved prompt consumed
@@ -498,7 +498,7 @@ Workflow creation accepts:
 ```json
 {
   "request_key": "e3f257f6-bb5d-47cd-b903-8966c4bd36d8",
-  "name": "Implement a ticket",
+  "title": "Implement a ticket",
   "summary": "Implement, verify, review, and open a pull request.",
   "instructions": "Read the live ticket..."
 }
@@ -522,7 +522,7 @@ For example:
 ```json
 {
   "request_key": "2ca4ecb2-e4d3-4530-a215-ce9ddabece8b",
-  "name": "Ready issues",
+  "title": "Ready issues",
   "workflow_id": "5258f005-b811-47db-88c9-a828269849c0",
   "repository_id": "6fe11697-1086-47f8-a2f1-b96a748bb35e",
   "context": "Implement the issue and open a pull request.",
@@ -591,12 +591,12 @@ Repository 1 --- * Automation
 Task 1 --- 1 Execution 1 --- * Attempt 1 --- * AttemptEvent
 ```
 
-`workflows` stores stable identity, current name, enabled state, current revision
+`workflows` stores stable identity, current title, enabled state, current revision
 ID, mutation identity, and timestamps. `workflow_revisions` stores immutable
-revision number, display name, summary, Markdown instructions, mutation
+revision number, display title, summary, Markdown instructions, mutation
 identity, and creation time.
 
-`automations` stores stable identity, name, Workflow ID, repository ID, trusted
+`automations` stores stable identity, title, Workflow ID, repository ID, trusted
 context, timeout, enabled state, configuration version, Trigger type, evaluation
 lease, next evaluation time, last health fields, cumulative match, skipped, and
 dispatched counts, and timestamps.
@@ -615,7 +615,7 @@ Every read verifies the discriminator and one-row cardinality. A mismatch is
 reported as corrupt state and that Automation is not evaluated.
 
 `automation_occurrences` stores identity, Automation ID and configuration
-version, Automation name snapshot, nullable Workflow revision ID, repository ID
+version, Automation title snapshot, nullable Workflow revision ID, repository ID
 and identity snapshot, nullable context and timeout snapshots, state, nullable
 resolved prompt, deterministic Task request key, nullable unique Task ID,
 nullable Task ID snapshot, nullable dispatch token and lease expiry, diagnostic,
@@ -677,7 +677,7 @@ the copied repository, title, description, and timeout before linking it.
 Linking or Skip clears the copied payload and retains the Occurrence identity.
 
 `tasks` already has nullable `workflow_id`, `workflow_revision_id`,
-`workflow_name`, `workflow_revision_number`, and `context` fields.
+`workflow_title`, `workflow_revision_number`, and `context` fields.
 `description` is the immutable resolved prompt used by the worker. Manual
 Workflow Tasks and productive Automation Tasks populate all five fields in the
 same transaction that creates the Task and Execution. Existing Tasks retain
@@ -739,7 +739,7 @@ Task records. Stable IDs survive rename. Revision numbers and Automation
 versions start at 1 and increase in the same transaction as their write. An
 Automation UUID is accepted only when its reserved Task-key namespace is empty.
 
-Names are trimmed and ASCII `A` through `Z` are folded to lowercase for
+Titles are trimmed and ASCII `A` through `Z` are folded to lowercase for
 uniqueness. Other UTF-8 bytes remain exact. GitHub labels are trimmed,
 case-folded for duplicate checks, sorted for canonical mutation hashing, and
 preserved in display form. Base branches are trimmed, compared byte-for-byte,
@@ -789,7 +789,7 @@ Poller retirement is an offline, disabled-first migration:
 4. Only built-in GitHub queues are imported. Import atomically creates one
    ordinary Workflow from each queue prompt and one disabled `github_issue`
    Automation from its project, state, labels, polling interval, and timeout.
-   Stable import keys make retry return the same records. Name conflicts require
+   Stable import keys make retry return the same records. Title conflicts require
    an explicit rename. Unsupported command queues remain unimported and are
    reported in the UI. No runtime adapter is generated.
 5. Import preserves every submitted observation's ledger identity. For a
@@ -1023,7 +1023,7 @@ all Automation evaluators are unhealthy.
   workflow.
 - Jira text, a merge-request URL, a branch name, and a repository-wide request
   are all accepted as ordinary context without target-type fields.
-- Task detail shows the original context, workflow name and revision, and exact
+- Task detail shows the original context, workflow title and revision, and exact
   resolved prompt.
 - Delegate task uses the pinned workflow revision selected by the operator even
   when another operator edits the workflow before submission completes.
@@ -1053,7 +1053,7 @@ all Automation evaluators are unhealthy.
   fields. No generic Queue or opaque property map is stored.
 - Test trigger previews bounded GitHub matches or schedule instants without
   changing Occurrences, Tasks, counters, health, or cursors.
-- Automation list and detail show name, Workflow, repository, Trigger summary,
+- Automation list and detail show title, Workflow, repository, Trigger summary,
   enabled state, last checked or due time, next check or due time, last outcome
   or error, matched, skipped, and dispatched counts, and the latest linked Task.
 - Automation repository selection and readiness reuse the existing repository
@@ -1128,7 +1128,7 @@ all Automation evaluators are unhealthy.
 
 ## 10. Test approach
 
-Store, HTTP, and migration tests will cover Workflow name normalization,
+Store, HTTP, and migration tests will cover Workflow title normalization,
 immutable revision increments, Workflow and Automation-create mutation replay,
 Automation update lost-response read-and-compare recovery, concurrent conflicts,
 enablement, list filters and pagination, exclusive Task prompt forms, pinned
@@ -1190,7 +1190,7 @@ restart; a config, path, schema, or observation change before Import or Finalize
 aborting without partial state; submitted rows with present, deleted, reused,
 and blank Task IDs; exact pending-request copy and restart recovery; Resume
 inserting or replaying a matching Task; Resume rejecting mismatched repository,
-title, description, or timeout without linking; Skip; imported name conflicts;
+title, description, or timeout without linking; Skip; imported title conflicts;
 missing repositories; unsupported command queues; idempotent Import; enablement
 blocked before Finalize; configured data-home archive placement; cross-filesystem
 sources; missing or mismatched manifests; destination collision; staged-copy

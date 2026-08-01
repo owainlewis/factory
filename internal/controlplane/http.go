@@ -119,6 +119,10 @@ func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *Au
 }
 
 func (a *API) listWorkflows(w http.ResponseWriter, r *http.Request) {
+	if _, retired := r.URL.Query()["name"]; retired {
+		writeError(w, invalid("invalid_query", "workflow filtering uses title, not name"))
+		return
+	}
 	limit, err := pageLimit(r, protocol.DefaultWorkflowPageSize, protocol.MaxWorkflowPageSize)
 	if err != nil {
 		writeError(w, err)
@@ -146,12 +150,12 @@ func (a *API) listWorkflows(w http.ResponseWriter, r *http.Request) {
 		}
 		enabled = &value
 	}
-	if len(r.URL.Query()["name"]) > 1 || len(r.URL.Query()["cursor"]) > 1 || len(r.URL.Query()["limit"]) > 1 {
+	if len(r.URL.Query()["title"]) > 1 || len(r.URL.Query()["cursor"]) > 1 || len(r.URL.Query()["limit"]) > 1 {
 		writeError(w, invalid("invalid_query", "workflow query parameters may be provided once"))
 		return
 	}
 	page, err := a.store.Workflows(r.Context(), protocol.WorkflowPageRequest{
-		Limit: limit, Cursor: cursor, Name: r.URL.Query().Get("name"), Enabled: enabled,
+		Limit: limit, Cursor: cursor, Title: r.URL.Query().Get("title"), Enabled: enabled,
 	})
 	if err != nil {
 		writeError(w, err)

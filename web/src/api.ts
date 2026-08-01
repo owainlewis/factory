@@ -212,7 +212,7 @@ export const api = {
   }: {
     migration: LegacyPollerMigration;
     selection: LegacyPollerSelection;
-    mappings: Array<{ queue_id: string; workflow_name: string; automation_name: string }>;
+    mappings: Array<{ queue_id: string; workflow_title: string; automation_title: string }>;
   }) => request<LegacyPollerMigration>("/api/v1/migrations/legacy-poller/import", {
     method: "POST",
     body: JSON.stringify({

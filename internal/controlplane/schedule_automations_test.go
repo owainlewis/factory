@@ -116,7 +116,7 @@ func createScheduleAutomationFixture(
 		}
 	}
 	detail, created, err := store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
-		RequestKey: "schedule-create", Name: "Daily maintenance",
+		RequestKey: "schedule-create", Title: "Daily maintenance",
 		WorkflowID: workflow.Workflow.ID, RepositoryID: repository.ID,
 		Context: "Use the safe managed repository only.", TimeoutSeconds: 3600,
 		Trigger: protocol.AutomationTrigger{
@@ -195,7 +195,7 @@ func TestScheduleAutomationUpdateNormalizesAndRecoversLostResponse(t *testing.T)
 	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
 	store, detail := createScheduleAutomationFixture(t, &now, false)
 	input := protocol.UpdateAutomationRequest{
-		ExpectedVersion: 1, Name: "Weekday maintenance", WorkflowID: detail.Automation.WorkflowID,
+		ExpectedVersion: 1, Title: "Weekday maintenance", WorkflowID: detail.Automation.WorkflowID,
 		Context: "Updated schedule context.", TimeoutSeconds: 7200,
 		Trigger: protocol.AutomationTrigger{Type: protocol.AutomationTriggerSchedule, Cron: " 30  10 * * MON-FRI ", Timezone: " UTC "},
 	}
@@ -386,7 +386,7 @@ func TestInvalidStoredScheduleDegradesOnlyItsAutomation(t *testing.T) {
 	}
 
 	provider, created, err := store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
-		RequestKey: "provider-after-schedule-degradation", Name: "Provider remains available",
+		RequestKey: "provider-after-schedule-degradation", Title: "Provider remains available",
 		WorkflowID: detail.Automation.WorkflowID, RepositoryID: detail.Automation.RepositoryID,
 		TimeoutSeconds: 60,
 		Trigger: protocol.AutomationTrigger{
@@ -579,7 +579,7 @@ func TestHTTPSchedulePreviewEnableAndRunNowAreStrictAndIdempotent(t *testing.T) 
 	workflow := createTestWorkflow(t, store, "invalid-schedule-workflow", "Invalid", "Do not run.")
 	repository := createManagedTestRepository(t, store, "github.com/owainlewis/invalid-schedule")
 	response = request(http.MethodPost, "/api/v1/automations", map[string]any{
-		"request_key": "invalid-schedule-shape", "name": "Invalid schedule shape",
+		"request_key": "invalid-schedule-shape", "title": "Invalid schedule shape",
 		"workflow_id": workflow.Workflow.ID, "repository_id": repository.ID,
 		"context": "", "timeout_seconds": 60,
 		"trigger": map[string]any{"type": "schedule", "cron": "0 9 * * *", "timezone": "UTC", "state": "open"},

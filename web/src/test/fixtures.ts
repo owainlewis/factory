@@ -91,7 +91,7 @@ const initialWorkflowDetail: WorkflowDetail = {
       id: "workflow-revision-1",
       workflow_id: "workflow-implement",
       revision_number: 1,
-      name: "Implement",
+      title: "Implement",
       summary: "Implement and verify one change.",
       instructions: "Implement the change and run the required checks.",
       created_at: "2026-08-01T08:00:00Z",
@@ -110,7 +110,7 @@ const historicalWorkflow: Workflow = {
     id: "workflow-history-revision-1",
     workflow_id: "workflow-history",
     revision_number: 1,
-    name: "Historical workflow",
+    title: "Historical workflow",
     summary: "An older loaded page.",
     instructions: "Use the historical instructions.",
     created_at: "2026-07-31T08:00:00Z",
@@ -122,9 +122,9 @@ const historicalWorkflow: Workflow = {
 const initialAutomationDetail: AutomationDetail = {
   automation: {
     id: "automation-ready",
-    name: "Ready issues",
+    title: "Ready issues",
     workflow_id: "workflow-implement",
-    workflow_name: "Implement",
+    workflow_title: "Implement",
     workflow_revision: 1,
     repository_id: "repo-factory",
     repository_identity: "github.com/example/factory",
@@ -189,7 +189,7 @@ export function mockControlPlane(
     title: string;
     context: string;
     description: string;
-    workflow?: { id: string; revision_id: string; name: string; revision_number: number };
+    workflow?: { id: string; revision_id: string; title: string; revision_number: number };
     resolvedPrompt?: string;
   } = {
     title: "Ship the UI",
@@ -322,7 +322,7 @@ export function mockControlPlane(
               ...historicalWorkflow.current_revision,
               id: "workflow-shifted-boundary-revision-1",
               workflow_id: "workflow-shifted-boundary",
-              name: "Shifted boundary workflow",
+              title: "Shifted boundary workflow",
             },
           };
           return Response.json({ workflows: [shiftedBoundary], next_cursor: null });
@@ -347,7 +347,7 @@ export function mockControlPlane(
             ...historicalWorkflow.current_revision,
             id: "workflow-history-revision-2",
             revision_number: 2,
-            name: "Refreshed workflow",
+            title: "Refreshed workflow",
             summary: "Fresh head data wins.",
           },
           updated_at: "2026-08-01T09:00:00Z",
@@ -375,7 +375,7 @@ export function mockControlPlane(
               id: "workflow-created-revision-1",
               workflow_id: "workflow-created",
               revision_number: 1,
-              name: String(body.name),
+              title: String(body.title),
               summary: String(body.summary),
               instructions: String(body.instructions),
               created_at: new Date().toISOString(),
@@ -398,7 +398,7 @@ export function mockControlPlane(
         id: "workflow-revision-2",
         workflow_id: workflowDetail.workflow.id,
         revision_number: workflowDetail.workflow.current_revision.revision_number + 1,
-        name: String(body.name),
+        title: String(body.title),
         summary: String(body.summary),
         instructions: String(body.instructions),
         created_at: new Date().toISOString(),
@@ -452,8 +452,8 @@ export function mockControlPlane(
           timeout_seconds: 3600,
           repository_id: "repo-factory",
           repository_identity: "github.com/example/factory",
-          workflow_name: "Legacy github-ready",
-          automation_name: "Legacy github-ready issues",
+          workflow_title: "Legacy github-ready",
+          automation_title: "Legacy github-ready issues",
           pending_observations: 1,
           submitted_observations: options.commandOnlyMigration ? 1 : 0,
           supported: !options.commandOnlyMigration,
@@ -468,8 +468,8 @@ export function mockControlPlane(
           required_labels: [],
           poll_interval_seconds: 0,
           timeout_seconds: 0,
-          workflow_name: "",
-          automation_name: "",
+          workflow_title: "",
+          automation_title: "",
           pending_observations: 1,
           submitted_observations: 0,
           supported: false,
@@ -486,12 +486,12 @@ export function mockControlPlane(
     }
     if (path === "/api/v1/migrations/legacy-poller/import" && init?.method === "POST") {
       if (!legacyMigration) throw new Error("legacy migration was not previewed");
-      const body = JSON.parse(String(init.body)) as { mappings: Array<{ workflow_name: string; automation_name: string }> };
+      const body = JSON.parse(String(init.body)) as { mappings: Array<{ workflow_title: string; automation_title: string }> };
       const importedAutomation = body.mappings.length > 0 ? {
         ...automationDetail.automation,
         id: "automation-imported",
-        name: body.mappings[0].automation_name,
-        workflow_name: body.mappings[0].workflow_name,
+        title: body.mappings[0].automation_title,
+        workflow_title: body.mappings[0].workflow_title,
         enabled: false,
       } : undefined;
       legacyMigration = {
@@ -536,7 +536,7 @@ export function mockControlPlane(
         automations: [{
           ...automationDetail.automation,
           id: "automation-history",
-          name: "Historical Automation",
+          title: "Historical Automation",
           updated_at: "2026-07-01T08:00:00Z",
         }],
         next_cursor: null,
@@ -549,7 +549,7 @@ export function mockControlPlane(
         automation: {
           ...automationDetail.automation,
           id: "automation-created",
-          name: String(body.name),
+          title: String(body.title),
           workflow_id: String(body.workflow_id),
           repository_id: String(body.repository_id),
           context: String(body.context),
@@ -568,7 +568,7 @@ export function mockControlPlane(
           ...automationDetail,
           automation: {
             ...automationDetail.automation,
-            name: String(body.name),
+            title: String(body.title),
             workflow_id: String(body.workflow_id),
             context: String(body.context),
             timeout_seconds: Number(body.timeout_seconds),
@@ -675,7 +675,7 @@ export function mockControlPlane(
           ? {
               id: workflowDetail.workflow.id,
               revision_id: workflowDetail.workflow.current_revision.id,
-              name: workflowDetail.workflow.current_revision.name,
+              title: workflowDetail.workflow.current_revision.title,
               revision_number: workflowDetail.workflow.current_revision.revision_number,
             }
           : undefined;

@@ -125,7 +125,7 @@ func createAutomationFixture(
 		}
 	}
 	detail, created, err := store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
-		RequestKey: "automation-create", Name: "Ready issues",
+		RequestKey: "automation-create", Title: "Ready issues",
 		WorkflowID: workflow.Workflow.ID, RepositoryID: repository.ID,
 		Context: "Open a reviewed pull request.", TimeoutSeconds: 3600,
 		Trigger: protocol.AutomationTrigger{
@@ -159,7 +159,7 @@ func createPullRequestAutomationFixture(
 		}
 	}
 	detail, created, err := store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
-		RequestKey: "pull-request-automation-create", Name: "Review pull requests",
+		RequestKey: "pull-request-automation-create", Title: "Review pull requests",
 		WorkflowID: workflow.Workflow.ID, RepositoryID: repository.ID,
 		Context: "Review the live pull request without merging it.", TimeoutSeconds: 3600,
 		Trigger: protocol.AutomationTrigger{
@@ -198,7 +198,7 @@ func TestAutomationStoreLifecycleIsTypedDisabledFirstAndOptimistic(t *testing.T)
 		t.Fatalf("created Automation = %#v", detail.Automation)
 	}
 	replayed, created, err := store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
-		RequestKey: "automation-create", Name: "Ready issues",
+		RequestKey: "automation-create", Title: "Ready issues",
 		WorkflowID: detail.Automation.WorkflowID, RepositoryID: detail.Automation.RepositoryID,
 		Context: "Open a reviewed pull request.", TimeoutSeconds: 3600,
 		Trigger: protocol.AutomationTrigger{
@@ -209,7 +209,7 @@ func TestAutomationStoreLifecycleIsTypedDisabledFirstAndOptimistic(t *testing.T)
 		t.Fatalf("create replay = created %v, error %v, detail %#v", created, err, replayed)
 	}
 	updated, err := store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
-		ExpectedVersion: 1, Name: "Ready implementation issues",
+		ExpectedVersion: 1, Title: "Ready implementation issues",
 		WorkflowID: detail.Automation.WorkflowID, Context: "Use live state.", TimeoutSeconds: 7200,
 		Trigger: protocol.AutomationTrigger{
 			Type: "github_issue", State: "open", RequiredLabels: []string{"bug", "factory:ready"}, PollIntervalSeconds: 30,
@@ -219,7 +219,7 @@ func TestAutomationStoreLifecycleIsTypedDisabledFirstAndOptimistic(t *testing.T)
 		t.Fatalf("updated Automation = error %v, detail %#v", err, updated)
 	}
 	replayedUpdate, err := store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
-		ExpectedVersion: 1, Name: "Ready implementation issues",
+		ExpectedVersion: 1, Title: "Ready implementation issues",
 		WorkflowID: detail.Automation.WorkflowID, Context: "Use live state.", TimeoutSeconds: 7200,
 		Trigger: protocol.AutomationTrigger{
 			Type: "github_issue", State: "open", RequiredLabels: []string{"bug", "factory:ready"}, PollIntervalSeconds: 30,
@@ -229,7 +229,7 @@ func TestAutomationStoreLifecycleIsTypedDisabledFirstAndOptimistic(t *testing.T)
 		t.Fatalf("lost-response update replay = error %v, detail %#v", err, replayedUpdate)
 	}
 	_, err = store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
-		ExpectedVersion: 1, Name: "stale", WorkflowID: detail.Automation.WorkflowID,
+		ExpectedVersion: 1, Title: "stale", WorkflowID: detail.Automation.WorkflowID,
 		TimeoutSeconds: 60, Trigger: protocol.AutomationTrigger{Type: "github_issue", State: "open", PollIntervalSeconds: 10},
 	})
 	assertErrorCode(t, err, "automation_version_conflict")
@@ -241,7 +241,7 @@ func TestAutomationStoreLifecycleIsTypedDisabledFirstAndOptimistic(t *testing.T)
 		t.Fatalf("enabled Automation = %#v", enabled.Automation)
 	}
 	_, err = store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
-		ExpectedVersion: 2, Name: "cannot edit", WorkflowID: detail.Automation.WorkflowID,
+		ExpectedVersion: 2, Title: "cannot edit", WorkflowID: detail.Automation.WorkflowID,
 		TimeoutSeconds: 60, Trigger: protocol.AutomationTrigger{Type: "github_issue", State: "open", PollIntervalSeconds: 10},
 	})
 	assertErrorCode(t, err, "automation_enabled")
@@ -738,7 +738,7 @@ func TestAutomationPreviewSharesEvaluatorCapacity(t *testing.T) {
 func TestAutomationListReleasesRowsBeforeLatestTaskLookups(t *testing.T) {
 	store, first := createAutomationFixture(t, false)
 	_, created, err := store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
-		RequestKey: "automation-list-second", Name: "Second Automation",
+		RequestKey: "automation-list-second", Title: "Second Automation",
 		WorkflowID: first.Automation.WorkflowID, RepositoryID: first.Automation.RepositoryID,
 		TimeoutSeconds: 60,
 		Trigger: protocol.AutomationTrigger{
@@ -1052,7 +1052,7 @@ func TestAutomationAndOccurrencePagesUseStableCursors(t *testing.T) {
 	store, first := createAutomationFixture(t, false)
 	for index := 2; index <= 3; index++ {
 		_, created, err := store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
-			RequestKey: "automation-page-" + strconv.Itoa(index), Name: "Ready issues " + strconv.Itoa(index),
+			RequestKey: "automation-page-" + strconv.Itoa(index), Title: "Ready issues " + strconv.Itoa(index),
 			WorkflowID: first.Automation.WorkflowID, RepositoryID: first.Automation.RepositoryID,
 			TimeoutSeconds: 60,
 			Trigger: protocol.AutomationTrigger{
@@ -1214,7 +1214,7 @@ func TestHTTPAutomationLifecycleAndPreview(t *testing.T) {
 		return response
 	}
 	response := postJSON(http.MethodPost, "/api/v1/automations", protocol.CreateAutomationRequest{
-		RequestKey: "http-create", Name: "HTTP ready issues", WorkflowID: workflow.Workflow.ID,
+		RequestKey: "http-create", Title: "HTTP ready issues", WorkflowID: workflow.Workflow.ID,
 		RepositoryID: repository.ID, Context: "Use live state.", TimeoutSeconds: 60,
 		Trigger: protocol.AutomationTrigger{Type: "github_issue", State: "open", RequiredLabels: []string{"factory:ready"}, PollIntervalSeconds: 10},
 	})
@@ -1263,7 +1263,7 @@ func TestHTTPPullRequestAutomationUsesStrictTypedTrigger(t *testing.T) {
 		return response
 	}
 	invalidBody := fmt.Sprintf(`{
-		"request_key":"invalid-mixed-trigger","name":"Invalid mixed trigger",
+		"request_key":"invalid-mixed-trigger","title":"Invalid mixed trigger",
 		"workflow_id":%q,"repository_id":%q,"context":"","timeout_seconds":60,
 		"trigger":{"type":"github_issue","state":"open","required_labels":[],"base_branches":["main"],"poll_interval_seconds":10}
 	}`, workflow.Workflow.ID, repository.ID)
@@ -1274,7 +1274,7 @@ func TestHTTPPullRequestAutomationUsesStrictTypedTrigger(t *testing.T) {
 	}
 	response.Body.Close()
 	validBody := fmt.Sprintf(`{
-		"request_key":"http-pull-request-create","name":"HTTP pull requests",
+		"request_key":"http-pull-request-create","title":"HTTP pull requests",
 		"workflow_id":%q,"repository_id":%q,"context":"Review only.","timeout_seconds":60,
 		"trigger":{"type":"github_pull_request","state":"open","include_drafts":false,
 		"required_labels":["factory:review"],"base_branches":["main"],"poll_interval_seconds":10}

@@ -82,11 +82,11 @@ export function WorkflowsView({ onWorkflow }: { onWorkflow: (id: string) => void
         />
       ) : (
         <div className="workflow-list">
-          <div className="workflow-table-head"><span>Name</span><span>Revision</span><span>State</span><span>Updated</span><span /></div>
+          <div className="workflow-table-head"><span>Title</span><span>Revision</span><span>State</span><span>Updated</span><span /></div>
           {items.map((workflow) => (
             <button className="workflow-row" key={workflow.id} onClick={() => onWorkflow(workflow.id)}>
               <span className="workflow-identity">
-                <strong>{workflow.current_revision.name}</strong>
+                <strong>{workflow.current_revision.title}</strong>
                 <small>{workflow.current_revision.summary || "No summary"}</small>
               </span>
               <span className="mono">#{workflow.current_revision.revision_number}</span>
@@ -148,7 +148,7 @@ export function WorkflowDetail({ id, onBack }: { id: string; onBack: () => void 
           <span className={`status-badge ${data.workflow.enabled ? "status-succeeded" : "status-cancelled"}`}>
             <span className="status-dot" />{data.workflow.enabled ? "Enabled" : "Disabled"}
           </span>
-          <h1>{current.name}</h1>
+          <h1>{current.title}</h1>
           <p>Revision {current.revision_number} · updated {new Date(data.workflow.updated_at).toLocaleString()}</p>
         </div>
         <div className="detail-actions">
@@ -200,7 +200,7 @@ export function WorkflowDetail({ id, onBack }: { id: string; onBack: () => void 
           {data.revisions.map((revision) => (
             <details key={revision.id} open={revision.id === current.id}>
               <summary>
-                <span><strong>Revision {revision.revision_number}</strong><small>{revision.name} · {new Date(revision.created_at).toLocaleString()}</small></span>
+                <span><strong>Revision {revision.revision_number}</strong><small>{revision.title} · {new Date(revision.created_at).toLocaleString()}</small></span>
                 <span className="mono">{revision.id.slice(0, 8)}</span>
               </summary>
               {revision.summary && <p>{revision.summary}</p>}
@@ -230,15 +230,15 @@ function WorkflowForm({
   onSaved: (detail: WorkflowDetailType) => void;
 }) {
   const queryClient = useQueryClient();
-  const nameID = useId();
+  const titleID = useId();
   const summaryID = useId();
   const instructionsID = useId();
-  const nameRef = useRef<HTMLInputElement>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
   const requestRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const current = detail?.workflow.current_revision;
   useEffect(() => {
-    nameRef.current?.focus();
+    titleRef.current?.focus();
     const close = (event: KeyboardEvent) => event.key === "Escape" && onClose();
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
@@ -258,18 +258,18 @@ function WorkflowForm({
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const name = String(form.get("name") ?? "").trim();
+    const title = String(form.get("title") ?? "").trim();
     const summary = String(form.get("summary") ?? "").trim();
     const instructions = String(form.get("instructions") ?? "");
     const nextErrors: Record<string, string> = {};
-    if (!name) nextErrors.name = "Enter a workflow name.";
-    else if (Array.from(name).length > 100) nextErrors.name = "Keep the name to 100 characters.";
+    if (!title) nextErrors.title = "Enter a workflow title.";
+    else if (Array.from(title).length > 100) nextErrors.title = "Keep the title to 100 characters.";
     if (Array.from(summary).length > 500) nextErrors.summary = "Keep the summary to 500 characters.";
     if (!instructions.trim()) nextErrors.instructions = "Enter workflow instructions.";
     else if (new TextEncoder().encode(instructions).length > 48 * 1024) nextErrors.instructions = "Keep instructions to 48 KiB.";
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) return;
-    const payload = { name, summary, instructions };
+    const payload = { title, summary, instructions };
     const fingerprint = JSON.stringify(payload);
     if (requestRef.current?.fingerprint !== fingerprint) {
       requestRef.current = { fingerprint, key: crypto.randomUUID() };
@@ -286,8 +286,8 @@ function WorkflowForm({
         </div>
         <form onSubmit={submit} noValidate>
           <div className="modal-body">
-            <WorkflowField label="Name" htmlFor={nameID} error={errors.name}>
-              <input ref={nameRef} id={nameID} name="name" defaultValue={current?.name ?? ""} aria-invalid={Boolean(errors.name)} />
+            <WorkflowField label="Title" htmlFor={titleID} error={errors.title}>
+              <input ref={titleRef} id={titleID} name="title" autoComplete="off" defaultValue={current?.title ?? ""} aria-invalid={Boolean(errors.title)} />
             </WorkflowField>
             <WorkflowField label="Summary" htmlFor={summaryID} error={errors.summary} hint="Optional · 500 characters">
               <textarea id={summaryID} name="summary" rows={2} defaultValue={current?.summary ?? ""} aria-invalid={Boolean(errors.summary)} />

@@ -17,8 +17,9 @@ import (
 )
 
 type normalizedAutomation struct {
-	RequestKey     string                     `json:"request_key,omitempty"`
-	Name           string                     `json:"name"`
+	RequestKey string `json:"request_key,omitempty"`
+	// Keep the legacy digest key so an equivalent retry survives the API field rename.
+	Title          string                     `json:"name"`
 	WorkflowID     string                     `json:"workflow_id"`
 	RepositoryID   string                     `json:"repository_id,omitempty"`
 	Context        string                     `json:"context"`
@@ -34,22 +35,22 @@ func boolInt(value bool) int {
 }
 
 func normalizeAutomation(
-	requestKey, name, workflowID, repositoryID, contextValue string,
+	requestKey, title, workflowID, repositoryID, contextValue string,
 	timeoutSeconds int,
 	trigger protocol.AutomationTrigger,
 	requireRequestKey bool,
 ) (normalizedAutomation, string, error) {
 	value := normalizedAutomation{
 		RequestKey: strings.TrimSpace(requestKey),
-		Name:       strings.TrimSpace(name), WorkflowID: strings.TrimSpace(workflowID),
+		Title:      strings.TrimSpace(title), WorkflowID: strings.TrimSpace(workflowID),
 		RepositoryID: strings.TrimSpace(repositoryID), Context: contextValue,
 		TimeoutSeconds: timeoutSeconds, Trigger: trigger,
 	}
 	if requireRequestKey && (value.RequestKey == "" || len(value.RequestKey) > 200) {
 		return value, "", invalid("invalid_request_key", "request_key is required and limited to 200 bytes")
 	}
-	if value.Name == "" || utf8.RuneCountInString(value.Name) > 100 {
-		return value, "", invalid("invalid_automation_name", "name is required and limited to 100 Unicode characters")
+	if value.Title == "" || utf8.RuneCountInString(value.Title) > 100 {
+		return value, "", invalid("invalid_automation_title", "title is required and limited to 100 Unicode characters")
 	}
 	if value.WorkflowID == "" {
 		return value, "", invalid("invalid_workflow", "workflow_id is required")
@@ -79,7 +80,7 @@ func normalizeAutomation(
 			return value, "", invalid("invalid_cron", parseErr.Error())
 		}
 		value.Trigger = protocol.AutomationTrigger{Type: protocol.AutomationTriggerSchedule, Cron: cron, Timezone: timezone}
-		return value, normalizeWorkflowName(value.Name), nil
+		return value, normalizeTitleKey(value.Title), nil
 	}
 	value.Trigger.Cron = ""
 	value.Trigger.Timezone = ""
@@ -120,7 +121,7 @@ func normalizeAutomation(
 	if value.Trigger.Type == protocol.AutomationTriggerGitHubIssue {
 		value.Trigger.IncludeDrafts = false
 		value.Trigger.BaseBranches = []string{}
-		return value, normalizeWorkflowName(value.Name), nil
+		return value, normalizeTitleKey(value.Title), nil
 	}
 	if len(value.Trigger.BaseBranches) > 20 {
 		return value, "", invalid("invalid_base_branches", "base_branches may contain at most 20 branches")
@@ -140,7 +141,7 @@ func normalizeAutomation(
 	}
 	sort.Strings(branches)
 	value.Trigger.BaseBranches = branches
-	return value, normalizeWorkflowName(value.Name), nil
+	return value, normalizeTitleKey(value.Title), nil
 }
 
 func automationDigest(value normalizedAutomation) ([]byte, error) {
@@ -156,8 +157,8 @@ func (s *Store) CreateAutomation(
 	ctx context.Context,
 	input protocol.CreateAutomationRequest,
 ) (protocol.AutomationDetail, bool, error) {
-	value, nameKey, err := normalizeAutomation(
-		input.RequestKey, input.Name, input.WorkflowID, input.RepositoryID,
+	value, titleKey, err := normalizeAutomation(
+		input.RequestKey, input.Title, input.WorkflowID, input.RepositoryID,
 		input.Context, input.TimeoutSeconds, input.Trigger, true,
 	)
 	if err != nil {
@@ -201,9 +202,9 @@ func (s *Store) CreateAutomation(
 		return protocol.AutomationDetail{}, false, err
 	}
 	var conflictingID string
-	err = tx.QueryRowContext(ctx, `SELECT id FROM automations WHERE name_key = ?`, nameKey).Scan(&conflictingID)
+	err = tx.QueryRowContext(ctx, `SELECT id FROM automations WHERE title_key = ?`, titleKey).Scan(&conflictingID)
 	if err == nil {
-		return protocol.AutomationDetail{}, false, conflict("automation_name_conflict", "an Automation with this normalized name already exists")
+		return protocol.AutomationDetail{}, false, conflict("automation_title_conflict", "an Automation with this normalized title already exists")
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return protocol.AutomationDetail{}, false, unavailable(err)
@@ -222,10 +223,10 @@ func (s *Store) CreateAutomation(
 	now := s.now().UnixMilli()
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO automations(
-			id, request_key, request_digest, name, name_key, workflow_id,
+			id, request_key, request_digest, title, title_key, workflow_id,
 			repository_id, context, timeout_seconds, trigger_type, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, automationID, value.RequestKey, digest, value.Name, nameKey, value.WorkflowID,
+	`, automationID, value.RequestKey, digest, value.Title, titleKey, value.WorkflowID,
 		value.RepositoryID, value.Context, value.TimeoutSeconds, value.Trigger.Type, now, now); err != nil {
 		return protocol.AutomationDetail{}, false, unavailable(err)
 	}
@@ -315,8 +316,8 @@ func validateAutomationDependencies(
 }
 
 const automationSelect = `
-	SELECT automation.id, automation.name, automation.workflow_id,
-	       workflow_revision.name, workflow_revision.revision_number,
+	SELECT automation.id, automation.title, automation.workflow_id,
+	       workflow_revision.title, workflow_revision.revision_number,
 	       automation.repository_id, repository.remote_identity,
 	       automation.context, automation.timeout_seconds, automation.enabled,
 	       automation.version, automation.trigger_type,
@@ -352,8 +353,8 @@ func scanAutomation(row scanner) (protocol.Automation, error) {
 	var lastChecked, nextCheck, nextDue sql.NullInt64
 	var createdAt, updatedAt int64
 	err := row.Scan(
-		&automation.ID, &automation.Name, &automation.WorkflowID,
-		&automation.WorkflowName, &automation.WorkflowRevision,
+		&automation.ID, &automation.Title, &automation.WorkflowID,
+		&automation.WorkflowTitle, &automation.WorkflowRevision,
 		&automation.RepositoryID, &automation.RepositoryIdentity,
 		&automation.Context, &automation.TimeoutSeconds, &enabled,
 		&automation.Version, &automation.Trigger.Type, &issueTriggerCount, &pullRequestTriggerCount, &scheduleTriggerCount,
@@ -501,8 +502,8 @@ func (s *Store) UpdateAutomation(
 	automationID string,
 	input protocol.UpdateAutomationRequest,
 ) (protocol.AutomationDetail, error) {
-	value, nameKey, err := normalizeAutomation(
-		"", input.Name, input.WorkflowID, "", input.Context,
+	value, titleKey, err := normalizeAutomation(
+		"", input.Title, input.WorkflowID, "", input.Context,
 		input.TimeoutSeconds, input.Trigger, false,
 	)
 	if err != nil {
@@ -526,11 +527,11 @@ func (s *Store) UpdateAutomation(
 	defer tx.Rollback()
 	var currentVersion, enabled, currentTimeout, currentInterval, currentIncludeDrafts int
 	var issueTriggerCount, pullRequestTriggerCount, scheduleTriggerCount int
-	var currentName, currentNameKey, currentWorkflowID, currentContext, currentType, currentState string
+	var currentTitle, currentTitleKey, currentWorkflowID, currentContext, currentType, currentState string
 	var currentCron, currentTimezone string
 	var currentLabels, currentBaseBranches []byte
 	err = tx.QueryRowContext(ctx, `
-		SELECT automation.version, automation.enabled, automation.name, automation.name_key,
+		SELECT automation.version, automation.enabled, automation.title, automation.title_key,
 		       automation.workflow_id, automation.context, automation.timeout_seconds,
 		       automation.trigger_type,
 		       (SELECT COUNT(*) FROM automation_github_issue_triggers typed_issue WHERE typed_issue.automation_id = automation.id),
@@ -548,7 +549,7 @@ func (s *Store) UpdateAutomation(
 		LEFT JOIN automation_schedule_triggers schedule_trigger ON schedule_trigger.automation_id = automation.id
 		WHERE automation.id = ?
 	`, strings.TrimSpace(automationID)).Scan(
-		&currentVersion, &enabled, &currentName, &currentNameKey, &currentWorkflowID,
+		&currentVersion, &enabled, &currentTitle, &currentTitleKey, &currentWorkflowID,
 		&currentContext, &currentTimeout, &currentType, &issueTriggerCount, &pullRequestTriggerCount, &scheduleTriggerCount,
 		&currentState, &currentIncludeDrafts,
 		&currentLabels, &currentBaseBranches, &currentInterval, &currentCron, &currentTimezone,
@@ -569,7 +570,7 @@ func (s *Store) UpdateAutomation(
 		return protocol.AutomationDetail{}, unavailable(errors.New("Automation typed trigger rows do not match its trigger type"))
 	}
 	exactReplay := currentVersion == input.ExpectedVersion+1 &&
-		currentName == value.Name && currentNameKey == nameKey && currentWorkflowID == value.WorkflowID &&
+		currentTitle == value.Title && currentTitleKey == titleKey && currentWorkflowID == value.WorkflowID &&
 		currentContext == value.Context && currentTimeout == value.TimeoutSeconds
 	if currentType == protocol.AutomationTriggerSchedule {
 		exactReplay = exactReplay && currentCron == value.Trigger.Cron && currentTimezone == value.Trigger.Timezone
@@ -599,9 +600,9 @@ func (s *Store) UpdateAutomation(
 		return protocol.AutomationDetail{}, err
 	}
 	var conflictID string
-	err = tx.QueryRowContext(ctx, `SELECT id FROM automations WHERE name_key = ? AND id != ?`, nameKey, automationID).Scan(&conflictID)
+	err = tx.QueryRowContext(ctx, `SELECT id FROM automations WHERE title_key = ? AND id != ?`, titleKey, automationID).Scan(&conflictID)
 	if err == nil {
-		return protocol.AutomationDetail{}, conflict("automation_name_conflict", "an Automation with this normalized name already exists")
+		return protocol.AutomationDetail{}, conflict("automation_title_conflict", "an Automation with this normalized title already exists")
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return protocol.AutomationDetail{}, unavailable(err)
@@ -609,10 +610,10 @@ func (s *Store) UpdateAutomation(
 	now := s.now().UnixMilli()
 	result, err := tx.ExecContext(ctx, `
 		UPDATE automations
-		SET name = ?, name_key = ?, workflow_id = ?, context = ?, timeout_seconds = ?,
+		SET title = ?, title_key = ?, workflow_id = ?, context = ?, timeout_seconds = ?,
 		    version = version + 1, updated_at = ?
 		WHERE id = ? AND version = ? AND enabled = 0
-	`, value.Name, nameKey, value.WorkflowID, value.Context, value.TimeoutSeconds,
+	`, value.Title, titleKey, value.WorkflowID, value.Context, value.TimeoutSeconds,
 		now, automationID, input.ExpectedVersion)
 	if err != nil {
 		return protocol.AutomationDetail{}, unavailable(err)

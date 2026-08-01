@@ -542,8 +542,8 @@ func (s *Store) legacyPollerMigrationFromSnapshot(
 	for _, repository := range repositories {
 		byIdentity[strings.ToLower(repository.RemoteIdentity)] = repository
 	}
-	existingWorkflowNames := make(map[string]bool)
-	workflowRows, err := s.db.QueryContext(ctx, `SELECT current_name_key FROM workflows`)
+	existingWorkflowTitles := make(map[string]bool)
+	workflowRows, err := s.db.QueryContext(ctx, `SELECT current_title_key FROM workflows`)
 	if err != nil {
 		return result, unavailable(err)
 	}
@@ -553,13 +553,13 @@ func (s *Store) legacyPollerMigrationFromSnapshot(
 			workflowRows.Close()
 			return result, unavailable(err)
 		}
-		existingWorkflowNames[key] = true
+		existingWorkflowTitles[key] = true
 	}
 	if err := workflowRows.Close(); err != nil {
 		return result, unavailable(err)
 	}
-	existingAutomationNames := make(map[string]bool)
-	automationRows, err := s.db.QueryContext(ctx, `SELECT name_key FROM automations`)
+	existingAutomationTitles := make(map[string]bool)
+	automationRows, err := s.db.QueryContext(ctx, `SELECT title_key FROM automations`)
 	if err != nil {
 		return result, unavailable(err)
 	}
@@ -569,7 +569,7 @@ func (s *Store) legacyPollerMigrationFromSnapshot(
 			automationRows.Close()
 			return result, unavailable(err)
 		}
-		existingAutomationNames[key] = true
+		existingAutomationTitles[key] = true
 	}
 	if err := automationRows.Close(); err != nil {
 		return result, unavailable(err)
@@ -583,7 +583,7 @@ func (s *Store) legacyPollerMigrationFromSnapshot(
 			QueueID: queueID, Name: queue.Name, Source: queue.Source, Project: queue.Project,
 			State: queue.Status, RequiredLabels: append([]string(nil), queue.Labels...),
 			TimeoutSeconds: queue.TimeoutSeconds,
-			WorkflowName:   queue.Name + " workflow", AutomationName: queue.Name,
+			WorkflowTitle:  queue.Name + " workflow", AutomationTitle: queue.Name,
 			PendingObservations: queueCounts.Pending, SubmittedObservations: queueCounts.Submitted,
 			Errors: []string{},
 		}
@@ -629,11 +629,11 @@ func (s *Store) legacyPollerMigrationFromSnapshot(
 					}
 				}
 			}
-			if existingWorkflowNames[normalizeWorkflowName(item.WorkflowName)] {
-				item.Errors = append(item.Errors, "Default Workflow name already exists; choose an explicit rename before Import.")
+			if existingWorkflowTitles[normalizeTitleKey(item.WorkflowTitle)] {
+				item.Errors = append(item.Errors, "Default Workflow title already exists; choose an explicit rename before Import.")
 			}
-			if existingAutomationNames[normalizeWorkflowName(item.AutomationName)] {
-				item.Errors = append(item.Errors, "Default Automation name already exists; choose an explicit rename before Import.")
+			if existingAutomationTitles[normalizeTitleKey(item.AutomationTitle)] {
+				item.Errors = append(item.Errors, "Default Automation title already exists; choose an explicit rename before Import.")
 			}
 		}
 		item.Supported = !fatal

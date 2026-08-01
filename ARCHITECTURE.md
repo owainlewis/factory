@@ -79,7 +79,7 @@ the system does not use WebSockets.
 11. A Workflow has stable identity, enabled state, and immutable numbered
     Markdown revisions. The control plane alone composes Workflow instructions
     with free-text task context.
-12. Tasks snapshot their Workflow name, revision, context, and resolved prompt.
+12. Tasks snapshot their Workflow title, revision, context, and resolved prompt.
     Workers remain generic and receive the resolved prompt through the existing
     claim task description.
 13. A typed Automation is created disabled. One issue, pull request, scheduled
@@ -120,7 +120,7 @@ ordered observation rows together with the ledger inode and full-file SHA-256.
 A lock failure, pathname replacement, pragma change, or snapshot change aborts
 the action without partial control-plane writes.
 
-Preview records stable source paths, queue mappings, counts, proposed names,
+Preview records stable source paths, queue mappings, counts, proposed titles,
 and validation errors. Ledger-only queue IDs are visible as unsupported and
 block Import until the matching configuration is restored, preventing silent
 loss of pending or submitted identities. Queue totals and the observation
@@ -347,7 +347,7 @@ GET    /api/v1/repositories
 POST   /api/v1/repositories
 GET    /api/v1/repositories/{repository_id}
 PUT    /api/v1/repositories/{repository_id}/enabled
-GET    /api/v1/workflows?name={name}&enabled={bool}&limit={1..200}&cursor={cursor}
+GET    /api/v1/workflows?title={title}&enabled={bool}&limit={1..200}&cursor={cursor}
 POST   /api/v1/workflows
 GET    /api/v1/workflows/{workflow_id}
 POST   /api/v1/workflows/{workflow_id}/revisions

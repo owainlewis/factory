@@ -10,10 +10,10 @@ import (
 	"github.com/owainlewis/factory/internal/protocol"
 )
 
-func createTestWorkflow(t *testing.T, store *Store, requestKey, name, instructions string) protocol.WorkflowDetail {
+func createTestWorkflow(t *testing.T, store *Store, requestKey, title, instructions string) protocol.WorkflowDetail {
 	t.Helper()
 	detail, created, err := store.CreateWorkflow(context.Background(), protocol.CreateWorkflowRequest{
-		RequestKey: requestKey, Name: name, Summary: "A test workflow", Instructions: instructions,
+		RequestKey: requestKey, Title: title, Summary: "A test workflow", Instructions: instructions,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -27,27 +27,27 @@ func createTestWorkflow(t *testing.T, store *Store, requestKey, name, instructio
 func TestWorkflowMutationsAreIdempotentVersionedAndConflictSafe(t *testing.T) {
 	store := newTestStore(t)
 	first := createTestWorkflow(t, store, "workflow-create", "  Code Review  ", "Review carefully.")
-	if first.Workflow.CurrentRevision.Name != "Code Review" || first.Workflow.CurrentRevision.RevisionNumber != 1 {
+	if first.Workflow.CurrentRevision.Title != "Code Review" || first.Workflow.CurrentRevision.RevisionNumber != 1 {
 		t.Fatalf("normalized initial revision = %#v", first.Workflow.CurrentRevision)
 	}
 	replayed, created, err := store.CreateWorkflow(context.Background(), protocol.CreateWorkflowRequest{
-		RequestKey: "workflow-create", Name: "Code Review", Summary: "A test workflow", Instructions: "Review carefully.",
+		RequestKey: "workflow-create", Title: "Code Review", Summary: "A test workflow", Instructions: "Review carefully.",
 	})
 	if err != nil || created || replayed.Workflow.ID != first.Workflow.ID {
 		t.Fatalf("create replay = created %v, error %v, workflow %#v", created, err, replayed.Workflow)
 	}
 	_, _, err = store.CreateWorkflow(context.Background(), protocol.CreateWorkflowRequest{
-		RequestKey: "workflow-create", Name: "Different", Instructions: "Different instructions.",
+		RequestKey: "workflow-create", Title: "Different", Instructions: "Different instructions.",
 	})
 	assertErrorCode(t, err, "request_key_conflict")
 	_, _, err = store.CreateWorkflow(context.Background(), protocol.CreateWorkflowRequest{
-		RequestKey: "normalized-name", Name: "code review", Instructions: "Duplicate name.",
+		RequestKey: "normalized-title", Title: "code review", Instructions: "Duplicate title.",
 	})
-	assertErrorCode(t, err, "workflow_name_conflict")
+	assertErrorCode(t, err, "workflow_title_conflict")
 
 	revisionInput := protocol.CreateWorkflowRevisionRequest{
 		RequestKey: "workflow-revision-2", ExpectedRevisionID: first.Workflow.CurrentRevision.ID,
-		Name: "Code Review", Summary: "Updated", Instructions: "Review carefully and run checks.",
+		Title: "Code Review", Summary: "Updated", Instructions: "Review carefully and run checks.",
 	}
 	second, created, err := store.CreateWorkflowRevision(context.Background(), first.Workflow.ID, revisionInput)
 	if err != nil || !created || second.Workflow.CurrentRevision.RevisionNumber != 2 || len(second.Revisions) != 2 {
@@ -59,7 +59,7 @@ func TestWorkflowMutationsAreIdempotentVersionedAndConflictSafe(t *testing.T) {
 	}
 	_, _, err = store.CreateWorkflowRevision(context.Background(), first.Workflow.ID, protocol.CreateWorkflowRevisionRequest{
 		RequestKey: "stale-edit", ExpectedRevisionID: first.Workflow.CurrentRevision.ID,
-		Name: "Code Review", Instructions: "Overwrite a newer edit.",
+		Title: "Code Review", Instructions: "Overwrite a newer edit.",
 	})
 	assertErrorCode(t, err, "workflow_revision_conflict")
 
@@ -73,7 +73,7 @@ func TestWorkflowMutationsAreIdempotentVersionedAndConflictSafe(t *testing.T) {
 				protocol.CreateWorkflowRevisionRequest{
 					RequestKey:         "concurrent-edit-" + string(rune('a'+index)),
 					ExpectedRevisionID: second.Workflow.CurrentRevision.ID,
-					Name:               "Code Review", Instructions: "Concurrent revision " + string(rune('A'+index)),
+					Title:              "Code Review", Instructions: "Concurrent revision " + string(rune('A'+index)),
 				})
 		}(index)
 	}
@@ -115,7 +115,7 @@ func TestWorkflowTaskSnapshotsSurviveDisableRevisionAndRetry(t *testing.T) {
 	if task.Context != contextText || task.Task.Description != wantPrompt || task.ResolvedPrompt != wantPrompt || task.Workflow == nil {
 		t.Fatalf("workflow task snapshot = %#v", task)
 	}
-	if task.Workflow.Name != "Implement" || task.Workflow.RevisionNumber != 1 {
+	if task.Workflow.Title != "Implement" || task.Workflow.RevisionNumber != 1 {
 		t.Fatalf("workflow snapshot identity = %#v", task.Workflow)
 	}
 	if _, err := store.SetWorkflowEnabled(context.Background(), workflow.Workflow.ID, false); err != nil {
@@ -216,7 +216,7 @@ func TestTaskPromptFormsAreExclusiveAndAtomic(t *testing.T) {
 func TestWorkflowByteAndRevisionLimitsAreAtomic(t *testing.T) {
 	store := newTestStore(t)
 	_, _, err := store.CreateWorkflow(context.Background(), protocol.CreateWorkflowRequest{
-		RequestKey: "oversized-instructions", Name: "Too large",
+		RequestKey: "oversized-instructions", Title: "Too large",
 		Instructions: strings.Repeat("é", protocol.MaxWorkflowInstructionsBytes/2+1),
 	})
 	assertErrorCode(t, err, "invalid_workflow_instructions")
@@ -244,7 +244,7 @@ func TestWorkflowByteAndRevisionLimitsAreAtomic(t *testing.T) {
 		detail, created, err := store.CreateWorkflowRevision(context.Background(), workflow.Workflow.ID,
 			protocol.CreateWorkflowRevisionRequest{
 				RequestKey:         "bounded-revision-" + string(rune(1000+revisionNumber)),
-				ExpectedRevisionID: current.ID, Name: "Bounded",
+				ExpectedRevisionID: current.ID, Title: "Bounded",
 				Instructions: "Revision " + string(rune(1000+revisionNumber)),
 			})
 		if err != nil || !created {
@@ -255,7 +255,7 @@ func TestWorkflowByteAndRevisionLimitsAreAtomic(t *testing.T) {
 	_, _, err = store.CreateWorkflowRevision(context.Background(), workflow.Workflow.ID,
 		protocol.CreateWorkflowRevisionRequest{
 			RequestKey: "revision-101", ExpectedRevisionID: current.ID,
-			Name: "Bounded", Instructions: "One too many",
+			Title: "Bounded", Instructions: "One too many",
 		})
 	assertErrorCode(t, err, "workflow_revision_limit")
 	detail, err := store.Workflow(context.Background(), workflow.Workflow.ID)
@@ -272,7 +272,7 @@ func TestWorkflowCountLimitIsAtomic(t *testing.T) {
 	for index := 0; index < protocol.MaxWorkflows; index++ {
 		_, created, err := store.CreateWorkflow(context.Background(), protocol.CreateWorkflowRequest{
 			RequestKey:   "workflow-limit-key-" + string(rune(1000+index)),
-			Name:         "Workflow limit name " + string(rune(1000+index)),
+			Title:        "Workflow limit title " + string(rune(1000+index)),
 			Instructions: "Bounded instructions.",
 		})
 		if err != nil || !created {
@@ -280,7 +280,7 @@ func TestWorkflowCountLimitIsAtomic(t *testing.T) {
 		}
 	}
 	_, _, err := store.CreateWorkflow(context.Background(), protocol.CreateWorkflowRequest{
-		RequestKey: "workflow-limit-overflow", Name: "One Workflow too many", Instructions: "Rejected.",
+		RequestKey: "workflow-limit-overflow", Title: "One Workflow too many", Instructions: "Rejected.",
 	})
 	assertErrorCode(t, err, "workflow_limit_reached")
 	var count int
@@ -321,8 +321,8 @@ func TestWorkflowListFiltersAndPaginates(t *testing.T) {
 	if len(next.Workflows) != 1 || next.Workflows[0].ID == page.Workflows[0].ID {
 		t.Fatalf("next workflow page = %#v", next)
 	}
-	byName, err := store.Workflows(context.Background(), protocol.WorkflowPageRequest{Limit: 10, Name: "ALPHA"})
-	if err != nil || len(byName.Workflows) != 1 || byName.Workflows[0].ID != first.Workflow.ID {
-		t.Fatalf("normalized name filter = %#v, %v", byName, err)
+	byTitle, err := store.Workflows(context.Background(), protocol.WorkflowPageRequest{Limit: 10, Title: "ALPHA"})
+	if err != nil || len(byTitle.Workflows) != 1 || byTitle.Workflows[0].ID != first.Workflow.ID {
+		t.Fatalf("normalized title filter = %#v, %v", byTitle, err)
 	}
 }

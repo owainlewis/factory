@@ -247,7 +247,7 @@ type TaskDetail struct {
 type TaskWorkflowSnapshot struct {
 	ID             string `json:"id"`
 	RevisionID     string `json:"revision_id"`
-	Name           string `json:"name"`
+	Title          string `json:"title"`
 	RevisionNumber int    `json:"revision_number"`
 }
 
@@ -263,7 +263,7 @@ type WorkflowRevision struct {
 	ID             string    `json:"id"`
 	WorkflowID     string    `json:"workflow_id"`
 	RevisionNumber int       `json:"revision_number"`
-	Name           string    `json:"name"`
+	Title          string    `json:"title"`
 	Summary        string    `json:"summary"`
 	Instructions   string    `json:"instructions,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
@@ -276,7 +276,7 @@ type WorkflowDetail struct {
 
 type CreateWorkflowRequest struct {
 	RequestKey   string `json:"request_key"`
-	Name         string `json:"name"`
+	Title        string `json:"title"`
 	Summary      string `json:"summary"`
 	Instructions string `json:"instructions"`
 }
@@ -284,7 +284,7 @@ type CreateWorkflowRequest struct {
 type CreateWorkflowRevisionRequest struct {
 	RequestKey         string `json:"request_key"`
 	ExpectedRevisionID string `json:"expected_revision_id"`
-	Name               string `json:"name"`
+	Title              string `json:"title"`
 	Summary            string `json:"summary"`
 	Instructions       string `json:"instructions"`
 }
@@ -301,7 +301,7 @@ type WorkflowCursor struct {
 type WorkflowPageRequest struct {
 	Limit   int
 	Cursor  *WorkflowCursor
-	Name    string
+	Title   string
 	Enabled *bool
 }
 
@@ -444,9 +444,9 @@ type AutomationHealth struct {
 
 type Automation struct {
 	ID                 string                 `json:"id"`
-	Name               string                 `json:"name"`
+	Title              string                 `json:"title"`
 	WorkflowID         string                 `json:"workflow_id"`
-	WorkflowName       string                 `json:"workflow_name"`
+	WorkflowTitle      string                 `json:"workflow_title"`
 	WorkflowRevision   int                    `json:"workflow_revision"`
 	RepositoryID       string                 `json:"repository_id"`
 	RepositoryIdentity string                 `json:"repository_identity"`
@@ -528,8 +528,8 @@ type LegacyPollerQueue struct {
 	TimeoutSeconds        int      `json:"timeout_seconds"`
 	RepositoryID          string   `json:"repository_id,omitempty"`
 	RepositoryIdentity    string   `json:"repository_identity,omitempty"`
-	WorkflowName          string   `json:"workflow_name"`
-	AutomationName        string   `json:"automation_name"`
+	WorkflowTitle         string   `json:"workflow_title"`
+	AutomationTitle       string   `json:"automation_title"`
 	PendingObservations   int      `json:"pending_observations"`
 	SubmittedObservations int      `json:"submitted_observations"`
 	Supported             bool     `json:"supported"`
@@ -562,9 +562,9 @@ type PreviewLegacyPollerRequest struct {
 }
 
 type LegacyPollerQueueMapping struct {
-	QueueID        string `json:"queue_id"`
-	WorkflowName   string `json:"workflow_name"`
-	AutomationName string `json:"automation_name"`
+	QueueID         string `json:"queue_id"`
+	WorkflowTitle   string `json:"workflow_title"`
+	AutomationTitle string `json:"automation_title"`
 }
 
 type ImportLegacyPollerRequest struct {
@@ -611,7 +611,7 @@ type AutomationOccurrenceCursor struct {
 
 type CreateAutomationRequest struct {
 	RequestKey     string            `json:"request_key"`
-	Name           string            `json:"name"`
+	Title          string            `json:"title"`
 	WorkflowID     string            `json:"workflow_id"`
 	RepositoryID   string            `json:"repository_id"`
 	Context        string            `json:"context"`
@@ -621,7 +621,7 @@ type CreateAutomationRequest struct {
 
 type UpdateAutomationRequest struct {
 	ExpectedVersion int               `json:"expected_version"`
-	Name            string            `json:"name"`
+	Title           string            `json:"title"`
 	WorkflowID      string            `json:"workflow_id"`
 	Context         string            `json:"context"`
 	TimeoutSeconds  int               `json:"timeout_seconds"`

@@ -61,7 +61,7 @@ func (s *Store) ImportLegacyPoller(
 		}
 		_, mapped := mappings[queue.QueueID]
 		if queue.Supported && !mapped {
-			return protocol.LegacyPollerMigration{}, invalid("invalid_migration_mapping", "every supported queue requires reviewed Workflow and Automation names")
+			return protocol.LegacyPollerMigration{}, invalid("invalid_migration_mapping", "every supported queue requires reviewed Workflow and Automation titles")
 		}
 		if !queue.Supported && mapped {
 			return protocol.LegacyPollerMigration{}, invalid("invalid_migration_mapping", "unsupported queue "+queue.Name+" cannot be imported")
@@ -133,29 +133,29 @@ func (s *Store) ImportLegacyPoller(
 		preview      protocol.LegacyPollerQueue
 		workflowID   string
 		automationID string
-		name         string
+		title        string
 	}
 	imports := make(map[string]importedQueue, len(mappings))
-	workflowNames := make(map[string]bool, len(mappings))
-	automationNames := make(map[string]bool, len(mappings))
+	workflowTitles := make(map[string]bool, len(mappings))
+	automationTitles := make(map[string]bool, len(mappings))
 	now := s.now().UnixMilli()
 	for queueID, mapping := range mappings {
 		queue := queueByID[queueID]
 		queuePreview := previewByID[queueID]
-		workflowValue, workflowNameKey, normalizeErr := normalizeWorkflowRevision(
+		workflowValue, workflowTitleKey, normalizeErr := normalizeWorkflowRevision(
 			"legacy-poller:"+input.MigrationID+":workflow:"+queueID,
-			"", "", mapping.WorkflowName, "Imported from legacy poller queue "+queue.Name+".", queue.Prompt,
+			"", "", mapping.WorkflowTitle, "Imported from legacy poller queue "+queue.Name+".", queue.Prompt,
 		)
 		if normalizeErr != nil {
 			return protocol.LegacyPollerMigration{}, normalizeErr
 		}
-		if workflowNames[workflowNameKey] {
-			return protocol.LegacyPollerMigration{}, conflict("workflow_name_conflict", "imported Workflow names must be unique")
+		if workflowTitles[workflowTitleKey] {
+			return protocol.LegacyPollerMigration{}, conflict("workflow_title_conflict", "imported Workflow titles must be unique")
 		}
-		workflowNames[workflowNameKey] = true
+		workflowTitles[workflowTitleKey] = true
 		var conflictID string
-		if err := tx.QueryRowContext(ctx, `SELECT id FROM workflows WHERE current_name_key = ?`, workflowNameKey).Scan(&conflictID); err == nil {
-			return protocol.LegacyPollerMigration{}, conflict("workflow_name_conflict", "a Workflow named "+workflowValue.Name+" already exists; choose an explicit rename")
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM workflows WHERE current_title_key = ?`, workflowTitleKey).Scan(&conflictID); err == nil {
+			return protocol.LegacyPollerMigration{}, conflict("workflow_title_conflict", "a Workflow titled "+workflowValue.Title+" already exists; choose an explicit rename")
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return protocol.LegacyPollerMigration{}, unavailable(err)
 		}
@@ -172,24 +172,24 @@ func (s *Store) ImportLegacyPoller(
 			return protocol.LegacyPollerMigration{}, unavailable(digestErr)
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO workflows(id, enabled, current_revision_id, current_name_key, created_at, updated_at)
+			INSERT INTO workflows(id, enabled, current_revision_id, current_title_key, created_at, updated_at)
 			VALUES (?, 1, ?, ?, ?, ?)
-		`, workflowID, revisionID, workflowNameKey, now, now); err != nil {
+		`, workflowID, revisionID, workflowTitleKey, now, now); err != nil {
 			return protocol.LegacyPollerMigration{}, unavailable(err)
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO workflow_revisions(
 				id, workflow_id, revision_number, request_key, request_digest,
-				name, summary, instructions, created_at
+				title, summary, instructions, created_at
 			) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
 		`, revisionID, workflowID, workflowValue.RequestKey, workflowDigest,
-			workflowValue.Name, workflowValue.Summary, workflowValue.Instructions, now); err != nil {
+			workflowValue.Title, workflowValue.Summary, workflowValue.Instructions, now); err != nil {
 			return protocol.LegacyPollerMigration{}, unavailable(err)
 		}
 
-		automationValue, automationNameKey, normalizeErr := normalizeAutomation(
+		automationValue, automationTitleKey, normalizeErr := normalizeAutomation(
 			"legacy-poller:"+input.MigrationID+":automation:"+queueID,
-			mapping.AutomationName, workflowID, queuePreview.RepositoryID, "",
+			mapping.AutomationTitle, workflowID, queuePreview.RepositoryID, "",
 			queue.TimeoutSeconds,
 			protocol.AutomationTrigger{
 				Type: protocol.AutomationTriggerGitHubIssue, State: queue.Status,
@@ -200,12 +200,12 @@ func (s *Store) ImportLegacyPoller(
 		if normalizeErr != nil {
 			return protocol.LegacyPollerMigration{}, normalizeErr
 		}
-		if automationNames[automationNameKey] {
-			return protocol.LegacyPollerMigration{}, conflict("automation_name_conflict", "imported Automation names must be unique")
+		if automationTitles[automationTitleKey] {
+			return protocol.LegacyPollerMigration{}, conflict("automation_title_conflict", "imported Automation titles must be unique")
 		}
-		automationNames[automationNameKey] = true
-		if err := tx.QueryRowContext(ctx, `SELECT id FROM automations WHERE name_key = ?`, automationNameKey).Scan(&conflictID); err == nil {
-			return protocol.LegacyPollerMigration{}, conflict("automation_name_conflict", "an Automation named "+automationValue.Name+" already exists; choose an explicit rename")
+		automationTitles[automationTitleKey] = true
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM automations WHERE title_key = ?`, automationTitleKey).Scan(&conflictID); err == nil {
+			return protocol.LegacyPollerMigration{}, conflict("automation_title_conflict", "an Automation titled "+automationValue.Title+" already exists; choose an explicit rename")
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return protocol.LegacyPollerMigration{}, unavailable(err)
 		}
@@ -220,11 +220,11 @@ func (s *Store) ImportLegacyPoller(
 		labels, _ := json.Marshal(automationValue.Trigger.RequiredLabels)
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO automations(
-				id, request_key, request_digest, name, name_key, workflow_id,
+				id, request_key, request_digest, title, title_key, workflow_id,
 				repository_id, context, timeout_seconds, trigger_type, created_at, updated_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, 'github_issue', ?, ?)
-		`, automationID, automationValue.RequestKey, automationDigest, automationValue.Name,
-			automationNameKey, workflowID, queuePreview.RepositoryID,
+		`, automationID, automationValue.RequestKey, automationDigest, automationValue.Title,
+			automationTitleKey, workflowID, queuePreview.RepositoryID,
 			automationValue.TimeoutSeconds, now, now); err != nil {
 			return protocol.LegacyPollerMigration{}, unavailable(err)
 		}
@@ -245,7 +245,7 @@ func (s *Store) ImportLegacyPoller(
 		}
 		imports[queueID] = importedQueue{
 			queue: queue, preview: queuePreview, workflowID: workflowID,
-			automationID: automationID, name: automationValue.Name,
+			automationID: automationID, title: automationValue.Title,
 		}
 	}
 
@@ -298,7 +298,7 @@ func (s *Store) importLegacyObservation(
 		preview      protocol.LegacyPollerQueue
 		workflowID   string
 		automationID string
-		name         string
+		title        string
 	},
 	observation legacyPollerObservation,
 	now int64,
@@ -348,12 +348,12 @@ func (s *Store) importLegacyObservation(
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO automation_occurrences(
-			id, automation_id, automation_version, automation_name,
+			id, automation_id, automation_version, automation_title,
 			workflow_revision_id, repository_id, repository_identity, context,
 			timeout_seconds, state, resolved_prompt, task_request_key, task_id,
 			task_id_snapshot, diagnostic, legacy_task_request_json, created_at, updated_at
 		) VALUES (?, ?, 1, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, occurrenceID, imported.automationID, imported.name,
+	`, occurrenceID, imported.automationID, imported.title,
 		imported.preview.RepositoryID, imported.preview.RepositoryIdentity,
 		nullableImportedString(description), timeout, state, nullableImportedString(description),
 		observation.RequestKey, nullableImportedString(taskID), taskIDSnapshot, diagnostic,

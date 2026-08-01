@@ -18,24 +18,25 @@ type normalizedWorkflowRevision struct {
 	RequestKey         string `json:"request_key"`
 	WorkflowID         string `json:"workflow_id,omitempty"`
 	ExpectedRevisionID string `json:"expected_revision_id,omitempty"`
-	Name               string `json:"name"`
-	Summary            string `json:"summary"`
-	Instructions       string `json:"instructions"`
+	// Keep the legacy digest key so an equivalent retry survives the API field rename.
+	Title        string `json:"name"`
+	Summary      string `json:"summary"`
+	Instructions string `json:"instructions"`
 }
 
 func normalizeWorkflowRevision(
-	requestKey, workflowID, expectedRevisionID, name, summary, instructions string,
+	requestKey, workflowID, expectedRevisionID, title, summary, instructions string,
 ) (normalizedWorkflowRevision, string, error) {
 	value := normalizedWorkflowRevision{
 		RequestKey: strings.TrimSpace(requestKey), WorkflowID: strings.TrimSpace(workflowID),
-		ExpectedRevisionID: strings.TrimSpace(expectedRevisionID), Name: strings.TrimSpace(name),
+		ExpectedRevisionID: strings.TrimSpace(expectedRevisionID), Title: strings.TrimSpace(title),
 		Summary: strings.TrimSpace(summary), Instructions: instructions,
 	}
 	if value.RequestKey == "" || len(value.RequestKey) > 200 {
 		return value, "", invalid("invalid_request_key", "request_key is required and limited to 200 bytes")
 	}
-	if value.Name == "" || utf8.RuneCountInString(value.Name) > 100 {
-		return value, "", invalid("invalid_workflow_name", "name is required and limited to 100 Unicode characters")
+	if value.Title == "" || utf8.RuneCountInString(value.Title) > 100 {
+		return value, "", invalid("invalid_workflow_title", "title is required and limited to 100 Unicode characters")
 	}
 	if utf8.RuneCountInString(value.Summary) > 500 {
 		return value, "", invalid("invalid_workflow_summary", "summary is limited to 500 Unicode characters")
@@ -43,10 +44,10 @@ func normalizeWorkflowRevision(
 	if strings.TrimSpace(value.Instructions) == "" || len([]byte(value.Instructions)) > protocol.MaxWorkflowInstructionsBytes {
 		return value, "", invalid("invalid_workflow_instructions", "instructions are required and limited to 48 KiB")
 	}
-	return value, normalizeWorkflowName(value.Name), nil
+	return value, normalizeTitleKey(value.Title), nil
 }
 
-func normalizeWorkflowName(value string) string {
+func normalizeTitleKey(value string) string {
 	value = strings.TrimSpace(value)
 	var builder strings.Builder
 	builder.Grow(len(value))
@@ -72,8 +73,8 @@ func (s *Store) CreateWorkflow(
 	ctx context.Context,
 	input protocol.CreateWorkflowRequest,
 ) (protocol.WorkflowDetail, bool, error) {
-	value, nameKey, err := normalizeWorkflowRevision(
-		input.RequestKey, "", "", input.Name, input.Summary, input.Instructions,
+	value, titleKey, err := normalizeWorkflowRevision(
+		input.RequestKey, "", "", input.Title, input.Summary, input.Instructions,
 	)
 	if err != nil {
 		return protocol.WorkflowDetail{}, false, err
@@ -99,9 +100,9 @@ func (s *Store) CreateWorkflow(
 		return detail, false, err
 	}
 	var conflictingID string
-	err = tx.QueryRowContext(ctx, `SELECT id FROM workflows WHERE current_name_key = ?`, nameKey).Scan(&conflictingID)
+	err = tx.QueryRowContext(ctx, `SELECT id FROM workflows WHERE current_title_key = ?`, titleKey).Scan(&conflictingID)
 	if err == nil {
-		return protocol.WorkflowDetail{}, false, conflict("workflow_name_conflict", "a workflow with this normalized name already exists")
+		return protocol.WorkflowDetail{}, false, conflict("workflow_title_conflict", "a workflow with this normalized title already exists")
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return protocol.WorkflowDetail{}, false, unavailable(err)
@@ -126,17 +127,17 @@ func (s *Store) CreateWorkflow(
 	}
 	now := s.now().UnixMilli()
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO workflows(id, enabled, current_revision_id, current_name_key, created_at, updated_at)
+		INSERT INTO workflows(id, enabled, current_revision_id, current_title_key, created_at, updated_at)
 		VALUES (?, 1, ?, ?, ?, ?)
-	`, workflowID, revisionID, nameKey, now, now); err != nil {
+	`, workflowID, revisionID, titleKey, now, now); err != nil {
 		return protocol.WorkflowDetail{}, false, unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO workflow_revisions(
 			id, workflow_id, revision_number, request_key, request_digest,
-			name, summary, instructions, created_at
+			title, summary, instructions, created_at
 		) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
-	`, revisionID, workflowID, value.RequestKey, digest, value.Name, value.Summary, value.Instructions, now); err != nil {
+	`, revisionID, workflowID, value.RequestKey, digest, value.Title, value.Summary, value.Instructions, now); err != nil {
 		return protocol.WorkflowDetail{}, false, unavailable(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -151,9 +152,9 @@ func (s *Store) CreateWorkflowRevision(
 	workflowID string,
 	input protocol.CreateWorkflowRevisionRequest,
 ) (protocol.WorkflowDetail, bool, error) {
-	value, nameKey, err := normalizeWorkflowRevision(
+	value, titleKey, err := normalizeWorkflowRevision(
 		input.RequestKey, workflowID, input.ExpectedRevisionID,
-		input.Name, input.Summary, input.Instructions,
+		input.Title, input.Summary, input.Instructions,
 	)
 	if err != nil {
 		return protocol.WorkflowDetail{}, false, err
@@ -206,10 +207,10 @@ func (s *Store) CreateWorkflowRevision(
 	}
 	var conflictingID string
 	err = tx.QueryRowContext(ctx, `
-		SELECT id FROM workflows WHERE current_name_key = ? AND id != ?
-	`, nameKey, value.WorkflowID).Scan(&conflictingID)
+		SELECT id FROM workflows WHERE current_title_key = ? AND id != ?
+	`, titleKey, value.WorkflowID).Scan(&conflictingID)
 	if err == nil {
-		return protocol.WorkflowDetail{}, false, conflict("workflow_name_conflict", "a workflow with this normalized name already exists")
+		return protocol.WorkflowDetail{}, false, conflict("workflow_title_conflict", "a workflow with this normalized title already exists")
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return protocol.WorkflowDetail{}, false, unavailable(err)
@@ -222,17 +223,17 @@ func (s *Store) CreateWorkflowRevision(
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO workflow_revisions(
 			id, workflow_id, revision_number, request_key, request_digest,
-			name, summary, instructions, created_at
+			title, summary, instructions, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, revisionID, value.WorkflowID, currentRevisionNumber+1, value.RequestKey, digest,
-		value.Name, value.Summary, value.Instructions, now); err != nil {
+		value.Title, value.Summary, value.Instructions, now); err != nil {
 		return protocol.WorkflowDetail{}, false, unavailable(err)
 	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE workflows
-		SET current_revision_id = ?, current_name_key = ?, updated_at = ?
+		SET current_revision_id = ?, current_title_key = ?, updated_at = ?
 		WHERE id = ? AND current_revision_id = ?
-	`, revisionID, nameKey, now, value.WorkflowID, value.ExpectedRevisionID)
+	`, revisionID, titleKey, now, value.WorkflowID, value.ExpectedRevisionID)
 	if err != nil {
 		return protocol.WorkflowDetail{}, false, unavailable(err)
 	}
@@ -283,7 +284,7 @@ func (s *Store) Workflow(ctx context.Context, workflowID string) (protocol.Workf
 	}
 	detail.Workflow = workflow
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, workflow_id, revision_number, name, summary, instructions, created_at
+		SELECT id, workflow_id, revision_number, title, summary, instructions, created_at
 		FROM workflow_revisions
 		WHERE workflow_id = ?
 		ORDER BY revision_number DESC
@@ -309,7 +310,7 @@ func (s *Store) Workflow(ctx context.Context, workflowID string) (protocol.Workf
 const workflowSelect = `
 	SELECT workflow.id, workflow.enabled, workflow.created_at, workflow.updated_at,
 	       revision.id, revision.workflow_id, revision.revision_number,
-	       revision.name, revision.summary, revision.created_at
+	       revision.title, revision.summary, revision.created_at
 	FROM workflows workflow
 	JOIN workflow_revisions revision ON revision.id = workflow.current_revision_id
 `
@@ -321,9 +322,9 @@ func (s *Store) Workflows(ctx context.Context, request protocol.WorkflowPageRequ
 	query := workflowSelect
 	conditions := make([]string, 0, 3)
 	args := make([]any, 0, 6)
-	if strings.TrimSpace(request.Name) != "" {
-		conditions = append(conditions, "workflow.current_name_key = ?")
-		args = append(args, normalizeWorkflowName(request.Name))
+	if strings.TrimSpace(request.Title) != "" {
+		conditions = append(conditions, "workflow.current_title_key = ?")
+		args = append(args, normalizeTitleKey(request.Title))
 	}
 	if request.Enabled != nil {
 		conditions = append(conditions, "workflow.enabled = ?")
@@ -461,7 +462,7 @@ func scanWorkflow(row workflowScanner) (protocol.Workflow, error) {
 	err := row.Scan(
 		&workflow.ID, &enabled, &createdAt, &updatedAt,
 		&workflow.CurrentRevision.ID, &workflow.CurrentRevision.WorkflowID,
-		&workflow.CurrentRevision.RevisionNumber, &workflow.CurrentRevision.Name,
+		&workflow.CurrentRevision.RevisionNumber, &workflow.CurrentRevision.Title,
 		&workflow.CurrentRevision.Summary, &revisionCreatedAt,
 	)
 	workflow.Enabled = enabled != 0
@@ -477,10 +478,10 @@ func scanWorkflowRevision(row workflowScanner, instructions bool) (protocol.Work
 	var err error
 	if instructions {
 		err = row.Scan(&revision.ID, &revision.WorkflowID, &revision.RevisionNumber,
-			&revision.Name, &revision.Summary, &revision.Instructions, &createdAt)
+			&revision.Title, &revision.Summary, &revision.Instructions, &createdAt)
 	} else {
 		err = row.Scan(&revision.ID, &revision.WorkflowID, &revision.RevisionNumber,
-			&revision.Name, &revision.Summary, &createdAt)
+			&revision.Title, &revision.Summary, &createdAt)
 	}
 	revision.CreatedAt = fromMillis(createdAt)
 	return revision, err

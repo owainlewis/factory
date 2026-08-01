@@ -114,7 +114,7 @@ export interface TaskDetail {
 export interface TaskWorkflowSnapshot {
   id: string;
   revision_id: string;
-  name: string;
+  title: string;
   revision_number: number;
 }
 
@@ -122,7 +122,7 @@ export interface WorkflowRevision {
   id: string;
   workflow_id: string;
   revision_number: number;
-  name: string;
+  title: string;
   summary: string;
   instructions?: string;
   created_at: string;
@@ -184,9 +184,9 @@ export interface AutomationHealth {
 
 export interface Automation {
 	id: string;
-	name: string;
+	title: string;
 	workflow_id: string;
-	workflow_name: string;
+	workflow_title: string;
 	workflow_revision: number;
 	repository_id: string;
 	repository_identity: string;
@@ -254,8 +254,8 @@ export interface LegacyPollerQueue {
 	timeout_seconds: number;
 	repository_id?: string;
 	repository_identity?: string;
-	workflow_name: string;
-	automation_name: string;
+	workflow_title: string;
+	automation_title: string;
 	pending_observations: number;
 	submitted_observations: number;
 	supported: boolean;
@@ -306,7 +306,7 @@ export interface AutomationOccurrencePage {
 
 export interface CreateAutomationInput {
 	request_key: string;
-	name: string;
+	title: string;
 	workflow_id: string;
 	repository_id: string;
 	context: string;
@@ -382,8 +382,8 @@ export type CreateTaskInput = CreateTaskBaseInput & (
 );
 
 export interface CreateWorkflowInput {
-  request_key: string;
-  name: string;
+	request_key: string;
+	title: string;
   summary: string;
   instructions: string;
 }

@@ -29,11 +29,11 @@ func countScheduledInstants(schedule cronSchedule, after, through time.Time) (in
 
 type scheduleSnapshot struct {
 	automationID         string
-	automationName       string
+	automationTitle      string
 	automationVersion    int
 	workflowID           string
 	workflowRevisionID   string
-	workflowName         string
+	workflowTitle        string
 	workflowRevision     int
 	workflowInstructions string
 	repositoryID         string
@@ -52,8 +52,8 @@ func loadScheduleSnapshot(ctx context.Context, tx *sql.Tx, automationID string) 
 	var snapshot scheduleSnapshot
 	var automationEnabled, workflowEnabled, repositoryEnabled int
 	err := tx.QueryRowContext(ctx, `
-		SELECT automation.id, automation.name, automation.version,
-		       workflow.id, revision.id, revision.name, revision.revision_number,
+		SELECT automation.id, automation.title, automation.version,
+		       workflow.id, revision.id, revision.title, revision.revision_number,
 		       revision.instructions, repository.id, repository.remote_identity,
 		       automation.context, automation.timeout_seconds,
 		       schedule.cron, schedule.timezone, schedule.next_due_at,
@@ -65,8 +65,8 @@ func loadScheduleSnapshot(ctx context.Context, tx *sql.Tx, automationID string) 
 		JOIN repositories repository ON repository.id = automation.repository_id
 		WHERE automation.id = ? AND automation.trigger_type = 'schedule'
 	`, strings.TrimSpace(automationID)).Scan(
-		&snapshot.automationID, &snapshot.automationName, &snapshot.automationVersion,
-		&snapshot.workflowID, &snapshot.workflowRevisionID, &snapshot.workflowName,
+		&snapshot.automationID, &snapshot.automationTitle, &snapshot.automationVersion,
+		&snapshot.workflowID, &snapshot.workflowRevisionID, &snapshot.workflowTitle,
 		&snapshot.workflowRevision, &snapshot.workflowInstructions,
 		&snapshot.repositoryID, &snapshot.repositoryIdentity,
 		&snapshot.context, &snapshot.timeoutSeconds, &snapshot.cron, &snapshot.timezone,
@@ -315,10 +315,10 @@ func (s *Store) insertScheduleOccurrence(
 	kind, identity, state, diagnostic string,
 	now time.Time,
 ) error {
-	title := snapshot.automationName + ": run now"
+	title := snapshot.automationTitle + ": run now"
 	requestKey := "automation:" + snapshot.automationID + ":schedule:run:" + identity
 	if kind == "scheduled" {
-		title = snapshot.automationName + ": scheduled " + identity
+		title = snapshot.automationTitle + ": scheduled " + identity
 		requestKey = "automation:" + snapshot.automationID + ":schedule:scheduled:" + identity
 	}
 	prompt, err := protocol.ResolveScheduleAutomationPrompt(
@@ -344,12 +344,12 @@ func (s *Store) insertScheduleOccurrence(
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO automation_occurrences(
-			id, automation_id, automation_version, automation_name,
+			id, automation_id, automation_version, automation_title,
 			workflow_revision_id, repository_id, repository_identity,
 			context, timeout_seconds, state, resolved_prompt, task_request_key,
 			diagnostic, retry_at, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, occurrenceID, snapshot.automationID, snapshot.automationVersion, snapshot.automationName,
+	`, occurrenceID, snapshot.automationID, snapshot.automationVersion, snapshot.automationTitle,
 		snapshot.workflowRevisionID, snapshot.repositoryID, snapshot.repositoryIdentity,
 		snapshot.context, snapshot.timeoutSeconds, state, storedPrompt, requestKey,
 		diagnostic, now.UnixMilli(), now.UnixMilli(), now.UnixMilli()); err != nil {

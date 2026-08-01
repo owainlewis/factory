@@ -227,7 +227,11 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Workflows" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Create workflow" }));
     const createDialog = screen.getByRole("dialog", { name: "Create workflow" });
-    await user.type(within(createDialog).getByLabelText("Name"), "Security review");
+    const workflowTitle = within(createDialog).getByLabelText("Title");
+    expect(workflowTitle).toHaveAttribute("name", "title");
+    expect(workflowTitle).toHaveAttribute("autocomplete", "off");
+    expect(createDialog.querySelector('[name="name"]')).not.toBeInTheDocument();
+    await user.type(workflowTitle, "Security review");
     await user.type(within(createDialog).getByLabelText("Summary"), "Review trust boundaries.");
     await user.type(within(createDialog).getByLabelText("Markdown instructions"), "Inspect inputs and permissions.");
     await user.click(within(createDialog).getByRole("button", { name: "Create workflow" }));
@@ -265,7 +269,11 @@ describe("App", () => {
     expect(existingRow).toHaveTextContent("No task yet");
     await user.click(screen.getByRole("button", { name: "Create Automation" }));
     const dialog = screen.getByRole("dialog", { name: "Create Automation" });
-    await user.type(within(dialog).getByLabelText("Name"), "Factory ready issues");
+    const automationTitle = within(dialog).getByLabelText("Title");
+    expect(automationTitle).toHaveAttribute("name", "title");
+    expect(automationTitle).toHaveAttribute("autocomplete", "off");
+    expect(dialog.querySelector('[name="name"]')).not.toBeInTheDocument();
+    await user.type(automationTitle, "Factory ready issues");
     await user.selectOptions(within(dialog).getByLabelText("Workflow"), "workflow-implement");
     await user.selectOptions(within(dialog).getByLabelText("Managed repository"), "repo-factory");
     await user.type(within(dialog).getByLabelText("Trusted Automation context"), "Fetch and revalidate live state.");
@@ -276,7 +284,7 @@ describe("App", () => {
     expect(screen.getByText("No task has been dispatched.")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Edit" }));
     const editDialog = screen.getByRole("dialog", { name: "Edit Automation" });
-    const editName = within(editDialog).getByLabelText("Name");
+    const editName = within(editDialog).getByLabelText("Title");
     await user.clear(editName);
     await user.type(editName, "Edited ready issues");
     await user.click(within(editDialog).getByRole("button", { name: "Save changes" }));
@@ -316,12 +324,12 @@ describe("App", () => {
     expect(within(dialog).getByText(/Repository mapping:/)).toHaveTextContent("github.com/example/factory");
     expect(within(dialog).getByText(/Repository mapping:/)).toHaveTextContent("repo-factory");
     expect(within(dialog).getByText(/0 submitted · 1 pending · every 30s/)).toBeVisible();
-    const workflowName = within(dialog).getByLabelText("Workflow name");
-    const automationName = within(dialog).getByLabelText("Automation name");
-    await user.clear(workflowName);
-    await user.type(workflowName, "Imported implementation workflow");
-    await user.clear(automationName);
-    await user.type(automationName, "Imported ready issues");
+    const workflowTitle = within(dialog).getByLabelText("Workflow title");
+    const automationTitle = within(dialog).getByLabelText("Automation title");
+    await user.clear(workflowTitle);
+    await user.type(workflowTitle, "Imported implementation workflow");
+    await user.clear(automationTitle);
+    await user.type(automationTitle, "Imported ready issues");
     await user.click(within(dialog).getByRole("button", { name: "Import disabled Automations" }));
 
     expect(await within(dialog).findByText("1 unresolved")).toBeVisible();
@@ -350,8 +358,8 @@ describe("App", () => {
       migration_id: "legacy-migration",
       mappings: [{
         queue_id: "legacy-queue",
-        workflow_name: "Imported implementation workflow",
-        automation_name: "Imported ready issues",
+        workflow_title: "Imported implementation workflow",
+        automation_title: "Imported ready issues",
       }],
     });
   });
@@ -426,7 +434,7 @@ describe("App", () => {
 
     await user.click(await screen.findByRole("button", { name: "Create Automation" }));
     const dialog = screen.getByRole("dialog", { name: "Create Automation" });
-    await user.type(within(dialog).getByLabelText("Name"), "Daily Factory maintenance");
+    await user.type(within(dialog).getByLabelText("Title"), "Daily Factory maintenance");
     await user.selectOptions(within(dialog).getByLabelText("Workflow"), "workflow-implement");
     await user.selectOptions(within(dialog).getByLabelText("Managed repository"), "repo-factory");
     await user.selectOptions(within(dialog).getByLabelText("Trigger type"), "schedule");
@@ -492,7 +500,7 @@ describe("App", () => {
 
     await user.click(await screen.findByRole("button", { name: "Create Automation" }));
     const dialog = screen.getByRole("dialog", { name: "Create Automation" });
-    await user.type(within(dialog).getByLabelText("Name"), "Factory pull request reviews");
+    await user.type(within(dialog).getByLabelText("Title"), "Factory pull request reviews");
     await user.selectOptions(within(dialog).getByLabelText("Workflow"), "workflow-implement");
     await user.selectOptions(within(dialog).getByLabelText("Managed repository"), "repo-factory");
     await user.selectOptions(within(dialog).getByLabelText("Trigger type"), "github_pull_request");
@@ -532,7 +540,7 @@ describe("App", () => {
     const dialog = screen.getByRole("dialog", { name: "Edit Automation" });
     expect(within(dialog).getByLabelText("Workflow")).toHaveValue("workflow-implement");
     expect(within(dialog).getByLabelText("Managed repository")).toHaveValue("repo-factory");
-    await user.type(within(dialog).getByLabelText("Name"), " updated");
+    await user.type(within(dialog).getByLabelText("Title"), " updated");
     await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
     expect(fetch.mock.calls.some(([input, init]) => {
       const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;

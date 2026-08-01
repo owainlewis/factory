@@ -1735,7 +1735,7 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 		var enabled int
 		var instructions string
 		err := tx.QueryRowContext(ctx, `
-			SELECT workflow.id, workflow.enabled, revision.name,
+			SELECT workflow.id, workflow.enabled, revision.title,
 			       revision.revision_number, revision.instructions
 			FROM workflow_revisions revision
 			JOIN workflows workflow ON workflow.id = revision.workflow_id
@@ -1804,7 +1804,7 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO tasks(
 			id, request_key, title, description, repository_id, timeout_seconds, created_at,
-			workflow_id, workflow_revision_id, workflow_name, workflow_revision_number,
+			workflow_id, workflow_revision_id, workflow_title, workflow_revision_number,
 			context
 		)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1918,14 +1918,14 @@ func (s *Store) Task(ctx context.Context, id string) (protocol.TaskDetail, error
 		return detail, unavailable(err)
 	}
 	detail.Task = task
-	var contextValue, workflowID, workflowRevisionID, workflowName sql.NullString
+	var contextValue, workflowID, workflowRevisionID, workflowTitle sql.NullString
 	var workflowRevisionNumber sql.NullInt64
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT context, workflow_id, workflow_revision_id,
-		       workflow_name, workflow_revision_number
+		       workflow_title, workflow_revision_number
 		FROM tasks WHERE id = ?
 	`, id).Scan(&contextValue, &workflowID, &workflowRevisionID,
-		&workflowName, &workflowRevisionNumber); err != nil {
+		&workflowTitle, &workflowRevisionNumber); err != nil {
 		return detail, unavailable(err)
 	}
 	detail.ResolvedPrompt = detail.Task.Description
@@ -1935,7 +1935,7 @@ func (s *Store) Task(ctx context.Context, id string) (protocol.TaskDetail, error
 	if workflowID.Valid {
 		detail.Workflow = &protocol.TaskWorkflowSnapshot{
 			ID: workflowID.String, RevisionID: workflowRevisionID.String,
-			Name: workflowName.String, RevisionNumber: int(workflowRevisionNumber.Int64),
+			Title: workflowTitle.String, RevisionNumber: int(workflowRevisionNumber.Int64),
 		}
 	}
 	row = s.db.QueryRowContext(ctx, `

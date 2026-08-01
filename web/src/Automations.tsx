@@ -99,12 +99,12 @@ export function AutomationsView({ onAutomation }: { onAutomation: (id: string) =
       ) : (
         <div className="workflow-list automation-list">
           <div className="automation-table-head">
-            <span>Name and trigger</span><span>Health</span><span>Counters</span><span>Schedule</span><span>Latest task</span><span />
+            <span>Title and trigger</span><span>Health</span><span>Counters</span><span>Schedule</span><span>Latest task</span><span />
           </div>
           {items.map((automation) => (
             <button className="automation-row" key={automation.id} onClick={() => onAutomation(automation.id)}>
               <span className="workflow-identity">
-                <strong>{automation.name}</strong>
+                <strong>{automation.title}</strong>
                 <small>{automation.repository_identity} · {triggerSummary(automation)}</small>
               </span>
               <span className="automation-list-health"><HealthBadge automation={automation} /><small>{automation.health.message || "No health detail."}</small></span>
@@ -237,7 +237,7 @@ export function AutomationDetail({
       <div className="detail-heading">
         <div>
           <HealthBadge automation={automation} />
-          <h1>{automation.name}</h1>
+          <h1>{automation.title}</h1>
           <p>{triggerSummary(automation)} · {automation.repository_identity}</p>
         </div>
         <div className="detail-actions">
@@ -275,7 +275,7 @@ export function AutomationDetail({
           <div>
             <strong>{confirmEnabled ? "Enable this Automation?" : "Disable this Automation?"}</strong>
             <p>{confirmEnabled
-              ? `${automation.workflow_name} · ${automation.repository_identity} · ${triggerSummary(automation)}`
+              ? `${automation.workflow_title} · ${automation.repository_identity} · ${triggerSummary(automation)}`
               : "Future checks and pending dispatches stop. Existing tasks continue."}</p>
           </div>
           <button
@@ -325,7 +325,7 @@ export function AutomationDetail({
         <section className="panel detail-main">
           <PanelHeading title="Configuration" aside={`Version ${automation.version}`} />
           <dl className="metadata">
-            <div><dt>Workflow</dt><dd>{automation.workflow_name} · revision {automation.workflow_revision}</dd></div>
+            <div><dt>Workflow</dt><dd>{automation.workflow_title} · revision {automation.workflow_revision}</dd></div>
             <div><dt>Repository</dt><dd className="mono">{automation.repository_identity}</dd></div>
             {automation.trigger.type === "schedule" ? <>
               <div><dt>Cron</dt><dd className="mono">{automation.trigger.cron}</dd></div>
@@ -435,7 +435,7 @@ function LegacyPollerMigrationDialog({
     },
   });
   const importMigration = useMutation({
-    mutationFn: (mappings: Array<{ queue_id: string; workflow_name: string; automation_name: string }>) =>
+    mutationFn: (mappings: Array<{ queue_id: string; workflow_title: string; automation_title: string }>) =>
       api.importLegacyPoller({ migration: migration!, selection, mappings }),
     onSuccess: async (result) => {
       setMigration(result);
@@ -468,8 +468,8 @@ function LegacyPollerMigrationDialog({
     const form = new FormData(event.currentTarget);
     const mappings = reviewQueues.filter((queue) => queue.supported).map((queue) => ({
       queue_id: queue.queue_id,
-      workflow_name: String(form.get(`workflow-${queue.queue_id}`) ?? "").trim(),
-      automation_name: String(form.get(`automation-${queue.queue_id}`) ?? "").trim(),
+      workflow_title: String(form.get(`workflow-${queue.queue_id}`) ?? "").trim(),
+      automation_title: String(form.get(`automation-${queue.queue_id}`) ?? "").trim(),
     }));
     importMigration.mutate(mappings);
   };
@@ -542,12 +542,12 @@ function LegacyPollerMigrationDialog({
                     <p className="muted">{queue.submitted_observations} submitted · {queue.pending_observations} pending · every {queue.poll_interval_seconds}s</p>
                     {queue.errors.map((message) => <p className="field-error" key={message}>{message}</p>)}
                     {queue.supported && (
-                      <div className="migration-name-grid">
-                        <Field label="Workflow name" htmlFor={`workflow-${queue.queue_id}`}>
-                          <input id={`workflow-${queue.queue_id}`} name={`workflow-${queue.queue_id}`} defaultValue={queue.workflow_name} required />
+                      <div className="migration-title-grid">
+                        <Field label="Workflow title" htmlFor={`workflow-${queue.queue_id}`}>
+                          <input id={`workflow-${queue.queue_id}`} name={`workflow-${queue.queue_id}`} autoComplete="off" defaultValue={queue.workflow_title} required />
                         </Field>
-                        <Field label="Automation name" htmlFor={`automation-${queue.queue_id}`}>
-                          <input id={`automation-${queue.queue_id}`} name={`automation-${queue.queue_id}`} defaultValue={queue.automation_name} required />
+                        <Field label="Automation title" htmlFor={`automation-${queue.queue_id}`}>
+                          <input id={`automation-${queue.queue_id}`} name={`automation-${queue.queue_id}`} autoComplete="off" defaultValue={queue.automation_title} required />
                         </Field>
                       </div>
                     )}
@@ -613,7 +613,7 @@ function LegacyPollerMigrationDialog({
                   <div className="detail-actions">
                     {migration.automations.map((automation) => (
                       <button className="button button-secondary" key={automation.id} onClick={() => onAutomation(automation.id)}>
-                        Review {automation.name}
+                        Review {automation.title}
                       </button>
                     ))}
                   </div>
@@ -644,7 +644,7 @@ function AutomationForm({
   onSaved: (detail: AutomationDetailType) => void;
 }) {
   const queryClient = useQueryClient();
-  const nameID = useId();
+  const titleID = useId();
   const workflowID = useId();
   const repositoryID = useId();
   const triggerTypeID = useId();
@@ -657,7 +657,7 @@ function AutomationForm({
   const timezoneID = useId();
   const timeoutID = useId();
   const contextID = useId();
-  const nameRef = useRef<HTMLInputElement>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
   const closeRef = useRef(onClose);
   const requestRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -671,7 +671,7 @@ function AutomationForm({
     closeRef.current = onClose;
   }, [onClose]);
   useEffect(() => {
-    nameRef.current?.focus();
+    titleRef.current?.focus();
     const close = (event: KeyboardEvent) => event.key === "Escape" && closeRef.current();
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
@@ -683,7 +683,7 @@ function AutomationForm({
           id: current!.id,
           input: {
             expected_version: current!.version,
-            name: input.name,
+            title: input.title,
             workflow_id: input.workflow_id,
             context: input.context,
             timeout_seconds: input.timeout_seconds,
@@ -698,7 +698,7 @@ function AutomationForm({
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const name = String(form.get("name") ?? "").trim();
+    const title = String(form.get("title") ?? "").trim();
     const workflow = String(form.get("workflow_id") ?? "");
     const repository = current?.repository_id ?? String(form.get("repository_id") ?? "");
     const context = String(form.get("context") ?? "");
@@ -709,8 +709,8 @@ function AutomationForm({
     const labels = String(form.get("required_labels") ?? "").split(",").map((label) => label.trim()).filter(Boolean);
     const baseBranches = String(form.get("base_branches") ?? "").split(",").map((branch) => branch.trim()).filter(Boolean);
     const nextErrors: Record<string, string> = {};
-    if (!name) nextErrors.name = "Enter an Automation name.";
-    else if (Array.from(name).length > 100) nextErrors.name = "Keep the name to 100 characters.";
+    if (!title) nextErrors.title = "Enter an Automation title.";
+    else if (Array.from(title).length > 100) nextErrors.title = "Keep the title to 100 characters.";
     if (!workflow) nextErrors.workflow = "Choose a Workflow.";
     if (!repository) nextErrors.repository = "Choose a repository.";
     if (!isSchedule && (labels.length > 20 || labels.some((label) => new TextEncoder().encode(label).length > 200))) nextErrors.labels = "Use at most 20 labels of 200 bytes each.";
@@ -740,7 +740,7 @@ function AutomationForm({
       poll_interval_seconds: pollInterval,
     };
     const payload = {
-      name,
+      title,
       workflow_id: workflow,
       repository_id: repository,
       context,
@@ -771,16 +771,16 @@ function AutomationForm({
         </div>
         <form onSubmit={submit} noValidate>
           <div className="modal-body automation-form-grid">
-            <Field label="Name" htmlFor={nameID} error={errors.name}>
-              <input ref={nameRef} id={nameID} name="name" defaultValue={current?.name ?? ""} aria-invalid={Boolean(errors.name)} />
+            <Field label="Title" htmlFor={titleID} error={errors.title}>
+              <input ref={titleRef} id={titleID} name="title" autoComplete="off" defaultValue={current?.title ?? ""} aria-invalid={Boolean(errors.title)} />
             </Field>
             <Field label="Workflow" htmlFor={workflowID} error={errors.workflow}>
               <select id={workflowID} name="workflow_id" defaultValue={current?.workflow_id ?? ""} aria-invalid={Boolean(errors.workflow)}>
                 <option value="">Choose a Workflow</option>
                 {current && <option key={current.workflow_id} value={current.workflow_id}>
-                  {selectedWorkflow?.current_revision.name ?? current.workflow_name}{selectedWorkflow?.enabled === false ? " (disabled)" : ""}
+                  {selectedWorkflow?.current_revision.title ?? current.workflow_title}{selectedWorkflow?.enabled === false ? " (disabled)" : ""}
                 </option>}
-                {workflowItems.filter((workflow) => workflow.id !== current?.workflow_id).map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.current_revision.name}{workflow.enabled ? "" : " (disabled)"}</option>)}
+                {workflowItems.filter((workflow) => workflow.id !== current?.workflow_id).map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.current_revision.title}{workflow.enabled ? "" : " (disabled)"}</option>)}
               </select>
             </Field>
             <Field label="Managed repository" htmlFor={repositoryID} error={errors.repository} hint={mode === "edit" ? "Repository identity is immutable." : undefined}>

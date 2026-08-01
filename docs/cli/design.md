@@ -113,8 +113,9 @@ for display without changing the stored context.
 
 ## Resolution and idempotency
 
-Workers, repositories, and workflows accept a stable ID or a unique friendly
-name. Ambiguity fails before mutation and prints candidates.
+Workers and repositories accept a stable ID or a unique friendly name.
+Workflows accept a stable ID or a unique title. Ambiguity fails before mutation
+and prints candidates.
 
 Selection order is:
 
@@ -125,8 +126,8 @@ Selection order is:
 
 Every task submission has a request key. The CLI generates a UUID unless the
 operator supplies `--request-key`. Retries after uncertain network failures use
-the same key. An explicit key is looked up before resolving mutable names, so
-replaying an old command returns the original task.
+the same key. An explicit key is looked up before resolving mutable names or
+titles, so replaying an old command returns the original task.
 
 ## Waiting and output
 
@@ -178,7 +179,7 @@ non-loopback hosts are rejected.
 ## Workflow files
 
 ```toml
-name = "code-review"
+title = "code-review"
 summary = "Review a merge request and report actionable findings."
 instructions_file = "./prompts/code-review.md"
 enabled = true

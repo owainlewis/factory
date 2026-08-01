@@ -70,6 +70,114 @@ func TestTaskPaginationMigrationProvidesTheOrderingIndex(t *testing.T) {
 	}
 }
 
+func TestTitleMigrationPreservesWorkflowAutomationAndTaskSnapshots(t *testing.T) {
+	database, err := sql.Open("sqlite", t.TempDir()+"/title-migration.sqlite3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for _, migrationName := range []string{
+		"001_controlplane.sql", "002_attempt_capacity_handoff.sql", "003_task_list_pagination.sql",
+		"004_worker_runtime.sql", "005_metrics_indexes.sql", "006_execution_retries.sql",
+		"007_worker_source_access.sql", "008_managed_repositories.sql", "009_workflows.sql",
+		"010_github_issue_automations.sql", "011_github_pull_request_automations.sql",
+		"012_schedule_automations.sql", "013_legacy_poller_migration.sql",
+	} {
+		body, readErr := migrations.Files.ReadFile(migrationName)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, execErr := database.Exec(string(body)); execErr != nil {
+			t.Fatalf("apply %s: %v", migrationName, execErr)
+		}
+	}
+	if _, err := database.Exec(`
+		INSERT INTO repositories(id, remote_identity, created_at, enabled, updated_at, centrally_managed)
+		VALUES ('repository', 'github.com/example/repository', 1, 1, 1, 1);
+		INSERT INTO workflows(id, enabled, current_revision_id, current_name_key, created_at, updated_at)
+		VALUES ('workflow', 1, 'revision', 'implement', 1, 1);
+		INSERT INTO workflow_revisions(
+			id, workflow_id, revision_number, request_key, request_digest,
+			name, summary, instructions, created_at
+		) VALUES ('revision', 'workflow', 1, 'workflow-request', X'00',
+			'Implement', 'Implement one change.', 'Implement safely.', 1);
+		INSERT INTO tasks(
+			id, request_key, title, description, repository_id, timeout_seconds, created_at,
+			workflow_id, workflow_revision_id, workflow_name, workflow_revision_number, context
+		) VALUES ('task', 'task-request', 'Task', 'Resolved prompt', 'repository', 60, 1,
+			'workflow', 'revision', 'Implement', 1, 'Ticket 123');
+		INSERT INTO automations(
+			id, request_key, request_digest, name, name_key, workflow_id, repository_id,
+			context, timeout_seconds, trigger_type, created_at, updated_at
+		) VALUES ('automation', 'automation-request', X'00', 'Ready issues', 'ready issues',
+			'workflow', 'repository', '', 60, 'github_issue', 1, 1);
+		INSERT INTO automation_github_issue_triggers(
+			automation_id, issue_state, required_labels_json, poll_interval_seconds
+		) VALUES ('automation', 'open', '["factory:ready"]', 10);
+		INSERT INTO automation_occurrences(
+			id, automation_id, automation_version, automation_name, workflow_revision_id,
+			repository_id, repository_identity, context, timeout_seconds, state,
+			resolved_prompt, task_request_key, created_at, updated_at
+		) VALUES ('occurrence', 'automation', 1, 'Ready issues', 'revision', 'repository',
+			'github.com/example/repository', '', 60, 'pending', 'Prompt', 'occurrence-request', 1, 1);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := migrations.Files.ReadFile("014_workflow_automation_titles.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(string(migration)); err != nil {
+		t.Fatal(err)
+	}
+	var workflowKey, workflowTitle, taskWorkflowTitle, automationTitle, automationKey, occurrenceTitle string
+	if err := database.QueryRow(`
+		SELECT workflow.current_title_key, revision.title, task.workflow_title,
+		       automation.title, automation.title_key, occurrence.automation_title
+		FROM workflows workflow
+		JOIN workflow_revisions revision ON revision.id = workflow.current_revision_id
+		JOIN tasks task ON task.workflow_id = workflow.id
+		JOIN automations automation ON automation.workflow_id = workflow.id
+		JOIN automation_occurrences occurrence ON occurrence.automation_id = automation.id
+	`).Scan(&workflowKey, &workflowTitle, &taskWorkflowTitle, &automationTitle, &automationKey, &occurrenceTitle); err != nil {
+		t.Fatal(err)
+	}
+	if workflowKey != "implement" || workflowTitle != "Implement" || taskWorkflowTitle != "Implement" ||
+		automationTitle != "Ready issues" || automationKey != "ready issues" || occurrenceTitle != "Ready issues" {
+		t.Fatalf("title migration lost data: %q %q %q %q %q %q", workflowKey, workflowTitle,
+			taskWorkflowTitle, automationTitle, automationKey, occurrenceTitle)
+	}
+	for table, retired := range map[string][]string{
+		"workflows":              {"current_name_key"},
+		"workflow_revisions":     {"name"},
+		"tasks":                  {"workflow_name"},
+		"automations":            {"name", "name_key"},
+		"automation_occurrences": {"automation_name"},
+	} {
+		rows, err := database.Query(`SELECT name FROM pragma_table_info(?)`, table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		columns := make(map[string]bool)
+		for rows.Next() {
+			var column string
+			if err := rows.Scan(&column); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			columns[column] = true
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for _, column := range retired {
+			if columns[column] {
+				t.Fatalf("%s still has retired column %s", table, column)
+			}
+		}
+	}
+}
+
 func TestPullRequestAutomationMigrationPreservesGitHubIssueAutomations(t *testing.T) {
 	database, err := sql.Open("sqlite", t.TempDir()+"/pull-request-automation-migration.sqlite3")
 	if err != nil {
