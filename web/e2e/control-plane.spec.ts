@@ -950,7 +950,11 @@ test("previews, enables, and runs a schedule Automation through the ordinary tas
   await page.getByRole("button", { name: "Enable" }).click();
   await expect(page.getByRole("checkbox", { name: /factory-poller is stopped/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Confirm enable" }).click();
-  await expect(page.getByText("Next due UTC").locator("..")).toContainText("2027");
+  const nextDue = page.getByText("Next due UTC").locator("..").locator("dd");
+  await expect.poll(async () => {
+    const instant = Date.parse((await nextDue.textContent()) ?? "");
+    return Number.isFinite(instant) && instant > Date.now();
+  }).toBe(true);
 
   await page.getByRole("button", { name: "Run now" }).click();
   await expect(page.locator(".occurrence-list").getByText("Run now", { exact: true })).toBeVisible({ timeout: 15_000 });

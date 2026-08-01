@@ -104,6 +104,7 @@ func run() (returnErr error) {
 		automationService.Run(automationContext)
 	}()
 	defer func() {
+		automationService.StopAdmission()
 		cancelAutomations()
 		<-automationsDone
 	}()
@@ -127,6 +128,7 @@ func run() (returnErr error) {
 	select {
 	case err := <-serverErrors:
 		if !errors.Is(err, http.ErrServerClosed) {
+			automationService.StopAdmission()
 			cancelAutomations()
 			<-automationsDone
 			cancelSweep()
@@ -134,6 +136,7 @@ func run() (returnErr error) {
 			return fmt.Errorf("serve HTTP: %w", err)
 		}
 	case <-rootContext.Done():
+		automationService.StopAdmission()
 		cancelAutomations()
 		<-automationsDone
 		cancelSweep()

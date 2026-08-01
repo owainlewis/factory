@@ -963,7 +963,10 @@ time. It records the number of other missed instants in the diagnostic and does
 not replay them. Run now never changes this cursor.
 
 At normal shutdown, the server first stops admitting schedule instants and
-provider checks, cancels in-flight `gh` processes, and waits for evaluators.
+Run now requests through one shared admission gate, stops provider checks,
+cancels in-flight `gh` processes, and waits for evaluators. Closing the gate
+waits for any admission transaction that already entered it, so the later drain
+cannot race a new committed Occurrence.
 It then uses a bounded non-cancelled context to drain committed, ready
 Occurrences through the ordinary Task-and-link transaction within the existing
 10-second server drain bound. No new Occurrence is admitted after shutdown

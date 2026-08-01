@@ -507,13 +507,15 @@ type automationEvaluation struct {
 }
 
 type AutomationService struct {
-	store  *Store
-	runner githubIssueLister
-	logger *slog.Logger
-	wake   chan struct{}
-	slots  chan struct{}
-	mu     sync.Mutex
-	cancel map[string]automationCancellation
+	store       *Store
+	runner      githubIssueLister
+	logger      *slog.Logger
+	wake        chan struct{}
+	slots       chan struct{}
+	admissionMu sync.RWMutex
+	admitting   bool
+	mu          sync.Mutex
+	cancel      map[string]automationCancellation
 	// afterScheduleAdmission is a deterministic test seam for the shutdown race
 	// between committing a due occurrence and dispatching committed work.
 	afterScheduleAdmission func()
@@ -538,8 +540,36 @@ func newAutomationService(store *Store, logger *slog.Logger, runner githubIssueL
 	return &AutomationService{
 		store: store, runner: runner, logger: logger,
 		wake: make(chan struct{}, 1), slots: make(chan struct{}, maxConcurrentAutomationChecks),
-		cancel: make(map[string]automationCancellation),
+		admitting: true, cancel: make(map[string]automationCancellation),
 	}
+}
+
+func (service *AutomationService) StopAdmission() {
+	service.admissionMu.Lock()
+	service.admitting = false
+	service.admissionMu.Unlock()
+}
+
+func (service *AutomationService) RunNow(
+	ctx context.Context,
+	automationID string,
+	input protocol.RunAutomationRequest,
+) (protocol.AutomationDetail, error) {
+	service.admissionMu.RLock()
+	defer service.admissionMu.RUnlock()
+	if !service.admitting {
+		return protocol.AutomationDetail{}, conflict("automation_shutting_down", "Automation occurrence admission is closed during shutdown")
+	}
+	return service.store.RunAutomationNow(ctx, automationID, input)
+}
+
+func (service *AutomationService) admitDueSchedules(ctx context.Context, limit int) error {
+	service.admissionMu.RLock()
+	defer service.admissionMu.RUnlock()
+	if !service.admitting {
+		return nil
+	}
+	return service.store.processDueSchedules(ctx, limit)
 }
 
 func (service *AutomationService) acquireSlot(ctx context.Context) error {
@@ -652,7 +682,7 @@ func (service *AutomationService) Run(ctx context.Context) {
 	var checks sync.WaitGroup
 	runPass := func() {
 		if ctx.Err() == nil {
-			if err := service.store.processDueSchedules(ctx, protocol.MaxAutomationMatches); err != nil {
+			if err := service.admitDueSchedules(ctx, protocol.MaxAutomationMatches); err != nil {
 				service.logger.Error("automation_schedule_failed", "error_class", "storage_unavailable")
 			}
 			if service.afterScheduleAdmission != nil {
@@ -695,6 +725,7 @@ func (service *AutomationService) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			service.StopAdmission()
 			service.mu.Lock()
 			for _, cancellation := range service.cancel {
 				cancellation.cancel()

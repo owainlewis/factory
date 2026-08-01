@@ -162,7 +162,7 @@ func (a *API) runAutomation(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	detail, err := a.store.RunAutomationNow(r.Context(), r.PathValue("automation_id"), input)
+	detail, err := a.automations.RunNow(r.Context(), r.PathValue("automation_id"), input)
 	if err != nil {
 		writeError(w, err)
 		return

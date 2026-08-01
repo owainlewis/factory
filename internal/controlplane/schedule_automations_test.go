@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -398,6 +399,56 @@ func TestScheduleShutdownDrainsOccurrenceCommittedBeforeCancellation(t *testing.
 	task, err := store.Task(context.Background(), current.Occurrences[0].Task.ID)
 	if err != nil || task.Task.State != "queued" {
 		t.Fatalf("shutdown-drained task = %#v, error %v", task.Task, err)
+	}
+}
+
+func TestScheduleShutdownAdmissionGateRejectsRunNowAndNewDueInstants(t *testing.T) {
+	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
+	store, detail := createScheduleAutomationFixture(t, &now, false)
+	enabled := enableAutomation(t, store, detail.Automation.ID)
+	service := newAutomationService(store, slog.Default(), fakeGitHubIssueLister{})
+	server := httptest.NewServer(NewHandlerWithAutomation(store, slog.Default(), service))
+	defer server.Close()
+	service.StopAdmission()
+	now = *enabled.Automation.NextDueAt
+	if err := service.admitDueSchedules(context.Background(), 100); err != nil {
+		t.Fatal(err)
+	}
+
+	const callers = 8
+	statuses := make(chan int, callers)
+	var wait sync.WaitGroup
+	for index := range callers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			body, err := json.Marshal(protocol.RunAutomationRequest{RequestKey: fmt.Sprintf("shutdown-run-%d", index)})
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			response, err := server.Client().Post(
+				server.URL+"/api/v1/automations/"+detail.Automation.ID+"/run",
+				"application/json", bytes.NewReader(body),
+			)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer response.Body.Close()
+			statuses <- response.StatusCode
+		}()
+	}
+	wait.Wait()
+	close(statuses)
+	for status := range statuses {
+		if status != http.StatusConflict {
+			t.Fatalf("Run now during shutdown status = %d", status)
+		}
+	}
+	current, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil || len(current.Occurrences) != 0 {
+		t.Fatalf("shutdown gate admitted occurrences = %#v, error %v", current.Occurrences, err)
 	}
 }
 
