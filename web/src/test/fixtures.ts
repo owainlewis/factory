@@ -478,6 +478,9 @@ export function mockControlPlane(
       });
     }
     if (path === `/api/v1/automations/${automationDetail.automation.id}/test` && init?.method === "POST") {
+      if (automationDetail.automation.trigger.type === "schedule") {
+        return Response.json({ matches: [], next_due_at: "2026-08-03T08:00:00Z" });
+      }
       if (automationDetail.automation.trigger.type === "github_pull_request") {
         return Response.json({ matches: [{
           number: 185,
@@ -500,9 +503,10 @@ export function mockControlPlane(
           ...automationDetail.automation,
           enabled: body.enabled,
           health: body.enabled
-            ? { status: "pending", message: "Waiting for the next GitHub check." }
+            ? { status: "pending", message: automationDetail.automation.trigger.type === "schedule" ? "Waiting for the next scheduled occurrence." : "Waiting for the next GitHub check." }
             : { status: "disabled", message: "Automation is disabled." },
-          next_check_at: body.enabled ? new Date().toISOString() : undefined,
+          next_check_at: body.enabled && automationDetail.automation.trigger.type !== "schedule" ? new Date().toISOString() : undefined,
+          next_due_at: body.enabled && automationDetail.automation.trigger.type === "schedule" ? "2026-08-03T08:00:00Z" : undefined,
         },
       };
       return Response.json(automationDetail);
@@ -514,6 +518,26 @@ export function mockControlPlane(
           ...automationDetail.automation,
           health: { status: "checking", message: "Checking GitHub now." },
         },
+      };
+      return Response.json(automationDetail, { status: 202 });
+    }
+    if (path === `/api/v1/automations/${automationDetail.automation.id}/run` && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as { request_key: string };
+      automationDetail = {
+        ...automationDetail,
+        occurrences: [{
+          id: "schedule-run-now",
+          automation_id: automationDetail.automation.id,
+          automation_version: automationDetail.automation.version,
+          state: "pending",
+          kind: "run_now",
+          run_request_key: body.request_key,
+          cron: automationDetail.automation.trigger.type === "schedule" ? automationDetail.automation.trigger.cron : "",
+          timezone: automationDetail.automation.trigger.type === "schedule" ? automationDetail.automation.trigger.timezone : "",
+          task_request_key: `automation:${automationDetail.automation.id}:schedule:run:${body.request_key}`,
+          created_at: "2026-08-01T08:00:00Z",
+          updated_at: "2026-08-01T08:00:00Z",
+        }],
       };
       return Response.json(automationDetail, { status: 202 });
     }

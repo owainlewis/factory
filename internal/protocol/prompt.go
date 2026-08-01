@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/json"
 	"strings"
+	"time"
 )
 
 const (
@@ -14,6 +15,42 @@ const (
 
 func ResolveWorkflowPrompt(instructions, context string) string {
 	return "Workflow instructions:\n\n" + instructions + "\n\nTask context:\n\n" + context
+}
+
+func ResolveScheduleAutomationPrompt(
+	instructions, context, kind, identity, cron, timezone string,
+) (string, error) {
+	var occurrence []byte
+	var err error
+	if kind == "scheduled" {
+		scheduledAt, parseErr := time.Parse(time.RFC3339, identity)
+		if parseErr != nil {
+			return "", parseErr
+		}
+		occurrence, err = json.Marshal(struct {
+			Type        string    `json:"type"`
+			Kind        string    `json:"kind"`
+			ScheduledAt time.Time `json:"scheduled_at"`
+			Cron        string    `json:"cron"`
+			Timezone    string    `json:"timezone"`
+		}{AutomationTriggerSchedule, kind, scheduledAt.UTC(), cron, timezone})
+	} else {
+		occurrence, err = json.Marshal(struct {
+			Type       string `json:"type"`
+			Kind       string `json:"kind"`
+			RequestKey string `json:"request_key"`
+			Cron       string `json:"cron"`
+			Timezone   string `json:"timezone"`
+		}{AutomationTriggerSchedule, kind, identity, cron, timezone})
+	}
+	if err != nil {
+		return "", err
+	}
+	return "Workflow instructions:\n\n" + instructions +
+		"\n\nAutomation context:\n\n" + context +
+		"\n\nSchedule instruction:\n\n" +
+		"Execute the Workflow for this scheduled occurrence. There is no provider item to revalidate." +
+		"\n\nTrusted schedule occurrence:\n\n" + string(occurrence), nil
 }
 
 func ResolveGitHubIssueAutomationPrompt(

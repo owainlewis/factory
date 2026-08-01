@@ -528,6 +528,9 @@ func NewAutomationService(store *Store, logger *slog.Logger) *AutomationService 
 }
 
 func newAutomationService(store *Store, logger *slog.Logger, runner githubIssueLister) *AutomationService {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &AutomationService{
 		store: store, runner: runner, logger: logger,
 		wake: make(chan struct{}, 1), slots: make(chan struct{}, maxConcurrentAutomationChecks),
@@ -582,13 +585,24 @@ func (service *AutomationService) Test(
 	if err != nil {
 		return protocol.TestAutomationResult{}, err
 	}
+	if detail.Automation.Trigger.Type == protocol.AutomationTriggerSchedule {
+		schedule, _, _, parseErr := parseCronSchedule(detail.Automation.Trigger.Cron, detail.Automation.Trigger.Timezone)
+		if parseErr != nil {
+			return protocol.TestAutomationResult{}, unavailable(parseErr)
+		}
+		next, nextErr := schedule.Next(service.store.now())
+		if nextErr != nil {
+			return protocol.TestAutomationResult{}, invalid("invalid_cron", nextErr.Error())
+		}
+		return protocol.TestAutomationResult{Matches: []protocol.AutomationMatch{}, NextDueAt: &next}, nil
+	}
 	if err := service.acquireSlot(ctx); err != nil {
 		return protocol.TestAutomationResult{}, &ServiceError{
 			Code: "automation_test_busy", Message: "Automation Test could not start before the request deadline", Status: 503, Err: err,
 		}
 	}
 	defer service.releaseSlot()
-	var result protocol.TestAutomationResult
+	result := protocol.TestAutomationResult{Matches: []protocol.AutomationMatch{}}
 	switch detail.Automation.Trigger.Type {
 	case protocol.AutomationTriggerGitHubIssue:
 		var matches []protocol.GitHubIssueMatch
@@ -633,6 +647,11 @@ func (service *AutomationService) Run(ctx context.Context) {
 	defer ticker.Stop()
 	var checks sync.WaitGroup
 	runPass := func() {
+		if ctx.Err() == nil {
+			if err := service.store.processDueSchedules(ctx, protocol.MaxAutomationMatches); err != nil {
+				service.logger.Error("automation_schedule_failed", "error_class", "storage_unavailable")
+			}
+		}
 		for {
 			if ctx.Err() != nil {
 				break
@@ -770,7 +789,7 @@ func (s *Store) reserveDueAutomation(ctx context.Context) (automationEvaluation,
 	var id string
 	err = tx.QueryRowContext(ctx, `
 		SELECT id FROM automations
-		WHERE enabled = 1 AND evaluation_token IS NULL
+		WHERE enabled = 1 AND trigger_type != 'schedule' AND evaluation_token IS NULL
 		  AND next_check_at IS NOT NULL AND next_check_at <= ?
 		ORDER BY next_check_at, id LIMIT 1
 	`, now).Scan(&id)
@@ -799,38 +818,9 @@ func (s *Store) reserveDueAutomation(ctx context.Context) (automationEvaluation,
 	}
 	var evaluation automationEvaluation
 	evaluation.Token = token
-	var enabled, includeDrafts, issueTriggerCount, pullRequestTriggerCount int
-	var labels, baseBranches []byte
-	var createdAt, updatedAt int64
-	var lastChecked, nextCheck sql.NullInt64
-	err = tx.QueryRowContext(ctx, automationSelect+`
-		WHERE automation.id = ?`, id).Scan(
-		&evaluation.Automation.ID, &evaluation.Automation.Name, &evaluation.Automation.WorkflowID,
-		&evaluation.Automation.WorkflowName, &evaluation.Automation.WorkflowRevision,
-		&evaluation.Automation.RepositoryID, &evaluation.Automation.RepositoryIdentity,
-		&evaluation.Automation.Context, &evaluation.Automation.TimeoutSeconds, &enabled,
-		&evaluation.Automation.Version, &evaluation.Automation.Trigger.Type,
-		&issueTriggerCount, &pullRequestTriggerCount, &evaluation.Automation.Trigger.State,
-		&includeDrafts, &labels, &baseBranches,
-		&evaluation.Automation.Trigger.PollIntervalSeconds, &evaluation.Automation.Health.Status,
-		&evaluation.Automation.Health.Code, &evaluation.Automation.Health.Message,
-		&lastChecked, &nextCheck, &evaluation.Automation.MatchedCount,
-		&evaluation.Automation.SkippedCount, &evaluation.Automation.DispatchedCount,
-		&createdAt, &updatedAt,
-	)
+	evaluation.Automation, err = scanAutomation(tx.QueryRowContext(ctx, automationSelect+`
+		WHERE automation.id = ?`, id))
 	if err != nil {
-		return automationEvaluation{}, false, unavailable(err)
-	}
-	evaluation.Automation.Enabled = enabled != 0
-	if (evaluation.Automation.Trigger.Type == protocol.AutomationTriggerGitHubIssue && (issueTriggerCount != 1 || pullRequestTriggerCount != 0)) ||
-		(evaluation.Automation.Trigger.Type == protocol.AutomationTriggerGitHubPullRequest && (pullRequestTriggerCount != 1 || issueTriggerCount != 0)) {
-		return automationEvaluation{}, false, unavailable(errors.New("Automation typed trigger rows do not match its trigger type"))
-	}
-	evaluation.Automation.Trigger.IncludeDrafts = includeDrafts != 0
-	if err := json.Unmarshal(labels, &evaluation.Automation.Trigger.RequiredLabels); err != nil {
-		return automationEvaluation{}, false, unavailable(err)
-	}
-	if err := json.Unmarshal(baseBranches, &evaluation.Automation.Trigger.BaseBranches); err != nil {
 		return automationEvaluation{}, false, unavailable(err)
 	}
 	err = tx.QueryRowContext(ctx, `
@@ -1205,7 +1195,9 @@ func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) err
 	defer tx.Rollback()
 	var automationID, automationName, triggerType, workflowRevisionID, repositoryID, repositoryIdentity string
 	var contextValue, prompt, requestKey string
-	var timeoutSeconds, itemNumber int
+	var timeoutSeconds int
+	var issueNumber, pullRequestNumber, scheduledAt sql.NullInt64
+	var scheduleKind, runRequestKey sql.NullString
 	var workflowID, workflowName string
 	var workflowRevisionNumber, automationEnabled, workflowEnabled, repositoryEnabled int
 	err = tx.QueryRowContext(ctx, `
@@ -1214,7 +1206,8 @@ func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) err
 		       occurrence.repository_identity, occurrence.context,
 		       occurrence.timeout_seconds, occurrence.resolved_prompt,
 		       occurrence.task_request_key,
-		       COALESCE(issue.issue_number, pull_request.pull_request_number),
+		       issue.issue_number, pull_request.pull_request_number,
+		       schedule.kind, schedule.scheduled_at, schedule.run_request_key,
 		       revision.workflow_id, revision.name, revision.revision_number,
 		       automation.enabled, workflow.enabled, repository.enabled
 		FROM automation_occurrences occurrence
@@ -1223,6 +1216,8 @@ func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) err
 		  ON issue.occurrence_id = occurrence.id AND automation.trigger_type = 'github_issue'
 		LEFT JOIN automation_github_pull_request_occurrences pull_request
 		  ON pull_request.occurrence_id = occurrence.id AND automation.trigger_type = 'github_pull_request'
+		LEFT JOIN automation_schedule_occurrences schedule
+		  ON schedule.occurrence_id = occurrence.id AND automation.trigger_type = 'schedule'
 		JOIN workflow_revisions revision ON revision.id = occurrence.workflow_revision_id
 		JOIN workflows workflow ON workflow.id = revision.workflow_id
 		JOIN repositories repository ON repository.id = occurrence.repository_id
@@ -1230,7 +1225,8 @@ func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) err
 	`, occurrenceID).Scan(
 		&automationID, &automationName, &triggerType, &workflowRevisionID, &repositoryID,
 		&repositoryIdentity, &contextValue, &timeoutSeconds, &prompt, &requestKey,
-		&itemNumber, &workflowID, &workflowName, &workflowRevisionNumber,
+		&issueNumber, &pullRequestNumber, &scheduleKind, &scheduledAt, &runRequestKey,
+		&workflowID, &workflowName, &workflowRevisionNumber,
 		&automationEnabled, &workflowEnabled, &repositoryEnabled,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1245,18 +1241,40 @@ func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) err
 	var title string
 	switch triggerType {
 	case protocol.AutomationTriggerGitHubIssue:
-		title = automationName + ": GitHub issue #" + strconv.Itoa(itemNumber)
+		if !issueNumber.Valid {
+			return unavailable(errors.New("GitHub issue Occurrence is missing typed identity"))
+		}
+		title = automationName + ": GitHub issue #" + strconv.Itoa(int(issueNumber.Int64))
 	case protocol.AutomationTriggerGitHubPullRequest:
-		title = automationName + ": GitHub pull request #" + strconv.Itoa(itemNumber)
+		if !pullRequestNumber.Valid {
+			return unavailable(errors.New("GitHub pull-request Occurrence is missing typed identity"))
+		}
+		title = automationName + ": GitHub pull request #" + strconv.Itoa(int(pullRequestNumber.Int64))
+	case protocol.AutomationTriggerSchedule:
+		if !scheduleKind.Valid {
+			return unavailable(errors.New("schedule Occurrence is missing typed identity"))
+		}
+		if scheduleKind.String == "scheduled" {
+			if !scheduledAt.Valid {
+				return unavailable(errors.New("scheduled Occurrence is missing due instant"))
+			}
+			title = automationName + ": scheduled " + fromMillis(scheduledAt.Int64).Format(time.RFC3339)
+		} else if scheduleKind.String == "run_now" && runRequestKey.Valid {
+			title = automationName + ": run now"
+		} else {
+			return unavailable(errors.New("Run now Occurrence is missing request identity"))
+		}
 	default:
 		return unavailable(errors.New("Automation Occurrence has an invalid trigger type"))
 	}
-	route := protocol.TaskRoute{
-		RepositoryRemoteIdentity: repositoryIdentity,
-		SourceAccess:             protocol.SourceAccess{Provider: "github", Hostname: "github.com"},
+	route := protocol.TaskRoute{RepositoryRemoteIdentity: repositoryIdentity}
+	requiresSourceAccess := false
+	if triggerType != protocol.AutomationTriggerSchedule {
+		route.SourceAccess = protocol.SourceAccess{Provider: "github", Hostname: "github.com"}
+		requiresSourceAccess = true
 	}
 	now := s.now().UnixMilli()
-	selection, err := s.selectTaskRoute(ctx, tx, route, now)
+	selection, err := s.selectTaskRouteWithSourceRequirement(ctx, tx, route, now, requiresSourceAccess)
 	if err != nil {
 		var serviceErr *ServiceError
 		if errors.As(err, &serviceErr) && serviceErr.Code == "no_eligible_worker" {

@@ -834,7 +834,7 @@ test("previews and dispatches one typed GitHub issue Automation without duplicat
   const automationTasksBefore = before.tasks.filter((task) => task.request_key.includes(":github_issue:184"));
   expect(automationTasksBefore).toHaveLength(1);
 
-  await page.getByRole("button", { name: "Run now" }).click();
+  await page.getByRole("button", { name: "Check now" }).click();
   await expect(page.locator(".automation-metrics > div").filter({ hasText: "Matched" }).locator("strong")).toHaveText("2", { timeout: 15_000 });
   const after = await json<{ tasks: Array<{ request_key: string }> }>(await api.get("/api/v1/tasks?limit=200"));
   const automationTasksAfter = after.tasks.filter((task) => task.request_key.includes(":github_issue:184"));
@@ -897,10 +897,66 @@ test("previews and dispatches one typed GitHub pull-request Automation without d
   const before = await json<{ tasks: Array<{ request_key: string }> }>(await api.get("/api/v1/tasks?limit=200"));
   expect(before.tasks.filter((task) => task.request_key.includes(":github_pull_request:185"))).toHaveLength(1);
 
-  await page.getByRole("button", { name: "Run now" }).click();
+  await page.getByRole("button", { name: "Check now" }).click();
   await expect(page.locator(".automation-metrics > div").filter({ hasText: "Matched" }).locator("strong")).toHaveText("2", { timeout: 15_000 });
   const after = await json<{ tasks: Array<{ request_key: string }> }>(await api.get("/api/v1/tasks?limit=200"));
   expect(after.tasks.filter((task) => task.request_key.includes(":github_pull_request:185"))).toHaveLength(1);
+  await api.dispose();
+  browser.assertClean();
+});
+
+test("previews, enables, and runs a schedule Automation through the ordinary task path", async ({ page }) => {
+  const browser = observeBrowser(page);
+  const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
+  await registerWorker(
+    api,
+    automationWorker,
+    "Schedule fixture",
+    [{
+      key: "automation-fixture",
+      remote_identity: "github.com/example/automation-fixture",
+      retained_count: 0,
+    }],
+    0,
+    [],
+    "codex",
+    [],
+  );
+  await page.goto("/workflows");
+  await page.getByRole("button", { name: "Create workflow" }).first().click();
+  const workflow = page.getByRole("dialog", { name: "Create workflow" });
+  await workflow.getByLabel("Name").fill("E2E scheduled maintenance");
+  await workflow.getByLabel("Summary").fill("Run safe scheduled maintenance.");
+  await workflow.getByLabel("Markdown instructions").fill("Inspect the fixture repository and report the scheduled maintenance result.");
+  await workflow.getByRole("button", { name: "Create workflow" }).click();
+  await expect(page.getByRole("heading", { name: "E2E scheduled maintenance" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Automations", exact: true }).click();
+  await page.getByRole("button", { name: "Create Automation" }).first().click();
+  const automation = page.getByRole("dialog", { name: "Create Automation" });
+  await automation.getByLabel("Name").fill("E2E schedule Automation");
+  await automation.getByLabel("Workflow").selectOption({ label: "E2E scheduled maintenance" });
+  await automation.getByLabel("Managed repository").selectOption(identifiers.automationRepository);
+  await automation.getByLabel("Trigger type").selectOption("schedule");
+  await automation.getByLabel("Cron (five fields)").fill("0 0 1 JAN *");
+  await automation.getByLabel("IANA timezone").fill("Europe/London");
+  await automation.getByLabel("Trusted Automation context").fill("Use only the safe synthetic repository.");
+  await automation.getByRole("button", { name: "Create Automation" }).click();
+  await expect(page.getByRole("heading", { name: "E2E schedule Automation" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Test trigger" }).click();
+  await expect(page.getByText(/next matching UTC instant/i)).toBeVisible();
+  await expect(page.getByText("No durable occurrences yet.")).toBeVisible();
+  await page.getByRole("button", { name: "Enable" }).click();
+  await expect(page.getByRole("checkbox", { name: /factory-poller is stopped/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Confirm enable" }).click();
+  await expect(page.getByText("Next due UTC").locator("..")).toContainText("2027");
+
+  await page.getByRole("button", { name: "Run now" }).click();
+  await expect(page.locator(".occurrence-list").getByText("Run now", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "Open task" })).toBeVisible({ timeout: 15_000 });
+  const tasks = await json<{ tasks: Array<{ request_key: string }> }>(await api.get("/api/v1/tasks?limit=200"));
+  expect(tasks.tasks.filter((task) => task.request_key.includes(":schedule:run:"))).toHaveLength(1);
   await api.dispose();
   browser.assertClean();
 });

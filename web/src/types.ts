@@ -162,7 +162,13 @@ export interface GitHubPullRequestTrigger {
 	poll_interval_seconds: number;
 }
 
-export type AutomationTrigger = GitHubIssueTrigger | GitHubPullRequestTrigger;
+export interface ScheduleTrigger {
+	type: "schedule";
+	cron: string;
+	timezone: string;
+}
+
+export type AutomationTrigger = GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger;
 
 export interface AutomationTaskSummary {
 	id: string;
@@ -192,6 +198,7 @@ export interface Automation {
 	health: AutomationHealth;
 	last_checked_at?: string;
 	next_check_at?: string;
+	next_due_at?: string;
 	matched_count: number;
 	skipped_count: number;
 	dispatched_count: number;
@@ -208,14 +215,19 @@ export interface AutomationOccurrence {
 	issue_number?: number;
 	issue_url?: string;
 	issue_title?: string;
-	observed_state: string;
-	observed_labels: string[];
+	observed_state?: string;
+	observed_labels?: string[];
 	pull_request_number?: number;
 	pull_request_url?: string;
 	pull_request_title?: string;
 	observed_draft?: boolean;
 	observed_base_branch?: string;
 	observed_head_commit?: string;
+	kind?: "scheduled" | "run_now";
+	scheduled_at?: string;
+	run_request_key?: string;
+	cron?: string;
+	timezone?: string;
 	task_request_key: string;
 	task?: AutomationTaskSummary;
 	task_id_snapshot?: string;
@@ -264,6 +276,7 @@ export interface TestAutomationResult {
 		base_branch?: string;
 		head_commit?: string;
 	}>;
+	next_due_at?: string;
 }
 
 export type MetricsWindow = "24h" | "7d" | "30d" | "all";

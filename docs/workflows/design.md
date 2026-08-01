@@ -1,8 +1,8 @@
 # Reusable Workflows and typed Automations
 
-> **Status:** Workflow slice implemented by issue #183. Typed GitHub Automation
-> slices are implemented for issues by #184 and pull requests by #185; schedule
-> and legacy-poller migration remain proposed for issues #186 and #187.
+> **Status:** Workflow slice implemented by issue #183. Typed Automation slices
+> are implemented for issues by #184, pull requests by #185, and schedules by
+> #186; legacy-poller migration remains proposed for issue #187.
 >
 > **Tracks:** [GitHub issue #173](https://github.com/owainlewis/factory/issues/173)
 

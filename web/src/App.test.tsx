@@ -261,7 +261,7 @@ describe("App", () => {
     const existingRow = screen.getByRole("button", { name: /Ready issues/ });
     expect(existingRow).toHaveTextContent("Automation is disabled.");
     expect(existingRow).toHaveTextContent("0 matched");
-    expect(existingRow).toHaveTextContent("Next Never");
+    expect(existingRow).toHaveTextContent("Next check Never");
     expect(existingRow).toHaveTextContent("No task yet");
     await user.click(screen.getByRole("button", { name: "Create Automation" }));
     const dialog = screen.getByRole("dialog", { name: "Create Automation" });
@@ -291,11 +291,45 @@ describe("App", () => {
     await user.click(confirmation);
     await user.click(screen.getByRole("button", { name: "Confirm enable" }));
     expect(await screen.findByRole("button", { name: "Disable" })).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Run now" }));
+    await user.click(screen.getByRole("button", { name: "Check now" }));
     expect(await screen.findByText("Checking GitHub now.")).toBeVisible();
     expect(fetch.mock.calls.some(([input, init]) => {
       const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       return path.endsWith("/check") && init?.method === "POST";
+    })).toBe(true);
+  });
+
+  it("creates, previews, enables, and runs a typed schedule Automation", async () => {
+    window.history.replaceState({}, "", "/automations");
+    const fetch = mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Create Automation" }));
+    const dialog = screen.getByRole("dialog", { name: "Create Automation" });
+    await user.type(within(dialog).getByLabelText("Name"), "Daily Factory maintenance");
+    await user.selectOptions(within(dialog).getByLabelText("Workflow"), "workflow-implement");
+    await user.selectOptions(within(dialog).getByLabelText("Managed repository"), "repo-factory");
+    await user.selectOptions(within(dialog).getByLabelText("Trigger type"), "schedule");
+    await user.clear(within(dialog).getByLabelText("Cron (five fields)"));
+    await user.type(within(dialog).getByLabelText("Cron (five fields)"), "0 9 * * 1");
+    await user.clear(within(dialog).getByLabelText("IANA timezone"));
+    await user.type(within(dialog).getByLabelText("IANA timezone"), "Europe/London");
+    await user.click(within(dialog).getByRole("button", { name: "Create Automation" }));
+
+    expect(await screen.findByRole("heading", { name: "Daily Factory maintenance" })).toBeVisible();
+    expect(screen.getByText("0 9 * * 1")).toBeVisible();
+    expect(screen.getByText("Europe/London")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Test trigger" }));
+    expect(await screen.findByText(/next matching UTC instant/i)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Enable" }));
+    expect(screen.queryByRole("checkbox", { name: /factory-poller is stopped/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Confirm enable" }));
+    await user.click(await screen.findByRole("button", { name: "Run now" }));
+    expect(await screen.findByText("Run now", { selector: ".occurrence-identity strong" })).toBeVisible();
+    expect(fetch.mock.calls.some(([input, init]) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return path.endsWith("/run") && init?.method === "POST";
     })).toBe(true);
   });
 

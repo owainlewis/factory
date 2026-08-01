@@ -313,6 +313,7 @@ type WorkflowPage struct {
 const (
 	AutomationTriggerGitHubIssue       = "github_issue"
 	AutomationTriggerGitHubPullRequest = "github_pull_request"
+	AutomationTriggerSchedule          = "schedule"
 )
 
 type GitHubIssueTrigger struct {
@@ -331,6 +332,12 @@ type GitHubPullRequestTrigger struct {
 	PollIntervalSeconds int      `json:"poll_interval_seconds"`
 }
 
+type ScheduleTrigger struct {
+	Type     string `json:"type"`
+	Cron     string `json:"cron"`
+	Timezone string `json:"timezone"`
+}
+
 // AutomationTrigger is a strict flat tagged union. UnmarshalJSON rejects fields
 // that do not belong to the selected concrete trigger type.
 type AutomationTrigger struct {
@@ -340,6 +347,8 @@ type AutomationTrigger struct {
 	RequiredLabels      []string
 	BaseBranches        []string
 	PollIntervalSeconds int
+	Cron                string
+	Timezone            string
 }
 
 func (trigger *AutomationTrigger) UnmarshalJSON(body []byte) error {
@@ -376,6 +385,13 @@ func (trigger *AutomationTrigger) UnmarshalJSON(body []byte) error {
 			PollIntervalSeconds: value.PollIntervalSeconds,
 		}
 		return nil
+	case AutomationTriggerSchedule:
+		var value ScheduleTrigger
+		if err := decode(&value); err != nil {
+			return err
+		}
+		*trigger = AutomationTrigger{Type: value.Type, Cron: value.Cron, Timezone: value.Timezone}
+		return nil
 	default:
 		return fmt.Errorf("unsupported Automation trigger type %q", discriminator.Type)
 	}
@@ -394,6 +410,8 @@ func (trigger AutomationTrigger) MarshalJSON() ([]byte, error) {
 			RequiredLabels: trigger.RequiredLabels, BaseBranches: trigger.BaseBranches,
 			PollIntervalSeconds: trigger.PollIntervalSeconds,
 		})
+	case AutomationTriggerSchedule:
+		return json.Marshal(ScheduleTrigger{Type: trigger.Type, Cron: trigger.Cron, Timezone: trigger.Timezone})
 	default:
 		return nil, fmt.Errorf("unsupported Automation trigger type %q", trigger.Type)
 	}
@@ -412,6 +430,10 @@ func (trigger AutomationTrigger) GitHubPullRequest() GitHubPullRequestTrigger {
 		RequiredLabels: trigger.RequiredLabels, BaseBranches: trigger.BaseBranches,
 		PollIntervalSeconds: trigger.PollIntervalSeconds,
 	}
+}
+
+func (trigger AutomationTrigger) Schedule() ScheduleTrigger {
+	return ScheduleTrigger{Type: trigger.Type, Cron: trigger.Cron, Timezone: trigger.Timezone}
 }
 
 type AutomationHealth struct {
@@ -436,6 +458,7 @@ type Automation struct {
 	Health             AutomationHealth       `json:"health"`
 	LastCheckedAt      *time.Time             `json:"last_checked_at,omitempty"`
 	NextCheckAt        *time.Time             `json:"next_check_at,omitempty"`
+	NextDueAt          *time.Time             `json:"next_due_at,omitempty"`
 	MatchedCount       int64                  `json:"matched_count"`
 	SkippedCount       int64                  `json:"skipped_count"`
 	DispatchedCount    int64                  `json:"dispatched_count"`
@@ -458,14 +481,19 @@ type AutomationOccurrence struct {
 	IssueNumber        int                    `json:"issue_number,omitempty"`
 	IssueURL           string                 `json:"issue_url,omitempty"`
 	IssueTitle         string                 `json:"issue_title,omitempty"`
-	ObservedState      string                 `json:"observed_state"`
-	ObservedLabels     []string               `json:"observed_labels"`
+	ObservedState      string                 `json:"observed_state,omitempty"`
+	ObservedLabels     []string               `json:"observed_labels,omitempty"`
 	PullRequestNumber  int                    `json:"pull_request_number,omitempty"`
 	PullRequestURL     string                 `json:"pull_request_url,omitempty"`
 	PullRequestTitle   string                 `json:"pull_request_title,omitempty"`
 	ObservedDraft      *bool                  `json:"observed_draft,omitempty"`
 	ObservedBaseBranch string                 `json:"observed_base_branch,omitempty"`
 	ObservedHeadCommit string                 `json:"observed_head_commit,omitempty"`
+	Kind               string                 `json:"kind,omitempty"`
+	ScheduledAt        *time.Time             `json:"scheduled_at,omitempty"`
+	RunRequestKey      string                 `json:"run_request_key,omitempty"`
+	Cron               string                 `json:"cron,omitempty"`
+	Timezone           string                 `json:"timezone,omitempty"`
 	TaskRequestKey     string                 `json:"task_request_key"`
 	Task               *AutomationTaskSummary `json:"task,omitempty"`
 	TaskIDSnapshot     string                 `json:"task_id_snapshot,omitempty"`
@@ -523,6 +551,10 @@ type SetAutomationEnabledRequest struct {
 	ConfirmLegacyPollerStopped bool  `json:"confirm_legacy_poller_stopped,omitempty"`
 }
 
+type RunAutomationRequest struct {
+	RequestKey string `json:"request_key"`
+}
+
 type GitHubIssueMatch struct {
 	Number int      `json:"number"`
 	Title  string   `json:"title"`
@@ -554,7 +586,8 @@ type AutomationMatch struct {
 }
 
 type TestAutomationResult struct {
-	Matches []AutomationMatch `json:"matches"`
+	Matches   []AutomationMatch `json:"matches"`
+	NextDueAt *time.Time        `json:"next_due_at,omitempty"`
 }
 
 type MetricsSummary struct {

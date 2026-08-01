@@ -154,6 +154,23 @@ func (a *API) checkAutomation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, detail)
 }
 
+func (a *API) runAutomation(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input protocol.RunAutomationRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	detail, err := a.store.RunAutomationNow(r.Context(), r.PathValue("automation_id"), input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	a.automations.Wake()
+	writeJSON(w, http.StatusAccepted, detail)
+}
+
 func (a *API) listAutomationOccurrences(w http.ResponseWriter, r *http.Request) {
 	limit := protocol.DefaultAutomationPageSize
 	if raw := r.URL.Query().Get("limit"); raw != "" {

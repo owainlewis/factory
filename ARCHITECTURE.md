@@ -2,8 +2,8 @@
 
 > **Status:** Current implementation
 >
-> **Verification basis:** Working tree including GitHub issue and pull-request
-> Automations from issues #184 and #185
+> **Verification basis:** Working tree including GitHub issue, pull-request,
+> and schedule Automations from issues #184 through #186
 
 ## 1. Executive summary
 
@@ -11,8 +11,8 @@ Factory is a local control plane for running coding agents in Git repositories.
 It separates durable coordination from agent execution:
 
 - `factory-server` stores work, assigns it, evaluates typed GitHub issue and
-  pull-request Automations through `gh`, exposes the HTTP API, and serves the
-  embedded browser UI.
+  pull-request Automations through `gh`, admits schedule Automations from its
+  clock, exposes the HTTP API, and serves the embedded browser UI.
 - `factory-worker` has one stable identity and one agent runtime. It advertises
   runtime capacity and provider access, acquires centrally managed repositories
   on demand, and runs attempts in isolated Git worktrees.
@@ -89,8 +89,9 @@ the system does not use WebSockets.
 12. Tasks snapshot their Workflow name, revision, context, and resolved prompt.
     Workers remain generic and receive the resolved prompt through the existing
     claim task description.
-13. A typed GitHub Automation is created disabled. One issue or pull request
-    creates at most one durable Occurrence and one ordinary Task per Automation.
+13. A typed Automation is created disabled. One issue, pull request, scheduled
+    UTC instant, or idempotent Run now key creates at most one durable
+    Occurrence and one ordinary Task per Automation.
 
 ## 4. Components and dependencies
 
@@ -106,7 +107,7 @@ the system does not use WebSockets.
 - allows ten seconds for HTTP shutdown.
 
 `internal/controlplane` owns the API, validation, state transitions, scheduling,
-metrics, pagination, Workflow revisions, typed GitHub Automations,
+metrics, pagination, Workflow revisions, typed GitHub and schedule Automations,
 provider health, prompt composition, and persistence.
 Claim selection is transactional and FIFO by execution creation time for the
 requesting worker.
@@ -264,6 +265,24 @@ use its installed provider CLI to update the issue and open a pull request.
    GitHub metadata and requires authenticated `gh` live-state revalidation
    before mutation.
 
+### Control-plane schedule Automation
+
+1. An operator creates a disabled Automation with a five-field cron expression
+   and separate IANA timezone, then previews the next matching UTC instant.
+2. Enabling stores the first match strictly after the enable transaction. The
+   existing Automation service checks due schedules alongside provider checks
+   and commits one durable Occurrence before task dispatch.
+3. Cron fields are parsed by a small standard-library-only implementation. It
+   iterates UTC minutes and matches local calendar fields, so a daylight-saving
+   overlap yields two UTC identities and a nonexistent local minute yields none.
+   This explicit behavior is why Factory does not add a cron dependency.
+4. Startup admits at most the stored overdue instant, then advances directly to
+   the first future match. Run now uses a separate idempotent request-key domain
+   and never changes the due cursor.
+5. The existing occurrence dispatcher routes the snapshotted Workflow and
+   repository as an ordinary Task. Schedule work does not require provider
+   access, and workers retain the same claim contract.
+
 ### Attempt execution
 
 1. The worker validates the claim identity, assignment, runtime, repository ID,
@@ -342,6 +361,7 @@ PUT    /api/v1/automations/{automation_id}
 PUT    /api/v1/automations/{automation_id}/enabled
 POST   /api/v1/automations/{automation_id}/test
 POST   /api/v1/automations/{automation_id}/check
+POST   /api/v1/automations/{automation_id}/run
 GET    /api/v1/automations/{automation_id}/occurrences?limit={1..200}&cursor={cursor}
 GET    /api/v1/tasks?limit={1..200}&cursor={cursor}
 POST   /api/v1/tasks
@@ -387,8 +407,9 @@ Task     1 --- 1 Execution       1 --- * Attempt 1 --- * AttemptEvent
   snapshot, and its exact resolved prompt in the existing description field.
 - A repository is the central fleet record. Its enabled flag gates new routed
   work but does not rewrite existing assignments.
-- An Automation stores one concrete `github_issue` or `github_pull_request`
-  Trigger, health and polling cursor, counters, and disabled-first state. Its
+- An Automation stores one concrete `github_issue`, `github_pull_request`, or
+  `schedule` Trigger, health and polling or due cursor, counters, and
+  disabled-first state. Its
   Occurrences snapshot the Workflow revision, repository, predicate,
   observation, prompt, and deterministic Task request key before dispatch.
 - Automation and Occurrence collection APIs use opaque descending cursors, so
@@ -545,7 +566,8 @@ and a reviewed tenant model.
   its queue condition.
 - One unhealthy Automation does not stop control-plane APIs or other
   Automations. Missing, unauthenticated, timed-out, malformed, oversized, and
-  over-limit `gh` results are stored as actionable per-Automation health.
+  over-limit `gh` results, plus corrupt stored schedule data, are stored as
+  actionable per-Automation health.
 - Normal server shutdown stops Automation admission, cancels active `gh`
   processes, waits for evaluator work to finish, and then closes SQLite.
 
@@ -581,15 +603,14 @@ The contributor check set is documented in [CONTRIBUTING.md](CONTRIBUTING.md).
   transport.
 - A task has one execution assigned to one worker. Fan-out and cross-worker
   rescheduling are not implemented.
-- Execution scheduling is pull-based FIFO per worker. There are no priorities,
-  cron triggers, or automatic task retries.
+- Execution scheduling is pull-based FIFO per worker. There are no priorities
+  or automatic task retries.
 - GitHub is the only built-in issue source. Jira, Linear, and other providers
   need a command adapter that implements the normalized issue JSON contract.
 - Standalone poller configuration remains file-based as a temporary migration
   path. Control-plane GitHub issue and pull-request Automations are managed in
   the UI. Neither path rearms a provider item automatically.
-- Scheduled Automations and a unified `factory` CLI are proposed but not
-  implemented.
+- A unified `factory` CLI is proposed but not implemented.
 - Metrics do not confirm external outcomes such as merged pull requests or
   closed tickets.
 - Terminal history requires explicit deletion. There is no time-based retention
@@ -613,6 +634,7 @@ designs.
 | Workflow identity, revisions, and listing | `internal/controlplane/workflows.go` |
 | Typed Automation store and API | `internal/controlplane/automations.go`, `automations_http.go` |
 | GitHub evaluator and occurrence dispatch | `internal/controlplane/automation_runtime.go` |
+| Schedule parsing and admission | `internal/controlplane/schedule_cron.go`, `schedule_runtime.go` |
 | Prompt composition and complete agent input | `internal/protocol/prompt.go` |
 | Database schema | `migrations` |
 | Shared contracts and limits | `internal/protocol` |

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -64,9 +65,24 @@ func normalizeAutomation(
 	}
 	value.Trigger.Type = strings.TrimSpace(value.Trigger.Type)
 	value.Trigger.State = strings.ToLower(strings.TrimSpace(value.Trigger.State))
-	if value.Trigger.Type != protocol.AutomationTriggerGitHubIssue && value.Trigger.Type != protocol.AutomationTriggerGitHubPullRequest {
-		return value, "", invalid("invalid_trigger_type", "trigger.type must be github_issue or github_pull_request")
+	if value.Trigger.Type != protocol.AutomationTriggerGitHubIssue &&
+		value.Trigger.Type != protocol.AutomationTriggerGitHubPullRequest &&
+		value.Trigger.Type != protocol.AutomationTriggerSchedule {
+		return value, "", invalid("invalid_trigger_type", "trigger.type must be github_issue, github_pull_request, or schedule")
 	}
+	if value.Trigger.Type == protocol.AutomationTriggerSchedule {
+		_, cron, timezone, parseErr := parseCronSchedule(value.Trigger.Cron, value.Trigger.Timezone)
+		if parseErr != nil {
+			if strings.Contains(parseErr.Error(), "timezone") {
+				return value, "", invalid("invalid_timezone", parseErr.Error())
+			}
+			return value, "", invalid("invalid_cron", parseErr.Error())
+		}
+		value.Trigger = protocol.AutomationTrigger{Type: protocol.AutomationTriggerSchedule, Cron: cron, Timezone: timezone}
+		return value, normalizeWorkflowName(value.Name), nil
+	}
+	value.Trigger.Cron = ""
+	value.Trigger.Timezone = ""
 	if value.Trigger.Type == protocol.AutomationTriggerGitHubIssue && value.Trigger.State != "open" && value.Trigger.State != "closed" {
 		return value, "", invalid("invalid_issue_state", "trigger.state must be open or closed")
 	}
@@ -221,7 +237,7 @@ func (s *Store) CreateAutomation(
 		`, automationID, value.Trigger.State, labels, value.Trigger.PollIntervalSeconds); err != nil {
 			return protocol.AutomationDetail{}, false, unavailable(err)
 		}
-	} else {
+	} else if value.Trigger.Type == protocol.AutomationTriggerGitHubPullRequest {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO automation_github_pull_request_triggers(
 				automation_id, pull_request_state, include_drafts, required_labels_json,
@@ -229,6 +245,13 @@ func (s *Store) CreateAutomation(
 			) VALUES (?, ?, ?, ?, ?, ?)
 		`, automationID, value.Trigger.State, value.Trigger.IncludeDrafts, labels,
 			baseBranches, value.Trigger.PollIntervalSeconds); err != nil {
+			return protocol.AutomationDetail{}, false, unavailable(err)
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO automation_schedule_triggers(automation_id, cron, timezone)
+			VALUES (?, ?, ?)
+		`, automationID, value.Trigger.Cron, value.Trigger.Timezone); err != nil {
 			return protocol.AutomationDetail{}, false, unavailable(err)
 		}
 	}
@@ -299,11 +322,14 @@ const automationSelect = `
 	       automation.version, automation.trigger_type,
 	       (SELECT COUNT(*) FROM automation_github_issue_triggers typed_issue WHERE typed_issue.automation_id = automation.id),
 	       (SELECT COUNT(*) FROM automation_github_pull_request_triggers typed_pull_request WHERE typed_pull_request.automation_id = automation.id),
-	       COALESCE(issue_trigger.issue_state, pull_request_trigger.pull_request_state),
+	       (SELECT COUNT(*) FROM automation_schedule_triggers typed_schedule WHERE typed_schedule.automation_id = automation.id),
+	       COALESCE(issue_trigger.issue_state, pull_request_trigger.pull_request_state, ''),
 	       COALESCE(pull_request_trigger.include_drafts, 0),
-	       COALESCE(issue_trigger.required_labels_json, pull_request_trigger.required_labels_json),
+	       COALESCE(issue_trigger.required_labels_json, pull_request_trigger.required_labels_json, '[]'),
 	       COALESCE(pull_request_trigger.base_branches_json, '[]'),
-	       COALESCE(issue_trigger.poll_interval_seconds, pull_request_trigger.poll_interval_seconds),
+	       COALESCE(issue_trigger.poll_interval_seconds, pull_request_trigger.poll_interval_seconds, 0),
+	       COALESCE(schedule_trigger.cron, ''), COALESCE(schedule_trigger.timezone, ''),
+	       schedule_trigger.next_due_at,
 	       automation.health_status,
 	       automation.health_code, automation.health_message,
 	       automation.last_checked_at, automation.next_check_at,
@@ -315,24 +341,26 @@ const automationSelect = `
 	JOIN repositories repository ON repository.id = automation.repository_id
 	LEFT JOIN automation_github_issue_triggers issue_trigger ON issue_trigger.automation_id = automation.id
 	LEFT JOIN automation_github_pull_request_triggers pull_request_trigger ON pull_request_trigger.automation_id = automation.id
+	LEFT JOIN automation_schedule_triggers schedule_trigger ON schedule_trigger.automation_id = automation.id
 `
 
 func scanAutomation(row scanner) (protocol.Automation, error) {
 	var automation protocol.Automation
-	var enabled, issueTriggerCount, pullRequestTriggerCount int
+	var enabled, issueTriggerCount, pullRequestTriggerCount, scheduleTriggerCount int
 	var includeDrafts int
 	var labels, baseBranches []byte
-	var lastChecked, nextCheck sql.NullInt64
+	var lastChecked, nextCheck, nextDue sql.NullInt64
 	var createdAt, updatedAt int64
 	err := row.Scan(
 		&automation.ID, &automation.Name, &automation.WorkflowID,
 		&automation.WorkflowName, &automation.WorkflowRevision,
 		&automation.RepositoryID, &automation.RepositoryIdentity,
 		&automation.Context, &automation.TimeoutSeconds, &enabled,
-		&automation.Version, &automation.Trigger.Type, &issueTriggerCount, &pullRequestTriggerCount,
+		&automation.Version, &automation.Trigger.Type, &issueTriggerCount, &pullRequestTriggerCount, &scheduleTriggerCount,
 		&automation.Trigger.State,
 		&includeDrafts, &labels, &baseBranches,
-		&automation.Trigger.PollIntervalSeconds, &automation.Health.Status,
+		&automation.Trigger.PollIntervalSeconds, &automation.Trigger.Cron, &automation.Trigger.Timezone,
+		&nextDue, &automation.Health.Status,
 		&automation.Health.Code, &automation.Health.Message,
 		&lastChecked, &nextCheck, &automation.MatchedCount,
 		&automation.SkippedCount, &automation.DispatchedCount,
@@ -342,11 +370,15 @@ func scanAutomation(row scanner) (protocol.Automation, error) {
 		return automation, err
 	}
 	automation.Enabled = enabled != 0
-	if automation.Trigger.Type != protocol.AutomationTriggerGitHubIssue && automation.Trigger.Type != protocol.AutomationTriggerGitHubPullRequest {
+	if automation.Trigger.Type != protocol.AutomationTriggerGitHubIssue &&
+		automation.Trigger.Type != protocol.AutomationTriggerGitHubPullRequest &&
+		automation.Trigger.Type != protocol.AutomationTriggerSchedule {
 		return automation, errors.New("Automation has an invalid trigger type")
 	}
 	if (automation.Trigger.Type == protocol.AutomationTriggerGitHubIssue && (issueTriggerCount != 1 || pullRequestTriggerCount != 0)) ||
-		(automation.Trigger.Type == protocol.AutomationTriggerGitHubPullRequest && (pullRequestTriggerCount != 1 || issueTriggerCount != 0)) {
+		(automation.Trigger.Type == protocol.AutomationTriggerGitHubPullRequest && (pullRequestTriggerCount != 1 || issueTriggerCount != 0)) ||
+		(automation.Trigger.Type == protocol.AutomationTriggerSchedule && (scheduleTriggerCount != 1 || issueTriggerCount != 0 || pullRequestTriggerCount != 0)) ||
+		(automation.Trigger.Type != protocol.AutomationTriggerSchedule && scheduleTriggerCount != 0) {
 		return automation, errors.New("Automation typed trigger rows do not match its trigger type")
 	}
 	automation.Trigger.IncludeDrafts = includeDrafts != 0
@@ -363,6 +395,10 @@ func scanAutomation(row scanner) (protocol.Automation, error) {
 	if nextCheck.Valid {
 		value := fromMillis(nextCheck.Int64)
 		automation.NextCheckAt = &value
+	}
+	if nextDue.Valid {
+		value := fromMillis(nextDue.Int64)
+		automation.NextDueAt = &value
 	}
 	automation.CreatedAt = fromMillis(createdAt)
 	automation.UpdatedAt = fromMillis(updatedAt)
@@ -489,8 +525,9 @@ func (s *Store) UpdateAutomation(
 	}
 	defer tx.Rollback()
 	var currentVersion, enabled, currentTimeout, currentInterval, currentIncludeDrafts int
-	var issueTriggerCount, pullRequestTriggerCount int
+	var issueTriggerCount, pullRequestTriggerCount, scheduleTriggerCount int
 	var currentName, currentNameKey, currentWorkflowID, currentContext, currentType, currentState string
+	var currentCron, currentTimezone string
 	var currentLabels, currentBaseBranches []byte
 	err = tx.QueryRowContext(ctx, `
 		SELECT automation.version, automation.enabled, automation.name, automation.name_key,
@@ -498,20 +535,23 @@ func (s *Store) UpdateAutomation(
 		       automation.trigger_type,
 		       (SELECT COUNT(*) FROM automation_github_issue_triggers typed_issue WHERE typed_issue.automation_id = automation.id),
 		       (SELECT COUNT(*) FROM automation_github_pull_request_triggers typed_pull_request WHERE typed_pull_request.automation_id = automation.id),
-		       COALESCE(issue_trigger.issue_state, pull_request_trigger.pull_request_state),
+		       (SELECT COUNT(*) FROM automation_schedule_triggers typed_schedule WHERE typed_schedule.automation_id = automation.id),
+		       COALESCE(issue_trigger.issue_state, pull_request_trigger.pull_request_state, ''),
 		       COALESCE(pull_request_trigger.include_drafts, 0),
-		       COALESCE(issue_trigger.required_labels_json, pull_request_trigger.required_labels_json),
+		       COALESCE(issue_trigger.required_labels_json, pull_request_trigger.required_labels_json, '[]'),
 		       COALESCE(pull_request_trigger.base_branches_json, '[]'),
-		       COALESCE(issue_trigger.poll_interval_seconds, pull_request_trigger.poll_interval_seconds)
+		       COALESCE(issue_trigger.poll_interval_seconds, pull_request_trigger.poll_interval_seconds, 0),
+		       COALESCE(schedule_trigger.cron, ''), COALESCE(schedule_trigger.timezone, '')
 		FROM automations automation
 		LEFT JOIN automation_github_issue_triggers issue_trigger ON issue_trigger.automation_id = automation.id
 		LEFT JOIN automation_github_pull_request_triggers pull_request_trigger ON pull_request_trigger.automation_id = automation.id
+		LEFT JOIN automation_schedule_triggers schedule_trigger ON schedule_trigger.automation_id = automation.id
 		WHERE automation.id = ?
 	`, strings.TrimSpace(automationID)).Scan(
 		&currentVersion, &enabled, &currentName, &currentNameKey, &currentWorkflowID,
-		&currentContext, &currentTimeout, &currentType, &issueTriggerCount, &pullRequestTriggerCount,
+		&currentContext, &currentTimeout, &currentType, &issueTriggerCount, &pullRequestTriggerCount, &scheduleTriggerCount,
 		&currentState, &currentIncludeDrafts,
-		&currentLabels, &currentBaseBranches, &currentInterval,
+		&currentLabels, &currentBaseBranches, &currentInterval, &currentCron, &currentTimezone,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.AutomationDetail{}, ErrNotFound
@@ -523,15 +563,22 @@ func (s *Store) UpdateAutomation(
 		return protocol.AutomationDetail{}, conflict("automation_trigger_type_immutable", "trigger type is immutable; create a new Automation")
 	}
 	if (currentType == protocol.AutomationTriggerGitHubIssue && (issueTriggerCount != 1 || pullRequestTriggerCount != 0)) ||
-		(currentType == protocol.AutomationTriggerGitHubPullRequest && (pullRequestTriggerCount != 1 || issueTriggerCount != 0)) {
+		(currentType == protocol.AutomationTriggerGitHubPullRequest && (pullRequestTriggerCount != 1 || issueTriggerCount != 0)) ||
+		(currentType == protocol.AutomationTriggerSchedule && (scheduleTriggerCount != 1 || issueTriggerCount != 0 || pullRequestTriggerCount != 0)) ||
+		(currentType != protocol.AutomationTriggerSchedule && scheduleTriggerCount != 0) {
 		return protocol.AutomationDetail{}, unavailable(errors.New("Automation typed trigger rows do not match its trigger type"))
 	}
 	exactReplay := currentVersion == input.ExpectedVersion+1 &&
 		currentName == value.Name && currentNameKey == nameKey && currentWorkflowID == value.WorkflowID &&
-		currentContext == value.Context && currentTimeout == value.TimeoutSeconds &&
-		currentState == value.Trigger.State && currentIncludeDrafts == boolInt(value.Trigger.IncludeDrafts) &&
-		bytes.Equal(currentLabels, labels) && bytes.Equal(currentBaseBranches, baseBranches) &&
-		currentInterval == value.Trigger.PollIntervalSeconds
+		currentContext == value.Context && currentTimeout == value.TimeoutSeconds
+	if currentType == protocol.AutomationTriggerSchedule {
+		exactReplay = exactReplay && currentCron == value.Trigger.Cron && currentTimezone == value.Trigger.Timezone
+	} else {
+		exactReplay = exactReplay && currentState == value.Trigger.State &&
+			currentIncludeDrafts == boolInt(value.Trigger.IncludeDrafts) &&
+			bytes.Equal(currentLabels, labels) && bytes.Equal(currentBaseBranches, baseBranches) &&
+			currentInterval == value.Trigger.PollIntervalSeconds
+	}
 	if exactReplay {
 		if err := tx.Commit(); err != nil {
 			return protocol.AutomationDetail{}, unavailable(err)
@@ -585,7 +632,7 @@ func (s *Store) UpdateAutomation(
 		`, value.Trigger.State, labels, value.Trigger.PollIntervalSeconds, automationID); err != nil {
 			return protocol.AutomationDetail{}, unavailable(err)
 		}
-	} else {
+	} else if value.Trigger.Type == protocol.AutomationTriggerGitHubPullRequest {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE automation_github_pull_request_triggers
 			SET pull_request_state = ?, include_drafts = ?, required_labels_json = ?,
@@ -593,6 +640,13 @@ func (s *Store) UpdateAutomation(
 			WHERE automation_id = ?
 		`, value.Trigger.State, value.Trigger.IncludeDrafts, labels, baseBranches,
 			value.Trigger.PollIntervalSeconds, automationID); err != nil {
+			return protocol.AutomationDetail{}, unavailable(err)
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE automation_schedule_triggers SET cron = ?, timezone = ?
+			WHERE automation_id = ?
+		`, value.Trigger.Cron, value.Trigger.Timezone, automationID); err != nil {
 			return protocol.AutomationDetail{}, unavailable(err)
 		}
 	}
@@ -623,13 +677,18 @@ func (s *Store) setAutomationEnabled(
 		return protocol.AutomationDetail{}, "", unavailable(err)
 	}
 	defer tx.Rollback()
-	var workflowID, repositoryID string
+	var workflowID, repositoryID, triggerType, cron, timezone string
 	var currentEnabled int
 	var evaluationToken sql.NullString
-	err = tx.QueryRowContext(ctx,
-		`SELECT workflow_id, repository_id, enabled, evaluation_token FROM automations WHERE id = ?`,
+	err = tx.QueryRowContext(ctx, `
+		SELECT automation.workflow_id, automation.repository_id, automation.enabled,
+		       automation.evaluation_token, automation.trigger_type,
+		       COALESCE(schedule.cron, ''), COALESCE(schedule.timezone, '')
+		FROM automations automation
+		LEFT JOIN automation_schedule_triggers schedule ON schedule.automation_id = automation.id
+		WHERE automation.id = ?`,
 		strings.TrimSpace(automationID),
-	).Scan(&workflowID, &repositoryID, &currentEnabled, &evaluationToken)
+	).Scan(&workflowID, &repositoryID, &currentEnabled, &evaluationToken, &triggerType, &cron, &timezone)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.AutomationDetail{}, "", ErrNotFound
 	}
@@ -643,7 +702,7 @@ func (s *Store) setAutomationEnabled(
 		detail, err := s.Automation(ctx, automationID)
 		return detail, "", err
 	}
-	if enabled && !confirmLegacyPollerStopped {
+	if enabled && triggerType != protocol.AutomationTriggerSchedule && !confirmLegacyPollerStopped {
 		return protocol.AutomationDetail{}, "", invalid(
 			"legacy_poller_confirmation_required",
 			"confirm that factory-poller is stopped for any equivalent queue before enabling this Automation",
@@ -654,11 +713,25 @@ func (s *Store) setAutomationEnabled(
 			return protocol.AutomationDetail{}, "", err
 		}
 	}
-	now := s.now().UnixMilli()
+	nowTime := s.now()
+	now := nowTime.UnixMilli()
 	status, code, message := "disabled", "", "Automation is disabled."
 	var nextCheck any
+	var nextDue any
 	if enabled {
-		status, message, nextCheck = "pending", "Waiting for the next GitHub check.", now
+		if triggerType == protocol.AutomationTriggerSchedule {
+			schedule, _, _, parseErr := parseCronSchedule(cron, timezone)
+			if parseErr != nil {
+				return protocol.AutomationDetail{}, "", unavailable(fmt.Errorf("stored schedule is invalid: %w", parseErr))
+			}
+			due, nextErr := schedule.Next(nowTime)
+			if nextErr != nil {
+				return protocol.AutomationDetail{}, "", invalid("invalid_cron", nextErr.Error())
+			}
+			status, message, nextDue = "pending", "Waiting for the next scheduled occurrence.", due.UnixMilli()
+		} else {
+			status, message, nextCheck = "pending", "Waiting for the next GitHub check.", now
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE automations
@@ -668,6 +741,13 @@ func (s *Store) setAutomationEnabled(
 		WHERE id = ?
 	`, enabled, nextCheck, status, code, message, enabled, now, automationID); err != nil {
 		return protocol.AutomationDetail{}, "", unavailable(err)
+	}
+	if triggerType == protocol.AutomationTriggerSchedule {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE automation_schedule_triggers SET next_due_at = ? WHERE automation_id = ?
+		`, nextDue, automationID); err != nil {
+			return protocol.AutomationDetail{}, "", unavailable(err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return protocol.AutomationDetail{}, "", unavailable(err)
@@ -684,6 +764,15 @@ func (s *Store) setAutomationEnabled(
 }
 
 func (s *Store) RequestAutomationCheck(ctx context.Context, automationID string) (protocol.AutomationDetail, error) {
+	var triggerType string
+	if err := s.db.QueryRowContext(ctx, `SELECT trigger_type FROM automations WHERE id = ?`, strings.TrimSpace(automationID)).Scan(&triggerType); errors.Is(err, sql.ErrNoRows) {
+		return protocol.AutomationDetail{}, ErrNotFound
+	} else if err != nil {
+		return protocol.AutomationDetail{}, unavailable(err)
+	}
+	if triggerType == protocol.AutomationTriggerSchedule {
+		return protocol.AutomationDetail{}, conflict("automation_not_provider_trigger", "scheduled Automations use Run now instead of a provider check")
+	}
 	now := s.now().UnixMilli()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE automations SET next_check_at = ?, updated_at = ?
@@ -736,6 +825,8 @@ func (s *Store) AutomationOccurrencesPage(
 		       pull_request.pull_request_title, pull_request.observed_state,
 		       pull_request.observed_draft, pull_request.observed_base_branch,
 		       pull_request.observed_head_commit, pull_request.observed_labels_json,
+		       schedule.kind, schedule.scheduled_at, schedule.run_request_key,
+		       schedule.cron, schedule.timezone,
 		       occurrence.task_request_key, occurrence.task_id_snapshot,
 		       occurrence.diagnostic, occurrence.created_at, occurrence.updated_at,
 		       task.id, task.title, execution.state
@@ -743,6 +834,7 @@ func (s *Store) AutomationOccurrencesPage(
 		JOIN automations automation ON automation.id = occurrence.automation_id
 		LEFT JOIN automation_github_issue_occurrences issue ON issue.occurrence_id = occurrence.id
 		LEFT JOIN automation_github_pull_request_occurrences pull_request ON pull_request.occurrence_id = occurrence.id
+		LEFT JOIN automation_schedule_occurrences schedule ON schedule.occurrence_id = occurrence.id
 		LEFT JOIN tasks task ON task.id = occurrence.task_id
 		LEFT JOIN executions execution ON execution.task_id = task.id
 		WHERE occurrence.automation_id = ?`
@@ -765,6 +857,8 @@ func (s *Store) AutomationOccurrencesPage(
 		var issueNumber, pullRequestNumber, observedDraft sql.NullInt64
 		var issueURL, issueTitle, issueState, pullRequestURL, pullRequestTitle sql.NullString
 		var pullRequestState, baseBranch, headCommit sql.NullString
+		var scheduleKind, runRequestKey, scheduleCron, scheduleTimezone sql.NullString
+		var scheduledAt sql.NullInt64
 		var issueLabels, pullRequestLabels []byte
 		var taskID, taskTitle, taskState sql.NullString
 		var createdAt, updatedAt int64
@@ -774,6 +868,7 @@ func (s *Store) AutomationOccurrencesPage(
 			&issueTitle, &issueState, &issueLabels, &pullRequestNumber,
 			&pullRequestURL, &pullRequestTitle, &pullRequestState, &observedDraft,
 			&baseBranch, &headCommit, &pullRequestLabels,
+			&scheduleKind, &scheduledAt, &runRequestKey, &scheduleCron, &scheduleTimezone,
 			&occurrence.TaskRequestKey, &occurrence.TaskIDSnapshot,
 			&occurrence.Diagnostic, &createdAt, &updatedAt,
 			&taskID, &taskTitle, &taskState,
@@ -803,6 +898,25 @@ func (s *Store) AutomationOccurrencesPage(
 			occurrence.ObservedBaseBranch, occurrence.ObservedHeadCommit = baseBranch.String, headCommit.String
 			if err := json.Unmarshal(pullRequestLabels, &occurrence.ObservedLabels); err != nil {
 				return protocol.AutomationOccurrencePage{}, unavailable(err)
+			}
+		case protocol.AutomationTriggerSchedule:
+			if !scheduleKind.Valid || !scheduleCron.Valid || !scheduleTimezone.Valid || issueNumber.Valid || pullRequestNumber.Valid {
+				return protocol.AutomationOccurrencePage{}, unavailable(errors.New("schedule Occurrence is missing typed metadata"))
+			}
+			occurrence.Kind, occurrence.Cron, occurrence.Timezone = scheduleKind.String, scheduleCron.String, scheduleTimezone.String
+			if occurrence.Kind == "scheduled" {
+				if !scheduledAt.Valid || runRequestKey.Valid {
+					return protocol.AutomationOccurrencePage{}, unavailable(errors.New("scheduled Occurrence has invalid identity"))
+				}
+				value := fromMillis(scheduledAt.Int64)
+				occurrence.ScheduledAt = &value
+			} else if occurrence.Kind == "run_now" {
+				if scheduledAt.Valid || !runRequestKey.Valid {
+					return protocol.AutomationOccurrencePage{}, unavailable(errors.New("Run now Occurrence has invalid identity"))
+				}
+				occurrence.RunRequestKey = runRequestKey.String
+			} else {
+				return protocol.AutomationOccurrencePage{}, unavailable(errors.New("schedule Occurrence has invalid kind"))
 			}
 		default:
 			return protocol.AutomationOccurrencePage{}, unavailable(errors.New("Occurrence has an invalid trigger type"))

@@ -730,7 +730,7 @@ func (s *Store) SetManagedRepositoryEnabled(
 			    health_status = CASE WHEN enabled = 1 THEN 'pending' ELSE health_status END,
 			    health_code = CASE WHEN enabled = 1 THEN '' ELSE health_code END,
 			    health_message = CASE WHEN enabled = 1 THEN 'Repository enabled; waiting for a GitHub check.' ELSE health_message END
-			WHERE repository_id = ?
+			WHERE repository_id = ? AND trigger_type != 'schedule'
 		`, now, repositoryID)
 	} else {
 		_, err = tx.ExecContext(ctx, `
@@ -740,8 +740,28 @@ func (s *Store) SetManagedRepositoryEnabled(
 			    health_status = CASE WHEN enabled = 1 THEN 'blocked' ELSE health_status END,
 			    health_code = CASE WHEN enabled = 1 THEN 'repository_disabled' ELSE health_code END,
 			    health_message = CASE WHEN enabled = 1 THEN 'Enable the selected repository before checks can run.' ELSE health_message END
-			WHERE repository_id = ?
+			WHERE repository_id = ? AND trigger_type != 'schedule'
 		`, now+time.Minute.Milliseconds(), repositoryID)
+	}
+	if err != nil {
+		return protocol.ManagedRepository{}, unavailable(err)
+	}
+	if enabled {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE automations
+			SET health_status = CASE WHEN enabled = 1 THEN 'pending' ELSE health_status END,
+			    health_code = CASE WHEN enabled = 1 THEN '' ELSE health_code END,
+			    health_message = CASE WHEN enabled = 1 THEN 'Repository enabled; waiting for the next scheduled occurrence.' ELSE health_message END
+			WHERE repository_id = ? AND trigger_type = 'schedule'
+		`, repositoryID)
+	} else {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE automations
+			SET health_status = CASE WHEN enabled = 1 THEN 'blocked' ELSE health_status END,
+			    health_code = CASE WHEN enabled = 1 THEN 'repository_disabled' ELSE health_code END,
+			    health_message = CASE WHEN enabled = 1 THEN 'Scheduled instants will be recorded without tasks until the repository is enabled.' ELSE health_message END
+			WHERE repository_id = ? AND trigger_type = 'schedule'
+		`, repositoryID)
 	}
 	if err != nil {
 		return protocol.ManagedRepository{}, unavailable(err)
@@ -1444,6 +1464,16 @@ func (s *Store) selectTaskRoute(
 	route protocol.TaskRoute,
 	now int64,
 ) (taskRouteCandidate, error) {
+	return s.selectTaskRouteWithSourceRequirement(ctx, tx, route, now, true)
+}
+
+func (s *Store) selectTaskRouteWithSourceRequirement(
+	ctx context.Context,
+	tx *sql.Tx,
+	route protocol.TaskRoute,
+	now int64,
+	requireSourceAccess bool,
+) (taskRouteCandidate, error) {
 	repositoryPredicate := "r.remote_identity = ?"
 	if route.SourceAccess.Provider == "github" && route.SourceAccess.Hostname == "github.com" {
 		repositoryPredicate = "lower(r.remote_identity) = lower(?)"
@@ -1557,7 +1587,7 @@ func (s *Store) selectTaskRoute(
 		if err := json.Unmarshal(encoded, &access); err != nil {
 			return taskRouteCandidate{}, unavailable(err)
 		}
-		if !hasSourceAccess(access, route.SourceAccess) {
+		if requireSourceAccess && !hasSourceAccess(access, route.SourceAccess) {
 			continue
 		}
 		candidate.load = active + queued
@@ -1574,9 +1604,13 @@ func (s *Store) selectTaskRoute(
 		return taskRouteCandidate{}, unavailable(err)
 	}
 	if !found {
+		message := "no healthy online worker can acquire the repository and access its source provider"
+		if !requireSourceAccess {
+			message = "no healthy online worker can acquire the repository"
+		}
 		return taskRouteCandidate{}, conflict(
 			"no_eligible_worker",
-			"no healthy online worker can acquire the repository and access its source provider",
+			message,
 		)
 	}
 	if !best.repositoryAdvertised {

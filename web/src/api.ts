@@ -193,6 +193,11 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
+  runAutomation: (id: string, requestKey: string) =>
+    request<AutomationDetail>(`/api/v1/automations/${encodeURIComponent(id)}/run`, {
+      method: "POST",
+      body: JSON.stringify({ request_key: requestKey }),
+    }),
   events: async (attemptID: string, after: number): Promise<AttemptEventPage> => {
     const query = new URLSearchParams({ after: String(after), limit: "100" });
     const page = await request<{

@@ -408,7 +408,7 @@ func (s *Store) SetWorkflowEnabled(ctx context.Context, workflowID string, enabl
 			    health_status = CASE WHEN enabled = 1 THEN 'pending' ELSE health_status END,
 			    health_code = CASE WHEN enabled = 1 THEN '' ELSE health_code END,
 			    health_message = CASE WHEN enabled = 1 THEN 'Workflow enabled; waiting for a GitHub check.' ELSE health_message END
-			WHERE workflow_id = ?
+			WHERE workflow_id = ? AND trigger_type != 'schedule'
 		`, now, workflowID)
 	} else {
 		_, err = tx.ExecContext(ctx, `
@@ -418,8 +418,28 @@ func (s *Store) SetWorkflowEnabled(ctx context.Context, workflowID string, enabl
 			    health_status = CASE WHEN enabled = 1 THEN 'blocked' ELSE health_status END,
 			    health_code = CASE WHEN enabled = 1 THEN 'workflow_disabled' ELSE health_code END,
 			    health_message = CASE WHEN enabled = 1 THEN 'Enable the selected Workflow before checks can run.' ELSE health_message END
-			WHERE workflow_id = ?
+			WHERE workflow_id = ? AND trigger_type != 'schedule'
 		`, now+time.Minute.Milliseconds(), workflowID)
+	}
+	if err != nil {
+		return protocol.WorkflowDetail{}, unavailable(err)
+	}
+	if enabled {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE automations
+			SET health_status = CASE WHEN enabled = 1 THEN 'pending' ELSE health_status END,
+			    health_code = CASE WHEN enabled = 1 THEN '' ELSE health_code END,
+			    health_message = CASE WHEN enabled = 1 THEN 'Workflow enabled; waiting for the next scheduled occurrence.' ELSE health_message END
+			WHERE workflow_id = ? AND trigger_type = 'schedule'
+		`, workflowID)
+	} else {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE automations
+			SET health_status = CASE WHEN enabled = 1 THEN 'blocked' ELSE health_status END,
+			    health_code = CASE WHEN enabled = 1 THEN 'workflow_disabled' ELSE health_code END,
+			    health_message = CASE WHEN enabled = 1 THEN 'Scheduled instants will be recorded without tasks until the Workflow is enabled.' ELSE health_message END
+			WHERE workflow_id = ? AND trigger_type = 'schedule'
+		`, workflowID)
 	}
 	if err != nil {
 		return protocol.WorkflowDetail{}, unavailable(err)

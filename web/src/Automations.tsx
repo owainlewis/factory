@@ -75,7 +75,7 @@ export function AutomationsView({ onAutomation }: { onAutomation: (id: string) =
       />
       {query.error && <StaleBanner error={query.error} />}
       <div className="view-toolbar">
-        <p>Typed GitHub issue and pull-request triggers evaluated by the local control plane.</p>
+        <p>Typed GitHub issue, pull-request, and schedule triggers evaluated by the local control plane.</p>
         <button className="button button-primary" onClick={() => setCreateOpen(true)}>
           <Plus size={15} /> Create Automation
         </button>
@@ -84,7 +84,7 @@ export function AutomationsView({ onAutomation }: { onAutomation: (id: string) =
         <EmptyState
           icon={<Bot size={22} />}
           title="No Automations yet"
-          description="Create a disabled GitHub trigger, preview its matches, then enable it."
+          description="Create a disabled typed trigger, preview it, then enable it."
           action={<button className="button button-primary" onClick={() => setCreateOpen(true)}>Create Automation</button>}
         />
       ) : (
@@ -100,7 +100,7 @@ export function AutomationsView({ onAutomation }: { onAutomation: (id: string) =
               </span>
               <span className="automation-list-health"><HealthBadge automation={automation} /><small>{automation.health.message || "No health detail."}</small></span>
               <span className="automation-list-copy"><strong>{automation.matched_count} matched</strong><small>{automation.skipped_count} reused · {automation.dispatched_count} dispatched</small></span>
-              <span className="automation-list-copy"><strong>{formatTimestamp(automation.last_checked_at)}</strong><small>Next {formatTimestamp(automation.next_check_at)}</small></span>
+              <span className="automation-list-copy"><strong>{formatTimestamp(automation.last_checked_at)}</strong><small>{automation.trigger.type === "schedule" ? "Next due" : "Next check"} {formatTimestamp(automation.next_due_at ?? automation.next_check_at)}</small></span>
               <span className="automation-list-copy"><strong>{automation.latest_task?.title || "No task yet"}</strong><small>{automation.latest_task?.state || "Waiting for a match"}</small></span>
               <ChevronRight size={15} className="row-chevron" />
             </button>
@@ -194,6 +194,13 @@ export function AutomationDetail({
       await invalidateControlPlane(queryClient);
     },
   });
+  const run = useMutation({
+    mutationFn: () => api.runAutomation(id, crypto.randomUUID()),
+    onSuccess: async (next) => {
+      queryClient.setQueryData(["automation", id], next);
+      await invalidateControlPlane(queryClient);
+    },
+  });
 
   if (detail.isPending) return <LoadingState label="Loading Automation" />;
   if (!detail.data) return <ErrorState error={detail.error} onRetry={() => void detail.refetch()} />;
@@ -217,9 +224,15 @@ export function AutomationDetail({
           <button className="button button-secondary" onClick={() => test.mutate()} disabled={test.isPending}>
             {test.isPending ? <LoaderCircle size={14} className="spin" /> : <FlaskConical size={14} />} Test trigger
           </button>
-          <button className="button button-secondary" onClick={() => check.mutate()} disabled={!automation.enabled || check.isPending}>
-            <CirclePlay size={14} /> Run now
-          </button>
+          {automation.trigger.type === "schedule" ? (
+            <button className="button button-secondary" onClick={() => run.mutate()} disabled={!automation.enabled || run.isPending}>
+              <CirclePlay size={14} /> Run now
+            </button>
+          ) : (
+            <button className="button button-secondary" onClick={() => check.mutate()} disabled={!automation.enabled || check.isPending}>
+              <CirclePlay size={14} /> Check now
+            </button>
+          )}
           <button className="button button-secondary" onClick={() => setEditing(true)} disabled={automation.enabled}>
             <Pencil size={14} /> Edit
           </button>
@@ -236,6 +249,7 @@ export function AutomationDetail({
       {setEnabled.error && <InlineError error={setEnabled.error} />}
       {test.error && <InlineError error={test.error} />}
       {check.error && <InlineError error={check.error} />}
+      {run.error && <InlineError error={run.error} />}
       {confirmEnabled !== undefined && (
         <div className="confirm-action automation-confirm" role="alert">
           <div>
@@ -243,7 +257,7 @@ export function AutomationDetail({
             <p>{confirmEnabled
               ? `${automation.workflow_name} · ${automation.repository_identity} · ${triggerSummary(automation)}`
               : "Future checks and pending dispatches stop. Existing tasks continue."}</p>
-            {confirmEnabled && (
+            {confirmEnabled && automation.trigger.type !== "schedule" && (
               <label className="confirmation-check">
                 <input
                   type="checkbox"
@@ -256,7 +270,7 @@ export function AutomationDetail({
           </div>
           <button
             className={confirmEnabled ? "button button-primary" : "button button-danger"}
-            disabled={setEnabled.isPending || (confirmEnabled && !pollerConfirmed)}
+            disabled={setEnabled.isPending || (confirmEnabled && automation.trigger.type !== "schedule" && !pollerConfirmed)}
             onClick={() => setEnabled.mutate(confirmEnabled)}
           >
             {setEnabled.isPending ? "Saving…" : `Confirm ${confirmEnabled ? "enable" : "disable"}`}
@@ -275,8 +289,8 @@ export function AutomationDetail({
           <Metric label="Matched" value={automation.matched_count} />
           <Metric label="Reused" value={automation.skipped_count} />
           <Metric label="Dispatched" value={automation.dispatched_count} />
-          <Metric label="Last checked" value={formatTimestamp(automation.last_checked_at)} />
-          <Metric label="Next check" value={formatTimestamp(automation.next_check_at)} />
+          <Metric label={automation.trigger.type === "schedule" ? "Last occurrence" : "Last checked"} value={formatTimestamp(automation.last_checked_at)} />
+          <Metric label={automation.trigger.type === "schedule" ? "Next due" : "Next check"} value={formatTimestamp(automation.next_due_at ?? automation.next_check_at)} />
         </div>
         <div className="automation-latest-task">
           <span><strong>Latest task</strong><small>{automation.latest_task ? `${automation.latest_task.title} · ${automation.latest_task.state}` : "No task has been dispatched."}</small></span>
@@ -286,9 +300,9 @@ export function AutomationDetail({
 
       {preview && (
         <section className="panel preview-panel" aria-live="polite">
-          <PanelHeading title="Test results" aside={`${preview.matches.length} bounded match${preview.matches.length === 1 ? "" : "es"}`} />
+          <PanelHeading title="Test results" aside={preview.next_due_at ? `Next due ${formatTimestamp(preview.next_due_at)}` : `${preview.matches.length} bounded match${preview.matches.length === 1 ? "" : "es"}`} />
           <p className="muted">Testing creates no task or durable occurrence.</p>
-          {preview.matches.length === 0 ? <p>No GitHub items matched.</p> : preview.matches.map((match) => (
+          {preview.next_due_at ? <p>The next matching UTC instant is <strong>{new Date(preview.next_due_at).toISOString()}</strong>.</p> : preview.matches.length === 0 ? <p>No GitHub items matched.</p> : preview.matches.map((match) => (
             <a key={match.number} href={match.url} target="_blank" rel="noreferrer" className="preview-match">
               <strong>#{match.number} {match.title}</strong>
               <span>{match.state}{match.base_branch ? ` · base ${match.base_branch}` : ""}{match.is_draft ? " · draft" : ""} · {match.labels.join(", ") || "no labels"}</span>
@@ -303,13 +317,19 @@ export function AutomationDetail({
           <dl className="metadata">
             <div><dt>Workflow</dt><dd>{automation.workflow_name} · revision {automation.workflow_revision}</dd></div>
             <div><dt>Repository</dt><dd className="mono">{automation.repository_identity}</dd></div>
-            <div><dt>{automation.trigger.type === "github_pull_request" ? "Pull request state" : "Issue state"}</dt><dd>{automation.trigger.state}</dd></div>
+            {automation.trigger.type === "schedule" ? <>
+              <div><dt>Cron</dt><dd className="mono">{automation.trigger.cron}</dd></div>
+              <div><dt>Timezone</dt><dd>{automation.trigger.timezone}</dd></div>
+              <div><dt>Next due UTC</dt><dd>{automation.next_due_at ? new Date(automation.next_due_at).toISOString() : "Disabled"}</dd></div>
+            </> : <>
+              <div><dt>{automation.trigger.type === "github_pull_request" ? "Pull request state" : "Issue state"}</dt><dd>{automation.trigger.state}</dd></div>
             {automation.trigger.type === "github_pull_request" && <>
               <div><dt>Drafts</dt><dd>{automation.trigger.include_drafts ? "Included" : "Excluded"}</dd></div>
               <div><dt>Base branches</dt><dd>{automation.trigger.base_branches.join(", ") || "Any"}</dd></div>
             </>}
             <div><dt>Required labels</dt><dd>{automation.trigger.required_labels.join(", ") || "None"}</dd></div>
             <div><dt>Polling</dt><dd>Every {automation.trigger.poll_interval_seconds} seconds</dd></div>
+            </>}
             <div><dt>Timeout</dt><dd>{automation.timeout_seconds} seconds</dd></div>
           </dl>
         </section>
@@ -329,7 +349,7 @@ export function AutomationDetail({
               <div className="occurrence-row" key={occurrence.id}>
                 <span className={`status-badge status-${occurrence.state}`}><span className="status-dot" />{occurrence.state}</span>
                 <span className="occurrence-identity">
-                  <strong>#{occurrenceNumber(occurrence)} {occurrenceTitle(occurrence)}</strong>
+                  <strong>{occurrenceIdentity(occurrence)}</strong>
                   <small>{formatTimestamp(occurrence.created_at)}{occurrence.diagnostic ? ` · ${occurrence.diagnostic}` : ""}</small>
                 </span>
                 {occurrence.task ? (
@@ -396,6 +416,8 @@ function AutomationForm({
   const draftsID = useId();
   const branchesID = useId();
   const intervalID = useId();
+  const cronID = useId();
+  const timezoneID = useId();
   const timeoutID = useId();
   const contextID = useId();
   const nameRef = useRef<HTMLInputElement>(null);
@@ -407,6 +429,7 @@ function AutomationForm({
   const current = detail?.automation;
   const [triggerType, setTriggerType] = useState<AutomationTrigger["type"]>(current?.trigger.type ?? "github_issue");
   const isPullRequest = triggerType === "github_pull_request";
+  const isSchedule = triggerType === "schedule";
   useEffect(() => {
     closeRef.current = onClose;
   }, [onClose]);
@@ -444,6 +467,8 @@ function AutomationForm({
     const context = String(form.get("context") ?? "");
     const timeout = Number(form.get("timeout_seconds"));
     const pollInterval = Number(form.get("poll_interval_seconds"));
+    const cron = String(form.get("cron") ?? "").trim().replace(/\s+/g, " ");
+    const timezone = String(form.get("timezone") ?? "").trim();
     const labels = String(form.get("required_labels") ?? "").split(",").map((label) => label.trim()).filter(Boolean);
     const baseBranches = String(form.get("base_branches") ?? "").split(",").map((branch) => branch.trim()).filter(Boolean);
     const nextErrors: Record<string, string> = {};
@@ -451,14 +476,20 @@ function AutomationForm({
     else if (Array.from(name).length > 100) nextErrors.name = "Keep the name to 100 characters.";
     if (!workflow) nextErrors.workflow = "Choose a Workflow.";
     if (!repository) nextErrors.repository = "Choose a repository.";
-    if (labels.length > 20 || labels.some((label) => new TextEncoder().encode(label).length > 200)) nextErrors.labels = "Use at most 20 labels of 200 bytes each.";
+    if (!isSchedule && (labels.length > 20 || labels.some((label) => new TextEncoder().encode(label).length > 200))) nextErrors.labels = "Use at most 20 labels of 200 bytes each.";
     if (isPullRequest && (baseBranches.length > 20 || baseBranches.some((branch) => new TextEncoder().encode(branch).length > 255))) nextErrors.branches = "Use at most 20 base branches of 255 bytes each.";
-    if (!Number.isInteger(pollInterval) || pollInterval < 10 || pollInterval > 86_400) nextErrors.interval = "Use 10 to 86,400 seconds.";
+    if (!isSchedule && (!Number.isInteger(pollInterval) || pollInterval < 10 || pollInterval > 86_400)) nextErrors.interval = "Use 10 to 86,400 seconds.";
+    if (isSchedule && cron.split(" ").length !== 5) nextErrors.cron = "Enter exactly five cron fields, with no seconds field.";
+    if (isSchedule && !timezone) nextErrors.timezone = "Enter an IANA timezone, such as Europe/London.";
     if (!Number.isInteger(timeout) || timeout < 1 || timeout > 28_800) nextErrors.timeout = "Use 1 to 28,800 seconds.";
     if (new TextEncoder().encode(context).length > 8 * 1024) nextErrors.context = "Keep context to 8 KiB.";
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) return;
-    const trigger: AutomationTrigger = isPullRequest ? {
+    const trigger: AutomationTrigger = isSchedule ? {
+      type: "schedule",
+      cron,
+      timezone,
+    } : isPullRequest ? {
       type: "github_pull_request",
       state: String(form.get("state")) as "open" | "closed" | "merged",
       include_drafts: form.get("include_drafts") === "on",
@@ -534,14 +565,15 @@ function AutomationForm({
               >
                 <option value="github_issue">GitHub issue</option>
                 <option value="github_pull_request">GitHub pull request</option>
+                <option value="schedule">Schedule</option>
               </select>
             </Field>
-            <Field label={isPullRequest ? "Pull request state" : "Issue state"} htmlFor={stateID}>
-              <select id={stateID} name="state" defaultValue={current?.trigger.state ?? "open"}>
+            {!isSchedule && <Field label={isPullRequest ? "Pull request state" : "Issue state"} htmlFor={stateID}>
+              <select id={stateID} name="state" defaultValue={current?.trigger.type === "github_issue" || current?.trigger.type === "github_pull_request" ? current.trigger.state : "open"}>
                 <option value="open">Open</option><option value="closed">Closed</option>
                 {isPullRequest && <option value="merged">Merged</option>}
               </select>
-            </Field>
+            </Field>}
             {isPullRequest && <>
               <Field label="Draft pull requests" htmlFor={draftsID} hint="Include drafts that match every other condition.">
                 <label className="confirmation-check" htmlFor={draftsID}>
@@ -553,12 +585,21 @@ function AutomationForm({
                 <input id={branchesID} name="base_branches" defaultValue={current?.trigger.type === "github_pull_request" ? current.trigger.base_branches.join(", ") : ""} aria-invalid={Boolean(errors.branches)} />
               </Field>
             </>}
-            <Field label="Required labels" htmlFor={labelsID} error={errors.labels} hint="Comma separated · up to 20">
-              <input id={labelsID} name="required_labels" defaultValue={current?.trigger.required_labels.join(", ") ?? "factory:ready"} aria-invalid={Boolean(errors.labels)} />
-            </Field>
-            <Field label="Poll interval (seconds)" htmlFor={intervalID} error={errors.interval}>
-              <input id={intervalID} name="poll_interval_seconds" type="number" min={10} max={86_400} defaultValue={current?.trigger.poll_interval_seconds ?? 30} aria-invalid={Boolean(errors.interval)} />
-            </Field>
+            {isSchedule ? <>
+              <Field label="Cron (five fields)" htmlFor={cronID} error={errors.cron} hint="Minute hour day-of-month month day-of-week · no seconds">
+                <input id={cronID} name="cron" className="mono" defaultValue={current?.trigger.type === "schedule" ? current.trigger.cron : "0 9 * * 1"} aria-invalid={Boolean(errors.cron)} />
+              </Field>
+              <Field label="IANA timezone" htmlFor={timezoneID} error={errors.timezone} hint="For example Europe/London">
+                <input id={timezoneID} name="timezone" defaultValue={current?.trigger.type === "schedule" ? current.trigger.timezone : Intl.DateTimeFormat().resolvedOptions().timeZone} aria-invalid={Boolean(errors.timezone)} />
+              </Field>
+            </> : <>
+              <Field label="Required labels" htmlFor={labelsID} error={errors.labels} hint="Comma separated · up to 20">
+                <input id={labelsID} name="required_labels" defaultValue={current?.trigger.type === "github_issue" || current?.trigger.type === "github_pull_request" ? current.trigger.required_labels.join(", ") : "factory:ready"} aria-invalid={Boolean(errors.labels)} />
+              </Field>
+              <Field label="Poll interval (seconds)" htmlFor={intervalID} error={errors.interval}>
+                <input id={intervalID} name="poll_interval_seconds" type="number" min={10} max={86_400} defaultValue={current?.trigger.type === "github_issue" || current?.trigger.type === "github_pull_request" ? current.trigger.poll_interval_seconds : 30} aria-invalid={Boolean(errors.interval)} />
+              </Field>
+            </>}
             <Field label="Task timeout (seconds)" htmlFor={timeoutID} error={errors.timeout}>
               <input id={timeoutID} name="timeout_seconds" type="number" min={1} max={28_800} defaultValue={current?.timeout_seconds ?? 7200} aria-invalid={Boolean(errors.timeout)} />
             </Field>
@@ -596,6 +637,9 @@ function Metric({ label, value }: { label: string; value: string | number }) {
 }
 
 function triggerSummary(automation: Automation): string {
+  if (automation.trigger.type === "schedule") {
+    return `Schedule · ${automation.trigger.cron} · ${automation.trigger.timezone}`;
+  }
   const labels = automation.trigger.required_labels.length
     ? ` · labels ${automation.trigger.required_labels.join(", ")}`
     : "";
@@ -609,12 +653,12 @@ function triggerSummary(automation: Automation): string {
   return `GitHub issues · ${automation.trigger.state}${labels}`;
 }
 
-function occurrenceNumber(occurrence: AutomationOccurrence): number {
-  return occurrence.pull_request_number ?? occurrence.issue_number ?? 0;
-}
-
-function occurrenceTitle(occurrence: AutomationOccurrence): string {
-  return occurrence.pull_request_title ?? occurrence.issue_title ?? "Unknown GitHub item";
+function occurrenceIdentity(occurrence: AutomationOccurrence): string {
+  if (occurrence.kind === "scheduled") return `Scheduled ${occurrence.scheduled_at ? new Date(occurrence.scheduled_at).toISOString() : "instant"}`;
+  if (occurrence.kind === "run_now") return "Run now";
+  const number = occurrence.pull_request_number ?? occurrence.issue_number ?? 0;
+  const title = occurrence.pull_request_title ?? occurrence.issue_title ?? "Unknown GitHub item";
+  return `#${number} ${title}`;
 }
 
 function formatTimestamp(value?: string): string {
