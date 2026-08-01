@@ -382,6 +382,12 @@ exit "$status"
 func TestWorktreeFetchDoesNotApplyConfiguredOriginRefmap(t *testing.T) {
 	repository := createRepository(t, "custom-refmap")
 	sentinel := runGitTest(t, repository.path, "rev-parse", "HEAD")
+	runGitTest(t, repository.path, "fetch", "origin", "main")
+	fetchHeadPath := filepath.Join(repository.path, ".git", "FETCH_HEAD")
+	fetchHead, err := os.ReadFile(fetchHeadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runGitTest(t, repository.path, "branch", "vendor/main", sentinel)
 	runGitTest(t, repository.path, "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/vendor/*")
 
@@ -413,6 +419,9 @@ func TestWorktreeFetchDoesNotApplyConfiguredOriginRefmap(t *testing.T) {
 	}
 	if branchCommit := runGitTest(t, repository.path, "rev-parse", "refs/heads/vendor/main"); branchCommit != sentinel {
 		t.Fatalf("configured fetch mapping changed vendor/main from %q to %q", sentinel, branchCommit)
+	}
+	if currentFetchHead, err := os.ReadFile(fetchHeadPath); err != nil || string(currentFetchHead) != string(fetchHead) {
+		t.Fatalf("Factory base fetch changed FETCH_HEAD from %q to %q: %v", fetchHead, currentFetchHead, err)
 	}
 }
 

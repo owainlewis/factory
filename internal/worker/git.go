@@ -319,7 +319,7 @@ func resolveBaseCommit(
 		"rev-parse", "--verify", base+"^{commit}")
 	if localErr != nil || strings.TrimSpace(string(stdout)) != base {
 		stdout, stderr, err := runGitCommand(ctx, gitExecutable, repository.Path, 256<<10,
-			"fetch", "--no-tags", "--refmap=", "origin", "refs/heads/"+branch)
+			"fetch", "--no-tags", "--no-write-fetch-head", "--refmap=", "origin", "refs/heads/"+branch)
 		if err != nil {
 			return "", "", commandFailure("fetch base branch origin/"+branch, stdout, stderr, err)
 		}
