@@ -533,6 +533,7 @@ type LegacyPollerQueue struct {
 	PendingObservations   int      `json:"pending_observations"`
 	SubmittedObservations int      `json:"submitted_observations"`
 	Supported             bool     `json:"supported"`
+	Blocking              bool     `json:"blocking"`
 	Errors                []string `json:"errors"`
 }
 

@@ -622,7 +622,12 @@ func TestLegacyPollerImportEnforcesOccurrenceLimitAtomically(t *testing.T) {
 }
 
 func TestLegacyPollerCommandOnlyMigrationArchivesWithoutAutomations(t *testing.T) {
-	fixture := newLegacyMigrationFixture(t, nil)
+	commandQueueID := legacyQueueID(legacyPollerQueue{Name: "command-history", Source: "linear", Project: "ENG"})
+	pending := legacyPendingRequest(t, commandQueueID, 82)
+	submitted := legacyPendingRequest(t, commandQueueID, 83)
+	submitted.State = "submitted"
+	submitted.TaskID = "archived-command-task"
+	fixture := newLegacyMigrationFixture(t, []legacyPollerObservation{pending, submitted})
 	config := `poll_every = "30s"
 data_directory = "poller"
 
@@ -640,27 +645,90 @@ timeout_seconds = 3600
 	if err := os.WriteFile(fixture.configPath, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store := newTestStore(t)
+	databasePath := filepath.Join(t.TempDir(), "controlplane.sqlite3")
+	store, err := Open(context.Background(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	selection := migrationSelection(fixture)
 	preview, err := store.PreviewLegacyPoller(context.Background(), protocol.PreviewLegacyPollerRequest{LegacyPollerSelection: selection})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.Counts.Supported != 0 || preview.Counts.Unsupported != 1 {
+	if preview.Counts.Supported != 0 || preview.Counts.Unsupported != 1 ||
+		preview.Counts.Pending != 1 || preview.Counts.Submitted != 1 {
 		t.Fatalf("command-only Preview = %#v", preview)
 	}
 	imported, err := store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
 		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
 		Mappings: nil,
 	})
-	if err != nil || imported.Status != "imported" || len(imported.Automations) != 0 {
+	if err != nil || imported.Status != "imported" || len(imported.Automations) != 0 ||
+		imported.Counts.Queues != 1 || imported.Counts.Supported != 0 || imported.Counts.Unsupported != 1 ||
+		imported.Counts.Pending != 1 || imported.Counts.Submitted != 1 {
 		t.Fatalf("command-only Import = %#v, error %v", imported, err)
 	}
-	finalized, err := store.FinalizeLegacyPoller(context.Background(), protocol.FinalizeLegacyPollerRequest{
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(context.Background(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	active, err := reopened.ActiveLegacyPollerMigration(context.Background())
+	if err != nil || active == nil || active.Counts.Queues != 1 || active.Counts.Supported != 0 || active.Counts.Unsupported != 1 ||
+		active.Counts.Pending != 1 || active.Counts.Submitted != 1 {
+		t.Fatalf("command-only active migration after restart = %#v, error %v", active, err)
+	}
+	finalized, err := reopened.FinalizeLegacyPoller(context.Background(), protocol.FinalizeLegacyPollerRequest{
 		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
 	})
 	if err != nil || finalized.Status != "finalized" {
 		t.Fatalf("command-only Finalize = %#v, error %v", finalized, err)
+	}
+}
+
+func TestLegacyPollerBlocksImportWhenLedgerContainsRemovedQueue(t *testing.T) {
+	configuredQueueID := legacyQueueID(legacyPollerQueue{Name: "github-ready", Source: "github", Project: "example/project"})
+	removedQueueID := "removed-queue-ledger-id"
+	fixture := newLegacyMigrationFixture(t, []legacyPollerObservation{legacyPendingRequest(t, removedQueueID, 81)})
+	store := newTestStore(t)
+	createManagedTestRepository(t, store, "github.com/example/project")
+	selection := migrationSelection(fixture)
+	preview, err := store.PreviewLegacyPoller(context.Background(), protocol.PreviewLegacyPollerRequest{LegacyPollerSelection: selection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Counts.Queues != 2 || preview.Counts.Supported != 1 || preview.Counts.Unsupported != 1 ||
+		preview.Counts.Pending != 1 || len(preview.Queues) != 2 {
+		t.Fatalf("removed-queue Preview = %#v", preview)
+	}
+	var removed *protocol.LegacyPollerQueue
+	for index := range preview.Queues {
+		if preview.Queues[index].QueueID == removedQueueID {
+			removed = &preview.Queues[index]
+		}
+	}
+	if removed == nil || removed.Source != "ledger-only" || removed.Supported || !removed.Blocking || removed.PendingObservations != 1 ||
+		len(removed.Errors) == 0 || !strings.Contains(removed.Errors[0], "restore the matching queue") {
+		t.Fatalf("removed ledger queue = %#v", removed)
+	}
+	_, err = store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
+		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
+		Mappings: []protocol.LegacyPollerQueueMapping{{
+			QueueID: configuredQueueID, WorkflowName: "Configured workflow", AutomationName: "Configured issues",
+		}},
+	})
+	var serviceErr *ServiceError
+	if !errors.As(err, &serviceErr) || serviceErr.Code != "legacy_ledger_queue_missing" {
+		t.Fatalf("removed-queue Import error = %v", err)
+	}
+	for _, table := range []string{"legacy_poller_imports", "workflows", "automations", "automation_occurrences"} {
+		var count int
+		if err := store.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("%s changed after blocked Import: count=%d, error %v", table, count, err)
+		}
 	}
 }
 

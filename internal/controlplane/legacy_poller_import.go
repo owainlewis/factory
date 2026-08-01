@@ -53,6 +53,12 @@ func (s *Store) ImportLegacyPoller(
 		mappings[mapping.QueueID] = mapping
 	}
 	for _, queue := range preview.Queues {
+		if queue.Blocking {
+			return protocol.LegacyPollerMigration{}, conflict(
+				"legacy_ledger_queue_missing",
+				"legacy ledger contains observations for queue "+queue.QueueID+" which is missing from poller.toml; restore the matching queue and run Preview again",
+			)
+		}
 		_, mapped := mappings[queue.QueueID]
 		if queue.Supported && !mapped {
 			return protocol.LegacyPollerMigration{}, invalid("invalid_migration_mapping", "every supported queue requires reviewed Workflow and Automation names")
@@ -473,14 +479,20 @@ func (s *Store) LegacyPollerMigration(
 		Occurrences: []protocol.AutomationOccurrence{}, Errors: []string{},
 	}
 	var createdAt, updatedAt int64
+	var unimportedPending, unimportedSubmitted int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, snapshot_digest, status, config_path, data_home, working_directory,
-		       data_directory, ledger_path, archive_root, archive_path, created_at, updated_at
+		       data_directory, ledger_path, archive_root, archive_path, queue_count,
+		       supported_queue_count, unsupported_queue_count,
+		       unimported_pending_observation_count, unimported_submitted_observation_count,
+		       created_at, updated_at
 		FROM legacy_poller_migrations WHERE id = ?
 	`, strings.TrimSpace(migrationID)).Scan(
 		&result.ID, &result.SnapshotDigest, &result.Status, &result.ConfigPath,
 		&result.DataHome, &result.WorkingDirectory, &result.DataDirectory,
 		&result.LedgerPath, &result.ArchiveRoot, &result.ArchivePath,
+		&result.Counts.Queues, &result.Counts.Supported, &result.Counts.Unsupported,
+		&unimportedPending, &unimportedSubmitted,
 		&createdAt, &updatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -532,8 +544,8 @@ func (s *Store) LegacyPollerMigration(
 		return result, unavailable(err)
 	}
 	result.Counts.Submitted -= result.Counts.Pending
-	result.Counts.Supported = len(result.Automations)
-	result.Counts.Queues = len(result.Automations)
+	result.Counts.Pending += unimportedPending
+	result.Counts.Submitted += unimportedSubmitted
 	return result, nil
 }
 

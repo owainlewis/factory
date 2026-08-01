@@ -202,7 +202,11 @@ process can write the ledger.
 5. Review every resolved source path, managed-repository identity and ID,
    proposed Workflow and Automation name, observation count, and error.
    Unsupported command queues
-   remain recoverable from the later archive but are not imported.
+   remain recoverable from the later archive but are not imported. If the
+   ledger contains observations for a queue removed or renamed in
+   `poller.toml`, Factory shows that ledger-only queue and blocks Import. Restore
+   the matching queue entry, stop the poller, and run Preview again so no
+   observation identity is silently omitted.
 6. Choose **Import disabled Automations**. Factory verifies the exact Preview
    snapshot while holding an exclusive legacy-ledger lock. Existing submitted
    task identities and deleted-task tombstones are retained. Imported

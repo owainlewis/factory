@@ -259,6 +259,7 @@ export interface LegacyPollerQueue {
 	pending_observations: number;
 	submitted_observations: number;
 	supported: boolean;
+	blocking: boolean;
 	errors: string[];
 }
 

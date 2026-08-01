@@ -121,10 +121,16 @@ A lock failure, pathname replacement, pragma change, or snapshot change aborts
 the action without partial control-plane writes.
 
 Preview records stable source paths, queue mappings, counts, proposed names,
-and validation errors. Import atomically creates one Workflow and one disabled
-GitHub issue Automation per supported queue. Submitted observations retain
-their task identity or deleted-task tombstone. Pending observations retain the
-exact stored request and require explicit Resume or Skip. Imported Automations
+and validation errors. Ledger-only queue IDs are visible as unsupported and
+block Import until the matching configuration is restored, preventing silent
+loss of pending or submitted identities. Queue totals and the observation
+totals for archive-only unsupported queues are stored with the migration so
+Import responses and restart recovery report the reviewed source set rather
+than only the created Automations. Import atomically creates one
+Workflow and one disabled GitHub issue Automation per supported queue.
+Submitted observations retain their task identity or deleted-task tombstone.
+Pending observations retain the exact stored request and require explicit
+Resume or Skip. Imported Automations
 cannot be enabled before Finalize. The active imported migration is discoverable
 after a browser or server restart, and every imported observation remains
 visible beyond the ordinary paginated Automation history limit. Finalize

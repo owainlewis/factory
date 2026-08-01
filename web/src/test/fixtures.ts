@@ -157,6 +157,7 @@ export function mockControlPlane(
     eventFailuresAfter?: number;
     growingTaskHistory?: boolean;
     incrementalEvents?: boolean;
+    ledgerOnlyMigration?: boolean;
     paginatedAutomations?: boolean;
     paginatedAutomationOccurrences?: boolean;
     paginatedAutomationWorkflows?: boolean;
@@ -434,11 +435,11 @@ export function mockControlPlane(
         ledger_path: "/tmp/legacy/poller/poller.sqlite3",
         archive_root: "/tmp/legacy/archive",
         counts: {
-          queues: 1,
+          queues: options.ledgerOnlyMigration ? 2 : 1,
           supported_queues: options.commandOnlyMigration ? 0 : 1,
-          unsupported_queues: options.commandOnlyMigration ? 1 : 0,
-          pending_observations: options.commandOnlyMigration ? 0 : 1,
-          submitted_observations: 0,
+          unsupported_queues: options.commandOnlyMigration || options.ledgerOnlyMigration ? 1 : 0,
+          pending_observations: options.commandOnlyMigration ? 1 : options.ledgerOnlyMigration ? 2 : 1,
+          submitted_observations: options.commandOnlyMigration ? 1 : 0,
         },
         queues: [{
           queue_id: "legacy-queue",
@@ -454,10 +455,27 @@ export function mockControlPlane(
           workflow_name: "Legacy github-ready",
           automation_name: "Legacy github-ready issues",
           pending_observations: 1,
-          submitted_observations: 0,
+          submitted_observations: options.commandOnlyMigration ? 1 : 0,
           supported: !options.commandOnlyMigration,
+          blocking: false,
           errors: options.commandOnlyMigration ? ["Only built-in GitHub queues can be imported."] : [],
-        }],
+        }, ...(options.ledgerOnlyMigration ? [{
+          queue_id: "removed-queue-ledger-id",
+          name: "Removed legacy queue removed-queue-ledger-id",
+          source: "ledger-only",
+          project: "",
+          state: "",
+          required_labels: [],
+          poll_interval_seconds: 0,
+          timeout_seconds: 0,
+          workflow_name: "",
+          automation_name: "",
+          pending_observations: 1,
+          submitted_observations: 0,
+          supported: false,
+          blocking: true,
+          errors: ["Ledger observations reference queue ID removed-queue-ledger-id which is missing from poller.toml; restore the matching queue before Import."],
+        }] : [])],
         automations: [],
         occurrences: [],
         errors: [],

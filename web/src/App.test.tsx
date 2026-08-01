@@ -384,10 +384,38 @@ describe("App", () => {
     await user.click(within(dialog).getByRole("checkbox", { name: /I stopped every factory-poller process/ }));
     await user.click(within(dialog).getByRole("button", { name: "Preview locked snapshot" }));
     expect(await within(dialog).findByText("0 supported · 1 unsupported")).toBeVisible();
+    expect(within(dialog).getByText("1 submitted · 1 pending", { exact: true })).toBeVisible();
     await user.click(within(dialog).getByRole("button", { name: "Continue to archive" }));
     expect(await within(dialog).findByRole("button", { name: "Finalize and archive" })).toBeEnabled();
-    await user.click(within(dialog).getByRole("button", { name: "Finalize and archive" }));
-    expect(await within(dialog).findByText("Migration finalized")).toBeVisible();
+    expect(within(dialog).getByText("0 supported · 1 unsupported")).toBeVisible();
+    await user.click(within(dialog).getAllByRole("button", { name: "Close" })[1]);
+    await user.click(screen.getByRole("button", { name: "Migrate legacy poller" }));
+    const resumedDialog = screen.getByRole("dialog", { name: "Migrate legacy poller" });
+    expect(await within(resumedDialog).findByText("0 supported · 1 unsupported")).toBeVisible();
+    expect(within(resumedDialog).getByText("1 submitted · 1 pending", { exact: true })).toBeVisible();
+    await user.click(within(resumedDialog).getByRole("checkbox", { name: /I reconfirmed every factory-poller process/ }));
+    await user.click(within(resumedDialog).getByRole("button", { name: "Finalize and archive" }));
+    expect(await within(resumedDialog).findByText("Migration finalized")).toBeVisible();
+  });
+
+  it("blocks Import when the ledger contains a removed queue", async () => {
+    window.history.replaceState({}, "", "/automations");
+    const fetch = mockControlPlane({ ledgerOnlyMigration: true });
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Migrate legacy poller" }));
+    const dialog = screen.getByRole("dialog", { name: "Migrate legacy poller" });
+    await user.click(within(dialog).getByRole("checkbox", { name: /I stopped every factory-poller process/ }));
+    await user.click(within(dialog).getByRole("button", { name: "Preview locked snapshot" }));
+
+    expect(await within(dialog).findByText("1 supported · 1 unsupported")).toBeVisible();
+    expect(within(dialog).getByText(/restore the matching queue before Import/)).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Restore missing queue before Import" })).toBeDisabled();
+    expect(fetch.mock.calls.some(([input]) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return path === "/api/v1/migrations/legacy-poller/import";
+    })).toBe(false);
   });
 
   it("creates, previews, enables, and runs a typed schedule Automation", async () => {

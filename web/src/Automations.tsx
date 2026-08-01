@@ -459,6 +459,7 @@ function LegacyPollerMigrationDialog({
   });
   const unresolved = migration?.occurrences.filter((occurrence) =>
     occurrence.state === "pending" || occurrence.state === "dispatching" || occurrence.state === "failed") ?? [];
+  const hasMissingLedgerQueue = reviewQueues.some((queue) => queue.blocking);
   const operationError = activeMigration.error || preview.error || importMigration.error || resolveOccurrence.error || finalize.error;
   const setPath = (field: "config_path" | "data_home" | "working_directory", value: string) =>
     setSelection((current) => ({ ...current, [field]: value || undefined }));
@@ -555,8 +556,8 @@ function LegacyPollerMigrationDialog({
               </div>
               <div className="migration-actions">
                 <button type="button" className="button button-secondary" onClick={() => { setMigration(undefined); setReviewQueues([]); }}>Run a new Preview</button>
-                <button type="submit" className="button button-primary" disabled={importMigration.isPending}>
-                  {importMigration.isPending ? "Importing…" : migration.counts.supported_queues === 0 ? "Continue to archive" : "Import disabled Automations"}
+                <button type="submit" className="button button-primary" disabled={hasMissingLedgerQueue || importMigration.isPending}>
+                  {importMigration.isPending ? "Importing…" : hasMissingLedgerQueue ? "Restore missing queue before Import" : migration.counts.supported_queues === 0 ? "Continue to archive" : "Import disabled Automations"}
                 </button>
               </div>
             </form>

@@ -149,18 +149,34 @@ func (s *Store) PreviewLegacyPoller(
 		return protocol.LegacyPollerMigration{}, unavailable(err)
 	}
 	now := s.now().UnixMilli()
+	preview, err := s.legacyPollerMigrationFromSnapshot(ctx, migrationID, "previewed", source.snapshot)
+	if err != nil {
+		return protocol.LegacyPollerMigration{}, err
+	}
+	var unimportedPending, unimportedSubmitted int
+	for _, queue := range preview.Queues {
+		if !queue.Supported {
+			unimportedPending += queue.PendingObservations
+			unimportedSubmitted += queue.SubmittedObservations
+		}
+	}
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO legacy_poller_migrations(
 			id, snapshot_digest, config_path, data_home, working_directory,
-			data_directory, ledger_path, archive_root, status, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'previewed', ?, ?)
+			data_directory, ledger_path, archive_root, status, queue_count,
+			supported_queue_count, unsupported_queue_count,
+			unimported_pending_observation_count, unimported_submitted_observation_count,
+			created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'previewed', ?, ?, ?, ?, ?, ?, ?)
 	`, migrationID, source.snapshot.Digest, source.snapshot.ConfigPath,
 		source.snapshot.DataHome, source.snapshot.WorkingDirectory,
 		source.snapshot.DataDirectory, source.snapshot.LedgerPath,
-		source.snapshot.ArchiveRoot, now, now); err != nil {
+		source.snapshot.ArchiveRoot, preview.Counts.Queues, preview.Counts.Supported,
+		preview.Counts.Unsupported, unimportedPending, unimportedSubmitted, now, now); err != nil {
 		return protocol.LegacyPollerMigration{}, unavailable(err)
 	}
-	return s.legacyPollerMigrationFromSnapshot(ctx, migrationID, "previewed", source.snapshot)
+	preview.CreatedAt, preview.UpdatedAt = fromMillis(now), fromMillis(now)
+	return preview, nil
 }
 
 func openLegacyPollerSource(
@@ -558,8 +574,10 @@ func (s *Store) legacyPollerMigrationFromSnapshot(
 	if err := automationRows.Close(); err != nil {
 		return result, unavailable(err)
 	}
+	configuredQueueIDs := make(map[string]bool, len(snapshot.Config.Queues))
 	for _, queue := range snapshot.Config.Queues {
 		queueID := legacyQueueID(queue)
+		configuredQueueIDs[queueID] = true
 		queueCounts := counts[queueID]
 		item := protocol.LegacyPollerQueue{
 			QueueID: queueID, Name: queue.Name, Source: queue.Source, Project: queue.Project,
@@ -631,6 +649,27 @@ func (s *Store) legacyPollerMigrationFromSnapshot(
 		for _, message := range item.Errors {
 			result.Errors = append(result.Errors, queue.Name+": "+message)
 		}
+	}
+	missingQueueIDs := make([]string, 0)
+	for queueID := range counts {
+		if !configuredQueueIDs[queueID] {
+			missingQueueIDs = append(missingQueueIDs, queueID)
+		}
+	}
+	sort.Strings(missingQueueIDs)
+	for _, queueID := range missingQueueIDs {
+		queueCounts := counts[queueID]
+		message := "Ledger observations reference queue ID " + queueID + " which is missing from poller.toml; restore the matching queue before Import."
+		result.Queues = append(result.Queues, protocol.LegacyPollerQueue{
+			QueueID: queueID, Name: "Removed legacy queue " + queueID, Source: "ledger-only",
+			PendingObservations: queueCounts.Pending, SubmittedObservations: queueCounts.Submitted,
+			Supported: false, Blocking: true, Errors: []string{message},
+		})
+		result.Counts.Queues++
+		result.Counts.Unsupported++
+		result.Counts.Pending += queueCounts.Pending
+		result.Counts.Submitted += queueCounts.Submitted
+		result.Errors = append(result.Errors, message)
 	}
 	return result, nil
 }

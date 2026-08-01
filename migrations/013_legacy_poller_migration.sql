@@ -108,6 +108,11 @@ CREATE TABLE legacy_poller_migrations (
     archive_root TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('previewed', 'imported', 'finalized')),
     archive_path TEXT NOT NULL DEFAULT '',
+    queue_count INTEGER NOT NULL DEFAULT 0,
+    supported_queue_count INTEGER NOT NULL DEFAULT 0,
+    unsupported_queue_count INTEGER NOT NULL DEFAULT 0,
+    unimported_pending_observation_count INTEGER NOT NULL DEFAULT 0,
+    unimported_submitted_observation_count INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     finalized_at INTEGER
