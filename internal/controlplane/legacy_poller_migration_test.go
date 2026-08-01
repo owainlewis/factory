@@ -320,6 +320,86 @@ func TestLegacyPollerResumeRecoversAfterTaskCommitAndRestart(t *testing.T) {
 	}
 }
 
+func TestLegacyPollerResumeResetsAfterCanceledLinkBeginAndRestart(t *testing.T) {
+	queueID := legacyQueueID(legacyPollerQueue{Name: "github-ready", Source: "github", Project: "example/project"})
+	observation := legacyPendingRequest(t, queueID, 20)
+	fixture := newLegacyMigrationFixture(t, []legacyPollerObservation{observation})
+	databasePath := filepath.Join(t.TempDir(), "controlplane.sqlite3")
+	store, err := Open(context.Background(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := createManagedTestRepository(t, store, "github.com/example/project")
+	_, err = store.RegisterWorker(context.Background(), "link-failure-worker", protocol.WorkerRegistration{
+		Name: "link-failure-worker", WorkerVersion: "test", Runtime: protocol.RuntimeCodex,
+		RuntimeVersion: "test", Capacity: 1, Health: "healthy",
+		AcceptsManagedRepositories: true, ManagedRepositoryIDs: []string{repository.ID},
+		SourceAccess: []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection := migrationSelection(fixture)
+	preview, err := store.PreviewLegacyPoller(context.Background(), protocol.PreviewLegacyPollerRequest{LegacyPollerSelection: selection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imported, err := store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
+		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
+		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Link failure workflow", AutomationName: "Link failure issues"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resumeContext, cancelResume := context.WithCancel(context.Background())
+	store.beginLegacyResumeLink = func(context.Context) (*sql.Tx, error) {
+		cancelResume()
+		return nil, context.Canceled
+	}
+	_, err = store.ResumeLegacyPollerOccurrence(resumeContext, imported.Occurrences[0].ID)
+	if !errors.Is(err, context.Canceled) || resumeContext.Err() != context.Canceled {
+		t.Fatalf("injected link failure = %v, context = %v", err, resumeContext.Err())
+	}
+	var state, diagnostic string
+	var retainedRequest []byte
+	if err := store.db.QueryRowContext(context.Background(), `
+		SELECT state, diagnostic, legacy_task_request_json
+		FROM automation_occurrences
+		WHERE id = ?
+	`, imported.Occurrences[0].ID).Scan(&state, &diagnostic, &retainedRequest); err != nil {
+		t.Fatal(err)
+	}
+	if state != "pending" || !strings.Contains(diagnostic, "context canceled") || len(retainedRequest) == 0 {
+		t.Fatalf("occurrence after link failure: state=%q diagnostic=%q request=%q", state, diagnostic, retainedRequest)
+	}
+	page, err := store.Tasks(context.Background(), protocol.TaskPageRequest{Limit: 50})
+	if err != nil || len(page.Tasks) != 1 || page.Tasks[0].RequestKey != observation.RequestKey {
+		t.Fatalf("created Task after link failure = %#v, error %v", page.Tasks, err)
+	}
+	createdTaskID := page.Tasks[0].ID
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(context.Background(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	resumed, err := reopened.ResumeLegacyPollerOccurrence(context.Background(), imported.Occurrences[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.State != "dispatched" || resumed.Task == nil || resumed.Task.ID != createdTaskID {
+		t.Fatalf("Resume after restart = %#v", resumed)
+	}
+	page, err = reopened.Tasks(context.Background(), protocol.TaskPageRequest{Limit: 50})
+	if err != nil || len(page.Tasks) != 1 {
+		t.Fatalf("Tasks after recovered Resume = %#v, error %v", page.Tasks, err)
+	}
+}
+
 func TestLegacyPollerImportPreservesSubmittedDeletedAndBlankTaskIDIdentity(t *testing.T) {
 	store := newTestStore(t)
 	repository := createManagedTestRepository(t, store, "github.com/example/project")
@@ -476,6 +556,150 @@ func TestLegacyPollerSkipArchiveFailureRetryAndFinalizeSnapshotGuard(t *testing.
 	}
 	if _, err := os.Stat(filepath.Join(changedFixture.dataHome, "archive", "poller", changedPreview.ID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("archive exists after source-change abort: %v", err)
+	}
+}
+
+func TestLegacyPollerFinalizeRebuildsInvalidStagingFilesAfterRestart(t *testing.T) {
+	queueID := legacyQueueID(legacyPollerQueue{Name: "github-ready", Source: "github", Project: "example/project"})
+	fixture := newLegacyMigrationFixture(t, []legacyPollerObservation{legacyPendingRequest(t, queueID, 23)})
+	databasePath := filepath.Join(t.TempDir(), "controlplane.sqlite3")
+	store, err := Open(context.Background(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createManagedTestRepository(t, store, "github.com/example/project")
+	selection := migrationSelection(fixture)
+	preview, err := store.PreviewLegacyPoller(context.Background(), protocol.PreviewLegacyPollerRequest{LegacyPollerSelection: selection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imported, err := store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
+		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
+		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Staging workflow", AutomationName: "Staging issues"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SkipLegacyPollerOccurrence(context.Background(), imported.Occurrences[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	stagingPath := filepath.Join(fixture.dataHome, "archive", "poller", "."+preview.ID+".staging")
+	if err := os.MkdirAll(stagingPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"poller.toml", "poller.sqlite3", "manifest.json"} {
+		if err := os.WriteFile(filepath.Join(stagingPath, name), []byte("incomplete write"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(context.Background(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	finalized, err := reopened.FinalizeLegacyPoller(context.Background(), protocol.FinalizeLegacyPollerRequest{
+		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
+	})
+	if err != nil || finalized.Status != "finalized" {
+		t.Fatalf("Finalize after partial staging restart = %#v, error %v", finalized, err)
+	}
+	if _, err := os.Stat(stagingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging path remains after Finalize: %v", err)
+	}
+	configBody, err := os.ReadFile(fixture.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archivedConfig, err := os.ReadFile(filepath.Join(finalized.ArchivePath, "poller.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(archivedConfig) != string(configBody) {
+		t.Fatal("Finalize did not rebuild the partial staged configuration")
+	}
+	sourceLedgerDigest, err := digestFile(fixture.ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archivedLedgerDigest, err := digestFile(filepath.Join(finalized.ArchivePath, "poller.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archivedLedgerDigest != sourceLedgerDigest {
+		t.Fatalf("archived ledger digest = %s, want %s", archivedLedgerDigest, sourceLedgerDigest)
+	}
+}
+
+func TestLegacyPollerFinalizeResyncsArchiveParentAfterRestart(t *testing.T) {
+	queueID := legacyQueueID(legacyPollerQueue{Name: "github-ready", Source: "github", Project: "example/project"})
+	fixture := newLegacyMigrationFixture(t, []legacyPollerObservation{legacyPendingRequest(t, queueID, 24)})
+	databasePath := filepath.Join(t.TempDir(), "controlplane.sqlite3")
+	store, err := Open(context.Background(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createManagedTestRepository(t, store, "github.com/example/project")
+	selection := migrationSelection(fixture)
+	preview, err := store.PreviewLegacyPoller(context.Background(), protocol.PreviewLegacyPollerRequest{LegacyPollerSelection: selection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imported, err := store.ImportLegacyPoller(context.Background(), protocol.ImportLegacyPollerRequest{
+		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
+		Mappings: []protocol.LegacyPollerQueueMapping{{QueueID: queueID, WorkflowName: "Parent sync workflow", AutomationName: "Parent sync issues"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SkipLegacyPollerOccurrence(context.Background(), imported.Occurrences[0].ID); err != nil {
+		t.Fatal(err)
+	}
+
+	archiveRoot := filepath.Join(fixture.dataHome, "archive", "poller")
+	parentSyncs := 0
+	originalSyncDirectory := legacyArchiveSyncDirectory
+	legacyArchiveSyncDirectory = func(path string) error {
+		if path == archiveRoot {
+			parentSyncs++
+			if parentSyncs == 1 {
+				return errors.New("injected archive parent sync failure")
+			}
+		}
+		return syncDirectory(path)
+	}
+	t.Cleanup(func() { legacyArchiveSyncDirectory = originalSyncDirectory })
+	_, err = store.FinalizeLegacyPoller(context.Background(), protocol.FinalizeLegacyPollerRequest{
+		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
+	})
+	var serviceErr *ServiceError
+	if !errors.As(err, &serviceErr) || serviceErr.Code != "migration_archive_failed" {
+		t.Fatalf("injected parent sync failure = %v", err)
+	}
+	finalPath := filepath.Join(archiveRoot, preview.ID)
+	if _, err := os.Stat(finalPath); err != nil {
+		t.Fatalf("published archive after parent sync failure: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(context.Background(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	finalized, err := reopened.FinalizeLegacyPoller(context.Background(), protocol.FinalizeLegacyPollerRequest{
+		LegacyPollerSelection: selection, MigrationID: preview.ID, SnapshotDigest: preview.SnapshotDigest,
+	})
+	if err != nil || finalized.Status != "finalized" || finalized.ArchivePath != finalPath {
+		t.Fatalf("Finalize after parent sync restart = %#v, error %v", finalized, err)
+	}
+	if parentSyncs != 2 {
+		t.Fatalf("archive parent syncs = %d, want 2", parentSyncs)
 	}
 }
 

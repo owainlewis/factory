@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/owainlewis/factory/internal/protocol"
 )
+
+const legacyResumeCleanupTimeout = 5 * time.Second
 
 func (s *Store) ResumeLegacyPollerOccurrence(
 	ctx context.Context,
@@ -71,16 +74,28 @@ func (s *Store) ResumeLegacyPollerOccurrence(
 		s.resetLegacyResume(ctx, occurrenceID, truncateAutomationDiagnostic(createErr.Error()))
 		return protocol.AutomationOccurrence{}, createErr
 	}
+	linked := false
+	cleanupDiagnostic := "legacy_resume_link_failed"
+	defer func() {
+		if !linked {
+			s.resetLegacyResume(ctx, occurrenceID, cleanupDiagnostic)
+		}
+	}()
 	if !equalLegacyTask(detail, request, repositoryID) {
-		s.resetLegacyResume(ctx, occurrenceID, "legacy_task_conflict")
+		cleanupDiagnostic = "legacy_task_conflict"
 		return protocol.AutomationOccurrence{}, conflict(
 			"legacy_task_conflict",
 			"the legacy request key belongs to a Task with a different repository, title, description, or timeout; Skip the observation or repair the conflicting Task",
 		)
 	}
 
-	link, err := s.db.BeginTx(ctx, nil)
+	beginLink := s.beginLegacyResumeLink
+	if beginLink == nil {
+		beginLink = func(ctx context.Context) (*sql.Tx, error) { return s.db.BeginTx(ctx, nil) }
+	}
+	link, err := beginLink(ctx)
 	if err != nil {
+		cleanupDiagnostic = truncateAutomationDiagnostic(err.Error())
 		return protocol.AutomationOccurrence{}, unavailable(err)
 	}
 	defer link.Rollback()
@@ -110,13 +125,17 @@ func (s *Store) ResumeLegacyPollerOccurrence(
 		return protocol.AutomationOccurrence{}, unavailable(err)
 	}
 	if err := link.Commit(); err != nil {
+		cleanupDiagnostic = truncateAutomationDiagnostic(err.Error())
 		return protocol.AutomationOccurrence{}, unavailable(err)
 	}
+	linked = true
 	return s.legacyOccurrence(ctx, occurrenceID)
 }
 
 func (s *Store) resetLegacyResume(ctx context.Context, occurrenceID, diagnostic string) {
-	_, _ = s.db.ExecContext(ctx, `
+	cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), legacyResumeCleanupTimeout)
+	defer cancel()
+	_, _ = s.db.ExecContext(cleanupContext, `
 		UPDATE automation_occurrences
 		SET state = 'pending', diagnostic = ?, updated_at = ?
 		WHERE id = ? AND state = 'dispatching' AND legacy_task_request_json IS NOT NULL

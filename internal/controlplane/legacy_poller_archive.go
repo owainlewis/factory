@@ -25,6 +25,7 @@ type legacyPollerArchiveManifest struct {
 }
 
 var legacyArchiveRename = os.Rename
+var legacyArchiveSyncDirectory = syncDirectory
 
 func (s *Store) FinalizeLegacyPoller(
 	ctx context.Context,
@@ -117,6 +118,9 @@ func createLegacyPollerArchive(source *legacyLockedSource, migrationID string) (
 		if err := verifyLegacyArchive(finalPath, manifest); err != nil {
 			return "", fmt.Errorf("archive collision at %s: %w", finalPath, err)
 		}
+		if err := legacyArchiveSyncDirectory(snapshot.ArchiveRoot); err != nil {
+			return "", fmt.Errorf("sync recovered archive parent: %w", err)
+		}
 		return finalPath, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("inspect final archive: %w", err)
@@ -150,7 +154,7 @@ func createLegacyPollerArchive(source *legacyLockedSource, migrationID string) (
 	if err := ensureArchiveBytes(filepath.Join(stagingPath, "manifest.json"), manifestBody, hex.EncodeToString(manifestDigest[:])); err != nil {
 		return "", err
 	}
-	if err := syncDirectory(stagingPath); err != nil {
+	if err := legacyArchiveSyncDirectory(stagingPath); err != nil {
 		return "", fmt.Errorf("sync archive staging directory: %w", err)
 	}
 	if err := source.verifyLedgerPath(); err != nil {
@@ -158,11 +162,14 @@ func createLegacyPollerArchive(source *legacyLockedSource, migrationID string) (
 	}
 	if err := legacyArchiveRename(stagingPath, finalPath); err != nil {
 		if verifyErr := verifyLegacyArchive(finalPath, manifest); verifyErr == nil {
+			if syncErr := legacyArchiveSyncDirectory(snapshot.ArchiveRoot); syncErr != nil {
+				return "", fmt.Errorf("sync recovered archive parent: %w", syncErr)
+			}
 			return finalPath, nil
 		}
 		return "", fmt.Errorf("publish archive: %w", err)
 	}
-	if err := syncDirectory(snapshot.ArchiveRoot); err != nil {
+	if err := legacyArchiveSyncDirectory(snapshot.ArchiveRoot); err != nil {
 		return "", fmt.Errorf("sync archive parent: %w", err)
 	}
 	return finalPath, nil
@@ -174,10 +181,12 @@ func ensureArchiveBytes(path string, body []byte, expectedDigest string) error {
 			return errors.New("archive staging file must be a regular non-symlink file: " + path)
 		}
 		digest, digestErr := digestFile(path)
-		if digestErr != nil || digest != expectedDigest {
-			return errors.New("archive staging file conflicts with the locked snapshot: " + path)
+		if digestErr == nil && digest == expectedDigest {
+			return nil
 		}
-		return nil
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("replace invalid archive staging file: %w", err)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect archive staging file: %w", err)
 	}
@@ -205,10 +214,12 @@ func ensureArchiveCopy(path string, source *os.File, expectedDigest string) erro
 			return errors.New("archive staging ledger must be a regular non-symlink file")
 		}
 		digest, digestErr := digestFile(path)
-		if digestErr != nil || digest != expectedDigest {
-			return errors.New("archive staging ledger conflicts with the locked snapshot")
+		if digestErr == nil && digest == expectedDigest {
+			return nil
 		}
-		return nil
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("replace invalid archive staging ledger: %w", err)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect archive staging ledger: %w", err)
 	}

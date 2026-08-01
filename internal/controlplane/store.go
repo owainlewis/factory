@@ -49,9 +49,10 @@ func invalid(code, message string) error {
 }
 
 type Store struct {
-	db         *sql.DB
-	now        func() time.Time
-	sweepEvery time.Duration
+	db                    *sql.DB
+	now                   func() time.Time
+	sweepEvery            time.Duration
+	beginLegacyResumeLink func(context.Context) (*sql.Tx, error)
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -81,6 +82,9 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(8)
 	store := &Store{db: db, now: time.Now, sweepEvery: 5 * time.Second}
+	store.beginLegacyResumeLink = func(ctx context.Context) (*sql.Tx, error) {
+		return db.BeginTx(ctx, nil)
+	}
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping sqlite: %w", err)
