@@ -70,7 +70,7 @@ func LoadConfig(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("resolve worker configuration path: %w", err)
 	}
-	dataDirectoryDefaulted := config.DataDirectory == ""
+	dataDirectoryDefaulted := !metadata.IsDefined("data_directory")
 	if dataDirectoryDefaulted {
 		config.DataDirectory, err = defaultDataDirectory(config.path)
 		if err != nil {
@@ -80,7 +80,7 @@ func LoadConfig(path string) (Config, error) {
 	for index := range config.SourceAccess {
 		config.SourceAccess[index] = strings.ToLower(strings.TrimSpace(config.SourceAccess[index]))
 	}
-	if !dataDirectoryDefaulted && !filepath.IsAbs(config.DataDirectory) {
+	if !dataDirectoryDefaulted && strings.TrimSpace(config.DataDirectory) != "" && !filepath.IsAbs(config.DataDirectory) {
 		config.DataDirectory = filepath.Join(filepath.Dir(path), config.DataDirectory)
 	}
 	for key, repository := range config.Repositories {

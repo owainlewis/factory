@@ -1656,6 +1656,36 @@ runtime = "codex"
 	}
 }
 
+func TestLoadConfigDistinguishesOmittedAndEmptyDataDirectory(t *testing.T) {
+	root := t.TempDir()
+
+	t.Run("omitted", func(t *testing.T) {
+		configPath := filepath.Join(root, "omitted.toml")
+		if err := os.WriteFile(configPath, []byte(`name = "local"`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		config, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := filepath.Join(root, "workers", "omitted")
+		if config.DataDirectory != want {
+			t.Fatalf("data directory = %q, want %q", config.DataDirectory, want)
+		}
+	})
+
+	t.Run("explicitly empty", func(t *testing.T) {
+		configPath := filepath.Join(root, "empty.toml")
+		body := []byte("name = \"local\"\ndata_directory = \"\"\n")
+		if err := os.WriteFile(configPath, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadConfig(configPath); err == nil || !strings.Contains(err.Error(), "data_directory is required") {
+			t.Fatalf("explicitly empty data directory error = %v", err)
+		}
+	})
+}
+
 func TestLoadConfigPreservesExplicitDataDirectories(t *testing.T) {
 	root := t.TempDir()
 	absolute := filepath.Join(t.TempDir(), "worker-data")
