@@ -85,6 +85,20 @@ type ManagedRepository struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+type ManagedRepositoryReadiness struct {
+	RoutingReady bool                               `json:"routing_ready"`
+	Workers      []ManagedRepositoryWorkerReadiness `json:"workers"`
+}
+
+type ManagedRepositoryWorkerReadiness struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Cached     bool   `json:"cached"`
+	Advertised bool   `json:"advertised"`
+	Ready      bool   `json:"ready"`
+	Reason     string `json:"reason"`
+}
+
 type CreateManagedRepositoryRequest struct {
 	RemoteIdentity string `json:"remote_identity"`
 }

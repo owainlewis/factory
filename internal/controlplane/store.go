@@ -547,6 +547,133 @@ func (s *Store) ManagedRepository(ctx context.Context, repositoryID string) (pro
 	return repository, nil
 }
 
+func (s *Store) ManagedRepositoryReadiness(
+	ctx context.Context,
+	repositoryID string,
+) (protocol.ManagedRepositoryReadiness, error) {
+	repository, err := s.ManagedRepository(ctx, repositoryID)
+	if err != nil {
+		return protocol.ManagedRepositoryReadiness{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT w.id, w.name, w.health, w.last_heartbeat, w.source_access_json,
+		       w.accepts_managed_repositories,
+		       EXISTS (
+		           SELECT 1 FROM json_each(w.managed_repository_ids_json) cached
+		           WHERE cached.value = ?
+		       ),
+		       COALESCE(wr.advertised, 0),
+		       EXISTS (
+		           SELECT 1 FROM worker_repositories conflict
+		           WHERE conflict.worker_id = w.id
+		             AND conflict.display_key = ?
+		             AND conflict.repository_id != ?
+		       ),
+		       json_array_length(w.managed_repository_ids_json) + (
+		           SELECT COUNT(*)
+		           FROM worker_repositories reserved
+		           WHERE reserved.worker_id = w.id
+		             AND reserved.dynamic = 1
+		             AND reserved.advertised = 1
+		             AND NOT EXISTS (
+		                 SELECT 1 FROM json_each(w.managed_repository_ids_json) cached
+		                 WHERE cached.value = reserved.repository_id
+		             )
+		       ),
+		       COALESCE(wr.retained_count, 0) + (
+		           SELECT COUNT(*)
+		           FROM attempts active_attempt
+		           JOIN executions active_execution ON active_execution.id = active_attempt.execution_id
+		           JOIN tasks active_task ON active_task.id = active_execution.task_id
+		           WHERE active_attempt.worker_id = w.id
+		             AND active_task.repository_id = ?
+		             AND active_attempt.state IN ('preparing', 'running')
+		       ) + (
+		           SELECT COUNT(*)
+		           FROM attempts terminal_attempt
+		           JOIN executions terminal_execution ON terminal_execution.id = terminal_attempt.execution_id
+		           JOIN tasks terminal_task ON terminal_task.id = terminal_execution.task_id
+		           WHERE terminal_attempt.worker_id = w.id
+		             AND terminal_task.repository_id = ?
+		             AND terminal_attempt.state IN ('succeeded', 'failed', 'cancelled', 'lost')
+		             AND terminal_attempt.capacity_acknowledged = 0
+		       )
+		FROM workers w
+		LEFT JOIN worker_repositories wr
+		  ON wr.worker_id = w.id AND wr.repository_id = ?
+		ORDER BY w.registered_at, w.id
+	`, repository.ID, repository.RemoteIdentity, repository.ID,
+		repository.ID, repository.ID, repository.ID)
+	if err != nil {
+		return protocol.ManagedRepositoryReadiness{}, unavailable(err)
+	}
+	defer rows.Close()
+
+	readiness := protocol.ManagedRepositoryReadiness{
+		Workers: make([]protocol.ManagedRepositoryWorkerReadiness, 0),
+	}
+	now := s.now()
+	for rows.Next() {
+		var worker protocol.ManagedRepositoryWorkerReadiness
+		var health string
+		var heartbeat int64
+		var encodedSourceAccess []byte
+		var acceptsManaged, cached, advertised, displayKeyConflict int
+		var cacheUse, retentionUse int
+		if err := rows.Scan(
+			&worker.ID, &worker.Name, &health, &heartbeat, &encodedSourceAccess,
+			&acceptsManaged, &cached, &advertised, &displayKeyConflict,
+			&cacheUse, &retentionUse,
+		); err != nil {
+			return protocol.ManagedRepositoryReadiness{}, unavailable(err)
+		}
+		var sourceAccess []protocol.SourceAccess
+		if err := json.Unmarshal(encodedSourceAccess, &sourceAccess); err != nil {
+			return protocol.ManagedRepositoryReadiness{}, unavailable(err)
+		}
+		worker.Cached = cached != 0
+		worker.Advertised = advertised != 0
+		online := now.Sub(fromMillis(heartbeat)) <= protocol.WorkerOnlineWindow
+		githubAccess := hasSourceAccess(sourceAccess, protocol.SourceAccess{
+			Provider: "github", Hostname: "github.com",
+		})
+		switch {
+		case !repository.Enabled:
+			worker.Reason = "Repository routing is disabled."
+		case !online:
+			worker.Reason = "Worker is offline."
+		case health != "healthy":
+			worker.Reason = "Worker is unhealthy."
+		case !githubAccess:
+			worker.Reason = "Worker does not currently report GitHub access."
+		case !worker.Advertised && displayKeyConflict != 0:
+			worker.Reason = "Another advertised repository uses this routing identity."
+		case !worker.Advertised && acceptsManaged == 0:
+			worker.Reason = "Worker cannot acquire managed repositories and does not advertise this one."
+		case !worker.Advertised && !worker.Cached && cacheUse >= protocol.MaxRepositoryCacheEntries:
+			worker.Reason = "Managed repository cache and reservations are full."
+		case retentionUse >= protocol.MaxRetainedPerRepo:
+			worker.Reason = "Repository retained-worktree capacity is full."
+		default:
+			worker.Ready = true
+			readiness.RoutingReady = true
+			switch {
+			case worker.Cached:
+				worker.Reason = "Online, healthy, with GitHub access and this repository cached."
+			case worker.Advertised:
+				worker.Reason = "Online, healthy, with GitHub access and this repository advertised."
+			default:
+				worker.Reason = "Online, healthy, with GitHub access and managed cache headroom."
+			}
+		}
+		readiness.Workers = append(readiness.Workers, worker)
+	}
+	if err := rows.Err(); err != nil {
+		return protocol.ManagedRepositoryReadiness{}, unavailable(err)
+	}
+	return readiness, nil
+}
+
 func (s *Store) SetManagedRepositoryEnabled(
 	ctx context.Context,
 	repositoryID string,

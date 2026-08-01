@@ -4,6 +4,8 @@ import type {
   CreateTaskInput,
   MetricsSummary,
   MetricsWindow,
+  ManagedRepository,
+  ManagedRepositoryReadiness,
   TaskPage,
   TaskDetail,
   Worker,
@@ -20,7 +22,7 @@ export class APIError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function requestWithStatus<T>(path: string, init?: RequestInit): Promise<{ data: T; status: number }> {
   const response = await fetch(path, {
     ...init,
     headers: init?.body
@@ -41,9 +43,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
   if (response.status === 204) {
-    return undefined as T;
+    return { data: undefined as T, status: response.status };
   }
-  return response.json() as Promise<T>;
+  return { data: await response.json() as T, status: response.status };
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  return (await requestWithStatus<T>(path, init)).data;
 }
 
 export const api = {
@@ -61,8 +67,31 @@ export const api = {
   },
   task: (id: string) => request<TaskDetail>(`/api/v1/tasks/${encodeURIComponent(id)}`),
   workers: async () =>
-    (await request<{ workers: Worker[] | null }>("/api/v1/workers")).workers ?? [],
-  worker: (id: string) => request<Worker>(`/api/v1/workers/${encodeURIComponent(id)}`),
+    ((await request<{ workers: Worker[] | null }>("/api/v1/workers")).workers ?? [])
+      .map(normalizeWorker),
+  worker: async (id: string) =>
+    normalizeWorker(await request<Worker>(`/api/v1/workers/${encodeURIComponent(id)}`)),
+  repositories: async () =>
+    (await request<{ repositories: ManagedRepository[] | null }>("/api/v1/repositories"))
+      .repositories ?? [],
+  repository: (id: string) =>
+    request<ManagedRepository>(`/api/v1/repositories/${encodeURIComponent(id)}`),
+  repositoryReadiness: (id: string) =>
+    request<ManagedRepositoryReadiness>(
+      `/api/v1/repositories/${encodeURIComponent(id)}/readiness`,
+    ),
+  createRepository: async (remoteIdentity: string) => {
+    const response = await requestWithStatus<ManagedRepository>("/api/v1/repositories", {
+      method: "POST",
+      body: JSON.stringify({ remote_identity: remoteIdentity }),
+    });
+    return { repository: response.data, created: response.status === 201 };
+  },
+  setRepositoryEnabled: (id: string, enabled: boolean) =>
+    request<ManagedRepository>(`/api/v1/repositories/${encodeURIComponent(id)}/enabled`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
   events: async (attemptID: string, after: number): Promise<AttemptEventPage> => {
     const query = new URLSearchParams({ after: String(after), limit: "100" });
     const page = await request<{
@@ -90,3 +119,12 @@ export const api = {
       body: "{}",
     }),
 };
+
+function normalizeWorker(worker: Worker): Worker {
+  return {
+    ...worker,
+    repositories: worker.repositories ?? [],
+    retained_worktrees: worker.retained_worktrees ?? [],
+    source_access: worker.source_access ?? [],
+  };
+}

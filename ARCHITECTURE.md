@@ -164,7 +164,9 @@ event and completion contract.
 ### Browser UI
 
 `web/src` is a React and TypeScript application with Overview, Work, Workers,
-Task detail, and Delegate task views. It polls the same-origin API.
+managed Repositories, Task detail, and Delegate task views. Repository detail
+combines the central catalog with the control plane's current routing and
+acquisition readiness facts. It polls the same-origin API.
 
 `web/dist` is generated, committed, and embedded by `web/embed.go`. The server
 uses an SPA fallback for application routes, immutable caching for versioned

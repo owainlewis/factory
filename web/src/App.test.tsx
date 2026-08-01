@@ -91,6 +91,127 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: /^Work$/ })).not.toHaveAttribute("aria-current");
   });
 
+  it("lists managed repositories and shows current acquisition readiness", async () => {
+    window.history.replaceState({}, "", "/repositories/repo-factory");
+    mockControlPlane();
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: "github.com/example/factory" })).toBeVisible();
+    expect(screen.getByText("1 worker is ready to acquire routed work")).toBeVisible();
+    const workerRow = screen.getByText("Build Mac").closest(".repository-worker-row");
+    expect(workerRow).not.toBeNull();
+    expect(within(workerRow as HTMLElement).getByText("Cached")).toBeVisible();
+    expect(within(workerRow as HTMLElement).getByText("Advertised")).toBeVisible();
+    expect(within(workerRow as HTMLElement).getByText("Ready")).toBeVisible();
+    const navigation = screen.getByRole("button", { name: /^Repositories$/ });
+    expect(navigation).toHaveClass("active");
+    expect(navigation).not.toHaveAttribute("aria-current");
+  });
+
+  it("adds, disables, and enables a managed repository", async () => {
+    window.history.replaceState({}, "", "/repositories");
+    mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    expect(await screen.findByText("github.com/example/disabled")).toBeVisible();
+    await user.type(screen.getByLabelText("Canonical identity"), "github.com/example/new-repository");
+    await user.click(screen.getByRole("button", { name: "Add repository" }));
+
+    expect(await screen.findByRole("heading", { name: "github.com/example/new-repository" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Disable repository" }));
+    expect(screen.getByText(/Disabling rejects new routed work/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Disable routing" }));
+    expect(await screen.findByText("Routing disabled")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Enable repository" }));
+    expect(await screen.findByRole("button", { name: "Disable repository" })).toBeVisible();
+  });
+
+  it("shows actionable repository validation errors", async () => {
+    window.history.replaceState({}, "", "/repositories");
+    mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    const input = await screen.findByLabelText("Canonical identity");
+    await user.type(input, "example.com/not-github");
+    await user.click(screen.getByRole("button", { name: "Add repository" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "remote_identity must use the canonical github.com/owner/repository form (invalid_repository)",
+    );
+    expect(input).toHaveAttribute("aria-invalid", "true");
+  });
+
+  it("identifies duplicate repositories and opens the existing entry", async () => {
+    window.history.replaceState({}, "", "/repositories");
+    mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    const input = await screen.findByLabelText("Canonical identity");
+    await user.type(input, "github.com/example/factory");
+    await user.click(screen.getByRole("button", { name: "Add repository" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("is already managed");
+    expect(screen.queryByRole("heading", { name: "github.com/example/factory" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open existing repository" }));
+    expect(await screen.findByRole("heading", { name: "github.com/example/factory" })).toBeVisible();
+  });
+
+  it("shows repository limit and failed mutation errors", async () => {
+    window.history.replaceState({}, "", "/repositories");
+    mockControlPlane({ repositoryToggleFailure: true });
+    const user = userEvent.setup();
+    renderApp();
+
+    const input = await screen.findByLabelText("Canonical identity");
+    await user.type(input, "github.com/example/over-limit");
+    await user.click(screen.getByRole("button", { name: "Add repository" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "the managed repository limit has been reached (repository_limit_reached)",
+    );
+
+    await user.click(screen.getByText("github.com/example/disabled"));
+    await user.click(await screen.findByRole("button", { name: "Enable repository" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "repository update could not be saved (storage_unavailable)",
+    );
+  });
+
+  it("shows server readiness even when the worker list fails", async () => {
+    window.history.replaceState({}, "", "/repositories/repo-factory");
+    mockControlPlane({ workerFailure: true });
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: "github.com/example/factory" })).toBeVisible();
+    expect(screen.getByText("1 worker is ready to acquire routed work")).toBeVisible();
+    expect(screen.getByText("Worker readiness")).toBeVisible();
+  });
+
+  it("preserves repository form focus and input during background polling", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      window.history.replaceState({}, "", "/repositories");
+      mockControlPlane();
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderApp();
+
+      const input = await screen.findByLabelText("Canonical identity");
+      await user.type(input, "github.com/example/in-progress");
+      expect(input).toHaveFocus();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+
+      expect(input).toHaveValue("github.com/example/in-progress");
+      expect(input).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("renders every task status in the operational board", async () => {
     mockControlPlane();
     renderApp();

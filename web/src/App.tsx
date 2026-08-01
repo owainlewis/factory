@@ -1,10 +1,11 @@
-import { Bot, Boxes, Gauge, ListChecks, Menu, Plus, X } from "lucide-react";
+import { Bot, Boxes, Gauge, GitBranch, ListChecks, Menu, Plus, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { invalidateControlPlane } from "./controlPlaneQueries";
 import { DelegateModal } from "./DelegateModal";
 import { Overview } from "./Overview";
+import { RepositoriesView, RepositoryDetail } from "./Repositories";
 import { TaskDetail } from "./TaskDetail";
 import { useVisibleInterval } from "./polling";
 import type { Task, TaskPage } from "./types";
@@ -15,14 +16,18 @@ type Route =
   | { page: "overview" }
   | { page: "work" }
   | { page: "workers" }
+  | { page: "repositories" }
   | { page: "task"; id: string }
-  | { page: "worker"; id: string };
+  | { page: "worker"; id: string }
+  | { page: "repository"; id: string };
 
 function readRoute(): Route {
   const parts = window.location.pathname.split("/").filter(Boolean);
   if (parts[0] === "tasks" && parts[1]) return { page: "task", id: parts[1] };
   if (parts[0] === "workers" && parts[1]) return { page: "worker", id: parts[1] };
   if (parts[0] === "workers") return { page: "workers" };
+  if (parts[0] === "repositories" && parts[1]) return { page: "repository", id: parts[1] };
+  if (parts[0] === "repositories") return { page: "repositories" };
   if (parts[0] === "work") return { page: "work" };
   return { page: "overview" };
 }
@@ -31,6 +36,8 @@ function routePath(route: Route): string {
   if (route.page === "task") return `/tasks/${route.id}`;
   if (route.page === "worker") return `/workers/${route.id}`;
   if (route.page === "workers") return "/workers";
+  if (route.page === "repository") return `/repositories/${route.id}`;
+  if (route.page === "repositories") return "/repositories";
   return route.page === "work" ? "/work" : "/";
 }
 
@@ -148,6 +155,13 @@ export function App() {
           >
             <Bot size={17} /> Workers
           </button>
+          <button
+            className={`nav-item ${route.page === "repositories" || route.page === "repository" ? "active" : ""}`}
+            aria-current={route.page === "repositories" ? "page" : undefined}
+            onClick={() => navigate({ page: "repositories" })}
+          >
+            <GitBranch size={17} /> Repositories
+          </button>
         </nav>
         <div className="sidebar-foot">
           <span className="local-dot" aria-hidden="true" />
@@ -171,6 +185,8 @@ export function App() {
             {route.page === "workers" && "Workers"}
             {route.page === "task" && "Task detail"}
             {route.page === "worker" && "Worker detail"}
+            {route.page === "repositories" && "Repositories"}
+            {route.page === "repository" && "Repository detail"}
           </div>
           <button className="button button-primary" onClick={() => openDelegate()}>
             <Plus size={16} /> Delegate task
@@ -213,6 +229,9 @@ export function App() {
               onRefresh={() => void workers.refetch()}
             />
           )}
+          {route.page === "repositories" && (
+            <RepositoriesView onRepository={(id) => navigate({ page: "repository", id })} />
+          )}
           {route.page === "task" && (
             <TaskDetail
               id={route.id}
@@ -235,6 +254,12 @@ export function App() {
               id={route.id}
               onBack={() => navigate({ page: "workers" })}
               onDelegate={() => openDelegate(route.id)}
+            />
+          )}
+          {route.page === "repository" && (
+            <RepositoryDetail
+              id={route.id}
+              onBack={() => navigate({ page: "repositories" })}
             />
           )}
         </main>

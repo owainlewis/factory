@@ -1179,6 +1179,14 @@ func TestRoutedTaskReservesManagedRepositoryCacheHeadroom(t *testing.T) {
 	}
 	_, err = createRouted("cache-reservation-blocked", secondRepository)
 	assertErrorCode(t, err, "no_eligible_worker")
+	readiness, err := store.ManagedRepositoryReadiness(context.Background(), secondRepository.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readiness.RoutingReady || len(readiness.Workers) != 1 || readiness.Workers[0].Ready ||
+		readiness.Workers[0].Reason != "Managed repository cache and reservations are full." {
+		t.Fatalf("reserved cache readiness = %#v", readiness)
+	}
 
 	registration.ManagedRepositoryIDs = append(registration.ManagedRepositoryIDs, firstRepository.ID)
 	if _, err := store.RegisterWorker(context.Background(), workerA, registration); err != nil {

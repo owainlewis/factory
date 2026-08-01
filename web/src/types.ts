@@ -27,10 +27,35 @@ export interface Worker {
   health: "healthy" | "unhealthy";
   online: boolean;
   repositories: Repository[];
+  source_access?: Array<{ provider: string; hostname: string }>;
+  accepts_managed_repositories?: boolean;
+  repository_cache_count?: number;
   retained_worktrees: RetainedWorktree[];
   registered_at: string;
   last_heartbeat: string;
   current_task_title?: string;
+}
+
+export interface ManagedRepository {
+  id: string;
+  remote_identity: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ManagedRepositoryWorkerReadiness {
+  id: string;
+  name: string;
+  cached: boolean;
+  advertised: boolean;
+  ready: boolean;
+  reason: string;
+}
+
+export interface ManagedRepositoryReadiness {
+  routing_ready: boolean;
+  workers: ManagedRepositoryWorkerReadiness[];
 }
 
 export interface Task {

@@ -74,6 +74,7 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /api/v1/repositories", api.listManagedRepositories)
 	mux.HandleFunc("POST /api/v1/repositories", api.createManagedRepository)
 	mux.HandleFunc("GET /api/v1/repositories/{repository_id}", api.getManagedRepository)
+	mux.HandleFunc("GET /api/v1/repositories/{repository_id}/readiness", api.getManagedRepositoryReadiness)
 	mux.HandleFunc("PUT /api/v1/repositories/{repository_id}/enabled", api.setManagedRepositoryEnabled)
 	mux.HandleFunc("GET /api/v1/metrics/summary", api.getMetrics)
 	mux.HandleFunc("GET /api/v1/tasks", api.listTasks)
@@ -278,6 +279,17 @@ func (a *API) getManagedRepository(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, repository)
+}
+
+func (a *API) getManagedRepositoryReadiness(w http.ResponseWriter, r *http.Request) {
+	readiness, err := a.store.ManagedRepositoryReadiness(
+		r.Context(), r.PathValue("repository_id"),
+	)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, readiness)
 }
 
 func (a *API) setManagedRepositoryEnabled(w http.ResponseWriter, r *http.Request) {

@@ -11,6 +11,7 @@ test.setTimeout(120_000);
 
 const workerOnline = "worker-online-e2e";
 const workerOffline = "worker-offline-e2e";
+const managedWorker = "worker-managed-e2e";
 const realWorker = "11111111-1111-4111-8111-111111111111";
 const onlineRepositories = [
   { key: "factory", remote_identity: "github.com/example/factory", retained_count: 1 },
@@ -612,5 +613,86 @@ test("opens and closes delegation from the keyboard", async ({ page }) => {
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(delegate).toBeFocused();
+  browser.assertClean();
+});
+
+test("manages repository routing end to end and preserves add input while polling", async ({ page }) => {
+  const browser = observeBrowser(page);
+  const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
+  await json(
+    await api.put(`/api/v1/workers/${managedWorker}`, {
+      data: {
+        name: "Managed repository worker",
+        worker_version: "2.0.0-test",
+        runtime: "codex",
+        runtime_version: "0.42.0-test",
+        capacity: 1,
+        active_count: 0,
+        health: "healthy",
+        source_access: [{ provider: "github", hostname: "github.com" }],
+        accepts_managed_repositories: true,
+        managed_repository_ids: [],
+        repositories: [],
+        retained_worktrees: [],
+      },
+    }),
+  );
+
+  await page.goto("/repositories");
+  const repositoriesNavigation = page.getByRole("button", { name: "Repositories", exact: true });
+  await expect(repositoriesNavigation).toHaveAttribute("aria-current", "page");
+  const input = page.getByLabel("Canonical identity");
+  await input.fill("github.com/example/browser-managed");
+  await expect(input).toBeFocused();
+  await page.waitForTimeout(10_500);
+  await expect(input).toHaveValue("github.com/example/browser-managed");
+  await expect(input).toBeFocused();
+  await page.getByRole("button", { name: "Add repository" }).click();
+
+  await expect(page.getByRole("heading", { name: "github.com/example/browser-managed" })).toBeVisible();
+  await expect(repositoriesNavigation).toHaveClass(/active/);
+  await expect(repositoriesNavigation).not.toHaveAttribute("aria-current");
+  await expect(page.getByText(/\d+ workers? (?:is|are) ready to acquire routed work/)).toBeVisible();
+  await expect(page.getByText("Managed repository worker")).toBeVisible();
+  await page.screenshot({ path: "test-results/screenshots/repository-detail-desktop.png", fullPage: true });
+
+  await page.getByRole("button", { name: "Disable repository" }).click();
+  await expect(page.getByText(/Disabling rejects new routed work/)).toBeVisible();
+  await page.getByRole("button", { name: "Disable routing" }).click();
+  await expect(page.getByText("Routing disabled")).toBeVisible();
+
+  const disabledRoute = await api.post("/api/v1/tasks", {
+    data: {
+      request_key: "e2e-disabled-managed-route",
+      title: "Rejected while repository routing is disabled",
+      description: "Prove disabled managed repositories reject new routed work.",
+      route: {
+        repository_remote_identity: "github.com/example/browser-managed",
+        source_access: { provider: "github", hostname: "github.com" },
+      },
+      timeout_seconds: 60,
+    },
+  });
+  expect(disabledRoute.status()).toBe(409);
+  expect(await disabledRoute.json()).toMatchObject({ error: { code: "repository_not_managed" } });
+
+  await page.getByRole("button", { name: "Enable repository" }).click();
+  await expect(page.getByRole("button", { name: "Disable repository" })).toBeVisible();
+  const enabledRoute = await api.post("/api/v1/tasks", {
+    data: {
+      request_key: "e2e-enabled-managed-route",
+      title: "Eligible after repository routing is enabled",
+      description: "Prove enabled managed repositories become eligible for acquisition.",
+      route: {
+        repository_remote_identity: "github.com/example/browser-managed",
+        source_access: { provider: "github", hostname: "github.com" },
+      },
+      timeout_seconds: 60,
+    },
+  });
+  expect(enabledRoute.status()).toBe(201);
+  const enabledTask = await enabledRoute.json() as { execution: { assigned_worker_id: string } };
+  expect([managedWorker, realWorker]).toContain(enabledTask.execution.assigned_worker_id);
+  await api.dispose();
   browser.assertClean();
 });

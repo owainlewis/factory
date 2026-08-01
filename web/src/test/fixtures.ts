@@ -1,4 +1,4 @@
-import type { MetricsSummary, Task, Worker } from "../types";
+import type { ManagedRepository, MetricsSummary, Task, Worker } from "../types";
 import { vi } from "vitest";
 
 export const worker: Worker = {
@@ -11,6 +11,9 @@ export const worker: Worker = {
   active_count: 1,
   health: "healthy",
   online: true,
+  source_access: [{ provider: "github", hostname: "github.com" }],
+  accepts_managed_repositories: true,
+  repository_cache_count: 1,
   repositories: [
     { id: "repo-factory", key: "factory", remote_identity: "github.com/example/factory", retained_count: 0 },
     { id: "repo-docs", key: "docs", remote_identity: "github.com/example/docs", retained_count: 0 },
@@ -20,6 +23,23 @@ export const worker: Worker = {
   last_heartbeat: new Date().toISOString(),
   current_task_title: "Implement control plane",
 };
+
+export const managedRepositories: ManagedRepository[] = [
+  {
+    id: "repo-factory",
+    remote_identity: "github.com/example/factory",
+    enabled: true,
+    created_at: "2026-07-29T10:00:00Z",
+    updated_at: "2026-07-29T10:00:00Z",
+  },
+  {
+    id: "repo-disabled",
+    remote_identity: "github.com/example/disabled",
+    enabled: false,
+    created_at: "2026-07-29T10:00:00Z",
+    updated_at: "2026-07-29T11:00:00Z",
+  },
+];
 
 export const offlineWorker: Worker = {
   ...worker,
@@ -77,6 +97,8 @@ export function mockControlPlane(
     taskDetailFailuresAfter?: number;
     terminalEventFailures?: number;
     terminalTaskAfter?: number;
+    repositoryToggleFailure?: boolean;
+    workerFailure?: boolean;
   } = {},
 ) {
   let createFailures = options.createFailures ?? 0;
@@ -90,6 +112,7 @@ export function mockControlPlane(
     title: "Ship the UI",
     description: "Build and verify the real interface.",
   };
+  let repositoryItems = managedRepositories.map((repository) => ({ ...repository }));
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const path =
       typeof input === "string"
@@ -100,6 +123,80 @@ export function mockControlPlane(
     if (path.startsWith("/api/v1/metrics/summary?window=")) {
       const window = new URL(path, "http://factory.test").searchParams.get("window");
       return Response.json({ ...metrics, window });
+    }
+    if (path === "/api/v1/repositories") {
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { remote_identity: string };
+        if (!/^github\.com\/[^/]+\/[^/]+$/.test(body.remote_identity)) {
+          return Response.json(
+            { error: { code: "invalid_repository", message: "remote_identity must use the canonical github.com/owner/repository form" } },
+            { status: 400 },
+          );
+        }
+        if (body.remote_identity === "github.com/example/over-limit") {
+          return Response.json(
+            { error: { code: "repository_limit_reached", message: "the managed repository limit has been reached" } },
+            { status: 409 },
+          );
+        }
+        const existing = repositoryItems.find((item) => item.remote_identity === body.remote_identity);
+        if (existing) return Response.json(existing);
+        const created: ManagedRepository = {
+          id: "repo-created",
+          remote_identity: body.remote_identity,
+          enabled: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        repositoryItems = [...repositoryItems, created];
+        return Response.json(created, { status: 201 });
+      }
+      return Response.json({ repositories: repositoryItems });
+    }
+    if (path.startsWith("/api/v1/repositories/")) {
+      const parts = path.split("/");
+      const repositoryID = parts[4];
+      const existing = repositoryItems.find((item) => item.id === repositoryID);
+      if (!existing) return Response.json({ error: { code: "not_found", message: "not found" } }, { status: 404 });
+      if (parts[5] === "readiness") {
+        const enabled = existing.enabled;
+        return Response.json({
+          routing_ready: enabled,
+          workers: [
+            {
+              id: worker.id,
+              name: worker.name,
+              cached: existing.id === "repo-factory",
+              advertised: existing.id === "repo-factory",
+              ready: enabled,
+              reason: enabled
+                ? "Online, healthy, with GitHub access and managed cache headroom."
+                : "Repository routing is disabled.",
+            },
+            {
+              id: offlineWorker.id,
+              name: offlineWorker.name,
+              cached: false,
+              advertised: false,
+              ready: false,
+              reason: enabled ? "Worker is offline." : "Repository routing is disabled.",
+            },
+          ],
+        });
+      }
+      if (parts[5] === "enabled" && init?.method === "PUT") {
+        if (options.repositoryToggleFailure) {
+          return Response.json(
+            { error: { code: "storage_unavailable", message: "repository update could not be saved" } },
+            { status: 503 },
+          );
+        }
+        const body = JSON.parse(String(init.body)) as { enabled: boolean };
+        const updated = { ...existing, enabled: body.enabled, updated_at: new Date().toISOString() };
+        repositoryItems = repositoryItems.map((item) => item.id === updated.id ? updated : item);
+        return Response.json(updated);
+      }
+      return Response.json(existing);
     }
     if (path === "/api/v1/tasks") {
       if (init?.method === "POST") {
@@ -376,7 +473,15 @@ export function mockControlPlane(
         has_more: false,
       });
     }
-    if (path === "/api/v1/workers") return Response.json({ workers: [worker, offlineWorker] });
+    if (path === "/api/v1/workers") {
+      if (options.workerFailure) {
+        return Response.json(
+          { error: { code: "workers_unavailable", message: "workers could not be loaded" } },
+          { status: 503 },
+        );
+      }
+      return Response.json({ workers: [worker, offlineWorker] });
+    }
     if (path === `/api/v1/workers/${worker.id}`) return Response.json(worker);
     throw new Error(`Unhandled request: ${path}`);
   });

@@ -128,6 +128,25 @@ func TestHTTPManagedRepositoryCatalog(t *testing.T) {
 	}
 
 	response = fixture.request(
+		http.MethodPut, "/api/v1/workers/managed-worker", "application/json", "",
+		protocol.WorkerRegistration{
+			Name: "managed-worker", WorkerVersion: "test", RuntimeVersion: "test",
+			Capacity: 1, Health: "healthy",
+			SourceAccess:               []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+			AcceptsManagedRepositories: true,
+		},
+	)
+	requireStatus(t, response, http.StatusOK)
+	response = fixture.request(
+		http.MethodGet, "/api/v1/repositories/"+repository.ID+"/readiness", "", "", nil,
+	)
+	requireStatus(t, response, http.StatusOK)
+	readiness := decodeResponse[protocol.ManagedRepositoryReadiness](t, response)
+	if !readiness.RoutingReady || len(readiness.Workers) != 1 || !readiness.Workers[0].Ready {
+		t.Fatalf("repository readiness = %#v", readiness)
+	}
+
+	response = fixture.request(
 		http.MethodPut,
 		"/api/v1/repositories/"+repository.ID+"/enabled",
 		"application/json",
