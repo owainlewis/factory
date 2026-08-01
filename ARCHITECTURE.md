@@ -241,10 +241,10 @@ use its installed provider CLI to update the issue and open a pull request.
 9. Completion records a bounded result, error, and outcome, and moves the
    execution to `succeeded`, `failed`, or `cancelled`.
 
-The configured checkout is repository metadata and a shared Git object store;
-agent work never runs inside it. Worktrees isolate Git state, not process,
-network, credential, or host filesystem access. A future sandbox may contain
-the prepared worktree without changing task or execution identity.
+The legacy checkout or managed cache is repository metadata and a shared Git
+object store; agent work never runs inside it. Worktrees isolate Git state, not
+process, network, credential, or host filesystem access. A future sandbox may
+contain the prepared worktree without changing task or execution identity.
 
 ### Cancellation and lease expiry
 

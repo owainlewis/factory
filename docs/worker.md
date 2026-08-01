@@ -105,11 +105,11 @@ The worker prepares a task as follows:
 9. report the result and outcome;
 10. inspect final Git state locally to decide whether cleanup is safe.
 
-The registered checkout is never switched to the base branch and agent work
-never runs in it. A worktree isolates Git state but is not a security sandbox:
-the runtime still has the worker process's filesystem, network, and credential
-access. A later sandbox can contain this same prepared workspace without
-changing the task contract.
+The legacy checkout and managed cache are never switched to the base branch,
+and agent work never runs in either. A worktree isolates Git state but is not a
+security sandbox: the runtime still has the worker process's filesystem,
+network, and credential access. A later sandbox can contain this same prepared
+workspace without changing the task contract.
 
 Codex is launched non-interactively with structured result output. Claude Code
 is launched non-interactively with JSON output. The worker normalizes both into

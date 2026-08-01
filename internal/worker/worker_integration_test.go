@@ -577,10 +577,7 @@ if [ "${1:-}" = "remote" ] && [ "${2:-}" = "get-url" ] && [ "${3:-}" = "origin" 
       ;;
   esac
 fi
-if [ "${1:-}" = "fetch" ]; then
-  exec "$FACTORY_TEST_REAL_GIT" -c "url.$FACTORY_TEST_GH_ORIGIN.insteadOf=https://github.com/example/cattle.git" "$@"
-fi
-if [ "${1:-}" = "remote" ] && [ "${2:-}" = "set-head" ]; then
+if [ "${1:-}" = "fetch" ] || [ "${1:-}" = "ls-remote" ]; then
   exec "$FACTORY_TEST_REAL_GIT" -c "url.$FACTORY_TEST_GH_ORIGIN.insteadOf=https://github.com/example/cattle.git" "$@"
 fi
 exec "$FACTORY_TEST_REAL_GIT" "$@"
@@ -633,6 +630,9 @@ exec "$FACTORY_TEST_REAL_GIT" "$@"
 	if info, err := os.Stat(cachePath); err != nil || !info.IsDir() {
 		t.Fatalf("managed repository cache = %v, err %v", info, err)
 	}
+	sentinel := runGitTest(t, cachePath, "rev-parse", "HEAD")
+	runGitTest(t, cachePath, "branch", "vendor/main", sentinel)
+	runGitTest(t, cachePath, "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/vendor/*")
 	if err := os.WriteFile(filepath.Join(upstream.path, "SECOND.md"), []byte("second\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -645,8 +645,11 @@ exec "$FACTORY_TEST_REAL_GIT" "$@"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := runGitTest(t, upstream.path, "rev-parse", "HEAD"); refreshed.BaseCommit != want {
-		t.Fatalf("refreshed base commit = %q, want %q", refreshed.BaseCommit, want)
+	if want := runGitTest(t, upstream.path, "rev-parse", "HEAD"); refreshed.BaseBranch != "main" || refreshed.BaseCommit != want {
+		t.Fatalf("refreshed base = %q %q, want main %q", refreshed.BaseBranch, refreshed.BaseCommit, want)
+	}
+	if branchCommit := runGitTest(t, cachePath, "rev-parse", "refs/heads/vendor/main"); branchCommit != sentinel {
+		t.Fatalf("managed fetch mapping changed vendor/main from %q to %q", sentinel, branchCommit)
 	}
 	worker = waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
 		return len(worker.Repositories) == 1 && worker.Repositories[0].ID == managed.ID

@@ -115,39 +115,11 @@ func (manager *Manager) acquireManagedRepository(
 	if !strings.EqualFold(repository.RemoteIdentity, identity) {
 		return Repository{}, errors.New("managed repository cache origin does not match the assigned repository")
 	}
-	stdout, stderr, err := runCommand(
-		acquisitionContext,
-		manager.options.GitExecutable,
-		repository.Path,
-		256<<10,
-		"fetch", "--prune", "origin",
+	repository.BaseBranch, repository.BaseCommit, err = resolveBaseCommit(
+		acquisitionContext, manager.options.GitExecutable, repository,
 	)
 	if err != nil {
-		return Repository{}, commandFailure("fetch managed repository", stdout, stderr, err)
-	}
-	stdout, stderr, err = runCommand(
-		acquisitionContext,
-		manager.options.GitExecutable,
-		repository.Path,
-		64<<10,
-		"remote", "set-head", "origin", "--auto",
-	)
-	if err != nil {
-		return Repository{}, commandFailure("refresh managed repository default branch", stdout, stderr, err)
-	}
-	stdout, stderr, err = runCommand(
-		acquisitionContext,
-		manager.options.GitExecutable,
-		repository.Path,
-		64<<10,
-		"rev-parse", "refs/remotes/origin/HEAD^{commit}",
-	)
-	if err != nil {
-		return Repository{}, commandFailure("resolve managed repository default branch", stdout, stderr, err)
-	}
-	repository.BaseCommit = strings.TrimSpace(string(stdout))
-	if !commitPattern.MatchString(repository.BaseCommit) {
-		return Repository{}, errors.New("managed repository default branch is not a full commit ID")
+		return Repository{}, fmt.Errorf("resolve managed repository base: %w", err)
 	}
 	return repository, nil
 }

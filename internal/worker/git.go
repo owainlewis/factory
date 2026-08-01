@@ -271,9 +271,14 @@ func prepareWorktree(ctx context.Context, gitExecutable, root string, repository
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return worktree{}, fmt.Errorf("inspect attempt worktree path: %w", err)
 	}
-	baseBranch, base, err := resolveBaseCommit(ctx, gitExecutable, repository)
-	if err != nil {
-		return worktree{}, err
+	baseBranch, base := repository.BaseBranch, repository.BaseCommit
+	if base == "" {
+		baseBranch, base, err = resolveBaseCommit(ctx, gitExecutable, repository)
+		if err != nil {
+			return worktree{}, err
+		}
+	} else if baseBranch == "" || !commitPattern.MatchString(base) {
+		return worktree{}, errors.New("pre-resolved repository base must include a branch and full commit ID")
 	}
 	branch := "factory/" + taskID[:12] + "-" + attemptID[:12]
 	value := worktree{
@@ -346,7 +351,7 @@ func validateRegisteredOrigin(ctx context.Context, gitExecutable string, reposit
 	if err != nil {
 		return fmt.Errorf("revalidate repository origin: %w", err)
 	}
-	if identity != repository.RemoteIdentity {
+	if !sameRemoteIdentity(identity, repository.RemoteIdentity) {
 		return errors.New("repository origin changed since worker registration")
 	}
 	return nil
