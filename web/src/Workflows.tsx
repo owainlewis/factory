@@ -311,6 +311,10 @@ function WorkflowField({ label, htmlFor, error, hint, children }: {
 
 function mergeWorkflows(...groups: Workflow[][]): Workflow[] {
   const unique = new Map<string, Workflow>();
-  for (const group of groups) for (const workflow of group) unique.set(workflow.id, workflow);
+  for (const group of groups) {
+    for (const workflow of group) {
+      if (!unique.has(workflow.id)) unique.set(workflow.id, workflow);
+    }
+  }
   return [...unique.values()].sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
 }

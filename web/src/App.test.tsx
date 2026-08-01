@@ -245,6 +245,25 @@ describe("App", () => {
     })).toBe(true);
   });
 
+  it("keeps a refreshed Workflow head entry over its stale loaded history copy", async () => {
+    window.history.replaceState({}, "", "/workflows");
+    mockControlPlane({ refreshesHistoricalWorkflow: true });
+    const user = userEvent.setup();
+    const { client } = renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Load more workflows" }));
+    expect(await screen.findByText("Historical workflow")).toBeVisible();
+
+    await client.refetchQueries({ queryKey: ["workflows", "head"] });
+
+    expect(await screen.findByText("Refreshed workflow")).toBeVisible();
+    expect(screen.queryByText("Historical workflow")).not.toBeInTheDocument();
+    const refreshedRow = screen.getByText("Refreshed workflow").closest(".workflow-row");
+    expect(refreshedRow).not.toBeNull();
+    expect(within(refreshedRow as HTMLElement).getByText("#2")).toBeVisible();
+    expect(within(refreshedRow as HTMLElement).getByText("Disabled")).toBeVisible();
+  });
+
   it("pins an enabled Workflow revision while preserving free-text context", async () => {
     const fetch = mockControlPlane();
     const user = userEvent.setup();

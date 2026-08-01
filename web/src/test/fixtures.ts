@@ -1,4 +1,4 @@
-import type { ManagedRepository, MetricsSummary, Task, Worker, WorkflowDetail } from "../types";
+import type { ManagedRepository, MetricsSummary, Task, Worker, Workflow, WorkflowDetail } from "../types";
 import { vi } from "vitest";
 
 export const worker: Worker = {
@@ -103,6 +103,22 @@ const initialWorkflowDetail: WorkflowDetail = {
 };
 initialWorkflowDetail.revisions = [initialWorkflowDetail.workflow.current_revision];
 
+const historicalWorkflow: Workflow = {
+  id: "workflow-history",
+  enabled: true,
+  current_revision: {
+    id: "workflow-history-revision-1",
+    workflow_id: "workflow-history",
+    revision_number: 1,
+    name: "Historical workflow",
+    summary: "An older loaded page.",
+    instructions: "Use the historical instructions.",
+    created_at: "2026-07-31T08:00:00Z",
+  },
+  created_at: "2026-07-31T08:00:00Z",
+  updated_at: "2026-07-31T08:00:00Z",
+};
+
 export function mockControlPlane(
   options: {
     createFailures?: number;
@@ -111,6 +127,7 @@ export function mockControlPlane(
     growingTaskHistory?: boolean;
     incrementalEvents?: boolean;
     paginatedTasks?: boolean;
+    refreshesHistoricalWorkflow?: boolean;
     shiftingTaskBoundary?: boolean;
     staleHistoryAfterDelete?: boolean;
     switchAttemptAfter?: number;
@@ -124,6 +141,7 @@ export function mockControlPlane(
   let createFailures = options.createFailures ?? 0;
   let eventRequests = 0;
   let taskHeadRequests = 0;
+  let workflowHeadRequests = 0;
   let terminalEventFailures = options.terminalEventFailures ?? 0;
   let taskDetailRequests = 0;
   const deletedTaskIDs = new Set<string>();
@@ -227,7 +245,32 @@ export function mockControlPlane(
       return Response.json(existing);
     }
     if (path.startsWith("/api/v1/workflows?limit=200")) {
-      const enabled = new URL(path, "http://factory.test").searchParams.get("enabled");
+      const query = new URL(path, "http://factory.test").searchParams;
+      const enabled = query.get("enabled");
+      if (options.refreshesHistoricalWorkflow && !enabled) {
+        if (query.get("cursor") === "workflow-history-page") {
+          return Response.json({ workflows: [historicalWorkflow], next_cursor: null });
+        }
+        workflowHeadRequests += 1;
+        const refreshedHistorical: Workflow = {
+          ...historicalWorkflow,
+          enabled: false,
+          current_revision: {
+            ...historicalWorkflow.current_revision,
+            id: "workflow-history-revision-2",
+            revision_number: 2,
+            name: "Refreshed workflow",
+            summary: "Fresh head data wins.",
+          },
+          updated_at: "2026-08-01T09:00:00Z",
+        };
+        return Response.json({
+          workflows: workflowHeadRequests === 1
+            ? [workflowDetail.workflow]
+            : [refreshedHistorical, workflowDetail.workflow],
+          next_cursor: workflowHeadRequests === 1 ? "workflow-history-page" : null,
+        });
+      }
       return Response.json({
         workflows: enabled === "true" && !workflowDetail.workflow.enabled ? [] : [workflowDetail.workflow],
         next_cursor: null,
