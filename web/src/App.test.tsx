@@ -19,6 +19,12 @@ function renderApp() {
   };
 }
 
+function workflowRequestPaths(fetch: ReturnType<typeof mockControlPlane>) {
+  return fetch.mock.calls
+    .map(([input]) => typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url)
+    .filter((path) => path.startsWith("/api/v1/workflows?limit=200"));
+}
+
 describe("App", () => {
   beforeEach(() => {
     window.history.replaceState({}, "", "/work");
@@ -262,6 +268,35 @@ describe("App", () => {
     expect(refreshedRow).not.toBeNull();
     expect(within(refreshedRow as HTMLElement).getByText("#2")).toBeVisible();
     expect(within(refreshedRow as HTMLElement).getByText("Disabled")).toBeVisible();
+  });
+
+  it("restarts Workflow history from a changed head boundary", async () => {
+    window.history.replaceState({}, "", "/workflows");
+    let releaseWorkflowHistory!: () => void;
+    const workflowHistoryGate = new Promise<void>((resolve) => {
+      releaseWorkflowHistory = resolve;
+    });
+    const fetch = mockControlPlane({ shiftingWorkflowBoundary: true, workflowHistoryGate });
+    const user = userEvent.setup();
+    const { client } = renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Load more workflows" }));
+    await vi.waitFor(() => expect(workflowRequestPaths(fetch)).toContain(
+      "/api/v1/workflows?limit=200&cursor=old-workflow-boundary",
+    ));
+
+    await client.refetchQueries({ queryKey: ["workflows", "head"] });
+    releaseWorkflowHistory();
+    expect(await screen.findByText("Historical workflow")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Load more workflows" }));
+
+    expect(await screen.findByText("Shifted boundary workflow")).toBeVisible();
+    expect(workflowRequestPaths(fetch)).toEqual([
+      "/api/v1/workflows?limit=200",
+      "/api/v1/workflows?limit=200&cursor=old-workflow-boundary",
+      "/api/v1/workflows?limit=200",
+      "/api/v1/workflows?limit=200&cursor=new-workflow-boundary",
+    ]);
   });
 
   it("pins an enabled Workflow revision while preserving free-text context", async () => {

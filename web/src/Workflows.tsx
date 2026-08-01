@@ -28,17 +28,26 @@ export function WorkflowsView({ onWorkflow }: { onWorkflow: (id: string) => void
   const [createOpen, setCreateOpen] = useState(false);
   const [history, setHistory] = useState<Workflow[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>();
+  const previousHeadCursor = useRef<string | null | undefined>(undefined);
   const workflows = useQuery({
     queryKey: ["workflows", "head"],
     queryFn: () => api.workflows(),
   });
   const loadMore = useMutation({
-    mutationFn: (cursor: string) => api.workflows(cursor),
-    onSuccess: (page) => {
+    mutationFn: ({ cursor }: { cursor: string; headCursor: string | null }) => api.workflows(cursor),
+    onSuccess: (page, request) => {
       setHistory((current) => mergeWorkflows(current, page.workflows));
-      setNextCursor(page.next_cursor);
+      if (previousHeadCursor.current === request.headCursor) {
+        setNextCursor(page.next_cursor);
+      }
     },
   });
+  useEffect(() => {
+    if (!workflows.data) return;
+    const boundaryChanged = previousHeadCursor.current !== workflows.data.next_cursor;
+    setNextCursor((current) => boundaryChanged ? workflows.data.next_cursor : current);
+    previousHeadCursor.current = workflows.data.next_cursor;
+  }, [workflows.data]);
   const activeCursor = nextCursor === undefined ? workflows.data?.next_cursor : nextCursor;
   const items = mergeWorkflows(workflows.data?.workflows ?? [], history);
 
@@ -95,7 +104,10 @@ export function WorkflowsView({ onWorkflow }: { onWorkflow: (id: string) => void
           <button
             className="button button-secondary"
             disabled={loadMore.isPending}
-            onClick={() => loadMore.mutate(activeCursor)}
+            onClick={() => loadMore.mutate({
+              cursor: activeCursor,
+              headCursor: previousHeadCursor.current ?? null,
+            })}
           >
             {loadMore.isPending ? "Loading…" : "Load more workflows"}
           </button>

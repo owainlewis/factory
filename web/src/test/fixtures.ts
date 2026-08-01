@@ -128,6 +128,7 @@ export function mockControlPlane(
     incrementalEvents?: boolean;
     paginatedTasks?: boolean;
     refreshesHistoricalWorkflow?: boolean;
+    shiftingWorkflowBoundary?: boolean;
     shiftingTaskBoundary?: boolean;
     staleHistoryAfterDelete?: boolean;
     switchAttemptAfter?: number;
@@ -135,6 +136,7 @@ export function mockControlPlane(
     terminalEventFailures?: number;
     terminalTaskAfter?: number;
     repositoryToggleFailure?: boolean;
+    workflowHistoryGate?: Promise<void>;
     workerFailure?: boolean;
   } = {},
 ) {
@@ -247,6 +249,33 @@ export function mockControlPlane(
     if (path.startsWith("/api/v1/workflows?limit=200")) {
       const query = new URL(path, "http://factory.test").searchParams;
       const enabled = query.get("enabled");
+      if (options.shiftingWorkflowBoundary && !enabled) {
+        const cursor = query.get("cursor");
+        if (cursor === "old-workflow-boundary") {
+          await options.workflowHistoryGate;
+          return Response.json({ workflows: [historicalWorkflow], next_cursor: "stale-workflow-boundary" });
+        }
+        if (cursor === "new-workflow-boundary") {
+          const shiftedBoundary: Workflow = {
+            ...historicalWorkflow,
+            id: "workflow-shifted-boundary",
+            current_revision: {
+              ...historicalWorkflow.current_revision,
+              id: "workflow-shifted-boundary-revision-1",
+              workflow_id: "workflow-shifted-boundary",
+              name: "Shifted boundary workflow",
+            },
+          };
+          return Response.json({ workflows: [shiftedBoundary], next_cursor: null });
+        }
+        workflowHeadRequests += 1;
+        return Response.json({
+          workflows: workflowHeadRequests === 1
+            ? [workflowDetail.workflow]
+            : [{ ...historicalWorkflow, updated_at: "2026-08-01T09:00:00Z" }, workflowDetail.workflow],
+          next_cursor: workflowHeadRequests === 1 ? "old-workflow-boundary" : "new-workflow-boundary",
+        });
+      }
       if (options.refreshesHistoricalWorkflow && !enabled) {
         if (query.get("cursor") === "workflow-history-page") {
           return Response.json({ workflows: [historicalWorkflow], next_cursor: null });
