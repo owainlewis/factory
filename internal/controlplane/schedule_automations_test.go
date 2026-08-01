@@ -248,26 +248,39 @@ func TestScheduleStartupCatchUpAdvancesToFirstFutureInstant(t *testing.T) {
 	}
 }
 
-func TestScheduleCatchUpDoesNotClaimUnmatchedInstantsWereSkipped(t *testing.T) {
-	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
-	store, detail := createScheduleAutomationFixture(t, &now, false)
-	enabled := enableAutomation(t, store, detail.Automation.ID)
-	now = enabled.Automation.NextDueAt.Add(time.Minute)
-	if err := store.recoverAutomationRuntime(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.processDueSchedules(context.Background(), 100); err != nil {
-		t.Fatal(err)
-	}
-	current, err := store.Automation(context.Background(), detail.Automation.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(current.Occurrences) != 1 || current.Occurrences[0].Diagnostic != "catch_up" {
-		t.Fatalf("catch-up occurrence = %#v", current.Occurrences)
-	}
-	if current.Automation.SkippedCount != 0 {
-		t.Fatalf("catch-up skipped count = %d, want 0", current.Automation.SkippedCount)
+func TestScheduleCatchUpClassificationStartsAfterDueMinute(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		offset         time.Duration
+		wantDiagnostic string
+	}{
+		{name: "exact due instant"},
+		{name: "milliseconds after due", offset: 100 * time.Millisecond},
+		{name: "end of due minute", offset: 59*time.Second + 999*time.Millisecond},
+		{name: "start of next minute", offset: time.Minute, wantDiagnostic: "catch_up"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
+			store, detail := createScheduleAutomationFixture(t, &now, false)
+			enabled := enableAutomation(t, store, detail.Automation.ID)
+			now = enabled.Automation.NextDueAt.Add(test.offset)
+			if err := store.recoverAutomationRuntime(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.processDueSchedules(context.Background(), 100); err != nil {
+				t.Fatal(err)
+			}
+			current, err := store.Automation(context.Background(), detail.Automation.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(current.Occurrences) != 1 || current.Occurrences[0].Diagnostic != test.wantDiagnostic {
+				t.Fatalf("occurrences = %#v, want diagnostic %q", current.Occurrences, test.wantDiagnostic)
+			}
+			if current.Automation.SkippedCount != 0 {
+				t.Fatalf("skipped count = %d, want 0", current.Automation.SkippedCount)
+			}
+		})
 	}
 }
 

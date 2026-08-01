@@ -196,7 +196,7 @@ func (s *Store) admitDueSchedule(ctx context.Context, automationID string) error
 			state, diagnostic, skipped = "failed", "repository_disabled", 1
 			healthStatus, healthCode, healthMessage = "blocked", "repository_disabled", "Scheduled occurrence recorded without a task because the repository is disabled."
 		}
-		if now.After(due) {
+		if !now.Before(due.Truncate(time.Minute).Add(time.Minute)) {
 			missed, err := countScheduledInstants(schedule, due, now)
 			if err != nil {
 				return unavailable(err)
