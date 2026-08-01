@@ -569,7 +569,8 @@ and a reviewed tenant model.
   over-limit `gh` results, plus corrupt stored schedule data, are stored as
   actionable per-Automation health.
 - Normal server shutdown stops Automation admission, cancels active `gh`
-  processes, waits for evaluator work to finish, and then closes SQLite.
+  processes, waits for evaluator work to finish, and uses a bounded non-cancelled
+  context to dispatch committed ready Occurrences before closing SQLite.
 
 Summary metrics are derived only from retained control-plane facts: execution
 counts and outcomes, queue and running counts, success and retry rates, median

@@ -366,6 +366,41 @@ func TestScheduleDisableAndShutdownAdmitNoFutureOccurrences(t *testing.T) {
 	}
 }
 
+func TestScheduleShutdownDrainsOccurrenceCommittedBeforeCancellation(t *testing.T) {
+	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
+	store, detail := createScheduleAutomationFixture(t, &now, true)
+	enabled := enableAutomation(t, store, detail.Automation.ID)
+	now = *enabled.Automation.NextDueAt
+	if _, err := store.RegisterWorker(context.Background(), "schedule-worker", protocol.WorkerRegistration{
+		Name: "schedule-worker", WorkerVersion: "test", RuntimeVersion: "test",
+		Capacity: 1, Health: "healthy", AcceptsManagedRepositories: true,
+		ManagedRepositoryIDs: []string{detail.Automation.RepositoryID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	service := newAutomationService(store, nil, fakeGitHubIssueLister{})
+	service.afterScheduleAdmission = cancel
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		service.Run(ctx)
+	}()
+	<-done
+
+	current, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current.Occurrences) != 1 || current.Occurrences[0].Kind != "scheduled" || current.Occurrences[0].Task == nil {
+		t.Fatalf("shutdown did not drain committed occurrence = %#v", current.Occurrences)
+	}
+	task, err := store.Task(context.Background(), current.Occurrences[0].Task.ID)
+	if err != nil || task.Task.State != "queued" {
+		t.Fatalf("shutdown-drained task = %#v, error %v", task.Task, err)
+	}
+}
+
 func TestHTTPSchedulePreviewEnableAndRunNowAreStrictAndIdempotent(t *testing.T) {
 	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
 	store, detail := createScheduleAutomationFixture(t, &now, false)

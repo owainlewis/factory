@@ -570,14 +570,15 @@ fields as success; every other result requires refresh and resubmission from the
 new current version. The UI reports that recovery instead of blindly retrying
 the stale write.
 
-`POST /test` previews provider matches or the next five scheduled instants. It
+`POST /test` previews provider matches or the next scheduled UTC instant. It
 does not mutate durable state. `POST /check` asks an enabled provider Automation
 to run its normal durable check now. `POST /run` applies only to a schedule and
 creates an idempotent immediate Occurrence using the required bounded request
 key. After validating and normalizing the request key, it returns an existing
 Occurrence before checking mutable enabled state. A first request requires the
 Automation, Workflow, and repository to be enabled. Rejection creates no
-Occurrence and does not reserve its request key.
+Occurrence and does not reserve its request key. The UI retains the same Run now
+key after an ambiguous response and allocates a new key only after success.
 
 ### Persistence
 
@@ -962,12 +963,12 @@ time. It records the number of other missed instants in the diagnostic and does
 not replay them. Run now never changes this cursor.
 
 At normal shutdown, the server first stops admitting schedule instants and
-provider checks, cancels in-flight `gh` processes, and stops the occurrence
-dispatcher from taking new claims. It lets an active Task-and-link transaction
-finish within the existing 10-second drain bound, then closes SQLite so any
-unfinished transaction rolls back. No background transaction begins after
-shutdown admission closes. Committed pending Occurrences and prior-process
-dispatch claims resume as pending after restart. Linked Tasks and workers
+provider checks, cancels in-flight `gh` processes, and waits for evaluators.
+It then uses a bounded non-cancelled context to drain committed, ready
+Occurrences through the ordinary Task-and-link transaction within the existing
+10-second server drain bound. No new Occurrence is admitted after shutdown
+starts. An Occurrence that cannot be routed or committed during the bounded
+drain remains durable and resumes after restart. Linked Tasks and workers
 continue through their existing lease behavior.
 
 ## 8. Security, privacy, and operations

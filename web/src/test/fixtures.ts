@@ -168,11 +168,13 @@ export function mockControlPlane(
     terminalEventFailures?: number;
     terminalTaskAfter?: number;
     repositoryToggleFailure?: boolean;
+    runFailures?: number;
     workflowHistoryGate?: Promise<void>;
     workerFailure?: boolean;
   } = {},
 ) {
   let createFailures = options.createFailures ?? 0;
+  let runFailures = options.runFailures ?? 0;
   let eventRequests = 0;
   let taskHeadRequests = 0;
   let workflowHeadRequests = 0;
@@ -529,16 +531,22 @@ export function mockControlPlane(
           id: "schedule-run-now",
           automation_id: automationDetail.automation.id,
           automation_version: automationDetail.automation.version,
-          state: "pending",
+          state: "dispatched",
           kind: "run_now",
           run_request_key: body.request_key,
           cron: automationDetail.automation.trigger.type === "schedule" ? automationDetail.automation.trigger.cron : "",
           timezone: automationDetail.automation.trigger.type === "schedule" ? automationDetail.automation.trigger.timezone : "",
           task_request_key: `automation:${automationDetail.automation.id}:schedule:run:${body.request_key}`,
+          task: { id: "task-schedule-run-now", title: "Schedule run now", state: "queued" },
+          task_id_snapshot: "task-schedule-run-now",
           created_at: "2026-08-01T08:00:00Z",
           updated_at: "2026-08-01T08:00:00Z",
         }],
       };
+      if (runFailures > 0) {
+        runFailures -= 1;
+        throw new Error("connection lost after Run now commit");
+      }
       return Response.json(automationDetail, { status: 202 });
     }
     if (path === "/api/v1/tasks") {

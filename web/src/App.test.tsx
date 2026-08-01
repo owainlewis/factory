@@ -301,7 +301,7 @@ describe("App", () => {
 
   it("creates, previews, enables, and runs a typed schedule Automation", async () => {
     window.history.replaceState({}, "", "/automations");
-    const fetch = mockControlPlane();
+    const fetch = mockControlPlane({ runFailures: 1 });
     const user = userEvent.setup();
     renderApp();
 
@@ -326,11 +326,19 @@ describe("App", () => {
     expect(screen.queryByRole("checkbox", { name: /factory-poller is stopped/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Confirm enable" }));
     await user.click(await screen.findByRole("button", { name: "Run now" }));
+    expect(await screen.findByText(/connection lost after Run now commit/i)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Run now" }));
     expect(await screen.findByText("Run now", { selector: ".occurrence-identity strong" })).toBeVisible();
-    expect(fetch.mock.calls.some(([input, init]) => {
-      const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-      return path.endsWith("/run") && init?.method === "POST";
-    })).toBe(true);
+    expect(screen.getAllByText("Run now", { selector: ".occurrence-identity strong" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Open task" })).toHaveLength(1);
+    const runBodies = fetch.mock.calls
+      .filter(([input, init]) => {
+        const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        return path.endsWith("/run") && init?.method === "POST";
+      })
+      .map(([, init]) => JSON.parse(String(init?.body)) as { request_key: string });
+    expect(runBodies).toHaveLength(2);
+    expect(runBodies[0].request_key).toBe(runBodies[1].request_key);
   });
 
   it("preserves Automation form focus and typed input during background refresh", async () => {

@@ -22,12 +22,13 @@ import (
 )
 
 const (
-	automationCommandTimeout      = 30 * time.Second
-	automationStdoutLimit         = 4 << 20
-	automationStderrLimit         = 64 << 10
-	automationDiagnosticLimit     = 4 << 10
-	maxObservationBytes           = 16 << 10
-	maxConcurrentAutomationChecks = 4
+	automationCommandTimeout       = 30 * time.Second
+	automationStdoutLimit          = 4 << 20
+	automationStderrLimit          = 64 << 10
+	automationDiagnosticLimit      = 4 << 10
+	automationShutdownDrainTimeout = 5 * time.Second
+	maxObservationBytes            = 16 << 10
+	maxConcurrentAutomationChecks  = 4
 )
 
 type automationCheckError struct {
@@ -513,6 +514,9 @@ type AutomationService struct {
 	slots  chan struct{}
 	mu     sync.Mutex
 	cancel map[string]automationCancellation
+	// afterScheduleAdmission is a deterministic test seam for the shutdown race
+	// between committing a due occurrence and dispatching committed work.
+	afterScheduleAdmission func()
 }
 
 type automationCancellation struct {
@@ -651,6 +655,9 @@ func (service *AutomationService) Run(ctx context.Context) {
 			if err := service.store.processDueSchedules(ctx, protocol.MaxAutomationMatches); err != nil {
 				service.logger.Error("automation_schedule_failed", "error_class", "storage_unavailable")
 			}
+			if service.afterScheduleAdmission != nil {
+				service.afterScheduleAdmission()
+			}
 		}
 		for {
 			if ctx.Err() != nil {
@@ -694,11 +701,31 @@ func (service *AutomationService) Run(ctx context.Context) {
 			}
 			service.mu.Unlock()
 			checks.Wait()
+			service.drainCommittedOccurrences()
 			return
 		case <-service.wake:
 			runPass()
 		case <-ticker.C:
 			runPass()
+		}
+	}
+}
+
+func (service *AutomationService) drainCommittedOccurrences() {
+	ctx, cancel := context.WithTimeout(context.Background(), automationShutdownDrainTimeout)
+	defer cancel()
+	for {
+		pending, err := service.store.hasDispatchableOccurrences(ctx)
+		if err != nil {
+			service.logger.Error("automation_shutdown_drain_failed", "error_class", "storage_unavailable")
+			return
+		}
+		if !pending {
+			return
+		}
+		if err := service.store.dispatchPendingOccurrences(ctx, protocol.MaxAutomationMatches); err != nil {
+			service.logger.Error("automation_shutdown_drain_failed", "error_class", "storage_unavailable")
+			return
 		}
 	}
 }
@@ -1185,6 +1212,22 @@ func (s *Store) dispatchPendingOccurrences(ctx context.Context, limit int) error
 		}
 	}
 	return result
+}
+
+func (s *Store) hasDispatchableOccurrences(ctx context.Context) (bool, error) {
+	var pending int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM automation_occurrences occurrence
+			JOIN automations automation ON automation.id = occurrence.automation_id
+			WHERE occurrence.state = 'pending' AND automation.enabled = 1
+			  AND (occurrence.retry_at IS NULL OR occurrence.retry_at <= ?)
+		)
+	`, s.now().UnixMilli()).Scan(&pending); err != nil {
+		return false, unavailable(err)
+	}
+	return pending != 0, nil
 }
 
 func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) error {

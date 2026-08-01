@@ -209,6 +209,111 @@ func TestPullRequestAutomationMigrationPreservesGitHubIssueAutomations(t *testin
 	}
 }
 
+func TestScheduleAutomationMigrationPreservesExistingTypedAutomationsAndOccurrences(t *testing.T) {
+	database, err := sql.Open("sqlite", t.TempDir()+"/schedule-automation-migration.sqlite3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for _, name := range []string{
+		"001_controlplane.sql", "002_attempt_capacity_handoff.sql", "003_task_list_pagination.sql",
+		"004_worker_runtime.sql", "005_metrics_indexes.sql", "006_execution_retries.sql",
+		"007_worker_source_access.sql", "008_managed_repositories.sql", "009_workflows.sql",
+		"010_github_issue_automations.sql", "011_github_pull_request_automations.sql",
+	} {
+		body, err := migrations.Files.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.Exec(string(body)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+	}
+	if _, err := database.Exec(`
+		INSERT INTO repositories(id, remote_identity, created_at, enabled, updated_at, centrally_managed)
+		VALUES ('repository', 'github.com/example/repository', 1, 1, 1, 1);
+		INSERT INTO workflows(id, enabled, current_revision_id, current_name_key, created_at, updated_at)
+		VALUES ('workflow', 1, 'revision', 'workflow', 1, 1);
+		INSERT INTO workflow_revisions(
+			id, workflow_id, revision_number, request_key, request_digest,
+			name, summary, instructions, created_at
+		) VALUES ('revision', 'workflow', 1, 'revision-request', X'00', 'Workflow', '', 'Review.', 1);
+		INSERT INTO automations(
+			id, request_key, request_digest, name, name_key, workflow_id, repository_id,
+			context, timeout_seconds, trigger_type, created_at, updated_at
+		) VALUES
+			('issue', 'issue-request', X'00', 'Issues', 'issues', 'workflow', 'repository', '', 60, 'github_issue', 1, 1),
+			('pull-request', 'pr-request', X'00', 'Pull requests', 'pull requests', 'workflow', 'repository', '', 60, 'github_pull_request', 1, 1);
+		INSERT INTO automation_github_issue_triggers(
+			automation_id, issue_state, required_labels_json, poll_interval_seconds
+		) VALUES ('issue', 'open', '["factory:ready"]', 10);
+		INSERT INTO automation_github_pull_request_triggers(
+			automation_id, pull_request_state, include_drafts, required_labels_json,
+			base_branches_json, poll_interval_seconds
+		) VALUES ('pull-request', 'open', 0, '["factory:review"]', '["main"]', 10);
+		INSERT INTO automation_occurrences(
+			id, automation_id, automation_version, automation_name, workflow_revision_id,
+			repository_id, repository_identity, context, timeout_seconds, state,
+			resolved_prompt, task_request_key, created_at, updated_at
+		) VALUES
+			('issue-occurrence', 'issue', 1, 'Issues', 'revision', 'repository',
+			 'github.com/example/repository', '', 60, 'pending', 'issue prompt', 'issue-key', 1, 1),
+			('pr-occurrence', 'pull-request', 1, 'Pull requests', 'revision', 'repository',
+			 'github.com/example/repository', '', 60, 'pending', 'pr prompt', 'pr-key', 1, 1);
+		INSERT INTO automation_github_issue_occurrences(
+			occurrence_id, automation_id, issue_number, issue_url, issue_title,
+			observed_state, observed_labels_json, configured_state, required_labels_json
+		) VALUES ('issue-occurrence', 'issue', 186, 'https://github.com/example/repository/issues/186',
+			'Issue', 'open', '["factory:ready"]', 'open', '["factory:ready"]');
+		INSERT INTO automation_github_pull_request_occurrences(
+			occurrence_id, automation_id, pull_request_number, pull_request_url,
+			pull_request_title, observed_state, observed_draft, observed_base_branch,
+			observed_head_commit, observed_labels_json, configured_state,
+			include_drafts, required_labels_json, base_branches_json
+		) VALUES ('pr-occurrence', 'pull-request', 191, 'https://github.com/example/repository/pull/191',
+			'Pull request', 'open', 0, 'main', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+			'["factory:review"]', 'open', 0, '["factory:review"]', '["main"]');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := migrations.Files.ReadFile("012_schedule_automations.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(string(migration)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatal(err)
+	}
+	var automations, occurrences int
+	if err := database.QueryRow(`
+		SELECT COUNT(*) FROM automations automation
+		WHERE (automation.id = 'issue' AND automation.trigger_type = 'github_issue')
+		   OR (automation.id = 'pull-request' AND automation.trigger_type = 'github_pull_request')
+	`).Scan(&automations); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`
+		SELECT
+			(SELECT COUNT(*) FROM automation_github_issue_occurrences WHERE occurrence_id = 'issue-occurrence') +
+			(SELECT COUNT(*) FROM automation_github_pull_request_occurrences WHERE occurrence_id = 'pr-occurrence')
+	`).Scan(&occurrences); err != nil {
+		t.Fatal(err)
+	}
+	if automations != 2 || occurrences != 2 {
+		t.Fatalf("schedule migration preserved %d Automations and %d typed Occurrences", automations, occurrences)
+	}
+	rows, err := database.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("schedule Automation migration left a foreign-key violation")
+	}
+}
+
 func TestRetryCountMigrationBackfillsHistoricalAttempts(t *testing.T) {
 	database, err := sql.Open("sqlite", t.TempDir()+"/retry-migration.sqlite3")
 	if err != nil {

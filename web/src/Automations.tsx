@@ -151,6 +151,7 @@ export function AutomationDetail({
   const [occurrenceHistory, setOccurrenceHistory] = useState<AutomationOccurrence[]>([]);
   const [nextOccurrenceCursor, setNextOccurrenceCursor] = useState<string | null>();
   const previousOccurrenceHeadCursor = useRef<string | null | undefined>(undefined);
+  const runRequest = useRef<{ automationID: string; key: string } | undefined>(undefined);
   const detail = useQuery({
     queryKey: ["automation", id],
     queryFn: () => api.automation(id),
@@ -195,8 +196,14 @@ export function AutomationDetail({
     },
   });
   const run = useMutation({
-    mutationFn: () => api.runAutomation(id, crypto.randomUUID()),
+    mutationFn: () => {
+      if (!runRequest.current || runRequest.current.automationID !== id) {
+        runRequest.current = { automationID: id, key: crypto.randomUUID() };
+      }
+      return api.runAutomation(id, runRequest.current.key);
+    },
     onSuccess: async (next) => {
+      runRequest.current = undefined;
       queryClient.setQueryData(["automation", id], next);
       await invalidateControlPlane(queryClient);
     },
