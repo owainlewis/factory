@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -560,17 +561,37 @@ func TestRunAutomationCommandEnforcesTimeoutAndOutputLimits(t *testing.T) {
 	started := time.Now()
 	_, _, _, _, err := runAutomationCommandWithLimits(
 		context.Background(), 20*time.Millisecond, 1024, 1024,
-		"/bin/sh", "-c", "sleep 5",
+		os.Args[0], "-test.run=TestAutomationCommandHelperProcess", "--", "automation-command-timeout",
 	)
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) > time.Second {
 		t.Fatalf("timeout = %v after %s", err, time.Since(started))
 	}
 	stdout, stderr, stdoutTooLarge, stderrTooLarge, err := runAutomationCommandWithLimits(
-		context.Background(), time.Second, 4, 3,
-		"/bin/sh", "-c", "printf 12345; printf 67890 >&2",
+		context.Background(), 5*time.Second, 4, 3,
+		os.Args[0], "-test.run=TestAutomationCommandHelperProcess", "--", "automation-command-output",
 	)
 	if err != nil || string(stdout) != "1234" || string(stderr) != "678" || !stdoutTooLarge || !stderrTooLarge {
 		t.Fatalf("bounded command = stdout %q stderr %q flags %v/%v error %v", stdout, stderr, stdoutTooLarge, stderrTooLarge, err)
+	}
+}
+
+func TestAutomationCommandHelperProcess(t *testing.T) {
+	mode := ""
+	for _, argument := range os.Args {
+		if strings.HasPrefix(argument, "automation-command-") {
+			mode = argument
+		}
+	}
+	switch mode {
+	case "":
+		return
+	case "automation-command-timeout":
+		time.Sleep(5 * time.Second)
+	case "automation-command-output":
+		_, _ = os.Stdout.WriteString("12345")
+		_, _ = os.Stderr.WriteString("67890")
+	default:
+		os.Exit(2)
 	}
 }
 
