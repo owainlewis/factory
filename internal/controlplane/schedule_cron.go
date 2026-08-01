@@ -89,7 +89,7 @@ func parseCronSchedule(expression, timezone string) (cronSchedule, string, strin
 }
 
 func parseCronField(value string, minimum, maximum int, names map[string]int, sundaySeven bool) (cronField, error) {
-	field := cronField{allowed: make([]bool, maximum+1), wildcard: value == "*"}
+	field := cronField{allowed: make([]bool, maximum+1), wildcard: strings.HasPrefix(value, "*")}
 	if value == "" {
 		return field, fmt.Errorf("field is empty")
 	}

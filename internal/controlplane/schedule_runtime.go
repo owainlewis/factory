@@ -4,11 +4,28 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/owainlewis/factory/internal/protocol"
 )
+
+func countScheduledInstants(schedule cronSchedule, after, through time.Time) (int, error) {
+	count := 0
+	cursor := after
+	for {
+		next, err := schedule.Next(cursor)
+		if err != nil {
+			return 0, err
+		}
+		if next.After(through) {
+			return count, nil
+		}
+		count++
+		cursor = next
+	}
+}
 
 type scheduleSnapshot struct {
 	automationID         string
@@ -179,8 +196,21 @@ func (s *Store) admitDueSchedule(ctx context.Context, automationID string) error
 			state, diagnostic, skipped = "failed", "repository_disabled", 1
 			healthStatus, healthCode, healthMessage = "blocked", "repository_disabled", "Scheduled occurrence recorded without a task because the repository is disabled."
 		}
-		if now.Sub(due) >= time.Minute && diagnostic == "" {
-			diagnostic = "catch_up; later missed instants skipped"
+		if now.After(due) {
+			missed, err := countScheduledInstants(schedule, due, now)
+			if err != nil {
+				return unavailable(err)
+			}
+			catchUpDiagnostic := "catch_up"
+			if missed != 0 {
+				catchUpDiagnostic = fmt.Sprintf("catch_up; %d later scheduled instants skipped", missed)
+				skipped += missed
+			}
+			if diagnostic == "" {
+				diagnostic = catchUpDiagnostic
+			} else {
+				diagnostic += "; " + catchUpDiagnostic
+			}
 		}
 		if err := s.insertScheduleOccurrence(ctx, tx, snapshot, "scheduled", due.Format(time.RFC3339), state, diagnostic, now); err != nil {
 			return err

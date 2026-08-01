@@ -49,6 +49,19 @@ func TestCronScheduleValidationAndVixieDaySemantics(t *testing.T) {
 	if !next.Equal(want) {
 		t.Fatalf("Vixie OR next = %s, want %s", next, want)
 	}
+
+	steppedWildcard, _, _, err := parseCronSchedule("0 9 */2 * MON", "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err = steppedWildcard.Next(time.Date(2026, 6, 7, 8, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = time.Date(2026, 6, 8, 9, 0, 0, 0, time.UTC)
+	if !next.Equal(want) {
+		t.Fatalf("Vixie stepped wildcard next = %s, want %s", next, want)
+	}
 }
 
 func TestCronScheduleDSTOverlapAndMissingLocalTime(t *testing.T) {
@@ -224,11 +237,65 @@ func TestScheduleStartupCatchUpAdvancesToFirstFutureInstant(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(current.Occurrences) != 1 || current.Occurrences[0].ScheduledAt == nil ||
-		!current.Occurrences[0].ScheduledAt.Equal(storedDue) || !stringsContain(current.Occurrences[0].Diagnostic, "catch_up") {
+		!current.Occurrences[0].ScheduledAt.Equal(storedDue) || current.Occurrences[0].Diagnostic != "catch_up; 3 later scheduled instants skipped" {
 		t.Fatalf("catch-up occurrence = %#v", current.Occurrences)
+	}
+	if current.Automation.SkippedCount != 3 {
+		t.Fatalf("catch-up skipped count = %d, want 3", current.Automation.SkippedCount)
 	}
 	if current.Automation.NextDueAt == nil || !current.Automation.NextDueAt.After(now) {
 		t.Fatalf("catch-up cursor = %#v", current.Automation.NextDueAt)
+	}
+}
+
+func TestScheduleCatchUpDoesNotClaimUnmatchedInstantsWereSkipped(t *testing.T) {
+	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
+	store, detail := createScheduleAutomationFixture(t, &now, false)
+	enabled := enableAutomation(t, store, detail.Automation.ID)
+	now = enabled.Automation.NextDueAt.Add(time.Minute)
+	if err := store.recoverAutomationRuntime(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.processDueSchedules(context.Background(), 100); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current.Occurrences) != 1 || current.Occurrences[0].Diagnostic != "catch_up" {
+		t.Fatalf("catch-up occurrence = %#v", current.Occurrences)
+	}
+	if current.Automation.SkippedCount != 0 {
+		t.Fatalf("catch-up skipped count = %d, want 0", current.Automation.SkippedCount)
+	}
+}
+
+func TestScheduleDisabledDependencyCatchUpCountsMissedInstants(t *testing.T) {
+	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
+	store, detail := createScheduleAutomationFixture(t, &now, false)
+	enabled := enableAutomation(t, store, detail.Automation.ID)
+	if _, err := store.SetWorkflowEnabled(context.Background(), detail.Automation.WorkflowID, false); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	if err := store.processDueSchedules(context.Background(), 100); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current.Occurrences) != 1 || current.Occurrences[0].ScheduledAt == nil ||
+		!current.Occurrences[0].ScheduledAt.Equal(*enabled.Automation.NextDueAt) ||
+		current.Occurrences[0].Diagnostic != "workflow_disabled; catch_up; 3 later scheduled instants skipped" {
+		t.Fatalf("disabled catch-up occurrence = %#v", current.Occurrences)
+	}
+	if current.Automation.SkippedCount != 4 {
+		t.Fatalf("disabled catch-up skipped count = %d, want 4", current.Automation.SkippedCount)
+	}
+	if current.Automation.NextDueAt == nil || !current.Automation.NextDueAt.After(now) {
+		t.Fatalf("disabled catch-up cursor = %#v", current.Automation.NextDueAt)
 	}
 }
 
