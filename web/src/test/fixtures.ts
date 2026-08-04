@@ -199,6 +199,7 @@ export function mockControlPlane(
   let repositoryItems = managedRepositories.map((repository) => ({ ...repository }));
   let workflowDetail = structuredClone(initialWorkflowDetail);
   let automationDetail = structuredClone(initialAutomationDetail);
+  let automationDeleted = false;
   let legacyMigration: LegacyPollerMigration | undefined;
   const automationOccurrence = (id: string, issue: number, createdAt: string): AutomationOccurrence => ({
     id,
@@ -416,7 +417,7 @@ export function mockControlPlane(
     }
     if (path === "/api/v1/automations?limit=200") {
       return Response.json({
-        automations: [automationDetail.automation],
+        automations: automationDeleted ? [] : [automationDetail.automation],
         next_cursor: options.paginatedAutomations ? "automation-history" : null,
       });
     }
@@ -562,6 +563,10 @@ export function mockControlPlane(
       return Response.json(automationDetail, { status: 201 });
     }
     if (path === `/api/v1/automations/${automationDetail.automation.id}`) {
+      if (init?.method === "DELETE") {
+        automationDeleted = true;
+        return Response.json({ deleted: true });
+      }
       if (init?.method === "PUT") {
         const body = JSON.parse(String(init.body)) as Record<string, unknown>;
         automationDetail = {
@@ -679,9 +684,13 @@ export function mockControlPlane(
               revision_number: workflowDetail.workflow.current_revision.revision_number,
             }
           : undefined;
-        const context = selectedWorkflow ? String(body.context) : String(body.description);
+        const submittedContext = selectedWorkflow ? String(body.context ?? "") : String(body.description);
+        const context = selectedWorkflow && !submittedContext.trim() ? "" : submittedContext;
+        const workflowInstructions = workflowDetail.workflow.current_revision.instructions ?? "";
         const resolvedPrompt = selectedWorkflow
-          ? `Workflow instructions:\n\n${workflowDetail.workflow.current_revision.instructions}\n\nTask context:\n\n${context}`
+          ? context.trim()
+            ? `Workflow instructions:\n\n${workflowInstructions}\n\nTask context:\n\n${context}`
+            : workflowInstructions
           : context;
         createdTask = {
           title: String(body.title),

@@ -14,6 +14,9 @@ const (
 )
 
 func ResolveWorkflowPrompt(instructions, context string) string {
+	if strings.TrimSpace(context) == "" {
+		return instructions
+	}
 	return "Workflow instructions:\n\n" + instructions + "\n\nTask context:\n\n" + context
 }
 

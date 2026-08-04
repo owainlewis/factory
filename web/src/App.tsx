@@ -308,6 +308,7 @@ export function App() {
               id={route.id}
               onBack={() => navigate({ page: "automations" })}
               onTask={(taskID) => navigate({ page: "task", id: taskID })}
+              onDeleted={() => navigate({ page: "automations" })}
             />
           )}
         </main>

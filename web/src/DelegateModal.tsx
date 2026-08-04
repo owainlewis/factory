@@ -88,7 +88,7 @@ export function DelegateModal({
     const nextErrors: Record<string, string> = {};
     if (!title) nextErrors.title = "Enter a task title.";
     else if (Array.from(title).length > 200) nextErrors.title = "Keep the title to 200 characters.";
-    if (!context.trim()) nextErrors.description = "Enter task context.";
+    if (!context.trim() && !workflowRevisionID) nextErrors.description = "Enter task context or choose a Workflow.";
     if (!workerID) nextErrors.worker = "Choose a worker.";
     if (!repositoryID) nextErrors.repository = "Choose a repository.";
     const timeoutSeconds = Number(timeout);
@@ -140,7 +140,15 @@ export function DelegateModal({
               <select
                 id={workflowID}
                 value={workflowRevisionID}
-                onChange={(event) => setWorkflowRevisionID(event.target.value)}
+                onChange={(event) => {
+                  setWorkflowRevisionID(event.target.value);
+                  setErrors((current) => {
+                    if (!current.description) return current;
+                    const next = { ...current };
+                    delete next.description;
+                    return next;
+                  });
+                }}
                 disabled={workflows.isPending}
               >
                 <option value="">Blank task</option>
@@ -156,12 +164,10 @@ export function DelegateModal({
               label="Context"
               htmlFor={descriptionID}
               error={errors.description}
-              hint={selectedWorker
-                ? workflowRevisionID
-                  ? `Factory combines this with the selected Workflow for ${runtimeLabel(selectedWorker.runtime)}.`
-                  : `This becomes the ${runtimeLabel(selectedWorker.runtime)} prompt.`
-                : workflowRevisionID
-                  ? "Factory combines this with the selected Workflow."
+              hint={workflowRevisionID
+                ? "Optional. Leave blank to run only the selected Workflow instructions."
+                : selectedWorker
+                  ? `This becomes the ${runtimeLabel(selectedWorker.runtime)} prompt.`
                   : "This becomes the selected worker runtime prompt."}
             >
               <textarea id={descriptionID} name="description" rows={6} aria-invalid={Boolean(errors.description)} placeholder="Describe the outcome, constraints, and checks…" />

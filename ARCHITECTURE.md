@@ -20,9 +20,9 @@ It separates durable coordination from agent execution:
   worker.
 
 The current task contract is a title, either a legacy free-text description or
-a pinned Workflow revision plus free-text context, assigned worker, repository,
-and timeout. The control plane snapshots one resolved prompt in the existing
-task description field before creating the task. Callers may name the
+a pinned Workflow revision plus optional free-text context, assigned worker,
+repository, and timeout. The control plane snapshots one resolved prompt in the
+existing task description field before creating the task. Callers may name the
 assignment directly or ask the control-plane scheduler to choose from cattle
 workers. The deployment is limited to a trusted user and loopback HTTP on one
 host.
@@ -202,14 +202,15 @@ Node.js is a contributor dependency only when UI source changes.
 ### Task creation and claiming
 
 1. A caller submits a unique `request_key`, title, either a free-text
-   `description` or a pinned Workflow revision with free-text `context`, an
-   optional timeout, and either an explicit worker/repository pair or a
-   repository remote plus source-access route. The two prompt forms are
+   `description` or a pinned Workflow revision with optional free-text
+   `context`, an optional timeout, and either an explicit worker/repository pair
+   or a repository remote plus source-access route. The two prompt forms are
    exclusive.
 2. The control plane returns an existing task before rechecking mutable
    Workflow state when the request key is a replay. For a new task it validates
    the selected revision and enabled Workflow, then composes and bounds the
-   resolved prompt.
+   resolved prompt. Empty Workflow context uses the revision instructions
+   unchanged.
 3. For a route, the control plane requires an enabled managed repository,
    chooses an eligible worker by fair load, and freezes both IDs. It then
    snapshots the context, Workflow identity, revision, and resolved prompt while
@@ -356,6 +357,7 @@ GET    /api/v1/automations?limit={1..200}&cursor={cursor}
 POST   /api/v1/automations
 GET    /api/v1/automations/{automation_id}
 PUT    /api/v1/automations/{automation_id}
+DELETE /api/v1/automations/{automation_id}
 PUT    /api/v1/automations/{automation_id}/enabled
 POST   /api/v1/automations/{automation_id}/test
 POST   /api/v1/automations/{automation_id}/check
@@ -419,6 +421,8 @@ Task     1 --- 1 Execution       1 --- * Attempt 1 --- * AttemptEvent
   disabled-first state. Its
   Occurrences snapshot the Workflow revision, repository, predicate,
   observation, prompt, and deterministic Task request key before dispatch.
+- Deleting an Automation requires it to be disabled, removes its Trigger and
+  Occurrence history, and preserves any ordinary Tasks it already created.
 - Automation and Occurrence collection APIs use opaque descending cursors, so
   every supported record remains reachable beyond the first bounded page.
 - A worker-repository row may be a legacy static advertisement or the dynamic

@@ -90,6 +90,7 @@ func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *Au
 	mux.HandleFunc("POST /api/v1/automations", api.createAutomation)
 	mux.HandleFunc("GET /api/v1/automations/{automation_id}", api.getAutomation)
 	mux.HandleFunc("PUT /api/v1/automations/{automation_id}", api.updateAutomation)
+	mux.HandleFunc("DELETE /api/v1/automations/{automation_id}", api.deleteAutomation)
 	mux.HandleFunc("PUT /api/v1/automations/{automation_id}/enabled", api.setAutomationEnabled)
 	mux.HandleFunc("POST /api/v1/automations/{automation_id}/test", api.testAutomation)
 	mux.HandleFunc("POST /api/v1/automations/{automation_id}/check", api.checkAutomation)

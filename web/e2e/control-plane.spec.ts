@@ -397,13 +397,13 @@ test("creates, pins, revises, and disables a reusable Workflow", async ({ page }
   const delegate = page.getByRole("dialog", { name: "Delegate task" });
   await delegate.getByLabel("Workflow").selectOption({ label: "E2E pinned review · revision 1" });
   await delegate.getByLabel("Title").fill("Pinned Workflow browser task");
-  await delegate.getByLabel("Context").fill("JIRA-183 stays free text.");
+  await expect(delegate.getByText("Optional. Leave blank to run only the selected Workflow instructions.")).toBeVisible();
   await delegate.getByLabel("Worker").selectOption(workerOffline);
   await delegate.getByLabel("Repository").selectOption(identifiers.offlineRepository);
   await delegate.getByRole("button", { name: "Delegate task" }).click();
   await expect(page.getByRole("heading", { name: "Pinned Workflow browser task" })).toBeVisible();
-  await expect(page.getByText("JIRA-183 stays free text.", { exact: true })).toBeVisible();
-  await expect(page.getByText(/Use revision one instructions exactly/)).toBeVisible();
+  await expect(page.getByText("No additional context. Workflow instructions run unchanged.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Use revision one instructions exactly.", { exact: true })).toBeVisible();
   const taskID = new URL(page.url()).pathname.split("/").at(-1)!;
 
   await page.goto(workflowURL);
@@ -415,11 +415,10 @@ test("creates, pins, revises, and disables a reusable Workflow", async ({ page }
 
   const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
   const pinned = await json<TaskDetail>(await api.get(`/api/v1/tasks/${taskID}`));
-  expect(pinned.context).toBe("JIRA-183 stays free text.");
+  expect(pinned.context).toBe("");
   expect(pinned.task.description).toBe(pinned.resolved_prompt);
   expect(pinned.workflow?.revision_number).toBe(1);
-  expect(pinned.resolved_prompt).toContain("Use revision one instructions exactly.");
-  expect(pinned.resolved_prompt).not.toContain("Use revision two instructions instead.");
+  expect(pinned.resolved_prompt).toBe("Use revision one instructions exactly.");
   await api.dispose();
 
   await page.getByRole("button", { name: "Disable" }).click();
@@ -937,7 +936,9 @@ test("previews, enables, and runs a schedule Automation through the ordinary tas
   await automation.getByLabel("Title").fill("E2E schedule Automation");
   await automation.getByLabel("Workflow").selectOption({ label: "E2E scheduled maintenance" });
   await automation.getByLabel("Managed repository").selectOption(identifiers.automationRepository);
+  await expect(automation.getByLabel("Required labels")).toHaveValue("factory:ready");
   await automation.getByLabel("Trigger type").selectOption("schedule");
+  await expect(automation.getByLabel("Cron (five fields)")).toHaveValue("0 9 * * 1");
   await automation.getByLabel("Cron (five fields)").fill("0 0 1 JAN *");
   await automation.getByLabel("IANA timezone").fill("Europe/London");
   await automation.getByLabel("Trusted Automation context").fill("Use only the safe synthetic repository.");
@@ -959,8 +960,19 @@ test("previews, enables, and runs a schedule Automation through the ordinary tas
   await page.getByRole("button", { name: "Run now" }).click();
   await expect(page.locator(".occurrence-list").getByText("Run now", { exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("button", { name: "Open task" })).toBeVisible({ timeout: 15_000 });
-  const tasks = await json<{ tasks: Array<{ request_key: string }> }>(await api.get("/api/v1/tasks?limit=200"));
-  expect(tasks.tasks.filter((task) => task.request_key.includes(":schedule:run:"))).toHaveLength(1);
+  const tasks = await json<{ tasks: Array<{ id: string; request_key: string }> }>(await api.get("/api/v1/tasks?limit=200"));
+  const scheduleTasks = tasks.tasks.filter((task) => task.request_key.includes(":schedule:run:"));
+  expect(scheduleTasks).toHaveLength(1);
+
+  await page.getByRole("button", { name: "Disable" }).click();
+  await page.getByRole("button", { name: "Confirm disable" }).click();
+  await expect(page.getByRole("button", { name: "Enable" })).toBeVisible();
+  await page.getByRole("button", { name: "Delete" }).click();
+  await expect(page.getByText("Delete this Automation?")).toBeVisible();
+  await page.getByRole("button", { name: "Confirm delete" }).click();
+  await expect(page.getByRole("heading", { name: "Automations", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /E2E schedule Automation/ })).toHaveCount(0);
+  expect((await api.get(`/api/v1/tasks/${scheduleTasks[0].id}`)).status()).toBe(200);
   await api.dispose();
   browser.assertClean();
 });

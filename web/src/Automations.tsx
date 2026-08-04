@@ -11,6 +11,7 @@ import {
   Plus,
   Power,
   PowerOff,
+  Trash2,
   X,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -152,15 +153,18 @@ export function AutomationDetail({
   id,
   onBack,
   onTask,
+  onDeleted,
 }: {
   id: string;
   onBack: () => void;
   onTask: (id: string) => void;
+  onDeleted: () => void;
 }) {
   const queryClient = useQueryClient();
   const interval = useVisibleInterval(3_000);
   const [editing, setEditing] = useState(false);
   const [confirmEnabled, setConfirmEnabled] = useState<boolean>();
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [preview, setPreview] = useState<TestAutomationResult>();
   const [occurrenceHistory, setOccurrenceHistory] = useState<AutomationOccurrence[]>([]);
   const [nextOccurrenceCursor, setNextOccurrenceCursor] = useState<string | null>();
@@ -194,6 +198,15 @@ export function AutomationDetail({
     onSuccess: async (next) => {
       queryClient.setQueryData(["automation", id], next);
       setConfirmEnabled(undefined);
+      await invalidateControlPlane(queryClient);
+    },
+  });
+  const deleteAutomation = useMutation({
+    mutationFn: () => api.deleteAutomation(id),
+    onSuccess: async () => {
+      queryClient.removeQueries({ queryKey: ["automation", id] });
+      queryClient.removeQueries({ queryKey: ["automations", id] });
+      onDeleted();
       await invalidateControlPlane(queryClient);
     },
   });
@@ -257,8 +270,20 @@ export function AutomationDetail({
             <Pencil size={14} /> Edit
           </button>
           <button
+            className="button button-danger-secondary"
+            onClick={() => {
+              setConfirmEnabled(undefined);
+              setConfirmDelete(true);
+            }}
+          >
+            <Trash2 size={14} /> Delete
+          </button>
+          <button
             className={automation.enabled ? "button button-danger-secondary" : "button button-primary"}
-            onClick={() => setConfirmEnabled(!automation.enabled)}
+            onClick={() => {
+              setConfirmDelete(false);
+              setConfirmEnabled(!automation.enabled);
+            }}
           >
             {automation.enabled ? <PowerOff size={14} /> : <Power size={14} />}
             {automation.enabled ? "Disable" : "Enable"}
@@ -267,6 +292,7 @@ export function AutomationDetail({
       </div>
       {detail.error && <StaleBanner error={detail.error} />}
       {setEnabled.error && <InlineError error={setEnabled.error} />}
+      {deleteAutomation.error && <InlineError error={deleteAutomation.error} />}
       {test.error && <InlineError error={test.error} />}
       {check.error && <InlineError error={check.error} />}
       {run.error && <InlineError error={run.error} />}
@@ -286,6 +312,24 @@ export function AutomationDetail({
             {setEnabled.isPending ? "Saving…" : `Confirm ${confirmEnabled ? "enable" : "disable"}`}
           </button>
           <button className="button button-secondary" onClick={() => setConfirmEnabled(undefined)}>Cancel</button>
+        </div>
+      )}
+      {confirmDelete && (
+        <div className="confirm-action automation-confirm" role="alert">
+          <div>
+            <strong>Delete this Automation?</strong>
+            <p>{automation.enabled
+              ? "Disable the Automation before deleting it. Existing Tasks remain."
+              : "Its trigger and occurrence history are removed permanently. Existing Tasks remain."}</p>
+          </div>
+          <button
+            className="button button-danger"
+            disabled={automation.enabled || deleteAutomation.isPending}
+            onClick={() => deleteAutomation.mutate()}
+          >
+            {deleteAutomation.isPending ? "Deleting…" : "Confirm delete"}
+          </button>
+          <button className="button button-secondary" onClick={() => setConfirmDelete(false)}>Cancel</button>
         </div>
       )}
 
@@ -665,6 +709,34 @@ function AutomationForm({
   const repositories = useQuery({ queryKey: ["repositories"], queryFn: api.repositories });
   const current = detail?.automation;
   const [triggerType, setTriggerType] = useState<AutomationTrigger["type"]>(current?.trigger.type ?? "github_issue");
+  const [issueFields, setIssueFields] = useState<{
+    state: "open" | "closed";
+    labels: string;
+    pollInterval: string;
+  }>(() => ({
+    state: current?.trigger.type === "github_issue" ? current.trigger.state : "open",
+    labels: current?.trigger.type === "github_issue" ? current.trigger.required_labels.join(", ") : "factory:ready",
+    pollInterval: String(current?.trigger.type === "github_issue" ? current.trigger.poll_interval_seconds : 30),
+  }));
+  const [pullRequestFields, setPullRequestFields] = useState<{
+    state: "open" | "closed" | "merged";
+    includeDrafts: boolean;
+    labels: string;
+    baseBranches: string;
+    pollInterval: string;
+  }>(() => ({
+    state: current?.trigger.type === "github_pull_request" ? current.trigger.state : "open",
+    includeDrafts: current?.trigger.type === "github_pull_request" && current.trigger.include_drafts,
+    labels: current?.trigger.type === "github_pull_request" ? current.trigger.required_labels.join(", ") : "factory:ready",
+    baseBranches: current?.trigger.type === "github_pull_request" ? current.trigger.base_branches.join(", ") : "",
+    pollInterval: String(current?.trigger.type === "github_pull_request" ? current.trigger.poll_interval_seconds : 30),
+  }));
+  const [scheduleFields, setScheduleFields] = useState(() => ({
+    cron: current?.trigger.type === "schedule" ? current.trigger.cron : "0 9 * * 1",
+    timezone: current?.trigger.type === "schedule"
+      ? current.trigger.timezone
+      : Intl.DateTimeFormat().resolvedOptions().timeZone,
+  }));
   const isPullRequest = triggerType === "github_pull_request";
   const isSchedule = triggerType === "schedule";
   useEffect(() => {
@@ -703,11 +775,12 @@ function AutomationForm({
     const repository = current?.repository_id ?? String(form.get("repository_id") ?? "");
     const context = String(form.get("context") ?? "");
     const timeout = Number(form.get("timeout_seconds"));
-    const pollInterval = Number(form.get("poll_interval_seconds"));
-    const cron = String(form.get("cron") ?? "").trim().replace(/\s+/g, " ");
-    const timezone = String(form.get("timezone") ?? "").trim();
-    const labels = String(form.get("required_labels") ?? "").split(",").map((label) => label.trim()).filter(Boolean);
-    const baseBranches = String(form.get("base_branches") ?? "").split(",").map((branch) => branch.trim()).filter(Boolean);
+    const providerFields = isPullRequest ? pullRequestFields : issueFields;
+    const pollInterval = Number(providerFields.pollInterval);
+    const cron = scheduleFields.cron.trim().replace(/\s+/g, " ");
+    const timezone = scheduleFields.timezone.trim();
+    const labels = providerFields.labels.split(",").map((label) => label.trim()).filter(Boolean);
+    const baseBranches = pullRequestFields.baseBranches.split(",").map((branch) => branch.trim()).filter(Boolean);
     const nextErrors: Record<string, string> = {};
     if (!title) nextErrors.title = "Enter an Automation title.";
     else if (Array.from(title).length > 100) nextErrors.title = "Keep the title to 100 characters.";
@@ -728,14 +801,14 @@ function AutomationForm({
       timezone,
     } : isPullRequest ? {
       type: "github_pull_request",
-      state: String(form.get("state")) as "open" | "closed" | "merged",
-      include_drafts: form.get("include_drafts") === "on",
+      state: pullRequestFields.state,
+      include_drafts: pullRequestFields.includeDrafts,
       required_labels: labels,
       base_branches: baseBranches,
       poll_interval_seconds: pollInterval,
     } : {
       type: "github_issue",
-      state: String(form.get("state")) as "open" | "closed",
+      state: issueFields.state,
       required_labels: labels,
       poll_interval_seconds: pollInterval,
     };
@@ -798,43 +871,97 @@ function AutomationForm({
                 name="trigger_type"
                 value={triggerType}
                 disabled={mode === "edit"}
-                onChange={(event) => setTriggerType(event.target.value as AutomationTrigger["type"])}
+                onChange={(event) => {
+                  setTriggerType(event.target.value as AutomationTrigger["type"]);
+                  setErrors({});
+                }}
               >
                 <option value="github_issue">GitHub issue</option>
                 <option value="github_pull_request">GitHub pull request</option>
                 <option value="schedule">Schedule</option>
               </select>
             </Field>
-            {!isSchedule && <Field label={isPullRequest ? "Pull request state" : "Issue state"} htmlFor={stateID}>
-              <select id={stateID} name="state" defaultValue={current?.trigger.type === "github_issue" || current?.trigger.type === "github_pull_request" ? current.trigger.state : "open"}>
+            {!isSchedule && <Field key={`${triggerType}-state`} label={isPullRequest ? "Pull request state" : "Issue state"} htmlFor={stateID}>
+              <select
+                id={stateID}
+                name="state"
+                value={isPullRequest ? pullRequestFields.state : issueFields.state}
+                onChange={(event) => isPullRequest
+                  ? setPullRequestFields((fields) => ({ ...fields, state: event.target.value as "open" | "closed" | "merged" }))
+                  : setIssueFields((fields) => ({ ...fields, state: event.target.value as "open" | "closed" }))}
+              >
                 <option value="open">Open</option><option value="closed">Closed</option>
                 {isPullRequest && <option value="merged">Merged</option>}
               </select>
             </Field>}
             {isPullRequest && <>
-              <Field label="Draft pull requests" htmlFor={draftsID} hint="Include drafts that match every other condition.">
+              <Field key="pull-request-drafts" label="Draft pull requests" htmlFor={draftsID} hint="Include drafts that match every other condition.">
                 <label className="confirmation-check" htmlFor={draftsID}>
-                  <input id={draftsID} name="include_drafts" type="checkbox" defaultChecked={current?.trigger.type === "github_pull_request" && current.trigger.include_drafts} />
+                  <input
+                    id={draftsID}
+                    name="include_drafts"
+                    type="checkbox"
+                    checked={pullRequestFields.includeDrafts}
+                    onChange={(event) => setPullRequestFields((fields) => ({ ...fields, includeDrafts: event.target.checked }))}
+                  />
                   Include drafts
                 </label>
               </Field>
-              <Field label="Base branches" htmlFor={branchesID} error={errors.branches} hint="Comma separated · optional · up to 20">
-                <input id={branchesID} name="base_branches" defaultValue={current?.trigger.type === "github_pull_request" ? current.trigger.base_branches.join(", ") : ""} aria-invalid={Boolean(errors.branches)} />
+              <Field key="pull-request-branches" label="Base branches" htmlFor={branchesID} error={errors.branches} hint="Comma separated · optional · up to 20">
+                <input
+                  id={branchesID}
+                  name="base_branches"
+                  value={pullRequestFields.baseBranches}
+                  onChange={(event) => setPullRequestFields((fields) => ({ ...fields, baseBranches: event.target.value }))}
+                  aria-invalid={Boolean(errors.branches)}
+                />
               </Field>
             </>}
             {isSchedule ? <>
-              <Field label="Cron (five fields)" htmlFor={cronID} error={errors.cron} hint="Minute hour day-of-month month day-of-week · no seconds">
-                <input id={cronID} name="cron" className="mono" defaultValue={current?.trigger.type === "schedule" ? current.trigger.cron : "0 9 * * 1"} aria-invalid={Boolean(errors.cron)} />
+              <Field key="schedule-cron" label="Cron (five fields)" htmlFor={cronID} error={errors.cron} hint="Minute hour day-of-month month day-of-week · no seconds">
+                <input
+                  id={cronID}
+                  name="cron"
+                  className="mono"
+                  value={scheduleFields.cron}
+                  onChange={(event) => setScheduleFields((fields) => ({ ...fields, cron: event.target.value }))}
+                  aria-invalid={Boolean(errors.cron)}
+                />
               </Field>
-              <Field label="IANA timezone" htmlFor={timezoneID} error={errors.timezone} hint="For example Europe/London">
-                <input id={timezoneID} name="timezone" defaultValue={current?.trigger.type === "schedule" ? current.trigger.timezone : Intl.DateTimeFormat().resolvedOptions().timeZone} aria-invalid={Boolean(errors.timezone)} />
+              <Field key="schedule-timezone" label="IANA timezone" htmlFor={timezoneID} error={errors.timezone} hint="For example Europe/London">
+                <input
+                  id={timezoneID}
+                  name="timezone"
+                  value={scheduleFields.timezone}
+                  onChange={(event) => setScheduleFields((fields) => ({ ...fields, timezone: event.target.value }))}
+                  aria-invalid={Boolean(errors.timezone)}
+                />
               </Field>
             </> : <>
-              <Field label="Required labels" htmlFor={labelsID} error={errors.labels} hint="Comma separated · up to 20">
-                <input id={labelsID} name="required_labels" defaultValue={current?.trigger.type === "github_issue" || current?.trigger.type === "github_pull_request" ? current.trigger.required_labels.join(", ") : "factory:ready"} aria-invalid={Boolean(errors.labels)} />
+              <Field key={`${triggerType}-labels`} label="Required labels" htmlFor={labelsID} error={errors.labels} hint="Comma separated · up to 20">
+                <input
+                  id={labelsID}
+                  name="required_labels"
+                  value={isPullRequest ? pullRequestFields.labels : issueFields.labels}
+                  onChange={(event) => isPullRequest
+                    ? setPullRequestFields((fields) => ({ ...fields, labels: event.target.value }))
+                    : setIssueFields((fields) => ({ ...fields, labels: event.target.value }))}
+                  aria-invalid={Boolean(errors.labels)}
+                />
               </Field>
-              <Field label="Poll interval (seconds)" htmlFor={intervalID} error={errors.interval}>
-                <input id={intervalID} name="poll_interval_seconds" type="number" min={10} max={86_400} defaultValue={current?.trigger.type === "github_issue" || current?.trigger.type === "github_pull_request" ? current.trigger.poll_interval_seconds : 30} aria-invalid={Boolean(errors.interval)} />
+              <Field key={`${triggerType}-interval`} label="Poll interval (seconds)" htmlFor={intervalID} error={errors.interval}>
+                <input
+                  id={intervalID}
+                  name="poll_interval_seconds"
+                  type="number"
+                  min={10}
+                  max={86_400}
+                  value={isPullRequest ? pullRequestFields.pollInterval : issueFields.pollInterval}
+                  onChange={(event) => isPullRequest
+                    ? setPullRequestFields((fields) => ({ ...fields, pollInterval: event.target.value }))
+                    : setIssueFields((fields) => ({ ...fields, pollInterval: event.target.value }))}
+                  aria-invalid={Boolean(errors.interval)}
+                />
               </Field>
             </>}
             <Field label="Task timeout (seconds)" htmlFor={timeoutID} error={errors.timeout}>

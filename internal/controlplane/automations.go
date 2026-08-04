@@ -657,6 +657,81 @@ func (s *Store) UpdateAutomation(
 	return s.Automation(ctx, automationID)
 }
 
+func (s *Store) DeleteAutomation(ctx context.Context, automationID string) error {
+	automationID = strings.TrimSpace(automationID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return unavailable(err)
+	}
+	defer tx.Rollback()
+
+	var enabled int
+	var evaluationToken sql.NullString
+	if err := tx.QueryRowContext(ctx, `
+		SELECT enabled, evaluation_token FROM automations WHERE id = ?
+	`, automationID).Scan(&enabled, &evaluationToken); errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return unavailable(err)
+	}
+	if enabled != 0 || evaluationToken.Valid {
+		return conflict("automation_enabled", "disable the Automation before deleting it")
+	}
+
+	var migrationStatus string
+	err = tx.QueryRowContext(ctx, `
+		SELECT migration.status
+		FROM legacy_poller_imports imported
+		JOIN legacy_poller_migrations migration ON migration.id = imported.migration_id
+		WHERE imported.automation_id = ?
+	`, automationID).Scan(&migrationStatus)
+	if err == nil && migrationStatus != "finalized" {
+		return conflict(
+			"migration_not_finalized",
+			"finalize the locked legacy poller migration before deleting its imported Automation",
+		)
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return unavailable(err)
+	}
+
+	statements := []string{
+		`DELETE FROM legacy_poller_observations
+		 WHERE occurrence_id IN (SELECT id FROM automation_occurrences WHERE automation_id = ?)`,
+		`DELETE FROM automation_github_issue_occurrences WHERE automation_id = ?`,
+		`DELETE FROM automation_github_pull_request_occurrences WHERE automation_id = ?`,
+		`DELETE FROM automation_schedule_occurrences WHERE automation_id = ?`,
+		`DELETE FROM automation_occurrences WHERE automation_id = ?`,
+		`DELETE FROM legacy_poller_imports WHERE automation_id = ?`,
+		`DELETE FROM automation_github_issue_triggers WHERE automation_id = ?`,
+		`DELETE FROM automation_github_pull_request_triggers WHERE automation_id = ?`,
+		`DELETE FROM automation_schedule_triggers WHERE automation_id = ?`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement, automationID); err != nil {
+			return unavailable(err)
+		}
+	}
+	result, err := tx.ExecContext(ctx, `
+		DELETE FROM automations
+		WHERE id = ? AND enabled = 0 AND evaluation_token IS NULL
+	`, automationID)
+	if err != nil {
+		return unavailable(err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return unavailable(err)
+	}
+	if changed != 1 {
+		return conflict("automation_enabled", "disable the Automation before deleting it")
+	}
+	if err := tx.Commit(); err != nil {
+		return unavailable(err)
+	}
+	return nil
+}
+
 func (s *Store) SetAutomationEnabled(
 	ctx context.Context,
 	automationID string,

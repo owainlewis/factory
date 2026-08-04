@@ -305,6 +305,60 @@ describe("App", () => {
     })).toBe(true);
   });
 
+  it("deletes a disabled Automation and returns to the Automation list", async () => {
+    window.history.replaceState({}, "", "/automations/automation-ready");
+    const fetch = mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: "Ready issues" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    expect(screen.getByText("Delete this Automation?")).toBeVisible();
+    expect(screen.getByText(/Existing Tasks remain/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Confirm delete" }));
+
+    expect(await screen.findByRole("heading", { name: "Automations" })).toBeVisible();
+    expect(screen.getByText("No Automations yet")).toBeVisible();
+    expect(fetch.mock.calls.some(([input, init]) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return path === "/api/v1/automations/automation-ready" && init?.method === "DELETE";
+    })).toBe(true);
+  });
+
+  it("keeps trigger-specific Automation form state isolated", async () => {
+    window.history.replaceState({}, "", "/automations");
+    mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Create Automation" }));
+    const dialog = screen.getByRole("dialog", { name: "Create Automation" });
+    const triggerType = within(dialog).getByLabelText("Trigger type");
+    expect(within(dialog).getByLabelText("Required labels")).toHaveValue("factory:ready");
+
+    await user.selectOptions(triggerType, "schedule");
+    expect(within(dialog).getByLabelText("Cron (five fields)")).toHaveValue("0 9 * * 1");
+    await user.clear(within(dialog).getByLabelText("Cron (five fields)"));
+    await user.type(within(dialog).getByLabelText("Cron (five fields)"), "30 8 * * 2");
+
+    await user.selectOptions(triggerType, "github_pull_request");
+    await user.selectOptions(within(dialog).getByLabelText("Pull request state"), "merged");
+    await user.clear(within(dialog).getByLabelText("Required labels"));
+    await user.type(within(dialog).getByLabelText("Required labels"), "factory:review");
+
+    await user.selectOptions(triggerType, "github_issue");
+    expect(within(dialog).getByLabelText("Issue state")).toHaveValue("open");
+    expect(within(dialog).getByLabelText("Required labels")).toHaveValue("factory:ready");
+
+    await user.selectOptions(triggerType, "schedule");
+    expect(within(dialog).getByLabelText("Cron (five fields)")).toHaveValue("30 8 * * 2");
+    expect(within(dialog).queryByDisplayValue("factory:ready")).not.toBeInTheDocument();
+
+    await user.selectOptions(triggerType, "github_pull_request");
+    expect(within(dialog).getByLabelText("Pull request state")).toHaveValue("merged");
+    expect(within(dialog).getByLabelText("Required labels")).toHaveValue("factory:review");
+  });
+
   it("previews, imports, resolves, and finalizes a legacy poller migration", async () => {
     window.history.replaceState({}, "", "/automations");
     const fetch = mockControlPlane();
@@ -638,6 +692,33 @@ describe("App", () => {
     });
   });
 
+  it("runs a selected Workflow without requiring task context", async () => {
+    const fetch = mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Delegate task" }));
+    const dialog = screen.getByRole("dialog", { name: "Delegate task" });
+    await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));
+    expect(within(dialog).getByText("Enter task context or choose a Workflow.")).toBeVisible();
+    await user.type(within(dialog).getByLabelText("Title"), "Run Workflow only");
+    await user.selectOptions(within(dialog).getByLabelText("Workflow"), "workflow-revision-1");
+    expect(within(dialog).queryByText("Enter task context or choose a Workflow.")).not.toBeInTheDocument();
+    expect(within(dialog).getByText("Optional. Leave blank to run only the selected Workflow instructions.")).toBeVisible();
+    await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
+    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
+    await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));
+
+    expect(await screen.findByRole("heading", { name: "Run Workflow only" })).toBeVisible();
+    expect(screen.getByText("No additional context. Workflow instructions run unchanged.", { exact: true })).toBeVisible();
+    expect(screen.getByText("Implement the change and run the required checks.", { exact: true })).toBeVisible();
+    const taskCreate = fetch.mock.calls.find(([input, init]) => input === "/api/v1/tasks" && init?.method === "POST");
+    expect(JSON.parse(String(taskCreate?.[1]?.body))).toMatchObject({
+      context: "",
+      workflow_revision_id: "workflow-revision-1",
+    });
+  });
+
   it("renders every task status in the operational board", async () => {
     mockControlPlane();
     renderApp();
@@ -859,7 +940,7 @@ describe("App", () => {
     const dialog = screen.getByRole("dialog", { name: "Delegate task" });
     await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));
     expect(within(dialog).getByText("Enter a task title.")).toBeVisible();
-    expect(within(dialog).getByText("Enter task context.")).toBeVisible();
+    expect(within(dialog).getByText("Enter task context or choose a Workflow.")).toBeVisible();
 
     await user.type(within(dialog).getByLabelText("Title"), "Ship the UI");
     await user.type(within(dialog).getByLabelText("Context"), "Build and verify the real interface.");
