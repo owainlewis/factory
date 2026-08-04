@@ -96,6 +96,23 @@ func (a *API) updateAutomation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, detail)
 }
 
+func (a *API) deleteAutomation(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	if !decodeEmptyJSON(w, r) {
+		return
+	}
+	id := r.PathValue("automation_id")
+	if err := a.store.DeleteAutomation(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	}
+	a.logger.Info("automation_deleted", "automation_id", id)
+	a.automations.Wake()
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
 func (a *API) setAutomationEnabled(w http.ResponseWriter, r *http.Request) {
 	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
 		return

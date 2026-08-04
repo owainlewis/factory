@@ -178,6 +178,11 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(input),
     }),
+  deleteAutomation: (id: string) =>
+    request<{ deleted: boolean }>(`/api/v1/automations/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      body: "{}",
+    }),
   setAutomationEnabled: ({ id, enabled }: { id: string; enabled: boolean }) =>
     request<AutomationDetail>(`/api/v1/automations/${encodeURIComponent(id)}/enabled`, {
       method: "PUT",

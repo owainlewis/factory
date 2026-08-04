@@ -356,6 +356,7 @@ GET    /api/v1/automations?limit={1..200}&cursor={cursor}
 POST   /api/v1/automations
 GET    /api/v1/automations/{automation_id}
 PUT    /api/v1/automations/{automation_id}
+DELETE /api/v1/automations/{automation_id}
 PUT    /api/v1/automations/{automation_id}/enabled
 POST   /api/v1/automations/{automation_id}/test
 POST   /api/v1/automations/{automation_id}/check
@@ -419,6 +420,8 @@ Task     1 --- 1 Execution       1 --- * Attempt 1 --- * AttemptEvent
   disabled-first state. Its
   Occurrences snapshot the Workflow revision, repository, predicate,
   observation, prompt, and deterministic Task request key before dispatch.
+- Deleting an Automation requires it to be disabled, removes its Trigger and
+  Occurrence history, and preserves any ordinary Tasks it already created.
 - Automation and Occurrence collection APIs use opaque descending cursors, so
   every supported record remains reachable beyond the first bounded page.
 - A worker-repository row may be a legacy static advertisement or the dynamic

@@ -517,6 +517,52 @@ func TestAutomationTaskDeletionLeavesOccurrenceTombstoneAndDeduplication(t *test
 	}
 }
 
+func TestAutomationDeletionRequiresDisableAndPreservesDispatchedTask(t *testing.T) {
+	store, detail := createAutomationFixture(t, true)
+	enableAutomation(t, store, detail.Automation.ID)
+	evaluation := reserveAutomation(t, store)
+	if err := store.completeAutomationSuccess(context.Background(), evaluation, []protocol.GitHubIssueMatch{testIssue}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.dispatchPendingOccurrences(context.Background(), 100); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil || len(current.Occurrences) != 1 || current.Occurrences[0].Task == nil {
+		t.Fatalf("dispatched Automation = error %v, detail %#v", err, current)
+	}
+	taskID := current.Occurrences[0].Task.ID
+
+	assertErrorCode(t, store.DeleteAutomation(context.Background(), detail.Automation.ID), "automation_enabled")
+	if _, err := store.SetAutomationEnabled(context.Background(), detail.Automation.ID, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteAutomation(context.Background(), detail.Automation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Automation(context.Background(), detail.Automation.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted Automation lookup error = %v, want not found", err)
+	}
+	if _, err := store.Task(context.Background(), taskID); err != nil {
+		t.Fatalf("dispatched Task was deleted with Automation: %v", err)
+	}
+	for _, table := range []string{
+		"automations", "automation_occurrences", "automation_github_issue_occurrences",
+		"automation_github_issue_triggers",
+	} {
+		var count int
+		if err := store.db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("%s count = %d, want 0", table, count)
+		}
+	}
+	if err := store.DeleteAutomation(context.Background(), detail.Automation.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("repeated delete error = %v, want not found", err)
+	}
+}
+
 func TestPublicTaskAPIReservesAutomationNamespaceAfterExactReplay(t *testing.T) {
 	store := newTestStore(t)
 	worker := registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{
@@ -1241,6 +1287,49 @@ func TestHTTPAutomationLifecycleAndPreview(t *testing.T) {
 	if len(page.Automations) != 1 {
 		t.Fatalf("Automation list = %#v", page)
 	}
+}
+
+func TestHTTPAutomationDeleteRequiresDisable(t *testing.T) {
+	store, detail := createAutomationFixture(t, false)
+	service := newAutomationService(store, slog.Default(), fakeGitHubIssueLister{})
+	server := httptest.NewServer(NewHandlerWithAutomation(store, slog.Default(), service))
+	defer server.Close()
+	client := server.Client()
+	request := func(method, path string, body any) *http.Response {
+		encoded, _ := json.Marshal(body)
+		req, _ := http.NewRequest(method, server.URL+path, bytes.NewReader(encoded))
+		req.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+
+	response := request(http.MethodPut, "/api/v1/automations/"+detail.Automation.ID+"/enabled", map[string]bool{"enabled": true})
+	requireStatus(t, response, http.StatusOK)
+	response.Body.Close()
+	response = request(http.MethodDelete, "/api/v1/automations/"+detail.Automation.ID, struct{}{})
+	requireStatus(t, response, http.StatusConflict)
+	deleteError := decodeResponse[protocol.ErrorBody](t, response)
+	if deleteError.Error.Code != "automation_enabled" {
+		t.Fatalf("enabled delete error = %#v", deleteError)
+	}
+	response = request(http.MethodPut, "/api/v1/automations/"+detail.Automation.ID+"/enabled", map[string]bool{"enabled": false})
+	requireStatus(t, response, http.StatusOK)
+	response.Body.Close()
+	response = request(http.MethodDelete, "/api/v1/automations/"+detail.Automation.ID, struct{}{})
+	requireStatus(t, response, http.StatusOK)
+	deleted := decodeResponse[map[string]bool](t, response)
+	if !deleted["deleted"] {
+		t.Fatalf("delete response = %#v", deleted)
+	}
+	response, err := client.Get(server.URL + "/api/v1/automations/" + detail.Automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireStatus(t, response, http.StatusNotFound)
+	response.Body.Close()
 }
 
 func TestHTTPPullRequestAutomationUsesStrictTypedTrigger(t *testing.T) {

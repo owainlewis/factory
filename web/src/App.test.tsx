@@ -305,6 +305,60 @@ describe("App", () => {
     })).toBe(true);
   });
 
+  it("deletes a disabled Automation and returns to the Automation list", async () => {
+    window.history.replaceState({}, "", "/automations/automation-ready");
+    const fetch = mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: "Ready issues" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    expect(screen.getByText("Delete this Automation?")).toBeVisible();
+    expect(screen.getByText(/Existing Tasks remain/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Confirm delete" }));
+
+    expect(await screen.findByRole("heading", { name: "Automations" })).toBeVisible();
+    expect(screen.getByText("No Automations yet")).toBeVisible();
+    expect(fetch.mock.calls.some(([input, init]) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return path === "/api/v1/automations/automation-ready" && init?.method === "DELETE";
+    })).toBe(true);
+  });
+
+  it("keeps trigger-specific Automation form state isolated", async () => {
+    window.history.replaceState({}, "", "/automations");
+    mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Create Automation" }));
+    const dialog = screen.getByRole("dialog", { name: "Create Automation" });
+    const triggerType = within(dialog).getByLabelText("Trigger type");
+    expect(within(dialog).getByLabelText("Required labels")).toHaveValue("factory:ready");
+
+    await user.selectOptions(triggerType, "schedule");
+    expect(within(dialog).getByLabelText("Cron (five fields)")).toHaveValue("0 9 * * 1");
+    await user.clear(within(dialog).getByLabelText("Cron (five fields)"));
+    await user.type(within(dialog).getByLabelText("Cron (five fields)"), "30 8 * * 2");
+
+    await user.selectOptions(triggerType, "github_pull_request");
+    await user.selectOptions(within(dialog).getByLabelText("Pull request state"), "merged");
+    await user.clear(within(dialog).getByLabelText("Required labels"));
+    await user.type(within(dialog).getByLabelText("Required labels"), "factory:review");
+
+    await user.selectOptions(triggerType, "github_issue");
+    expect(within(dialog).getByLabelText("Issue state")).toHaveValue("open");
+    expect(within(dialog).getByLabelText("Required labels")).toHaveValue("factory:ready");
+
+    await user.selectOptions(triggerType, "schedule");
+    expect(within(dialog).getByLabelText("Cron (five fields)")).toHaveValue("30 8 * * 2");
+    expect(within(dialog).queryByDisplayValue("factory:ready")).not.toBeInTheDocument();
+
+    await user.selectOptions(triggerType, "github_pull_request");
+    expect(within(dialog).getByLabelText("Pull request state")).toHaveValue("merged");
+    expect(within(dialog).getByLabelText("Required labels")).toHaveValue("factory:review");
+  });
+
   it("previews, imports, resolves, and finalizes a legacy poller migration", async () => {
     window.history.replaceState({}, "", "/automations");
     const fetch = mockControlPlane();
