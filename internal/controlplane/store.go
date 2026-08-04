@@ -885,6 +885,14 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	if input.Health != "healthy" && input.Health != "unhealthy" {
 		return protocol.Worker{}, invalid("invalid_health", "health must be healthy or unhealthy")
 	}
+	if input.WeeklyLimit != nil {
+		if input.WeeklyLimit.UsedPercent < 0 || input.WeeklyLimit.UsedPercent > 100 ||
+			input.WeeklyLimit.ResetsAt.IsZero() {
+			return protocol.Worker{}, invalid(
+				"invalid_weekly_limit", "weekly_limit must contain a percentage from 0 through 100 and a reset time")
+		}
+		input.WeeklyLimit.ResetsAt = input.WeeklyLimit.ResetsAt.UTC()
+	}
 	if input.CapacityHandoffVersion < 0 || input.CapacityHandoffVersion > 1 {
 		return protocol.Worker{}, invalid(
 			"invalid_capacity_handoff", "capacity_handoff_version must be 0 or 1")
@@ -1013,6 +1021,11 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 			"cached managed repository IDs could not be encoded",
 		)
 	}
+	var weeklyLimitUsedPercent, weeklyLimitResetsAt any
+	if input.WeeklyLimit != nil {
+		weeklyLimitUsedPercent = input.WeeklyLimit.UsedPercent
+		weeklyLimitResetsAt = input.WeeklyLimit.ResetsAt.UnixMilli()
+	}
 	now := s.now().UnixMilli()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1054,19 +1067,24 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 		INSERT INTO workers(
 			id, name, worker_version, runtime, runtime_version, capacity, active_count,
 			health, source_access_json, accepts_managed_repositories,
-			managed_repository_ids_json, retained_worktrees_json, registered_at, last_heartbeat
+			managed_repository_ids_json, retained_worktrees_json,
+			weekly_limit_used_percent, weekly_limit_resets_at, registered_at, last_heartbeat
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name=excluded.name, worker_version=excluded.worker_version, runtime_version=excluded.runtime_version,
 			capacity=excluded.capacity, active_count=excluded.active_count, health=excluded.health,
 			source_access_json=excluded.source_access_json,
 			accepts_managed_repositories=excluded.accepts_managed_repositories,
 			managed_repository_ids_json=excluded.managed_repository_ids_json,
-			retained_worktrees_json=excluded.retained_worktrees_json, last_heartbeat=excluded.last_heartbeat
+			retained_worktrees_json=excluded.retained_worktrees_json,
+			weekly_limit_used_percent=excluded.weekly_limit_used_percent,
+			weekly_limit_resets_at=excluded.weekly_limit_resets_at,
+			last_heartbeat=excluded.last_heartbeat
 	`, workerID, input.Name, input.WorkerVersion, input.Runtime, input.RuntimeVersion,
 		input.Capacity, input.ActiveCount, input.Health, sourceAccessJSON,
-		input.AcceptsManagedRepositories, managedRepositoryIDsJSON, retained, now, now)
+		input.AcceptsManagedRepositories, managedRepositoryIDsJSON, retained,
+		weeklyLimitUsedPercent, weeklyLimitResetsAt, now, now)
 	if err != nil {
 		return protocol.Worker{}, unavailable(err)
 	}

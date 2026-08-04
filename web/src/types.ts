@@ -334,6 +334,11 @@ export interface TestAutomationResult {
 
 export type MetricsWindow = "24h" | "7d" | "30d" | "all";
 
+export interface WeeklyLimit {
+  used_percent: number;
+  resets_at: string;
+}
+
 export interface MetricsSummary {
   window: MetricsWindow;
   generated_at: string;
@@ -349,6 +354,7 @@ export interface MetricsSummary {
   median_cycle_time_seconds: number | null;
   workers_online: number;
   workers_total: number;
+  weekly_limit?: WeeklyLimit;
 }
 
 export interface AttemptEvent {

@@ -77,6 +77,14 @@ function Metrics({ data }: { data: MetricsSummary }) {
       value: formatSeconds(data.median_cycle_time_seconds),
       detail: "Creation to succeeded or failed",
     },
+    {
+      label: "Weekly limit",
+      value: data.weekly_limit ? `${100 - data.weekly_limit.used_percent}% left` : "Unavailable",
+      detail: data.weekly_limit
+        ? formatReset(data.weekly_limit.resets_at)
+        : "Requires an online Codex worker",
+      remaining: data.weekly_limit ? 100 - data.weekly_limit.used_percent : null,
+    },
   ];
 
   return (
@@ -86,6 +94,14 @@ function Metrics({ data }: { data: MetricsSummary }) {
           <article className="metric-card" key={metric.label}>
             <span className="metric-label">{metric.label}</span>
             <strong>{metric.value}</strong>
+            {metric.remaining !== undefined && metric.remaining !== null && (
+              <meter
+                aria-label="Weekly limit remaining"
+                min="0"
+                max="100"
+                value={metric.remaining}
+              />
+            )}
             <small>{metric.detail}</small>
           </article>
         ))}
@@ -208,4 +224,17 @@ function formatSeconds(value: number | null): string {
   if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${minutes % 60}m`;
+}
+
+function formatReset(value: string): string {
+  const reset = new Date(value);
+  const time = new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(reset);
+  const date = new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
+    month: "short",
+  }).format(reset);
+  return `Resets ${time} on ${date}`;
 }

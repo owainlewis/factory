@@ -41,6 +41,8 @@ describe("App", () => {
     expect(screen.getByText("41", { selector: ".metric-card strong" })).toBeVisible();
     expect(screen.getByText("85%")).toBeVisible();
     expect(screen.getByText("14m 0s")).toBeVisible();
+    expect(screen.getByText("86% left")).toBeVisible();
+    expect(screen.getByRole("meter", { name: "Weekly limit remaining" })).toHaveValue(86);
     expect(screen.getByText("Rates exclude cancellations.", { exact: false })).toBeVisible();
     expect(screen.getByRole("button", { name: /^Overview$/ })).toHaveAttribute(
       "aria-current",

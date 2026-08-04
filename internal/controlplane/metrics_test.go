@@ -15,6 +15,14 @@ func TestMetricsSummarizesBoundedExecutionFacts(t *testing.T) {
 	store.now = func() time.Time { return now }
 	seedMetricsWorker(t, store, "worker-online", now.Add(-5*time.Second))
 	seedMetricsWorker(t, store, "worker-offline", now.Add(-protocol.WorkerOnlineWindow-time.Millisecond))
+	weeklyReset := now.Add(5 * 24 * time.Hour)
+	if _, err := store.db.Exec(`
+		UPDATE workers
+		SET weekly_limit_used_percent = 11, weekly_limit_resets_at = ?
+		WHERE id = 'worker-online'
+	`, weeklyReset.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
 
 	seedMetricsExecution(t, store, metricsExecution{
 		id: "queued", state: "queued", createdAt: now.Add(-10 * time.Minute),
@@ -80,6 +88,10 @@ func TestMetricsSummarizesBoundedExecutionFacts(t *testing.T) {
 	requireMetricRate(t, "median cycle seconds", summary.MedianCycleTimeSeconds, 2*time.Hour.Seconds())
 	if summary.WorkersOnline != 1 || summary.WorkersTotal != 2 {
 		t.Fatalf("workers = online %d total %d", summary.WorkersOnline, summary.WorkersTotal)
+	}
+	if summary.WeeklyLimit == nil || summary.WeeklyLimit.UsedPercent != 11 ||
+		!summary.WeeklyLimit.ResetsAt.Equal(weeklyReset) {
+		t.Fatalf("weekly limit = %#v", summary.WeeklyLimit)
 	}
 
 	all, err := store.Metrics(context.Background(), metricsWindowAll)

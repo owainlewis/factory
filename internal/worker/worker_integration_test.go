@@ -37,6 +37,15 @@ if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then
   echo "Logged in using test credentials"
   exit 0
 fi
+if [ "${1:-}" = "app-server" ]; then
+  read -r _
+  echo '{"id":1,"result":{}}'
+  read -r _
+  read -r _
+  echo '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":11,"windowDurationMins":10080,"resetsAt":1786438310},"secondary":null},"rateLimitsByLimitId":null}}'
+  while read -r _; do :; done
+  exit 0
+fi
 if [ "${1:-}" != "exec" ]; then
   echo "unexpected fake Codex arguments" >&2
   exit 90
@@ -528,7 +537,9 @@ func TestGitHubSourceAccessIsAdvertisedOnlyAfterSuccessfulProbe(t *testing.T) {
 		githubPath, nil,
 	)
 	want := []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}}
-	if value.State != "healthy" || !reflect.DeepEqual(value.SourceAccess, want) {
+	if value.State != "healthy" || !reflect.DeepEqual(value.SourceAccess, want) ||
+		value.WeeklyLimit == nil || value.WeeklyLimit.UsedPercent != 11 ||
+		value.WeeklyLimit.ResetsAt.Unix() != 1786438310 {
 		t.Fatalf("successful GitHub probe health = %#v", value)
 	}
 

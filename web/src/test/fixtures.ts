@@ -81,6 +81,10 @@ export const metrics: MetricsSummary = {
   median_cycle_time_seconds: 14 * 60,
   workers_online: 3,
   workers_total: 4,
+  weekly_limit: {
+    used_percent: 14,
+    resets_at: "2026-08-11T08:51:00Z",
+  },
 };
 
 const initialWorkflowDetail: WorkflowDetail = {
