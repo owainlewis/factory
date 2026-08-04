@@ -20,9 +20,9 @@ It separates durable coordination from agent execution:
   worker.
 
 The current task contract is a title, either a legacy free-text description or
-a pinned Workflow revision plus free-text context, assigned worker, repository,
-and timeout. The control plane snapshots one resolved prompt in the existing
-task description field before creating the task. Callers may name the
+a pinned Workflow revision plus optional free-text context, assigned worker,
+repository, and timeout. The control plane snapshots one resolved prompt in the
+existing task description field before creating the task. Callers may name the
 assignment directly or ask the control-plane scheduler to choose from cattle
 workers. The deployment is limited to a trusted user and loopback HTTP on one
 host.
@@ -202,14 +202,15 @@ Node.js is a contributor dependency only when UI source changes.
 ### Task creation and claiming
 
 1. A caller submits a unique `request_key`, title, either a free-text
-   `description` or a pinned Workflow revision with free-text `context`, an
-   optional timeout, and either an explicit worker/repository pair or a
-   repository remote plus source-access route. The two prompt forms are
+   `description` or a pinned Workflow revision with optional free-text
+   `context`, an optional timeout, and either an explicit worker/repository pair
+   or a repository remote plus source-access route. The two prompt forms are
    exclusive.
 2. The control plane returns an existing task before rechecking mutable
    Workflow state when the request key is a replay. For a new task it validates
    the selected revision and enabled Workflow, then composes and bounds the
-   resolved prompt.
+   resolved prompt. Empty Workflow context uses the revision instructions
+   unchanged.
 3. For a route, the control plane requires an enabled managed repository,
    chooses an eligible worker by fair load, and freezes both IDs. It then
    snapshots the context, Workflow identity, revision, and resolved prompt while

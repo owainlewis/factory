@@ -692,6 +692,33 @@ describe("App", () => {
     });
   });
 
+  it("runs a selected Workflow without requiring task context", async () => {
+    const fetch = mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Delegate task" }));
+    const dialog = screen.getByRole("dialog", { name: "Delegate task" });
+    await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));
+    expect(within(dialog).getByText("Enter task context or choose a Workflow.")).toBeVisible();
+    await user.type(within(dialog).getByLabelText("Title"), "Run Workflow only");
+    await user.selectOptions(within(dialog).getByLabelText("Workflow"), "workflow-revision-1");
+    expect(within(dialog).queryByText("Enter task context or choose a Workflow.")).not.toBeInTheDocument();
+    expect(within(dialog).getByText("Optional. Leave blank to run only the selected Workflow instructions.")).toBeVisible();
+    await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
+    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
+    await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));
+
+    expect(await screen.findByRole("heading", { name: "Run Workflow only" })).toBeVisible();
+    expect(screen.getByText("No additional context. Workflow instructions run unchanged.", { exact: true })).toBeVisible();
+    expect(screen.getByText("Implement the change and run the required checks.", { exact: true })).toBeVisible();
+    const taskCreate = fetch.mock.calls.find(([input, init]) => input === "/api/v1/tasks" && init?.method === "POST");
+    expect(JSON.parse(String(taskCreate?.[1]?.body))).toMatchObject({
+      context: "",
+      workflow_revision_id: "workflow-revision-1",
+    });
+  });
+
   it("renders every task status in the operational board", async () => {
     mockControlPlane();
     renderApp();
@@ -913,7 +940,7 @@ describe("App", () => {
     const dialog = screen.getByRole("dialog", { name: "Delegate task" });
     await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));
     expect(within(dialog).getByText("Enter a task title.")).toBeVisible();
-    expect(within(dialog).getByText("Enter task context.")).toBeVisible();
+    expect(within(dialog).getByText("Enter task context or choose a Workflow.")).toBeVisible();
 
     await user.type(within(dialog).getByLabelText("Title"), "Ship the UI");
     await user.type(within(dialog).getByLabelText("Context"), "Build and verify the real interface.");

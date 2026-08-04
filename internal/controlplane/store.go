@@ -1670,15 +1670,21 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	taskContext := input.Description
 	if workflowPrompt {
 		taskContext = input.Context
+		if strings.TrimSpace(taskContext) == "" {
+			taskContext = ""
+		}
 	}
-	if strings.TrimSpace(taskContext) == "" || len([]byte(taskContext)) > protocol.MaxDescriptionBytes {
+	if len([]byte(taskContext)) > protocol.MaxDescriptionBytes {
 		field := "description"
 		code := "invalid_description"
 		if workflowPrompt {
 			field = "context"
 			code = "invalid_context"
 		}
-		return protocol.TaskDetail{}, false, invalid(code, field+" is required and limited to 64 KiB")
+		return protocol.TaskDetail{}, false, invalid(code, field+" is limited to 64 KiB")
+	}
+	if !workflowPrompt && strings.TrimSpace(taskContext) == "" {
+		return protocol.TaskDetail{}, false, invalid("invalid_description", "description is required")
 	}
 	if input.TimeoutSeconds == 0 {
 		input.TimeoutSeconds = int(protocol.DefaultTimeout.Seconds())

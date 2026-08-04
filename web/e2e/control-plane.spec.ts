@@ -397,13 +397,13 @@ test("creates, pins, revises, and disables a reusable Workflow", async ({ page }
   const delegate = page.getByRole("dialog", { name: "Delegate task" });
   await delegate.getByLabel("Workflow").selectOption({ label: "E2E pinned review · revision 1" });
   await delegate.getByLabel("Title").fill("Pinned Workflow browser task");
-  await delegate.getByLabel("Context").fill("JIRA-183 stays free text.");
+  await expect(delegate.getByText("Optional. Leave blank to run only the selected Workflow instructions.")).toBeVisible();
   await delegate.getByLabel("Worker").selectOption(workerOffline);
   await delegate.getByLabel("Repository").selectOption(identifiers.offlineRepository);
   await delegate.getByRole("button", { name: "Delegate task" }).click();
   await expect(page.getByRole("heading", { name: "Pinned Workflow browser task" })).toBeVisible();
-  await expect(page.getByText("JIRA-183 stays free text.", { exact: true })).toBeVisible();
-  await expect(page.getByText(/Use revision one instructions exactly/)).toBeVisible();
+  await expect(page.getByText("No additional context. Workflow instructions run unchanged.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Use revision one instructions exactly.", { exact: true })).toBeVisible();
   const taskID = new URL(page.url()).pathname.split("/").at(-1)!;
 
   await page.goto(workflowURL);
@@ -415,11 +415,10 @@ test("creates, pins, revises, and disables a reusable Workflow", async ({ page }
 
   const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
   const pinned = await json<TaskDetail>(await api.get(`/api/v1/tasks/${taskID}`));
-  expect(pinned.context).toBe("JIRA-183 stays free text.");
+  expect(pinned.context).toBe("");
   expect(pinned.task.description).toBe(pinned.resolved_prompt);
   expect(pinned.workflow?.revision_number).toBe(1);
-  expect(pinned.resolved_prompt).toContain("Use revision one instructions exactly.");
-  expect(pinned.resolved_prompt).not.toContain("Use revision two instructions instead.");
+  expect(pinned.resolved_prompt).toBe("Use revision one instructions exactly.");
   await api.dispose();
 
   await page.getByRole("button", { name: "Disable" }).click();

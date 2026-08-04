@@ -371,7 +371,8 @@ not introduce a provider SDK or credential store.
   resource type. Other UTF-8 bytes remain exact.
 - Workflow summaries are limited to 500 Unicode characters. Markdown
   instructions are required and limited to 48 KiB.
-- Manual Workflow context is required and limited to 64 KiB. Automation context
+- Manual Workflow context is optional and limited to 64 KiB. Empty context runs
+  the pinned Workflow instructions unchanged. Automation context
   is limited to 8 KiB and may be empty. Automation timeout is required and
   stays within the current 1 second through 8 hour Task limit.
 - The resolved Task description remains limited to 64 KiB. An oversized manual
@@ -460,8 +461,9 @@ revision history; enabling and disabling are idempotent.
 
 The implemented `POST /api/v1/tasks` accepts two exclusive forms. Existing
 clients send `description` for a blank Task. Workflow-aware clients omit
-`description` and send a pinned `workflow_revision_id` with free-text `context`.
-Supplying both forms returns `ambiguous_task_prompt` and creates no Task:
+`description` and send a pinned `workflow_revision_id` with optional free-text
+`context`. Supplying both forms returns `ambiguous_task_prompt` and creates no
+Task:
 
 ```json
 {
@@ -485,11 +487,12 @@ atomic Occurrence-to-Task transaction; it adds no public Task lookup endpoint or
 Task request-key tombstone policy.
 
 The Task stores nullable Workflow and revision IDs, Workflow title and revision
-number snapshots, and original context. `tasks.description` stores the immutable
-resolved prompt; Task detail returns `context` and exposes the same bytes as
-`resolved_prompt`; `claim.task.description` remains the resolved prompt consumed
-by existing workers. The canonical formatter and 72 KiB agent-input limit live
-in the shared protocol package, where the worker-owned framing is added.
+number snapshots, and canonical context. Whitespace-only Workflow context is
+stored as empty. `tasks.description` stores the immutable resolved prompt; Task
+detail returns `context` and exposes the same bytes as `resolved_prompt`;
+`claim.task.description` remains the resolved prompt consumed by existing
+workers. The canonical formatter and 72 KiB agent-input limit live in the shared
+protocol package, where the worker-owned framing is added.
 Existing rows have no Workflow and copy their existing description to context;
 existing clients and workers remain compatible.
 

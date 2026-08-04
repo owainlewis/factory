@@ -151,6 +151,26 @@ func TestWorkflowTaskSnapshotsSurviveDisableRevisionAndRetry(t *testing.T) {
 	}
 }
 
+func TestWorkflowTaskUsesInstructionsAloneWithoutContext(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	workflow := createTestWorkflow(t, store, "workflow-only-task", "Review", "Review the repository and report findings.")
+	task, created, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+		RequestKey: "workflow-only-task", Title: "Run the review Workflow", Context: "  \n\t",
+		WorkerID: workerA, RepositoryID: worker.Repositories[0].ID, TimeoutSeconds: 60,
+		WorkflowRevisionID: workflow.Workflow.CurrentRevision.ID,
+	})
+	if err != nil || !created {
+		t.Fatalf("create Workflow-only task = created %v, error %v", created, err)
+	}
+	if task.Context != "" || task.ResolvedPrompt != "Review the repository and report findings." ||
+		task.Task.Description != task.ResolvedPrompt || task.Workflow == nil {
+		t.Fatalf("Workflow-only task = %#v", task)
+	}
+}
+
 func TestBlankTaskAndOldClaimContractRemainCompatible(t *testing.T) {
 	store := newTestStore(t)
 	worker := registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{

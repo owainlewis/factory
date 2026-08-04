@@ -9,6 +9,15 @@ func TestResolveWorkflowPromptUsesCanonicalSections(t *testing.T) {
 	}
 }
 
+func TestResolveWorkflowPromptUsesInstructionsAloneWithoutContext(t *testing.T) {
+	want := "Review carefully."
+	for _, context := range []string{"", "  \n\t"} {
+		if got := ResolveWorkflowPrompt(want, context); got != want {
+			t.Fatalf("ResolveWorkflowPrompt(%q) = %q, want %q", context, got, want)
+		}
+	}
+}
+
 func TestFormatAgentPromptPreservesSafetyAndBranchContract(t *testing.T) {
 	want := "You are running in a Factory managed Git worktree.\n" +
 		"Work only on the assigned task and repository. Preserve unrelated changes and do not touch Factory state or unrelated worktrees. " +

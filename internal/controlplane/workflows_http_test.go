@@ -52,6 +52,20 @@ func TestHTTPWorkflowLifecycleAndTaskSnapshot(t *testing.T) {
 		t.Fatalf("workflow task detail = %#v", task)
 	}
 
+	response = fixture.request(http.MethodPost, "/api/v1/tasks", "application/json", "", map[string]any{
+		"request_key": "http-workflow-only-task", "title": "Run Workflow only",
+		"workflow_revision_id": revised.Workflow.CurrentRevision.ID,
+		"worker_id":            worker.ID, "repository_id": worker.Repositories[0].ID,
+		"timeout_seconds": 60,
+	})
+	requireStatus(t, response, http.StatusCreated)
+	workflowOnlyTask := decodeResponse[protocol.TaskDetail](t, response)
+	if workflowOnlyTask.Context != "" ||
+		workflowOnlyTask.ResolvedPrompt != "Implement, verify twice, review, and open a pull request." ||
+		workflowOnlyTask.Task.Description != workflowOnlyTask.ResolvedPrompt {
+		t.Fatalf("Workflow-only HTTP task = %#v", workflowOnlyTask)
+	}
+
 	for title, body := range map[string]map[string]any{
 		"empty legacy description": {
 			"request_key": "mixed-empty-description", "title": "Mixed task",

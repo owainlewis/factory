@@ -230,7 +230,9 @@ export function TaskDetail({
       <div className="detail-grid">
         <section className="panel detail-main">
           <PanelHeading title="Context" />
-          <div className="long-copy">{data.context}</div>
+          <div className="long-copy">{data.context || (data.workflow
+            ? "No additional context. Workflow instructions run unchanged."
+            : "No task context.")}</div>
         </section>
         <section className="panel">
           <PanelHeading title="Assignment" />

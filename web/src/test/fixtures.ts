@@ -684,9 +684,13 @@ export function mockControlPlane(
               revision_number: workflowDetail.workflow.current_revision.revision_number,
             }
           : undefined;
-        const context = selectedWorkflow ? String(body.context) : String(body.description);
+        const submittedContext = selectedWorkflow ? String(body.context ?? "") : String(body.description);
+        const context = selectedWorkflow && !submittedContext.trim() ? "" : submittedContext;
+        const workflowInstructions = workflowDetail.workflow.current_revision.instructions ?? "";
         const resolvedPrompt = selectedWorkflow
-          ? `Workflow instructions:\n\n${workflowDetail.workflow.current_revision.instructions}\n\nTask context:\n\n${context}`
+          ? context.trim()
+            ? `Workflow instructions:\n\n${workflowInstructions}\n\nTask context:\n\n${context}`
+            : workflowInstructions
           : context;
         createdTask = {
           title: String(body.title),

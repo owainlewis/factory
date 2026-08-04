@@ -378,7 +378,7 @@ interface CreateTaskBaseInput {
 
 export type CreateTaskInput = CreateTaskBaseInput & (
   | { description: string; context?: never; workflow_revision_id?: never }
-  | { description?: never; context: string; workflow_revision_id: string }
+  | { description?: never; context?: string; workflow_revision_id: string }
 );
 
 export interface CreateWorkflowInput {
