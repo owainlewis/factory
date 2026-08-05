@@ -49,6 +49,10 @@ vet:
 vuln:
     go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
+# Run correctness and dead-code checks without style-only churn.
+staticcheck:
+    go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 -checks 'SA*,U1000' ./...
+
 # Prove workers do not import control-plane implementation code.
 boundary:
     @! go list -deps ./internal/worker | grep -qx 'github.com/owainlewis/factory/internal/controlplane'
@@ -66,4 +70,4 @@ test-launcher:
     ./scripts/test-run-local.sh
 
 # Run the normal local and CI checks, excluding the slower browser suite.
-check: format-check vet vuln boundary test ui-check test-tooling test-launcher
+check: format-check vet vuln staticcheck boundary test ui-check test-tooling test-launcher
