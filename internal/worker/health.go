@@ -34,7 +34,7 @@ func checkHealth(
 ) health {
 	result := health{State: "unhealthy"}
 	gitContext, cancel := context.WithTimeout(ctx, healthCheckTimeout)
-	stdout, stderr, err := runCommand(gitContext, gitExecutable, "", 64<<10, "--version")
+	stdout, _, err := runCommand(gitContext, gitExecutable, "", 64<<10, "--version")
 	cancel()
 	if err != nil {
 		result.Error = errors.New("Git health check failed; install Git and make it available on PATH")
@@ -47,7 +47,7 @@ func checkHealth(
 	}
 
 	runtimeContext, cancel := context.WithTimeout(ctx, healthCheckTimeout)
-	stdout, stderr, err = runCommand(runtimeContext, runtimeExecutable, "", 64<<10, "--version")
+	stdout, _, err = runCommand(runtimeContext, runtimeExecutable, "", 64<<10, "--version")
 	cancel()
 	if err != nil {
 		result.Error = fmt.Errorf("%s version check failed; install it and make it available on PATH", runtimeDisplayName(runtime))
@@ -66,7 +66,7 @@ func checkHealth(
 	} else {
 		authArguments = []string{"login", "status"}
 	}
-	stdout, stderr, err = runCommand(authContext, runtimeExecutable, "", 64<<10, authArguments...)
+	stdout, stderr, err := runCommand(authContext, runtimeExecutable, "", 64<<10, authArguments...)
 	cancel()
 	if err != nil {
 		result.Error = fmt.Errorf("%s authentication check failed; authenticate the configured runtime", runtimeDisplayName(runtime))

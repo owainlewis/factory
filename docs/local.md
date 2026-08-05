@@ -4,7 +4,7 @@ This guide starts one control plane and one worker on macOS or Linux.
 
 ## Requirements
 
-- Go 1.25 or newer
+- Go 1.25.12 or newer on the 1.25 release line, or Go 1.26.5 or newer
 - Git
 - `curl`
 - `just`
@@ -28,6 +28,20 @@ Relative database paths resolve from the config file directory. Unknown fields,
 symlinks, and files larger than 1 MiB are rejected. Command-line flags override
 the file. Copy [the example](../examples/config.toml) only when changing these
 defaults.
+
+The control-plane database contains prompts, results, and repository metadata.
+Factory creates the database, its marker, and SQLite WAL and shared-memory files
+with owner-only permissions (`0600`). When a valid existing database is opened,
+Factory corrects broader permissions before use and rejects non-regular files or
+symlinks in these locations. The containing database directory must be a real
+directory owned by the server's effective user and must not be writable by group
+or other users. Factory validates the configured path before creating missing
+directories, then separately validates its resolved target. Path components and
+symlinks must be owned by the effective user or root; group or world-writable
+ancestors require sticky-bit protection. This permits protected system symlinks
+such as macOS `/var` without trusting links controlled by another user. Existing
+`0755` database directories are accepted; use `chmod go-w PATH` before startup
+when an explicit database directory is group or world writable.
 
 ## Configure a worker
 

@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1815,10 +1817,17 @@ func TestDatabaseUsesWALAndRefusesAnUnmarkedExistingDatabase(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
+	for _, protected := range []string{path, path + ".v2-control-plane"} {
+		if err := os.Chmod(protected, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	reopened, err := Open(context.Background(), path)
 	if err != nil {
 		t.Fatalf("reopen marked database: %v", err)
 	}
+	assertFilePermissions(t, path, 0o600)
+	assertFilePermissions(t, path+".v2-control-plane", 0o600)
 	if err := reopened.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -1837,6 +1846,189 @@ func TestDatabaseUsesWALAndRefusesAnUnmarkedExistingDatabase(t *testing.T) {
 	}
 	if string(after) != string(original) {
 		t.Fatal("unmarked database was modified")
+	}
+}
+
+func TestDatabaseFilesUseOwnerOnlyPermissionsInExistingDirectory(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "configured")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "factory.sqlite3")
+	store, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.db.Exec(`CREATE TABLE permission_test (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, protected := range []string{path, path + ".v2-control-plane", path + "-wal", path + "-shm"} {
+		assertFilePermissions(t, protected, 0o600)
+	}
+}
+
+func TestPrepareDatabasePathCorrectsExistingFilePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "factory.sqlite3")
+	files := map[string]string{
+		path:                       "existing database",
+		path + ".v2-control-plane": "factory-v2-control-plane\n",
+		path + "-wal":              "existing WAL",
+		path + "-shm":              "existing shared memory",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(name, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(name, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := prepareDatabasePath(path); err != nil {
+		t.Fatal(err)
+	}
+	for name := range files {
+		assertFilePermissions(t, name, 0o600)
+	}
+}
+
+func TestPrepareDatabasePathRejectsSymlinkSidecar(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "factory.sqlite3")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".v2-control-plane", []byte("factory-v2-control-plane\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "target")
+	if err := os.WriteFile(target, []byte("do not modify"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path+"-wal"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := prepareDatabasePath(path)
+	if err == nil || !strings.Contains(err.Error(), "database WAL must be a regular non-symlink file") {
+		t.Fatalf("prepare database error = %v", err)
+	}
+	assertFilePermissions(t, target, 0o644)
+}
+
+func TestPrepareDatabasePathRejectsWritableDatabaseDirectory(t *testing.T) {
+	for _, mode := range []os.FileMode{0o770, 0o707} {
+		t.Run(fmt.Sprintf("%#o", mode), func(t *testing.T) {
+			directory := filepath.Join(t.TempDir(), "writable")
+			if err := os.Mkdir(directory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(directory, mode); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(directory, "factory.sqlite3")
+
+			_, err := prepareDatabasePath(path)
+			if err == nil || !strings.Contains(err.Error(), "database directory must not be writable by group or other users") {
+				t.Fatalf("prepare database error = %v", err)
+			}
+			for _, unexpected := range []string{path, path + ".v2-control-plane"} {
+				if _, err := os.Lstat(unexpected); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unsafe directory startup created %s: %v", unexpected, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateDatabaseDirectoryRejectsDifferentOwner(t *testing.T) {
+	directory := t.TempDir()
+	info, err := os.Lstat(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("directory metadata = %T", info.Sys())
+	}
+
+	err = validateDatabaseDirectory(directory, stat.Uid+1)
+	if err == nil || !strings.Contains(err.Error(), "database directory must be owned by effective user") {
+		t.Fatalf("validate database directory error = %v", err)
+	}
+}
+
+func TestPrepareDatabasePathRejectsWritableAncestor(t *testing.T) {
+	ancestor := filepath.Join(t.TempDir(), "writable-ancestor")
+	directory := filepath.Join(ancestor, "database")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(ancestor, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "factory.sqlite3")
+
+	_, err := prepareDatabasePath(path)
+	if err == nil || !strings.Contains(err.Error(), "database path ancestor must not be group or world writable") {
+		t.Fatalf("prepare database error = %v", err)
+	}
+	for _, unexpected := range []string{path, path + ".v2-control-plane"} {
+		if _, err := os.Lstat(unexpected); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unsafe ancestor startup created %s: %v", unexpected, err)
+		}
+	}
+}
+
+func TestPrepareDatabasePathRejectsSymlinkFromWritableSource(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "unsafe-source")
+	target := filepath.Join(root, "safe-target")
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(source, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(source, "database")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(source, "database", "factory.sqlite3")
+
+	_, err := prepareDatabasePath(path)
+	if err == nil || !strings.Contains(err.Error(), "configured database path ancestor must not be group or world writable") {
+		t.Fatalf("prepare database error = %v", err)
+	}
+	for _, unexpected := range []string{
+		filepath.Join(target, "factory.sqlite3"),
+		filepath.Join(target, "factory.sqlite3.v2-control-plane"),
+	} {
+		if _, err := os.Lstat(unexpected); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unsafe source path created %s: %v", unexpected, err)
+		}
+	}
+}
+
+func assertFilePermissions(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s permissions = %#o, want %#o", path, got, want)
 	}
 }
 
@@ -1901,7 +2093,7 @@ func TestDatabaseMarkerInitializationFailuresAreRecoverable(t *testing.T) {
 				t.Fatalf("failed marker still exists: %v", err)
 			}
 
-			if err := prepareDatabasePath(path); err != nil {
+			if _, err := prepareDatabasePath(path); err != nil {
 				t.Fatalf("retry marker initialization: %v", err)
 			}
 			body, err := os.ReadFile(marker)
