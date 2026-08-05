@@ -56,11 +56,33 @@ type Store struct {
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
+	return openStore(ctx, path, false)
+}
+
+func openExistingStore(ctx context.Context, path string) (*Store, error) {
+	return openStore(ctx, path, true)
+}
+
+func openStore(ctx context.Context, path string, existingOnly bool) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("database path is required")
 	}
+	if existingOnly && path == ":memory:" {
+		return nil, errors.New("existing database path is required")
+	}
 	if path != ":memory:" {
-		if err := prepareDatabasePath(path); err != nil {
+		if existingOnly {
+			info, err := os.Lstat(path)
+			if err != nil {
+				return nil, fmt.Errorf("inspect existing database: %w", err)
+			}
+			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+				return nil, fmt.Errorf("database must be a regular non-symlink file: %s", path)
+			}
+			if err := validateDatabaseMarker(path + ".v2-control-plane"); err != nil {
+				return nil, err
+			}
+		} else if err := prepareDatabasePath(path); err != nil {
 			return nil, err
 		}
 	}
@@ -68,6 +90,11 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	dsn := "file::memory:?cache=shared"
 	if path != ":memory:" {
 		u := &url.URL{Scheme: "file", Path: path}
+		if existingOnly {
+			query := u.Query()
+			query.Set("mode", "rw")
+			u.RawQuery = query.Encode()
+		}
 		dsn = u.String()
 		if strings.Contains(dsn, "?") {
 			dsn += "&"

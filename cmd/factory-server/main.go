@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -45,14 +46,21 @@ func run() (returnErr error) {
 	}
 	listen := flag.String("listen", defaultListen, "loopback HTTP listen address")
 	database := flag.String("database", selectedDatabase, "Factory SQLite database path")
+	backup := flag.String("backup", "", "write a consistent database backup and exit")
+	restore := flag.String("restore", "", "restore a validated backup into the selected fresh database and exit")
 	printListen := flag.Bool("print-listen", false, "print the resolved listen address and exit")
 	flag.Parse()
-
-	listenAddress, err := controlplane.ResolveListenAddress(*listen)
-	if err != nil {
-		return err
+	if *backup != "" && *restore != "" {
+		return errors.New("backup and restore modes are mutually exclusive")
+	}
+	if *printListen && (*backup != "" || *restore != "") {
+		return errors.New("print-listen cannot be combined with backup or restore mode")
 	}
 	if *printListen {
+		listenAddress, err := controlplane.ResolveListenAddress(*listen)
+		if err != nil {
+			return err
+		}
 		fmt.Println(listenAddress.String())
 		return nil
 	}
@@ -78,6 +86,17 @@ func run() (returnErr error) {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	rootContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	handled, err := runRecoveryMode(rootContext, *database, *backup, *restore, os.Stdout)
+	if err != nil {
+		return err
+	}
+	if handled {
+		return nil
+	}
+	listenAddress, err := controlplane.ResolveListenAddress(*listen)
+	if err != nil {
+		return err
+	}
 
 	store, err := controlplane.Open(rootContext, *database)
 	if err != nil {
@@ -188,6 +207,28 @@ func run() (returnErr error) {
 	<-automationsDone
 	logger.Info("server_stopped")
 	return nil
+}
+
+func runRecoveryMode(
+	ctx context.Context,
+	database, backup, restore string,
+	stdout io.Writer,
+) (bool, error) {
+	if restore != "" {
+		if err := controlplane.RestoreBackup(ctx, restore, database); err != nil {
+			return true, err
+		}
+		fmt.Fprintf(stdout, "restored Factory database to %s\n", database)
+		return true, nil
+	}
+	if backup != "" {
+		if err := controlplane.BackupDatabase(ctx, database, backup); err != nil {
+			return true, err
+		}
+		fmt.Fprintf(stdout, "created Factory database backup at %s\n", backup)
+		return true, nil
+	}
+	return false, nil
 }
 
 func defaultDatabasePath() (database string, root string, err error) {
