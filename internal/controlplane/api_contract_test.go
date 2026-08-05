@@ -97,6 +97,11 @@ func TestCheckedInAPICompatibilityBaseline(t *testing.T) {
 	if !ok || !strings.Contains(workerRegistration, "codex_version: string | null (optional)") {
 		t.Fatalf("worker registration wire schema does not track legacy codex_version: %q", workerRegistration)
 	}
+	for _, field := range []string{"runtime: string | null (optional)", "runtime_version: string | null (optional)"} {
+		if !strings.Contains(workerRegistration, field) {
+			t.Fatalf("worker registration wire schema does not track optional %s: %q", field, workerRegistration)
+		}
+	}
 
 	var changed compatibilityContract
 	if err := json.Unmarshal(body, &changed); err != nil {
@@ -178,6 +183,7 @@ func TestAPIRoutingErrorsUseContractErrorShape(t *testing.T) {
 	}{
 		{name: "not found", method: http.MethodGet, path: "/api/v1/not-real", wantStatus: http.StatusNotFound, wantCode: "not_found"},
 		{name: "method not allowed", method: http.MethodPut, path: "/api/v1/tasks", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed", wantAllow: "GET, HEAD, POST"},
+		{name: "health method not allowed", method: http.MethodPost, path: "/healthz", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed", wantAllow: "GET, HEAD"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := fixture.request(test.method, test.path, "application/json", "", map[string]any{})

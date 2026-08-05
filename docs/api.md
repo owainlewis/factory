@@ -22,14 +22,14 @@ Every error body has this shape:
 | --- | --- | --- | --- | --- | --- |
 | `PUT /api/v1/workers/{worker_id}` | registerWorker: Register or heartbeat a worker. | WorkerRegistrationRequest JSON; legacy codex_version is accepted only without runtime fields | 200 Worker JSON; legacy requests receive LegacyWorkerResponse JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/workers/{worker_id}/claims` | claim: Claim the next eligible execution. | ClaimRequest JSON | 200 Claim JSON or 204 with no body | none | ErrorBody: {error: {code: string, message: string}} |
-| `GET /api/v1/workers` | listWorkers: List workers. | none | 200 {workers: Worker[]} | none | ErrorBody: {error: {code: string, message: string}} |
+| `GET /api/v1/workers` | listWorkers: List workers. | none | 200 ListWorkersResponse JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `GET /api/v1/workers/{worker_id}` | getWorker: Get one worker. | none | 200 Worker JSON | none | ErrorBody: {error: {code: string, message: string}} |
 
 ## Repositories
 
 | Method and path | Operation | Request | Success response | Pagination | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `GET /api/v1/repositories` | listManagedRepositories: List managed repositories. | none | 200 {repositories: ManagedRepository[]} | none | ErrorBody: {error: {code: string, message: string}} |
+| `GET /api/v1/repositories` | listManagedRepositories: List managed repositories. | none | 200 ListManagedRepositoriesResponse JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/repositories` | createManagedRepository: Create or replay a managed repository. | CreateManagedRepositoryRequest JSON | 200 or 201 ManagedRepository JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `GET /api/v1/repositories/{repository_id}` | getManagedRepository: Get one managed repository. | none | 200 ManagedRepository JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `GET /api/v1/repositories/{repository_id}/readiness` | getManagedRepositoryReadiness: Inspect worker readiness for a repository. | none | 200 ManagedRepositoryReadiness JSON | none | ErrorBody: {error: {code: string, message: string}} |
@@ -39,7 +39,7 @@ Every error body has this shape:
 
 | Method and path | Operation | Request | Success response | Pagination | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `GET /api/v1/workflows` | listWorkflows: List and filter workflows. | none | 200 {workflows: Workflow[], next_cursor: string\|null} | Query: title, enabled, limit 1..200, opaque cursor; stable updated-at/ID ordering | ErrorBody: {error: {code: string, message: string}} |
+| `GET /api/v1/workflows` | listWorkflows: List and filter workflows. | none | 200 ListWorkflowsResponse JSON | Query: title, enabled, limit 1..200, opaque cursor; stable updated-at/ID ordering | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/workflows` | createWorkflow: Create or replay a workflow. | CreateWorkflowRequest JSON | 200 or 201 WorkflowDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `GET /api/v1/workflows/{workflow_id}` | getWorkflow: Get workflow revisions and current state. | none | 200 WorkflowDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/workflows/{workflow_id}/revisions` | createWorkflowRevision: Create or replay a workflow revision. | CreateWorkflowRevisionRequest JSON | 200 or 201 WorkflowDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
@@ -49,7 +49,7 @@ Every error body has this shape:
 
 | Method and path | Operation | Request | Success response | Pagination | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `GET /api/v1/automations` | listAutomations: List automations. | none | 200 {automations: Automation[], next_cursor: string\|null} | Query: limit 1..200 and opaque cursor; stable updated-at/ID ordering | ErrorBody: {error: {code: string, message: string}} |
+| `GET /api/v1/automations` | listAutomations: List automations. | none | 200 ListAutomationsResponse JSON | Query: limit 1..200 and opaque cursor; stable updated-at/ID ordering | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/automations` | createAutomation: Create or replay an automation. | CreateAutomationRequest JSON | 200 or 201 AutomationDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `GET /api/v1/automations/{automation_id}` | getAutomation: Get one automation. | none | 200 AutomationDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `PUT /api/v1/automations/{automation_id}` | updateAutomation: Update an automation with optimistic versioning. | UpdateAutomationRequest JSON | 200 AutomationDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
@@ -57,7 +57,7 @@ Every error body has this shape:
 | `POST /api/v1/automations/{automation_id}/test` | testAutomation: Test an automation without dispatch. | empty JSON object | 200 TestAutomationResult JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/automations/{automation_id}/check` | checkAutomation: Request an immediate provider check. | empty JSON object | 202 AutomationDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/automations/{automation_id}/run` | runAutomation: Run a schedule automation now. | RunAutomationRequest JSON | 202 AutomationDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
-| `GET /api/v1/automations/{automation_id}/occurrences` | listAutomationOccurrences: List retained automation occurrences. | none | 200 {occurrences: AutomationOccurrence[], next_cursor: string\|null} | Query: limit 1..200 and opaque cursor; stable created-at/ID ordering | ErrorBody: {error: {code: string, message: string}} |
+| `GET /api/v1/automations/{automation_id}/occurrences` | listAutomationOccurrences: List retained automation occurrences. | none | 200 ListAutomationOccurrencesResponse JSON | Query: limit 1..200 and opaque cursor; stable created-at/ID ordering | ErrorBody: {error: {code: string, message: string}} |
 
 ## Legacy migration
 
@@ -81,7 +81,7 @@ Every error body has this shape:
 
 | Method and path | Operation | Request | Success response | Pagination | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `GET /api/v1/tasks` | listTasks: List retained task summaries. | none | 200 {tasks: Task[], next_cursor: string\|null} | Query: limit 1..200 and opaque cursor; stable created-at/ID ordering | ErrorBody: {error: {code: string, message: string}} |
+| `GET /api/v1/tasks` | listTasks: List retained task summaries. | none | 200 ListTasksResponse JSON | Query: limit 1..200 and opaque cursor; stable created-at/ID ordering | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/tasks` | createTask: Create or replay a task. | CreateTaskRequest JSON | 200 or 201 TaskDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `GET /api/v1/tasks/{task_id}` | getTask: Get task, execution, attempts, and resolved prompt. | none | 200 TaskDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `DELETE /api/v1/tasks/{task_id}` | deleteTask: Delete eligible terminal task history. | empty JSON object or empty body | 200 {deleted: true} | none | ErrorBody: {error: {code: string, message: string}} |
@@ -100,7 +100,7 @@ Every error body has this shape:
 | `GET /api/v1/attempts/{attempt_id}` | getAttempt: Get one attempt. | none | 200 Attempt JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/attempts/{attempt_id}/start` | startAttempt: Record attempt startup and worktree metadata. | StartAttemptRequest JSON | 200 Attempt JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `PUT /api/v1/attempts/{attempt_id}/heartbeat` | heartbeat: Renew an attempt lease. | LeaseRequest JSON | 200 HeartbeatResponse JSON | none | ErrorBody: {error: {code: string, message: string}} |
-| `GET /api/v1/attempts/{attempt_id}/events` | getEvents: Read an attempt event page. | none | 200 {events: AttemptEvent[], next_after: integer, has_more: boolean} | Query: after >= -1 and limit 1..500; next page starts after next_after | ErrorBody: {error: {code: string, message: string}} |
+| `GET /api/v1/attempts/{attempt_id}/events` | getEvents: Read an attempt event page. | none | 200 ListAttemptEventsResponse JSON | Query: after >= -1 and limit 1..500; next page starts after next_after | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/attempts/{attempt_id}/events` | appendEvents: Append an ordered event batch. | EventBatchRequest JSON | 204 with no body | none | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/attempts/{attempt_id}/complete` | completeAttempt: Complete an attempt. | CompleteAttemptRequest JSON | 200 Attempt JSON | none | ErrorBody: {error: {code: string, message: string}} |
 
@@ -562,6 +562,68 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 }
 ```
 
+### ListAttemptEventsResponse
+
+```text
+{
+  events: AttemptEvent[]
+  next_after: integer
+  has_more: boolean
+}
+```
+
+### ListAutomationOccurrencesResponse
+
+```text
+{
+  occurrences: AutomationOccurrence[]
+  next_cursor: string | null
+}
+```
+
+### ListAutomationsResponse
+
+```text
+{
+  automations: Automation[]
+  next_cursor: string | null
+}
+```
+
+### ListManagedRepositoriesResponse
+
+```text
+{
+  repositories: ManagedRepository[]
+}
+```
+
+### ListTasksResponse
+
+```text
+{
+  tasks: Task[]
+  next_cursor: string | null
+}
+```
+
+### ListWorkersResponse
+
+```text
+{
+  workers: Worker[]
+}
+```
+
+### ListWorkflowsResponse
+
+```text
+{
+  workflows: Workflow[]
+  next_cursor: string | null
+}
+```
+
 ### ManagedRepository
 
 ```text
@@ -831,36 +893,15 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 }
 ```
 
-### WorkerRegistration
-
-```text
-{
-  name: string
-  worker_version: string
-  runtime: string
-  runtime_version: string
-  capacity: integer
-  active_count: integer
-  health: string
-  repositories: RepositoryRegistration[]
-  source_access: SourceAccess[] (optional)
-  accepts_managed_repositories: boolean (optional)
-  managed_repository_ids: string[] (optional)
-  retained_worktrees: RetainedWorktree[]
-  capacity_handoff_version: integer (optional)
-  disposed_attempt_ids: string[] (optional)
-  weekly_limit: WeeklyLimit | null (optional)
-}
-```
-
 ### WorkerRegistrationRequest
 
 ```text
 {
   name: string
   worker_version: string
-  runtime: string
-  runtime_version: string
+  runtime: string | null (optional)
+  runtime_version: string | null (optional)
+  codex_version: string | null (optional)
   capacity: integer
   active_count: integer
   health: string
@@ -872,7 +913,6 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
   capacity_handoff_version: integer (optional)
   disposed_attempt_ids: string[] (optional)
   weekly_limit: WeeklyLimit | null (optional)
-  codex_version: string | null (optional)
 }
 ```
 

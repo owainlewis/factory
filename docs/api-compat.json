@@ -21,9 +21,9 @@
     "GET /api/v1/attempts/{attempt_id}/events": {
       "operation": "getEvents",
       "request": "none",
-      "response": "200 {events: AttemptEvent[], next_after: integer, has_more: boolean}",
+      "response": "200 ListAttemptEventsResponse JSON",
       "response_schemas": [
-        "AttemptEvent"
+        "ListAttemptEventsResponse"
       ],
       "pagination": "Query: after \u003e= -1 and limit 1..500; next page starts after next_after",
       "errors": "ErrorBody: {error: {code: string, message: string}}"
@@ -31,9 +31,9 @@
     "GET /api/v1/automations": {
       "operation": "listAutomations",
       "request": "none",
-      "response": "200 {automations: Automation[], next_cursor: string|null}",
+      "response": "200 ListAutomationsResponse JSON",
       "response_schemas": [
-        "Automation"
+        "ListAutomationsResponse"
       ],
       "pagination": "Query: limit 1..200 and opaque cursor; stable updated-at/ID ordering",
       "errors": "ErrorBody: {error: {code: string, message: string}}"
@@ -51,9 +51,9 @@
     "GET /api/v1/automations/{automation_id}/occurrences": {
       "operation": "listAutomationOccurrences",
       "request": "none",
-      "response": "200 {occurrences: AutomationOccurrence[], next_cursor: string|null}",
+      "response": "200 ListAutomationOccurrencesResponse JSON",
       "response_schemas": [
-        "AutomationOccurrence"
+        "ListAutomationOccurrencesResponse"
       ],
       "pagination": "Query: limit 1..200 and opaque cursor; stable created-at/ID ordering",
       "errors": "ErrorBody: {error: {code: string, message: string}}"
@@ -91,9 +91,9 @@
     "GET /api/v1/repositories": {
       "operation": "listManagedRepositories",
       "request": "none",
-      "response": "200 {repositories: ManagedRepository[]}",
+      "response": "200 ListManagedRepositoriesResponse JSON",
       "response_schemas": [
-        "ManagedRepository"
+        "ListManagedRepositoriesResponse"
       ],
       "pagination": "none",
       "errors": "ErrorBody: {error: {code: string, message: string}}"
@@ -121,9 +121,9 @@
     "GET /api/v1/tasks": {
       "operation": "listTasks",
       "request": "none",
-      "response": "200 {tasks: Task[], next_cursor: string|null}",
+      "response": "200 ListTasksResponse JSON",
       "response_schemas": [
-        "Task"
+        "ListTasksResponse"
       ],
       "pagination": "Query: limit 1..200 and opaque cursor; stable created-at/ID ordering",
       "errors": "ErrorBody: {error: {code: string, message: string}}"
@@ -141,9 +141,9 @@
     "GET /api/v1/workers": {
       "operation": "listWorkers",
       "request": "none",
-      "response": "200 {workers: Worker[]}",
+      "response": "200 ListWorkersResponse JSON",
       "response_schemas": [
-        "Worker"
+        "ListWorkersResponse"
       ],
       "pagination": "none",
       "errors": "ErrorBody: {error: {code: string, message: string}}"
@@ -161,9 +161,9 @@
     "GET /api/v1/workflows": {
       "operation": "listWorkflows",
       "request": "none",
-      "response": "200 {workflows: Workflow[], next_cursor: string|null}",
+      "response": "200 ListWorkflowsResponse JSON",
       "response_schemas": [
-        "Workflow"
+        "ListWorkflowsResponse"
       ],
       "pagination": "Query: title, enabled, limit 1..200, opaque cursor; stable updated-at/ID ordering",
       "errors": "ErrorBody: {error: {code: string, message: string}}"
@@ -526,6 +526,13 @@
     "LegacyPollerQueueMapping": "{\n  queue_id: string\n  workflow_title: string\n  automation_title: string\n}",
     "LegacyPollerSelection": "{\n  config_path: string (optional)\n  data_home: string (optional)\n  working_directory: string (optional)\n  confirm_stopped: boolean\n}",
     "LegacyWorkerResponse": "{\n  id: string\n  name: string\n  worker_version: string\n  codex_version: string\n  capacity: integer\n  active_count: integer\n  health: string\n  online: boolean\n  repositories: Repository[]\n  retained_worktrees: RetainedWorktree[]\n  current_task_title: string (optional)\n  registered_at: string (RFC3339 timestamp)\n  last_heartbeat: string (RFC3339 timestamp)\n}",
+    "ListAttemptEventsResponse": "{\n  events: AttemptEvent[]\n  next_after: integer\n  has_more: boolean\n}",
+    "ListAutomationOccurrencesResponse": "{\n  occurrences: AutomationOccurrence[]\n  next_cursor: string | null\n}",
+    "ListAutomationsResponse": "{\n  automations: Automation[]\n  next_cursor: string | null\n}",
+    "ListManagedRepositoriesResponse": "{\n  repositories: ManagedRepository[]\n}",
+    "ListTasksResponse": "{\n  tasks: Task[]\n  next_cursor: string | null\n}",
+    "ListWorkersResponse": "{\n  workers: Worker[]\n}",
+    "ListWorkflowsResponse": "{\n  workflows: Workflow[]\n  next_cursor: string | null\n}",
     "ManagedRepository": "{\n  id: string\n  remote_identity: string\n  enabled: boolean\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
     "ManagedRepositoryReadiness": "{\n  routing_ready: boolean\n  workers: ManagedRepositoryWorkerReadiness[]\n}",
     "ManagedRepositoryWorkerReadiness": "{\n  id: string\n  name: string\n  cached: boolean\n  advertised: boolean\n  ready: boolean\n  reason: string\n}",
@@ -549,8 +556,7 @@
     "UpdateAutomationRequest": "{\n  expected_version: integer\n  title: string\n  workflow_id: string\n  context: string\n  timeout_seconds: integer\n  trigger: GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger\n}",
     "WeeklyLimit": "{\n  used_percent: integer\n  resets_at: string (RFC3339 timestamp)\n}",
     "Worker": "{\n  id: string\n  name: string\n  worker_version: string\n  runtime: string\n  runtime_version: string\n  capacity: integer\n  active_count: integer\n  health: string\n  online: boolean\n  repositories: Repository[]\n  source_access: SourceAccess[] (optional)\n  accepts_managed_repositories: boolean (optional)\n  repository_cache_count: integer (optional)\n  retained_worktrees: RetainedWorktree[]\n  current_task_title: string (optional)\n  registered_at: string (RFC3339 timestamp)\n  last_heartbeat: string (RFC3339 timestamp)\n}",
-    "WorkerRegistration": "{\n  name: string\n  worker_version: string\n  runtime: string\n  runtime_version: string\n  capacity: integer\n  active_count: integer\n  health: string\n  repositories: RepositoryRegistration[]\n  source_access: SourceAccess[] (optional)\n  accepts_managed_repositories: boolean (optional)\n  managed_repository_ids: string[] (optional)\n  retained_worktrees: RetainedWorktree[]\n  capacity_handoff_version: integer (optional)\n  disposed_attempt_ids: string[] (optional)\n  weekly_limit: WeeklyLimit | null (optional)\n}",
-    "WorkerRegistrationRequest": "{\n  name: string\n  worker_version: string\n  runtime: string\n  runtime_version: string\n  capacity: integer\n  active_count: integer\n  health: string\n  repositories: RepositoryRegistration[]\n  source_access: SourceAccess[] (optional)\n  accepts_managed_repositories: boolean (optional)\n  managed_repository_ids: string[] (optional)\n  retained_worktrees: RetainedWorktree[]\n  capacity_handoff_version: integer (optional)\n  disposed_attempt_ids: string[] (optional)\n  weekly_limit: WeeklyLimit | null (optional)\n  codex_version: string | null (optional)\n}",
+    "WorkerRegistrationRequest": "{\n  name: string\n  worker_version: string\n  runtime: string | null (optional)\n  runtime_version: string | null (optional)\n  codex_version: string | null (optional)\n  capacity: integer\n  active_count: integer\n  health: string\n  repositories: RepositoryRegistration[]\n  source_access: SourceAccess[] (optional)\n  accepts_managed_repositories: boolean (optional)\n  managed_repository_ids: string[] (optional)\n  retained_worktrees: RetainedWorktree[]\n  capacity_handoff_version: integer (optional)\n  disposed_attempt_ids: string[] (optional)\n  weekly_limit: WeeklyLimit | null (optional)\n}",
     "Workflow": "{\n  id: string\n  enabled: boolean\n  current_revision: WorkflowRevision\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
     "WorkflowDetail": "{\n  workflow: Workflow\n  revisions: WorkflowRevision[]\n}",
     "WorkflowRevision": "{\n  id: string\n  workflow_id: string\n  revision_number: integer\n  title: string\n  summary: string\n  instructions: string (optional)\n  created_at: string (RFC3339 timestamp)\n}"

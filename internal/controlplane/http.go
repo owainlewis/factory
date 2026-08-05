@@ -78,6 +78,7 @@ func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *Au
 			route.Handler(api, w, r)
 		})
 	}
+	mux.HandleFunc("/healthz", api.apiRouteFallback)
 	mux.HandleFunc("/api", api.apiRouteFallback)
 	mux.HandleFunc("/api/", api.apiRouteFallback)
 	return api.requestLog(mux)
@@ -86,7 +87,7 @@ func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *Au
 func (a *API) apiRouteFallback(w http.ResponseWriter, r *http.Request) {
 	allowed := make([]string, 0, 1)
 	for _, route := range apiRouteDefinitions {
-		if strings.HasPrefix(route.Path, "/api/") && contractPathMatches(route.Path, r.URL.Path) {
+		if contractPathMatches(route.Path, r.URL.Path) {
 			allowed = append(allowed, route.Method)
 			if route.Method == http.MethodGet {
 				allowed = append(allowed, http.MethodHead)
@@ -175,7 +176,7 @@ func (a *API) listWorkflows(w http.ResponseWriter, r *http.Request) {
 		}
 		nextCursor = &value
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"workflows": page.Workflows, "next_cursor": nextCursor})
+	writeJSON(w, http.StatusOK, listWorkflowsResponse{Workflows: page.Workflows, NextCursor: nextCursor})
 }
 
 func (a *API) createWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -412,7 +413,7 @@ func (a *API) listWorkers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"workers": workers})
+	writeJSON(w, http.StatusOK, listWorkersResponse{Workers: workers})
 }
 
 func (a *API) getWorker(w http.ResponseWriter, r *http.Request) {
@@ -430,7 +431,7 @@ func (a *API) listManagedRepositories(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"repositories": repositories})
+	writeJSON(w, http.StatusOK, listManagedRepositoriesResponse{Repositories: repositories})
 }
 
 func (a *API) createManagedRepository(w http.ResponseWriter, r *http.Request) {
@@ -524,7 +525,7 @@ func (a *API) listTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		nextCursor = &encoded
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tasks": page.Tasks, "next_cursor": nextCursor})
+	writeJSON(w, http.StatusOK, listTasksResponse{Tasks: page.Tasks, NextCursor: nextCursor})
 }
 
 func (a *API) createTask(w http.ResponseWriter, r *http.Request) {
@@ -692,8 +693,8 @@ func (a *API) getEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"events": page.Events, "next_after": page.NextAfter, "has_more": page.HasMore,
+	writeJSON(w, http.StatusOK, listAttemptEventsResponse{
+		Events: page.Events, NextAfter: page.NextAfter, HasMore: page.HasMore,
 	})
 }
 

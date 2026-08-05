@@ -48,7 +48,7 @@ func (a *API) listAutomations(w http.ResponseWriter, r *http.Request) {
 		}
 		nextCursor = &encoded
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"automations": page.Automations, "next_cursor": nextCursor})
+	writeJSON(w, http.StatusOK, listAutomationsResponse{Automations: page.Automations, NextCursor: nextCursor})
 }
 
 func (a *API) createAutomation(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +212,7 @@ func (a *API) listAutomationOccurrences(w http.ResponseWriter, r *http.Request) 
 		}
 		nextCursor = &encoded
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"occurrences": page.Occurrences, "next_cursor": nextCursor})
+	writeJSON(w, http.StatusOK, listAutomationOccurrencesResponse{Occurrences: page.Occurrences, NextCursor: nextCursor})
 }
 
 func encodeAutomationCursor(cursor protocol.AutomationCursor) (string, error) {
