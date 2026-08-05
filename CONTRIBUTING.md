@@ -64,6 +64,10 @@ run Node or npm.
 - Do not commit credentials, local worker configuration, databases, or retained
   worktrees.
 
+Changes to `main` must go through a pull request and pass the required `check`
+status. Maintainers should follow the [maintainer guide](docs/maintainers.md)
+when changing repository policy or recovering from a broken required check.
+
 By participating, you agree to follow the
 [Code of Conduct](CODE_OF_CONDUCT.md). Contributions use the project's
 [MIT License](LICENSE).
