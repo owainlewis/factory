@@ -12,7 +12,7 @@ import {
   Server,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, type KeyboardEvent, type ReactNode } from "react";
 import { api } from "./api";
 import { runtimeLabel, stateLabel, timeAgo } from "./format";
 import { useVisibleInterval } from "./polling";
@@ -26,6 +26,16 @@ import {
   ViewHeader,
   type ViewStateProps,
 } from "./ui";
+
+const workerTabs = ["overview", "work", "capabilities", "settings"] as const;
+type WorkerTab = (typeof workerTabs)[number];
+
+const workerTabLabel: Record<WorkerTab, string> = {
+  overview: "Overview",
+  work: "Work",
+  capabilities: "Capabilities",
+  settings: "Settings",
+};
 
 export function WorkersView({
   workers,
@@ -140,6 +150,7 @@ export function WorkerDetail({
     refetchInterval: interval,
   });
   const [copied, setCopied] = useState<string>();
+  const [activeTab, setActiveTab] = useState<WorkerTab>("overview");
 
   if (worker.isPending) return <LoadingState label="Loading worker" />;
   if (!worker.data) return <ErrorState error={worker.error} onRetry={() => void worker.refetch()} />;
@@ -156,6 +167,32 @@ export function WorkerDetail({
     setCopied(attemptID);
     window.setTimeout(() => setCopied(undefined), 1_500);
   };
+  const selectTabFromKeyboard = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let nextIndex: number | undefined;
+    if (event.key === "ArrowRight") nextIndex = (index + 1) % workerTabs.length;
+    if (event.key === "ArrowLeft") nextIndex = (index - 1 + workerTabs.length) % workerTabs.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = workerTabs.length - 1;
+    if (nextIndex === undefined) return;
+    event.preventDefault();
+    const nextTab = workerTabs[nextIndex];
+    setActiveTab(nextTab);
+    document.getElementById(`worker-${id}-tab-${nextTab}`)?.focus();
+  };
+  const tabPanel = (tab: WorkerTab, content: ReactNode) => (
+    <div
+      className="worker-tab-panel"
+      role="tabpanel"
+      id={`worker-${id}-panel-${tab}`}
+      aria-labelledby={`worker-${id}-tab-${tab}`}
+      hidden={activeTab !== tab}
+      tabIndex={0}
+    >
+      {content}
+    </div>
+  );
+  const activeSessions = `${data.active_count} active session${data.active_count === 1 ? "" : "s"}`;
+  const latestActiveTask = data.active_count > 1 ? `Latest of ${activeSessions}` : activeSessions;
 
   return (
     <div className="page detail-page">
@@ -164,17 +201,20 @@ export function WorkerDetail({
         <div className="worker-detail-identity">
           <span className="worker-avatar worker-avatar-large"><Bot size={25} /></span>
           <div>
-          <div className="worker-state-line">
-            <span className={`presence ${data.online ? "online" : "offline"}`} aria-hidden="true" />
-            <span>{data.online ? "Online" : "Offline"}</span>
-            <span>·</span>
-            <span className={data.health === "healthy" ? "healthy-text" : "danger-text"}>{stateLabel(data.health)}</span>
-          </div>
-          <h1>{data.name}</h1>
-          <span className={`runtime-badge runtime-${data.runtime}`}>
-            <Play size={10} /> {runtimeLabel(data.runtime)}
-          </span>
-          <p>Registered {new Date(data.registered_at).toLocaleString()}</p>
+            <div className="worker-state-line">
+              <span className={`presence ${data.online ? "online" : "offline"}`} aria-hidden="true" />
+              <span>{data.online ? "Online" : "Offline"}</span>
+              <span>·</span>
+              <span className={data.health === "healthy" ? "healthy-text" : "danger-text"}>{stateLabel(data.health)}</span>
+            </div>
+            <h1>{data.name}</h1>
+            <div className="worker-profile-meta">
+              <span className={`runtime-badge runtime-${data.runtime}`}>
+                <Play size={10} /> {runtimeLabel(data.runtime)}
+              </span>
+              <span>{data.active_count} / {data.capacity} sessions active</span>
+              <span>Last seen {timeAgo(data.last_heartbeat)}</span>
+            </div>
           </div>
         </div>
         <div className="detail-actions">
@@ -185,30 +225,68 @@ export function WorkerDetail({
       </div>
       {worker.error && <StaleBanner error={worker.error} />}
 
-      <div className="worker-detail-layout">
-        <div>
+      <div className="worker-tabs" role="tablist" aria-label="Worker profile">
+        {workerTabs.map((tab, index) => (
+          <button
+            type="button"
+            role="tab"
+            id={`worker-${id}-tab-${tab}`}
+            aria-controls={`worker-${id}-panel-${tab}`}
+            aria-selected={activeTab === tab}
+            tabIndex={activeTab === tab ? 0 : -1}
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            onKeyDown={(event) => selectTabFromKeyboard(event, index)}
+          >
+            {workerTabLabel[tab]}
+          </button>
+        ))}
+      </div>
+
+      {tabPanel("overview",
+        <>
+          <section className="worker-summary-grid" aria-label="Worker summary">
+            <div><span>Status</span><strong>{data.online ? "Online" : "Offline"}</strong><small>{stateLabel(data.health)}</small></div>
+            <div><span>Sessions</span><strong>{data.active_count} / {data.capacity}</strong><small>active capacity</small></div>
+            <div><span>Repositories</span><strong>{data.repositories.length}</strong><small>advertised</small></div>
+            <div><span>Worktrees</span><strong>{data.retained_worktrees?.length ?? 0}</strong><small>retained</small></div>
+          </section>
+          <div className="worker-overview-layout">
+            <section className="panel">
+              <PanelHeading title="Profile" />
+              <dl className="metadata">
+                <div><dt>Runtime</dt><dd>{runtimeLabel(data.runtime)}</dd></div>
+                <div><dt>Last seen</dt><dd>{timeAgo(data.last_heartbeat)}</dd></div>
+                <div><dt>Registered</dt><dd>{new Date(data.registered_at).toLocaleString()}</dd></div>
+                <div><dt>Worker ID</dt><dd><span className="worker-id" title={data.id}>{data.id}</span></dd></div>
+              </dl>
+            </section>
+            <section className="panel">
+              <PanelHeading title="Latest active task" aside={latestActiveTask} />
+              {data.current_task_title ? (
+                <div className="current-work"><LoaderCircle size={17} className="spin" /> {data.current_task_title}</div>
+              ) : data.active_count > 0 ? (
+                <div className="quiet-empty">No active task title is currently reported.</div>
+              ) : (
+                <div className="quiet-empty">This worker is ready for its next task.</div>
+              )}
+            </section>
+          </div>
+        </>,
+      )}
+
+      {tabPanel("work",
+        <>
           <section className="panel">
-            <PanelHeading title="Now" aside={data.current_task_title ? "1 active task" : "No active work"} />
+            <PanelHeading title="Latest active task" aside={latestActiveTask} />
             {data.current_task_title ? (
               <div className="current-work"><LoaderCircle size={17} className="spin" /> {data.current_task_title}</div>
+            ) : data.active_count > 0 ? (
+              <div className="quiet-empty">No active task title is currently reported.</div>
             ) : (
               <div className="quiet-empty">This worker is ready for its next task.</div>
             )}
           </section>
-
-          <section className="panel">
-            <PanelHeading title="Repositories" aside={`${data.repositories.length} advertised`} />
-            <div className="repository-rows">
-              {data.repositories.map((repo) => (
-                <div className="repository-row" key={repo.id}>
-                  <GitBranch size={17} />
-                  <span><strong>{repo.key}</strong><small>{repo.remote_identity}</small></span>
-                  <span className="retained-count">{repo.retained_count} retained</span>
-                </div>
-              ))}
-            </div>
-          </section>
-
           <section className="panel">
             <PanelHeading title="Retained worktrees" aside={`${data.retained_worktrees?.length ?? 0} retained`} />
             {(data.retained_worktrees ?? []).length === 0 ? (
@@ -239,23 +317,97 @@ export function WorkerDetail({
               })
             )}
           </section>
-        </div>
+        </>,
+      )}
 
-        <aside className="panel worker-profile-panel">
-          <PanelHeading title="Worker" />
-          <dl className="metadata">
-            <div><dt>Status</dt><dd>{data.online ? "Online" : "Offline"} · {stateLabel(data.health)}</dd></div>
-            <div><dt>Runtime</dt><dd>{runtimeLabel(data.runtime)}</dd></div>
-            <div><dt>Capacity</dt><dd>{data.active_count} / {data.capacity}</dd></div>
-            <div><dt>Last seen</dt><dd>{timeAgo(data.last_heartbeat)}</dd></div>
-            <div><dt>Runtime version</dt><dd>{data.runtime_version || "Unknown"}</dd></div>
-            <div><dt>Worker version</dt><dd>{data.worker_version || "Unknown"}</dd></div>
-          </dl>
-          <div className="profile-divider" />
-          <span className="profile-label">Worker ID</span>
-          <span className="worker-id" title={data.id}>{data.id}</span>
-        </aside>
-      </div>
+      {tabPanel("capabilities",
+        <>
+          <div className="worker-capabilities-layout">
+            <section className="panel">
+              <PanelHeading title="Runtime capability" />
+              <dl className="metadata">
+                <div><dt>Runtime</dt><dd>{runtimeLabel(data.runtime)}</dd></div>
+                <div><dt>Runtime version</dt><dd>{data.runtime_version || "Unknown"}</dd></div>
+                <div><dt>Worker version</dt><dd>{data.worker_version || "Unknown"}</dd></div>
+                <div><dt>Managed repositories</dt><dd>{data.accepts_managed_repositories ? "Accepted" : "Not advertised"}</dd></div>
+                <div><dt>Repository cache</dt><dd>{data.repository_cache_count ?? 0} cached</dd></div>
+              </dl>
+            </section>
+            <section className="panel">
+              <PanelHeading title="Source access" aside={`${data.source_access?.length ?? 0} advertised`} />
+              {(data.source_access ?? []).length === 0 ? (
+                <div className="quiet-empty">No source providers are advertised by this worker.</div>
+              ) : (
+                <div className="capability-list">
+                  {(data.source_access ?? []).map((source) => (
+                    <div key={`${source.provider}-${source.hostname}`}>
+                      <strong>{source.provider}</strong>
+                      <span>{source.hostname}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+          <section className="panel">
+            <PanelHeading title="Repositories" aside={`${data.repositories.length} advertised`} />
+            {data.repositories.length === 0 ? (
+              <div className="quiet-empty">No legacy repository checkouts are advertised.</div>
+            ) : (
+              <div className="repository-rows">
+                {data.repositories.map((repo) => (
+                  <div className="repository-row" key={repo.id}>
+                    <GitBranch size={17} />
+                    <span><strong>{repo.key}</strong><small>{repo.remote_identity}</small></span>
+                    <span className="retained-count">{repo.retained_count} retained</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </>,
+      )}
+
+      {tabPanel("settings",
+        <>
+          <section className="panel execution-settings-card">
+            <PanelHeading title="Execution" aside="Read only" />
+            <div className="execution-settings-grid">
+              <div className="execution-setting">
+                <span>Runtime</span>
+                <strong>{runtimeLabel(data.runtime)}</strong>
+                <small>One runtime type per worker identity.</small>
+              </div>
+              <div className="execution-setting execution-concurrency">
+                <span>Concurrency</span>
+                <strong>{data.active_count} / {data.capacity}</strong>
+                <small>sessions active</small>
+                <meter
+                  min={0}
+                  max={data.capacity}
+                  value={Math.min(data.active_count, data.capacity)}
+                  aria-label="Worker concurrency"
+                />
+              </div>
+            </div>
+            <div className="execution-owner-note">
+              <strong>Managed by worker configuration</strong>
+              <p>
+                Factory reads <code>runtime</code> and <code>max_concurrent</code> from the worker TOML at startup.
+                Update the file and restart the worker to apply concurrency changes. Runtime is immutable for an
+                existing worker identity; use a separate config and data directory for another runtime.
+              </p>
+            </div>
+          </section>
+          <section className="panel">
+            <PanelHeading title="Runtime ownership" />
+            <p className="settings-copy">
+              Model, reasoning effort, speed, and custom runtime arguments stay with the installed Codex or Claude
+              Code configuration. Factory reports execution capability but does not edit provider-owned settings.
+            </p>
+          </section>
+        </>,
+      )}
     </div>
   );
 }

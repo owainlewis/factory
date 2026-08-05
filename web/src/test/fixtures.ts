@@ -8,7 +8,7 @@ export const worker: Worker = {
   runtime: "codex",
   runtime_version: "0.42.0",
   capacity: 10,
-  active_count: 1,
+  active_count: 6,
   health: "healthy",
   online: true,
   source_access: [{ provider: "github", hostname: "github.com" }],

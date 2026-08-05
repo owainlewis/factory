@@ -658,8 +658,8 @@ describe("App", () => {
 
     await user.click(await screen.findByRole("button", { name: /^Workers$/ }));
     const summary = screen.getByLabelText("Fleet summary");
-    expect(within(summary).getByText("Available slots").closest("div")).toHaveTextContent("9");
-    expect(screen.getByLabelText("1 of 10 slots active")).toBeVisible();
+    expect(within(summary).getByText("Available slots").closest("div")).toHaveTextContent("4");
+    expect(screen.getByLabelText("6 of 10 slots active")).toBeVisible();
   });
 
   it("loads another bounded task page without duplicating existing work", async () => {
@@ -911,6 +911,54 @@ describe("App", () => {
     expect(screen.getByRole("dialog", { name: "Delegate task" })).toBeVisible();
     expect(screen.getByLabelText("Worker")).toHaveValue("worker-online");
     expect(screen.getByLabelText("Repository")).toBeEnabled();
+  });
+
+  it("presents worker facts in accessible profile tabs with read-only execution settings", async () => {
+    window.history.replaceState({}, "", "/workers/worker-online");
+    mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: "Build Mac" })).toBeVisible();
+    const tabs = screen.getByRole("tablist", { name: "Worker profile" });
+    const overview = within(tabs).getByRole("tab", { name: "Overview" });
+    const work = within(tabs).getByRole("tab", { name: "Work" });
+    const capabilities = within(tabs).getByRole("tab", { name: "Capabilities" });
+    const settings = within(tabs).getByRole("tab", { name: "Settings" });
+    for (const tab of [overview, work, capabilities, settings]) {
+      expect(document.getElementById(tab.getAttribute("aria-controls") ?? "")).not.toBeNull();
+    }
+    expect(overview).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("region", { name: "Worker summary" })).toHaveTextContent("6 / 10");
+
+    overview.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(work).toHaveFocus();
+    expect(work).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel")).toHaveTextContent("Retained worktrees");
+    expect(screen.getByRole("tabpanel")).toHaveTextContent("Latest of 6 active sessions");
+    expect(screen.getByRole("tabpanel")).toHaveTextContent("Latest active task");
+
+    await user.keyboard("{End}");
+    expect(settings).toHaveFocus();
+    const settingsPanel = screen.getByRole("tabpanel");
+    expect(within(settingsPanel).getByRole("heading", { name: "Execution" })).toBeVisible();
+    expect(within(settingsPanel).getByText("Read only")).toBeVisible();
+    expect(within(settingsPanel).getByText("6 / 10")).toBeVisible();
+    expect(within(settingsPanel).getByRole("meter", { name: "Worker concurrency" })).toHaveAttribute("max", "10");
+    expect(settingsPanel).toHaveTextContent("max_concurrent");
+    expect(settingsPanel).toHaveTextContent("restart the worker");
+    expect(within(settingsPanel).queryByRole("textbox")).not.toBeInTheDocument();
+    expect(within(settingsPanel).queryByRole("spinbutton")).not.toBeInTheDocument();
+    expect(within(settingsPanel).queryByRole("combobox")).not.toBeInTheDocument();
+
+    await user.keyboard("{Home}");
+    expect(overview).toHaveFocus();
+    await user.click(capabilities);
+    const capabilitiesPanel = screen.getByRole("tabpanel");
+    expect(capabilitiesPanel).toHaveTextContent("Codex");
+    expect(capabilitiesPanel).toHaveTextContent("github.com");
+    expect(capabilitiesPanel).toHaveTextContent("github.com/example/factory");
   });
 
   it("keeps the active delegate field focused while worker data refreshes", async () => {
