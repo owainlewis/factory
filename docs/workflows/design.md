@@ -1,7 +1,9 @@
 # Reusable Workflows and typed Automations
 
-> **Status:** Implemented by issues #183 through #187, including the offline
-> disabled-first legacy-poller migration and retirement.
+> **Status:** Implemented historical design. Issues #183 through #187 shipped
+> the offline disabled-first legacy-poller migration and retirement. The
+> [Software Factory target architecture](../software-factory/design.md)
+> supersedes this model for future product work.
 >
 > **Tracks:** [GitHub issue #173](https://github.com/owainlewis/factory/issues/173)
 

@@ -2,13 +2,18 @@
 
 > **Status:** Current implementation
 >
-> **Verification basis:** Working tree including Workflows, typed Automations,
-> and the offline legacy-poller migration from issues #184 through #187
+> **Verification basis:** Working tree based on commit `2ed92c3`
+>
+> **Direction:** The proposed
+> [Software Factory target architecture](docs/software-factory/design.md) defines
+> the intended product model. This document remains the source of truth for
+> behavior that exists today.
 
 ## 1. Executive summary
 
-Factory is a local control plane for running coding agents in Git repositories.
-It separates durable coordination from agent execution:
+Factory is the current local implementation of a control plane for running
+software-engineering agents in Git repositories. It separates durable
+coordination from agent execution:
 
 - `factory-server` stores work, assigns it, evaluates typed GitHub issue and
   pull-request Automations through `gh`, admits schedule Automations from its
@@ -26,6 +31,11 @@ task description field before creating the task. Callers may name the
 assignment directly or ask the control-plane scheduler to choose from cattle
 workers. The deployment is limited to a trusted user and loopback HTTP on one
 host.
+
+Workflow, Workflow Revision, Automation, Occurrence, Task, Execution, Attempt,
+and worker are the implemented model. They are not all target product concepts.
+New product work should follow the target design while migration work keeps
+this current behavior and history readable.
 
 ## 2. System context
 

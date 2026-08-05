@@ -1,7 +1,9 @@
 # Global reusable phases for Factory
 
 > **Status:** Superseded by the
-> [Reusable Workflows and typed Automations design](../workflows/design.md)
+> [Reusable Workflows and typed Automations design](../workflows/design.md),
+> which is itself superseded for future work by the
+> [Software Factory target architecture](../software-factory/design.md).
 
 The Phase proposal was never implemented and is no longer an active Factory
 design. The accepted product term is **Workflow**: versioned Markdown
