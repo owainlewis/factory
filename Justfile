@@ -45,6 +45,10 @@ format-check:
 vet:
     go vet ./...
 
+# Run correctness and dead-code checks without style-only churn.
+staticcheck:
+    go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 -checks 'SA*,U1000' ./...
+
 # Prove workers do not import control-plane implementation code.
 boundary:
     @! go list -deps ./internal/worker | grep -qx 'github.com/owainlewis/factory/internal/controlplane'
@@ -62,4 +66,4 @@ test-launcher:
     ./scripts/test-run-local.sh
 
 # Run the normal local and CI checks, excluding the slower browser suite.
-check: format-check vet boundary test ui-check test-tooling test-launcher
+check: format-check vet staticcheck boundary test ui-check test-tooling test-launcher
