@@ -14,6 +14,7 @@ Start with the root [README](../README.md) to run Factory.
 
 ## Active design work
 
+- [Database-portable attempt-event storage](event-storage/design.md)
 - [Unified CLI](cli/design.md)
 
 ## Superseded designs
