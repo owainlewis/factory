@@ -234,15 +234,19 @@ function WorkflowForm({
   const summaryID = useId();
   const instructionsID = useId();
   const titleRef = useRef<HTMLInputElement>(null);
+  const closeRef = useRef(onClose);
   const requestRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const current = detail?.workflow.current_revision;
   useEffect(() => {
+    closeRef.current = onClose;
+  }, [onClose]);
+  useEffect(() => {
     titleRef.current?.focus();
-    const close = (event: KeyboardEvent) => event.key === "Escape" && onClose();
+    const close = (event: KeyboardEvent) => event.key === "Escape" && closeRef.current();
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
-  }, [onClose]);
+  }, []);
   const save = useMutation({
     mutationFn: async (input: CreateWorkflowInput) => mode === "create"
       ? api.createWorkflow(input)

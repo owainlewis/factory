@@ -388,7 +388,13 @@ test("creates, pins, revises, and disables a reusable Workflow", async ({ page }
   const create = page.getByRole("dialog", { name: "Create runbook" });
   await create.getByLabel("Title").fill("E2E pinned review");
   await create.getByLabel("Summary").fill("Prove immutable prompt snapshots.");
-  await create.getByLabel("Markdown instructions").fill("Use revision one instructions exactly.");
+  const instructions = create.getByLabel("Markdown instructions");
+  await instructions.fill("Use revision one instructions exactly.");
+  await Promise.all([
+    page.waitForResponse((response) => response.url().includes("/api/v1/workflows?") && response.ok()),
+    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))"),
+  ]);
+  await expect(instructions).toBeFocused();
   await create.getByRole("button", { name: "Create runbook" }).click();
   await expect(page.getByRole("heading", { name: "E2E pinned review" })).toBeVisible();
   const workflowURL = page.url();

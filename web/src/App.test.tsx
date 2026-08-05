@@ -257,6 +257,31 @@ describe("App", () => {
     })).toBe(true);
   });
 
+  it("keeps runbook editor focus during background polling", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      window.history.replaceState({}, "", "/workflows");
+      mockControlPlane();
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderApp();
+
+      await user.click(await screen.findByRole("button", { name: "Create runbook" }));
+      const dialog = screen.getByRole("dialog", { name: "Create runbook" });
+      const instructions = within(dialog).getByLabelText("Markdown instructions");
+      await user.type(instructions, "Keep this cursor here.");
+      expect(instructions).toHaveFocus();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+
+      expect(instructions).toHaveValue("Keep this cursor here.");
+      expect(instructions).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("creates, tests, enables, runs, and disables a typed GitHub issue Automation", async () => {
     window.history.replaceState({}, "", "/automations");
     const fetch = mockControlPlane();
