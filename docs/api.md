@@ -20,7 +20,7 @@ Every error body has this shape:
 
 | Method and path | Operation | Request | Success response | Pagination | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `PUT /api/v1/workers/{worker_id}` | registerWorker: Register or heartbeat a worker. | WorkerRegistration JSON; legacy codex_version is accepted only without runtime fields | 200 Worker JSON; legacy requests receive LegacyWorkerResponse JSON | none | ErrorBody: {error: {code: string, message: string}} |
+| `PUT /api/v1/workers/{worker_id}` | registerWorker: Register or heartbeat a worker. | WorkerRegistrationRequest JSON; legacy codex_version is accepted only without runtime fields | 200 Worker JSON; legacy requests receive LegacyWorkerResponse JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/workers/{worker_id}/claims` | claim: Claim the next eligible execution. | ClaimRequest JSON | 200 Claim JSON or 204 with no body | none | ErrorBody: {error: {code: string, message: string}} |
 | `GET /api/v1/workers` | listWorkers: List workers. | none | 200 {workers: Worker[]} | none | ErrorBody: {error: {code: string, message: string}} |
 | `GET /api/v1/workers/{worker_id}` | getWorker: Get one worker. | none | 200 Worker JSON | none | ErrorBody: {error: {code: string, message: string}} |
@@ -850,6 +850,29 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
   capacity_handoff_version: integer (optional)
   disposed_attempt_ids: string[] (optional)
   weekly_limit: WeeklyLimit | null (optional)
+}
+```
+
+### WorkerRegistrationRequest
+
+```text
+{
+  name: string
+  worker_version: string
+  runtime: string
+  runtime_version: string
+  capacity: integer
+  active_count: integer
+  health: string
+  repositories: RepositoryRegistration[]
+  source_access: SourceAccess[] (optional)
+  accepts_managed_repositories: boolean (optional)
+  managed_repository_ids: string[] (optional)
+  retained_worktrees: RetainedWorktree[]
+  capacity_handoff_version: integer (optional)
+  disposed_attempt_ids: string[] (optional)
+  weekly_limit: WeeklyLimit | null (optional)
+  codex_version: string | null (optional)
 }
 ```
 

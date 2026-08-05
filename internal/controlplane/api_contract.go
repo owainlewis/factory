@@ -41,6 +41,14 @@ type bodyContract struct {
 	schemas     []schemaRoot
 }
 
+// workerRegistrationContract describes the accepted JSON wire shape. The
+// decoder keeps presence information separately so it can distinguish legacy
+// codex_version requests from runtime-aware registrations.
+type workerRegistrationContract struct {
+	protocol.WorkerRegistration
+	CodexVersion *string `json:"codex_version,omitempty"`
+}
+
 func body(description string, schemas ...schemaRoot) bodyContract {
 	return bodyContract{description: description, schemas: schemas}
 }
@@ -75,7 +83,7 @@ func route(
 var apiRouteDefinitions = []apiRouteDefinition{
 	route("Health", "health", "GET", "/healthz", "Check SQLite availability.", body("none"), body(`200 {status: "ok"}`), "none", (*API).health),
 
-	route("Workers", "registerWorker", "PUT", "/api/v1/workers/{worker_id}", "Register or heartbeat a worker.", body("WorkerRegistration JSON; legacy codex_version is accepted only without runtime fields", schema[protocol.WorkerRegistration]()), body("200 Worker JSON; legacy requests receive LegacyWorkerResponse JSON", schema[protocol.Worker](), namedSchema("LegacyWorkerResponse", legacyWorkerResponse{})), "none", (*API).registerWorker),
+	route("Workers", "registerWorker", "PUT", "/api/v1/workers/{worker_id}", "Register or heartbeat a worker.", body("WorkerRegistrationRequest JSON; legacy codex_version is accepted only without runtime fields", namedSchema("WorkerRegistrationRequest", workerRegistrationContract{})), body("200 Worker JSON; legacy requests receive LegacyWorkerResponse JSON", schema[protocol.Worker](), namedSchema("LegacyWorkerResponse", legacyWorkerResponse{})), "none", (*API).registerWorker),
 	route("Workers", "claim", "POST", "/api/v1/workers/{worker_id}/claims", "Claim the next eligible execution.", body("ClaimRequest JSON", schema[protocol.ClaimRequest]()), body("200 Claim JSON or 204 with no body", schema[protocol.Claim]()), "none", (*API).claim),
 	route("Workers", "listWorkers", "GET", "/api/v1/workers", "List workers.", body("none"), body(`200 {workers: Worker[]}`, schema[protocol.Worker]()), "none", (*API).listWorkers),
 	route("Workers", "getWorker", "GET", "/api/v1/workers/{worker_id}", "Get one worker.", body("none"), body("200 Worker JSON", schema[protocol.Worker]()), "none", (*API).getWorker),

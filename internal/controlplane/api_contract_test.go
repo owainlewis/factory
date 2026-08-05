@@ -89,6 +89,15 @@ func TestCheckedInAPICompatibilityBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var baseline compatibilityContract
+	if err := json.Unmarshal(body, &baseline); err != nil {
+		t.Fatal(err)
+	}
+	workerRegistration, ok := baseline.Schemas["WorkerRegistrationRequest"]
+	if !ok || !strings.Contains(workerRegistration, "codex_version: string | null (optional)") {
+		t.Fatalf("worker registration wire schema does not track legacy codex_version: %q", workerRegistration)
+	}
+
 	var changed compatibilityContract
 	if err := json.Unmarshal(body, &changed); err != nil {
 		t.Fatal(err)

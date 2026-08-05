@@ -465,9 +465,9 @@
     },
     "PUT /api/v1/workers/{worker_id}": {
       "operation": "registerWorker",
-      "request": "WorkerRegistration JSON; legacy codex_version is accepted only without runtime fields",
+      "request": "WorkerRegistrationRequest JSON; legacy codex_version is accepted only without runtime fields",
       "request_schemas": [
-        "WorkerRegistration"
+        "WorkerRegistrationRequest"
       ],
       "response": "200 Worker JSON; legacy requests receive LegacyWorkerResponse JSON",
       "response_schemas": [
@@ -550,6 +550,7 @@
     "WeeklyLimit": "{\n  used_percent: integer\n  resets_at: string (RFC3339 timestamp)\n}",
     "Worker": "{\n  id: string\n  name: string\n  worker_version: string\n  runtime: string\n  runtime_version: string\n  capacity: integer\n  active_count: integer\n  health: string\n  online: boolean\n  repositories: Repository[]\n  source_access: SourceAccess[] (optional)\n  accepts_managed_repositories: boolean (optional)\n  repository_cache_count: integer (optional)\n  retained_worktrees: RetainedWorktree[]\n  current_task_title: string (optional)\n  registered_at: string (RFC3339 timestamp)\n  last_heartbeat: string (RFC3339 timestamp)\n}",
     "WorkerRegistration": "{\n  name: string\n  worker_version: string\n  runtime: string\n  runtime_version: string\n  capacity: integer\n  active_count: integer\n  health: string\n  repositories: RepositoryRegistration[]\n  source_access: SourceAccess[] (optional)\n  accepts_managed_repositories: boolean (optional)\n  managed_repository_ids: string[] (optional)\n  retained_worktrees: RetainedWorktree[]\n  capacity_handoff_version: integer (optional)\n  disposed_attempt_ids: string[] (optional)\n  weekly_limit: WeeklyLimit | null (optional)\n}",
+    "WorkerRegistrationRequest": "{\n  name: string\n  worker_version: string\n  runtime: string\n  runtime_version: string\n  capacity: integer\n  active_count: integer\n  health: string\n  repositories: RepositoryRegistration[]\n  source_access: SourceAccess[] (optional)\n  accepts_managed_repositories: boolean (optional)\n  managed_repository_ids: string[] (optional)\n  retained_worktrees: RetainedWorktree[]\n  capacity_handoff_version: integer (optional)\n  disposed_attempt_ids: string[] (optional)\n  weekly_limit: WeeklyLimit | null (optional)\n  codex_version: string | null (optional)\n}",
     "Workflow": "{\n  id: string\n  enabled: boolean\n  current_revision: WorkflowRevision\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
     "WorkflowDetail": "{\n  workflow: Workflow\n  revisions: WorkflowRevision[]\n}",
     "WorkflowRevision": "{\n  id: string\n  workflow_id: string\n  revision_number: integer\n  title: string\n  summary: string\n  instructions: string (optional)\n  created_at: string (RFC3339 timestamp)\n}"
