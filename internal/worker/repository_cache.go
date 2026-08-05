@@ -79,15 +79,17 @@ func (manager *Manager) acquireManagedRepository(
 		return Repository{}, errors.New("claim contains a non-canonical managed repository identity")
 	}
 
-	acquisitionContext, cancel := context.WithTimeout(ctx, repositoryAcquisitionTimeout)
-	defer cancel()
+	waitContext, cancelWait := context.WithTimeout(ctx, repositoryAcquisitionTimeout)
 	release, err := manager.repositoryLocks.acquire(
-		acquisitionContext, managedRepositoryCoordinationKey(claimRepository.ID),
+		waitContext, managedRepositoryCoordinationKey(claimRepository.ID),
 	)
+	cancelWait()
 	if err != nil {
 		return Repository{}, err
 	}
 	defer release()
+	acquisitionContext, cancelAcquisition := context.WithTimeout(ctx, repositoryAcquisitionTimeout)
+	defer cancelAcquisition()
 
 	cacheRoot, err := manager.prepareRepositoryCacheRoot()
 	if err != nil {
