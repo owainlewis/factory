@@ -102,6 +102,14 @@ func TestCheckedInAPICompatibilityBaseline(t *testing.T) {
 			t.Fatalf("worker registration wire schema does not track optional %s: %q", field, workerRegistration)
 		}
 	}
+	for _, name := range []string{
+		"SetManagedRepositoryEnabledRequest", "SetWorkflowEnabledRequest", "SetAutomationEnabledRequest",
+	} {
+		got := baseline.Schemas[name]
+		if !strings.Contains(got, "\n  enabled: boolean\n") || strings.Contains(got, "enabled: boolean | null") {
+			t.Fatalf("%s schema = %q, want a required non-null boolean", name, got)
+		}
+	}
 
 	var changed compatibilityContract
 	if err := json.Unmarshal(body, &changed); err != nil {

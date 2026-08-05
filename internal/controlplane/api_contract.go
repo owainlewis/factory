@@ -41,28 +41,6 @@ type bodyContract struct {
 	schemas     []schemaRoot
 }
 
-// workerRegistrationContract describes the accepted JSON wire shape. The
-// decoder keeps presence information separately so it can distinguish legacy
-// codex_version requests from runtime-aware registrations.
-type workerRegistrationContract struct {
-	Name                       string                            `json:"name"`
-	WorkerVersion              string                            `json:"worker_version"`
-	Runtime                    *string                           `json:"runtime,omitempty"`
-	RuntimeVersion             *string                           `json:"runtime_version,omitempty"`
-	CodexVersion               *string                           `json:"codex_version,omitempty"`
-	Capacity                   int                               `json:"capacity"`
-	ActiveCount                int                               `json:"active_count"`
-	Health                     string                            `json:"health"`
-	Repositories               []protocol.RepositoryRegistration `json:"repositories"`
-	SourceAccess               []protocol.SourceAccess           `json:"source_access,omitempty"`
-	AcceptsManagedRepositories bool                              `json:"accepts_managed_repositories,omitempty"`
-	ManagedRepositoryIDs       []string                          `json:"managed_repository_ids,omitempty"`
-	RetainedWorktrees          []protocol.RetainedWorktree       `json:"retained_worktrees"`
-	CapacityHandoffVersion     int                               `json:"capacity_handoff_version,omitempty"`
-	DisposedAttemptIDs         []string                          `json:"disposed_attempt_ids,omitempty"`
-	WeeklyLimit                *protocol.WeeklyLimit             `json:"weekly_limit,omitempty"`
-}
-
 type listWorkersResponse struct {
 	Workers []protocol.Worker `json:"workers"`
 }
@@ -139,7 +117,7 @@ func route(
 var apiRouteDefinitions = []apiRouteDefinition{
 	route("Health", "health", "GET", "/healthz", "Check SQLite availability.", body("none"), body("200 HealthResponse JSON", namedSchema("HealthResponse", healthResponse{})), "none", (*API).health),
 
-	route("Workers", "registerWorker", "PUT", "/api/v1/workers/{worker_id}", "Register or heartbeat a worker.", body("WorkerRegistrationRequest JSON; legacy codex_version is accepted only without runtime fields", namedSchema("WorkerRegistrationRequest", workerRegistrationContract{})), body("200 Worker JSON; legacy requests receive LegacyWorkerResponse JSON", schema[protocol.Worker](), namedSchema("LegacyWorkerResponse", legacyWorkerResponse{})), "none", (*API).registerWorker),
+	route("Workers", "registerWorker", "PUT", "/api/v1/workers/{worker_id}", "Register or heartbeat a worker.", body("WorkerRegistrationRequest JSON; legacy codex_version is accepted only without runtime fields", namedSchema("WorkerRegistrationRequest", workerRegistrationRequest{})), body("200 Worker JSON; legacy requests receive LegacyWorkerResponse JSON", schema[protocol.Worker](), namedSchema("LegacyWorkerResponse", legacyWorkerResponse{})), "none", (*API).registerWorker),
 	route("Workers", "claim", "POST", "/api/v1/workers/{worker_id}/claims", "Claim the next eligible execution.", body("ClaimRequest JSON", schema[protocol.ClaimRequest]()), body("200 Claim JSON or 204 with no body", schema[protocol.Claim]()), "none", (*API).claim),
 	route("Workers", "listWorkers", "GET", "/api/v1/workers", "List workers.", body("none"), body("200 ListWorkersResponse JSON", namedSchema("ListWorkersResponse", listWorkersResponse{})), "none", (*API).listWorkers),
 	route("Workers", "getWorker", "GET", "/api/v1/workers/{worker_id}", "Get one worker.", body("none"), body("200 Worker JSON", schema[protocol.Worker]()), "none", (*API).getWorker),
@@ -468,12 +446,22 @@ func renderSchemaFields(typeOf reflect.Type, lines *[]string) {
 		for _, option := range tag[1:] {
 			optional = optional || option == "omitempty"
 		}
-		description := name + ": " + schemaTypeName(field.Type)
+		fieldType := schemaTypeName(field.Type)
+		if name == "enabled" && isPresenceValidatedEnabledRequest(typeOf) {
+			fieldType = "boolean"
+		}
+		description := name + ": " + fieldType
 		if optional {
 			description += " (optional)"
 		}
 		*lines = append(*lines, description)
 	}
+}
+
+func isPresenceValidatedEnabledRequest(typeOf reflect.Type) bool {
+	return typeOf == reflect.TypeOf(protocol.SetManagedRepositoryEnabledRequest{}) ||
+		typeOf == reflect.TypeOf(protocol.SetWorkflowEnabledRequest{}) ||
+		typeOf == reflect.TypeOf(protocol.SetAutomationEnabledRequest{})
 }
 
 func schemaTypeName(typeOf reflect.Type) string {
@@ -485,6 +473,9 @@ func schemaTypeName(typeOf reflect.Type) string {
 	}
 	if typeOf == reflect.TypeOf(json.RawMessage{}) {
 		return "any JSON value"
+	}
+	if typeOf == reflect.TypeOf(registrationString{}) {
+		return "string | null"
 	}
 	switch typeOf.Kind() {
 	case reflect.Bool:

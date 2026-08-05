@@ -762,7 +762,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 
 ```text
 {
-  enabled: boolean | null
+  enabled: boolean
   confirm_legacy_poller_stopped: boolean (optional)
 }
 ```
@@ -771,7 +771,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 
 ```text
 {
-  enabled: boolean | null
+  enabled: boolean
 }
 ```
 
@@ -779,7 +779,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 
 ```text
 {
-  enabled: boolean | null
+  enabled: boolean
 }
 ```
 

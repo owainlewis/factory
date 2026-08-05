@@ -27,10 +27,22 @@ type API struct {
 }
 
 type workerRegistrationRequest struct {
-	protocol.WorkerRegistration
-	Runtime        registrationString `json:"runtime"`
-	RuntimeVersion registrationString `json:"runtime_version"`
-	CodexVersion   registrationString `json:"codex_version"`
+	Name                       string                            `json:"name"`
+	WorkerVersion              string                            `json:"worker_version"`
+	Runtime                    registrationString                `json:"runtime,omitempty"`
+	RuntimeVersion             registrationString                `json:"runtime_version,omitempty"`
+	CodexVersion               registrationString                `json:"codex_version,omitempty"`
+	Capacity                   int                               `json:"capacity"`
+	ActiveCount                int                               `json:"active_count"`
+	Health                     string                            `json:"health"`
+	Repositories               []protocol.RepositoryRegistration `json:"repositories"`
+	SourceAccess               []protocol.SourceAccess           `json:"source_access,omitempty"`
+	AcceptsManagedRepositories bool                              `json:"accepts_managed_repositories,omitempty"`
+	ManagedRepositoryIDs       []string                          `json:"managed_repository_ids,omitempty"`
+	RetainedWorktrees          []protocol.RetainedWorktree       `json:"retained_worktrees"`
+	CapacityHandoffVersion     int                               `json:"capacity_handoff_version,omitempty"`
+	DisposedAttemptIDs         []string                          `json:"disposed_attempt_ids,omitempty"`
+	WeeklyLimit                *protocol.WeeklyLimit             `json:"weekly_limit,omitempty"`
 }
 
 type registrationString struct {
@@ -361,13 +373,20 @@ func (a *API) registerWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if legacyRequest {
-		input.WorkerRegistration.Runtime = protocol.RuntimeCodex
-		input.WorkerRegistration.RuntimeVersion = input.CodexVersion.Value
-	} else {
-		input.WorkerRegistration.Runtime = input.Runtime.Value
-		input.WorkerRegistration.RuntimeVersion = input.RuntimeVersion.Value
+		input.Runtime.Value = protocol.RuntimeCodex
+		input.RuntimeVersion.Value = input.CodexVersion.Value
 	}
-	worker, err := a.store.RegisterWorker(r.Context(), r.PathValue("worker_id"), input.WorkerRegistration)
+	registration := protocol.WorkerRegistration{
+		Name: input.Name, WorkerVersion: input.WorkerVersion,
+		Runtime: input.Runtime.Value, RuntimeVersion: input.RuntimeVersion.Value,
+		Capacity: input.Capacity, ActiveCount: input.ActiveCount, Health: input.Health,
+		Repositories: input.Repositories, SourceAccess: input.SourceAccess,
+		AcceptsManagedRepositories: input.AcceptsManagedRepositories,
+		ManagedRepositoryIDs:       input.ManagedRepositoryIDs, RetainedWorktrees: input.RetainedWorktrees,
+		CapacityHandoffVersion: input.CapacityHandoffVersion,
+		DisposedAttemptIDs:     input.DisposedAttemptIDs, WeeklyLimit: input.WeeklyLimit,
+	}
+	worker, err := a.store.RegisterWorker(r.Context(), r.PathValue("worker_id"), registration)
 	if err != nil {
 		writeError(w, err)
 		return
