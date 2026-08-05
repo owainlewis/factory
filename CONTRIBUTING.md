@@ -54,6 +54,30 @@ just test-browser
 changes, rebuild it and commit the generated assets. An operator build must not
 run Node or npm.
 
+## Dependency updates
+
+Dependabot checks Go and npm dependencies each week and GitHub Actions each
+month. Minor and patch updates are grouped to reduce pull-request noise; major
+updates remain separate so their compatibility impact is visible. Review the
+upstream release notes and keep `go.mod`, `go.sum`, `web/package.json`, and
+`web/package-lock.json` in sync with the change.
+
+Workflow actions must use a full commit SHA followed by a version comment, for
+example `owner/action@0123456789abcdef0123456789abcdef01234567 # v1.2.3`.
+Dependabot updates both the SHA and comment. Do not replace a pinned SHA with a
+mutable tag.
+
+Before merging an npm update, run:
+
+```sh
+cd web
+npm audit --omit=dev
+```
+
+The weekly dependency-audit workflow runs the same production audit. Treat a
+failure as a security maintenance task; confirm exploitability and update or
+mitigate the dependency rather than suppressing the audit without evidence.
+
 ## Pull requests
 
 - Keep changes focused.
