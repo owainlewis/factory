@@ -14,12 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - uses: extractions/setup-just@v4
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
       - name: Show minimum Go toolchain
         run: go version
       - name: Check reachable Go vulnerabilities
@@ -30,13 +30,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: 1.25.x
           check-latest: true
           cache: true
-      - uses: extractions/setup-just@v4
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
       - name: Show latest Go 1.25 toolchain
         run: go version
       - name: Check reachable Go vulnerabilities
@@ -53,13 +53,13 @@ jobs:
           - 1.26.5
           - 1.26.x
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go-version }}
           check-latest: true
           cache: true
-      - uses: extractions/setup-just@v4
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
       - name: Show Go toolchain
         run: go version
       - name: Check reachable Go vulnerabilities
@@ -74,15 +74,15 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: 1.25.x
           check-latest: true
           cache: true
-      - uses: extractions/setup-just@v4
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
       - name: Update the declared minimum
         run: ./scripts/update-go-minimum.sh "$(go env GOVERSION)"
       - name: Verify the proposed minimum
@@ -124,7 +124,7 @@ jobs:
           git commit -m "chore: require Go ${version}"
           git push origin "HEAD:refs/heads/${branch}"
           if ! gh pr create --base main --head "$branch" --title "$title" --body "$body"; then
-            if ! gh issue list --state open --search "Go ${version} update PR in:title" --json number --jq '.[0].number' | grep -q .; then
+            if ! gh issue list --state open --search "Go ${version} update PR in:title" --json number --jq '.[]?.number' | grep -q .; then
               gh issue create \
                 --title "Automation could not open the Go ${version} update PR" \
                 --body "The weekly Go security workflow pushed branch \`${branch}\`, but repository policy prevented it from opening a pull request. Open a pull request from that branch to apply the proposed minimum-toolchain update."
