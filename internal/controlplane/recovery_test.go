@@ -258,6 +258,79 @@ func TestRestoreRejectsForgedLedgerAndSiblingWAL(t *testing.T) {
 	}
 }
 
+func TestRestoreRejectsEmptyMigrationLedger(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	backup := filepath.Join(root, "empty-ledger.sqlite3")
+	database, err := sql.Open("sqlite", backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(backup, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := createDatabaseMarker(backup + ".v2-control-plane"); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(root, "restored.sqlite3")
+	if err := RestoreBackup(ctx, backup, destination); err == nil || !strings.Contains(err.Error(), "ledger is empty") {
+		t.Fatalf("empty ledger restore error = %v", err)
+	}
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatalf("empty ledger restore published a destination: %v", err)
+	}
+}
+
+func TestBackupRecoversInterruptedPartialPublication(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	source := filepath.Join(root, "source", "factory.sqlite3")
+	store, err := Open(ctx, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	destinationDirectory := filepath.Join(root, "backups")
+	if err := os.MkdirAll(destinationDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stagingDirectory, err := os.MkdirTemp(destinationDirectory, ".factory-recovery-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(stagingDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(stagingDirectory, "factory.sqlite3")
+	if err := createSnapshot(ctx, store.db, staged); err != nil {
+		t.Fatal(err)
+	}
+	if err := createDatabaseMarker(staged + ".v2-control-plane"); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(destinationDirectory, "factory.sqlite3")
+	if err := os.Link(staged, destination); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := BackupDatabase(ctx, source, destination); err != nil {
+		t.Fatalf("retry interrupted backup: %v", err)
+	}
+	if _, _, err := validateRecoverySource(destination, true); err != nil {
+		t.Fatalf("validate retried backup: %v", err)
+	}
+	if _, err := os.Lstat(stagingDirectory); !os.IsNotExist(err) {
+		t.Fatalf("interrupted staging directory remains: %v", err)
+	}
+}
+
 func TestBackupRejectsWritableDestinationDirectory(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

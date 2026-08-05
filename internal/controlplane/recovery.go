@@ -226,6 +226,9 @@ func prepareRecoveryDestination(path string) (string, error) {
 }
 
 func ensureFreshRecoveryTarget(path string) error {
+	if err := recoverInterruptedRecoveryPublication(path); err != nil {
+		return err
+	}
 	for _, candidate := range []string{
 		path, path + ".v2-control-plane", path + "-wal", path + "-shm",
 	} {
@@ -234,6 +237,85 @@ func ensureFreshRecoveryTarget(path string) error {
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("inspect recovery target %s: %w", candidate, err)
 		}
+	}
+	return nil
+}
+
+func recoverInterruptedRecoveryPublication(path string) error {
+	database, databaseErr := os.Lstat(path)
+	markerPath := path + ".v2-control-plane"
+	marker, markerErr := os.Lstat(markerPath)
+	databaseExists := databaseErr == nil
+	markerExists := markerErr == nil
+	if databaseErr != nil && !errors.Is(databaseErr, os.ErrNotExist) {
+		return fmt.Errorf("inspect interrupted recovery database: %w", databaseErr)
+	}
+	if markerErr != nil && !errors.Is(markerErr, os.ErrNotExist) {
+		return fmt.Errorf("inspect interrupted recovery marker: %w", markerErr)
+	}
+	if databaseExists == markerExists {
+		return nil
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Lstat(path + suffix); err == nil {
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect interrupted recovery sidecar: %w", err)
+		}
+	}
+
+	parent := filepath.Dir(path)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return fmt.Errorf("inspect recovery staging directories: %w", err)
+	}
+	partialPath := path
+	partialInfo := database
+	stagedName := "factory.sqlite3"
+	if markerExists {
+		partialPath = markerPath
+		partialInfo = marker
+		stagedName += ".v2-control-plane"
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), ".factory-recovery-") {
+			continue
+		}
+		stagingDirectory := filepath.Join(parent, entry.Name())
+		stagingInfo, err := os.Lstat(stagingDirectory)
+		if err != nil || !stagingInfo.IsDir() || stagingInfo.Mode()&os.ModeSymlink != 0 ||
+			stagingInfo.Mode().Perm()&0o077 != 0 {
+			continue
+		}
+		stat, ok := stagingInfo.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != uint32(os.Geteuid()) {
+			continue
+		}
+		stagedPartial, err := os.Lstat(filepath.Join(stagingDirectory, stagedName))
+		if err != nil || !stagedPartial.Mode().IsRegular() || !os.SameFile(partialInfo, stagedPartial) {
+			continue
+		}
+		stagedDatabase := filepath.Join(stagingDirectory, "factory.sqlite3")
+		if _, err := validateRecoveryFile(stagedDatabase, "staged recovery database", true); err != nil {
+			continue
+		}
+		stagedMarker := stagedDatabase + ".v2-control-plane"
+		if _, err := validateRecoveryFile(stagedMarker, "staged recovery marker", true); err != nil {
+			continue
+		}
+		if err := validateRecoveryMarker(stagedMarker); err != nil {
+			continue
+		}
+		if err := os.Remove(partialPath); err != nil {
+			return fmt.Errorf("remove interrupted recovery publication: %w", err)
+		}
+		if err := os.RemoveAll(stagingDirectory); err != nil {
+			return fmt.Errorf("remove interrupted recovery staging directory: %w", err)
+		}
+		if err := syncDirectory(parent); err != nil {
+			return fmt.Errorf("sync interrupted recovery cleanup: %w", err)
+		}
+		return nil
 	}
 	return nil
 }
@@ -486,6 +568,9 @@ func migrationLedgerVersion(ctx context.Context, database *sql.DB) (int, int, er
 	}
 	if err := rows.Err(); err != nil {
 		return 0, 0, fmt.Errorf("read backup schema version: %w", err)
+	}
+	if expected == 1 {
+		return 0, 0, errors.New("backup migration ledger is empty")
 	}
 	return expected - 1, supported, nil
 }
