@@ -12,7 +12,7 @@ import {
   Server,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { useState, type KeyboardEvent, type ReactNode } from "react";
+import { useId, useState, type KeyboardEvent, type ReactNode } from "react";
 import { api } from "./api";
 import { runtimeLabel, stateLabel, timeAgo } from "./format";
 import { useVisibleInterval } from "./polling";
@@ -151,11 +151,14 @@ export function WorkerDetail({
   });
   const [copied, setCopied] = useState<string>();
   const [activeTab, setActiveTab] = useState<WorkerTab>("overview");
+  const tabIDPrefix = useId();
 
   if (worker.isPending) return <LoadingState label="Loading worker" />;
   if (!worker.data) return <ErrorState error={worker.error} onRetry={() => void worker.refetch()} />;
 
   const data = worker.data;
+  const tabID = (tab: WorkerTab) => `${tabIDPrefix}-tab-${tab}`;
+  const tabPanelID = (tab: WorkerTab) => `${tabIDPrefix}-panel-${tab}`;
   const grouped = (data.retained_worktrees ?? []).reduce((groups, worktree) => {
     const current = groups.get(worktree.repository_id) ?? [];
     current.push(worktree);
@@ -177,14 +180,14 @@ export function WorkerDetail({
     event.preventDefault();
     const nextTab = workerTabs[nextIndex];
     setActiveTab(nextTab);
-    document.getElementById(`worker-${id}-tab-${nextTab}`)?.focus();
+    document.getElementById(tabID(nextTab))?.focus();
   };
   const tabPanel = (tab: WorkerTab, content: ReactNode) => (
     <div
       className="worker-tab-panel"
       role="tabpanel"
-      id={`worker-${id}-panel-${tab}`}
-      aria-labelledby={`worker-${id}-tab-${tab}`}
+      id={tabPanelID(tab)}
+      aria-labelledby={tabID(tab)}
       hidden={activeTab !== tab}
       tabIndex={0}
     >
@@ -230,8 +233,8 @@ export function WorkerDetail({
           <button
             type="button"
             role="tab"
-            id={`worker-${id}-tab-${tab}`}
-            aria-controls={`worker-${id}-panel-${tab}`}
+            id={tabID(tab)}
+            aria-controls={tabPanelID(tab)}
             aria-selected={activeTab === tab}
             tabIndex={activeTab === tab ? 0 : -1}
             key={tab}
