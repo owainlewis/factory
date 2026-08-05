@@ -64,6 +64,7 @@ test:
 # Test the Node-free build and Just command surface.
 test-tooling:
     ./scripts/test-build.sh
+    ./scripts/test-update-go-minimum.sh
 
 # Test local startup, readiness, and signal handling.
 test-launcher:

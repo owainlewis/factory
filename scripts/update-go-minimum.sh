@@ -19,6 +19,12 @@ if [[ "$current" == "$next" ]]; then
   printf 'Go minimum is already %s\n' "$current"
   exit 0
 fi
+current_patch="${current##*.}"
+next_patch="${next##*.}"
+if ((10#$next_patch < 10#$current_patch)); then
+  printf 'Refusing to lower Go minimum from %s to %s\n' "$current" "$next"
+  exit 0
+fi
 
 go mod edit -go="$next"
 documents=(
