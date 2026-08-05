@@ -90,6 +90,7 @@ func (manager *Manager) registration() protocol.WorkerRegistration {
 		RetainedWorktrees:          retained,
 		CapacityHandoffVersion:     1,
 		DisposedAttemptIDs:         disposedAttemptIDs,
+		WeeklyLimit:                manager.health.WeeklyLimit,
 	}
 }
 

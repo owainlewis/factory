@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -74,6 +75,9 @@ func (s *Store) Metrics(ctx context.Context, window string) (protocol.MetricsSum
 		return protocol.MetricsSummary{}, unavailable(err)
 	}
 	if err := s.countWorkers(ctx, tx, now, &summary); err != nil {
+		return protocol.MetricsSummary{}, unavailable(err)
+	}
+	if err := s.loadWeeklyLimit(ctx, tx, now, &summary); err != nil {
 		return protocol.MetricsSummary{}, unavailable(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -244,4 +248,38 @@ func (s *Store) countWorkers(
 		), 0)
 		FROM workers
 	`, cutoff, now.UnixMilli()).Scan(&summary.WorkersTotal, &summary.WorkersOnline)
+}
+
+func (s *Store) loadWeeklyLimit(
+	ctx context.Context,
+	query metricsQuerier,
+	now time.Time,
+	summary *protocol.MetricsSummary,
+) error {
+	var usedPercent int
+	var resetsAt int64
+	err := query.QueryRowContext(ctx, `
+		SELECT weekly_limit_used_percent, weekly_limit_resets_at
+		FROM workers
+		WHERE runtime = 'codex'
+		  AND last_heartbeat BETWEEN ? AND ?
+		  AND weekly_limit_used_percent IS NOT NULL
+		  AND weekly_limit_resets_at > ?
+		ORDER BY last_heartbeat DESC, id DESC
+		LIMIT 1
+	`, now.Add(-protocol.WorkerOnlineWindow).UnixMilli(), now.UnixMilli(), now.UnixMilli()).Scan(
+		&usedPercent, &resetsAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	// ponytail: one dashboard value uses the freshest online Codex worker; expose per-worker limits if accounts diverge.
+	summary.WeeklyLimit = &protocol.WeeklyLimit{
+		UsedPercent: usedPercent,
+		ResetsAt:    time.UnixMilli(resetsAt).UTC(),
+	}
+	return nil
 }

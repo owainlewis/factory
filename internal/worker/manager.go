@@ -68,6 +68,7 @@ type Manager struct {
 	managedRepositoryReservations map[string]bool
 	disposed                      map[string]bool
 	pending                       map[string]context.CancelFunc
+	claiming                      bool
 	fatalHealth                   error
 	registered                    bool
 	closed                        bool

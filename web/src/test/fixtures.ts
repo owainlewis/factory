@@ -7,8 +7,8 @@ export const worker: Worker = {
   worker_version: "2.0.0",
   runtime: "codex",
   runtime_version: "0.42.0",
-  capacity: 2,
-  active_count: 1,
+  capacity: 10,
+  active_count: 6,
   health: "healthy",
   online: true,
   source_access: [{ provider: "github", hostname: "github.com" }],
@@ -81,6 +81,10 @@ export const metrics: MetricsSummary = {
   median_cycle_time_seconds: 14 * 60,
   workers_online: 3,
   workers_total: 4,
+  weekly_limit: {
+    used_percent: 14,
+    resets_at: "2026-08-11T08:51:00Z",
+  },
 };
 
 const initialWorkflowDetail: WorkflowDetail = {

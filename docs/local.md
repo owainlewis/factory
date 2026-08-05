@@ -4,7 +4,7 @@ This guide starts one control plane and one worker on macOS or Linux.
 
 ## Requirements
 
-- Go 1.25 or newer
+- Go 1.25.12 or newer on the 1.25 release line, or Go 1.26.5 or newer
 - Git
 - `curl`
 - `just`
@@ -29,6 +29,20 @@ symlinks, and files larger than 1 MiB are rejected. Command-line flags override
 the file. Copy [the example](../examples/config.toml) only when changing these
 defaults.
 
+The control-plane database contains prompts, results, and repository metadata.
+Factory creates the database, its marker, and SQLite WAL and shared-memory files
+with owner-only permissions (`0600`). When a valid existing database is opened,
+Factory corrects broader permissions before use and rejects non-regular files or
+symlinks in these locations. The containing database directory must be a real
+directory owned by the server's effective user and must not be writable by group
+or other users. Factory validates the configured path before creating missing
+directories, then separately validates its resolved target. Path components and
+symlinks must be owned by the effective user or root; group or world-writable
+ancestors require sticky-bit protection. This permits protected system symlinks
+such as macOS `/var` without trusting links controlled by another user. Existing
+`0755` database directories are accepted; use `chmod go-w PATH` before startup
+when an explicit database directory is group or world writable.
+
 ## Configure a worker
 
 Build the binaries and copy the example:
@@ -45,8 +59,17 @@ Edit `~/.factory/worker.toml`:
 server = "http://127.0.0.1:7337"
 name = "local-codex"
 runtime = "codex"
-max_concurrent = 1
+# Optional. Defaults to 10 and accepts values from 1 through 100.
+max_concurrent = 10
 ```
+
+One worker is a pool for its configured runtime. Each slot runs an independent
+Codex or Claude Code session with its own worktree and process group. Preparing
+an attempt also consumes a slot. Choose a lower value when local CPU, memory, or
+provider limits require it.
+
+Factory migrates existing SQLite databases to the expanded worker capacity
+range when the control plane starts.
 
 With this `~/.factory/worker.toml` filename, Factory defaults durable worker
 state to `~/.factory/workers/worker`. The config filename, rather than `name`,
@@ -70,7 +93,7 @@ For Claude Code, use another config and identity:
 server = "http://127.0.0.1:7337"
 name = "local-claude"
 runtime = "claude-code"
-max_concurrent = 1
+max_concurrent = 10
 ```
 
 Saved as `~/.factory/claude-worker.toml`, this worker uses
@@ -187,6 +210,80 @@ FACTORY_DATA_HOME=/srv/factory \
 ```
 
 The server remains loopback-only.
+
+## Back up and restore the control plane
+
+Use the server's backup mode instead of copying a live SQLite file. Backup mode
+uses SQLite's online snapshot operation, includes every committed transaction
+from the WAL, validates the result, writes files with mode `0600`, and exits. It
+does not interrupt a running control plane, create a missing source, or apply
+migrations to the live database.
+
+```sh
+install -d -m 700 /secure/factory-backups/2026-08-05
+~/.factory/bin/factory-server \
+  -backup /secure/factory-backups/2026-08-05/factory.sqlite3
+```
+
+The command uses the database selected by `FACTORY_DATA_HOME`,
+`FACTORY_SERVER_CONFIG`, or `-database`, just like normal startup. A successful
+backup contains these two required files:
+
+```text
+factory.sqlite3
+factory.sqlite3.v2-control-plane
+```
+
+The live `factory.sqlite3-wal` and `factory.sqlite3-shm` files are temporary and
+must not be copied or restored. The backup command folds committed WAL data into
+the standalone snapshot. Restore rejects a backup with either sidecar present.
+Both commands refuse writable destination directories and never overwrite an
+existing database, marker, WAL, or shared-memory path.
+
+Configuration is not stored in the database snapshot. Copy the active server
+`config.toml` and every worker TOML file into the protected backup directory.
+Also retain any external secrets or service configuration used to start the
+process. Keep their existing restrictive permissions. Worker identity and
+retained-worktree state remain under each worker's configured data directory;
+back them up separately when the recovery plan must preserve those local paths.
+
+### Restore runbook
+
+Restore requires downtime and a fresh destination:
+
+1. Stop the control plane and all workers. Keep the old Factory data home
+   unchanged so rollback remains possible.
+2. Install the backed-up configuration into a new mode-`0700` Factory data
+   home. Update absolute paths only when the recovery host differs.
+3. Restore with the same Factory version that made the backup, or a newer
+   compatible version:
+
+   ```sh
+   install -d -m 700 /srv/factory-restored
+   FACTORY_DATA_HOME=/srv/factory-restored \
+     ~/.factory/bin/factory-server \
+     -restore /secure/factory-backups/2026-08-05/factory.sqlite3
+   ```
+
+4. Start the control plane with `FACTORY_DATA_HOME=/srv/factory-restored`.
+   Restore applies supported migrations in a private staging directory and
+   compares the complete resulting schema with the binary before publishing the
+   destination. It rejects a backup made by a newer schema, a corrupt database,
+   a forged or incomplete migration ledger, a missing or invalid marker, or any
+   existing destination.
+5. Check `curl --fail http://127.0.0.1:7337/healthz`, then inspect retained task
+   attempts and events, Workflows, Automations, and managed repositories in the
+   UI. Start workers and confirm they register as healthy before enabling new
+   work.
+6. Keep the old data home and backup until the restored system has completed a
+   representative task. To roll back, stop the restored processes and restart
+   the unchanged old data home with its original binary and configuration.
+
+The restore command runs SQLite quick and foreign-key integrity checks before
+publishing the destination. The health check confirms that normal startup then
+opens the restored database. Never restore over an existing home and never
+combine a main database copied by hand with WAL or shared-memory files from a
+different point in time.
 
 ## Migrate a legacy factory-poller
 

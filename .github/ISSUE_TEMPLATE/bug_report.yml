@@ -40,7 +40,7 @@ body:
     attributes:
       label: Environment
       description: Include the operating system and Go, Git, Codex, or Claude Code versions when relevant.
-      placeholder: macOS 15, Go 1.25, Git 2.x, Codex 0.x
+      placeholder: macOS 15, Go 1.25.12, Git 2.x, Codex 0.x
     validations:
       required: true
   - type: textarea

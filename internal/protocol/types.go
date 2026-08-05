@@ -40,6 +40,8 @@ const (
 	MaxAutomationOccurrences  = 100000
 	MaxAutomationContextBytes = 8 << 10
 	MaxAutomationMatches      = 100
+	MinWorkerCapacity         = 1
+	MaxWorkerCapacity         = 100
 )
 
 func SupportedRuntime(value string) bool {
@@ -65,6 +67,11 @@ type SourceAccess struct {
 	Hostname string `json:"hostname"`
 }
 
+type WeeklyLimit struct {
+	UsedPercent int       `json:"used_percent"`
+	ResetsAt    time.Time `json:"resets_at"`
+}
+
 type WorkerRegistration struct {
 	Name                       string                   `json:"name"`
 	WorkerVersion              string                   `json:"worker_version"`
@@ -80,6 +87,7 @@ type WorkerRegistration struct {
 	RetainedWorktrees          []RetainedWorktree       `json:"retained_worktrees"`
 	CapacityHandoffVersion     int                      `json:"capacity_handoff_version,omitempty"`
 	DisposedAttemptIDs         []string                 `json:"disposed_attempt_ids,omitempty"`
+	WeeklyLimit                *WeeklyLimit             `json:"weekly_limit,omitempty"`
 }
 
 type Repository struct {
@@ -673,20 +681,21 @@ type TestAutomationResult struct {
 }
 
 type MetricsSummary struct {
-	Window                 string    `json:"window"`
-	GeneratedAt            time.Time `json:"generated_at"`
-	ExecutionsCreated      int64     `json:"executions_created"`
-	ExecutionsCompleted    int64     `json:"executions_completed"`
-	Succeeded              int64     `json:"succeeded"`
-	Failed                 int64     `json:"failed"`
-	Cancelled              int64     `json:"cancelled"`
-	Queued                 int64     `json:"queued"`
-	Running                int64     `json:"running"`
-	SuccessRate            *float64  `json:"success_rate"`
-	RetryRate              *float64  `json:"retry_rate"`
-	MedianCycleTimeSeconds *float64  `json:"median_cycle_time_seconds"`
-	WorkersOnline          int64     `json:"workers_online"`
-	WorkersTotal           int64     `json:"workers_total"`
+	Window                 string       `json:"window"`
+	GeneratedAt            time.Time    `json:"generated_at"`
+	ExecutionsCreated      int64        `json:"executions_created"`
+	ExecutionsCompleted    int64        `json:"executions_completed"`
+	Succeeded              int64        `json:"succeeded"`
+	Failed                 int64        `json:"failed"`
+	Cancelled              int64        `json:"cancelled"`
+	Queued                 int64        `json:"queued"`
+	Running                int64        `json:"running"`
+	SuccessRate            *float64     `json:"success_rate"`
+	RetryRate              *float64     `json:"retry_rate"`
+	MedianCycleTimeSeconds *float64     `json:"median_cycle_time_seconds"`
+	WorkersOnline          int64        `json:"workers_online"`
+	WorkersTotal           int64        `json:"workers_total"`
+	WeeklyLimit            *WeeklyLimit `json:"weekly_limit,omitempty"`
 }
 
 type ClaimRequest struct {

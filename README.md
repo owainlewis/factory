@@ -19,7 +19,7 @@ does not include user authentication.
 
 Requirements:
 
-- Go 1.25 or newer
+- Go 1.25.12 or newer on the 1.25 release line, or Go 1.26.5 or newer
 - Git
 - `curl`
 - `just`
@@ -59,8 +59,10 @@ legacy poller** before removing their old configuration. Preview, Import, and
 Finalize each verify and lock the same legacy snapshot. Import creates disabled
 typed Automations and Finalize archives copies without deleting the originals.
 
-One worker has one stable identity and one runtime. Run another worker with a
-different config and data directory when you want both Codex and Claude Code:
+One worker has one stable identity and a configurable pool of independent
+sessions for one runtime. The pool defaults to ten slots. Run another worker
+with a different config and data directory when you want both Codex and Claude
+Code:
 
 ```sh
 FACTORY_WORKER_CONFIG=~/.factory/claude-worker.toml \
@@ -83,7 +85,7 @@ Go control plane
    | registration, claim, heartbeat, events, completion
    |
 Go workers
-  one identity + one runtime + on-demand repository cache
+  one identity + one runtime + N agent slots + on-demand repository cache
    |
    +-- Codex CLI
    `-- Claude Code CLI
