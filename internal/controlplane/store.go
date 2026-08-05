@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -60,9 +61,11 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, errors.New("database path is required")
 	}
 	if path != ":memory:" {
-		if err := prepareDatabasePath(path); err != nil {
+		preparedPath, err := prepareDatabasePath(path)
+		if err != nil {
 			return nil, err
 		}
+		path = preparedPath
 	}
 
 	dsn := "file::memory:?cache=shared"
@@ -93,30 +96,215 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if path != ":memory:" {
+		if err := restrictDatabaseFilePermissions(path); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	return store, nil
 }
 
-func prepareDatabasePath(path string) error {
+func prepareDatabasePath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve database path: %w", err)
+	}
+	directory := filepath.Dir(absolute)
+	existingDirectory, err := deepestExistingDirectory(directory)
+	if err != nil {
+		return "", err
+	}
+	effectiveUID := uint32(os.Geteuid())
+	if err := validateConfiguredDatabaseDirectoryChain(
+		existingDirectory,
+		effectiveUID,
+		existingDirectory == directory,
+	); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return "", fmt.Errorf("create database directory: %w", err)
+	}
+	if err := validateConfiguredDatabaseDirectoryChain(directory, effectiveUID, true); err != nil {
+		return "", err
+	}
+	directory, err = filepath.EvalSymlinks(directory)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize database directory: %w", err)
+	}
+	if err := validateDatabaseDirectory(directory, effectiveUID); err != nil {
+		return "", err
+	}
+	path = filepath.Join(directory, filepath.Base(absolute))
 	info, err := os.Lstat(path)
 	exists := err == nil
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect database: %w", err)
+		return "", fmt.Errorf("inspect database: %w", err)
 	}
 	if exists && !info.Mode().IsRegular() {
-		return fmt.Errorf("database must be a regular non-symlink file: %s", path)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create database directory: %w", err)
+		return "", fmt.Errorf("database must be a regular non-symlink file: %s", path)
 	}
 	marker := path + ".v2-control-plane"
 	if exists {
-		return validateDatabaseMarker(marker)
+		if err := validateDatabaseMarker(marker); err != nil {
+			return "", err
+		}
+		if err := restrictDatabaseFilePermissions(path); err != nil {
+			return "", err
+		}
+		return path, nil
 	}
 	err = createDatabaseMarker(marker)
 	if errors.Is(err, os.ErrExist) {
-		return validateDatabaseMarker(marker)
+		if err := validateDatabaseMarker(marker); err != nil {
+			return "", err
+		}
+	} else if err != nil {
+		return "", err
 	}
-	return err
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("create Factory database with owner-only permissions: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("close new Factory database: %w", err)
+	}
+	if err := restrictDatabaseFilePermissions(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func deepestExistingDirectory(path string) (string, error) {
+	for {
+		_, err := os.Lstat(path)
+		if err == nil {
+			return path, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("inspect database path directory %s: %w", path, err)
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return "", fmt.Errorf("database path has no existing ancestor: %s", path)
+		}
+		path = parent
+	}
+}
+
+func validateDatabaseDirectory(path string, effectiveUID uint32) error {
+	return validateDatabaseDirectoryChain(path, effectiveUID, true)
+}
+
+func validateConfiguredDatabaseDirectoryChain(path string, effectiveUID uint32, firstIsDatabaseDirectory bool) error {
+	configuredDirectory := path
+	for {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("inspect configured database path directory %s: %w", path, err)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("inspect configured database path owner: unsupported file metadata for %s", path)
+		}
+		if stat.Uid != effectiveUID && stat.Uid != 0 {
+			return fmt.Errorf("configured database path must be owned by effective user %d or root: %s", effectiveUID, path)
+		}
+		isSymlink := info.Mode()&os.ModeSymlink != 0
+		if !isSymlink && !info.IsDir() {
+			return fmt.Errorf("configured database path component must be a directory or trusted symlink: %s", path)
+		}
+		if !isSymlink && (!firstIsDatabaseDirectory || path != configuredDirectory) &&
+			info.Mode().Perm()&0o022 != 0 && info.Mode()&os.ModeSticky == 0 {
+			return fmt.Errorf(
+				"configured database path ancestor must not be group or world writable unless protected by the sticky bit: %s has mode %#o",
+				path,
+				info.Mode().Perm(),
+			)
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return nil
+		}
+		path = parent
+	}
+}
+
+func validateDatabaseDirectoryChain(path string, effectiveUID uint32, requireDatabaseDirectory bool) error {
+	databaseDirectory := path
+	for {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("inspect database path directory %s: %w", path, err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("database path must use real non-symlink directories: %s", path)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("inspect database path directory owner: unsupported file metadata for %s", path)
+		}
+		if requireDatabaseDirectory && path == databaseDirectory {
+			if stat.Uid != effectiveUID {
+				return fmt.Errorf("database directory must be owned by effective user %d: %s", effectiveUID, path)
+			}
+			if info.Mode().Perm()&0o022 != 0 {
+				return fmt.Errorf(
+					"database directory must not be writable by group or other users: %s has mode %#o; run chmod go-w %q",
+					path,
+					info.Mode().Perm(),
+					path,
+				)
+			}
+		} else {
+			if stat.Uid != effectiveUID && stat.Uid != 0 {
+				return fmt.Errorf("database path ancestor must be owned by effective user %d or root: %s", effectiveUID, path)
+			}
+			if info.Mode().Perm()&0o022 != 0 && info.Mode()&os.ModeSticky == 0 {
+				return fmt.Errorf(
+					"database path ancestor must not be group or world writable unless protected by the sticky bit: %s has mode %#o",
+					path,
+					info.Mode().Perm(),
+				)
+			}
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return nil
+		}
+		path = parent
+	}
+}
+
+func restrictDatabaseFilePermissions(path string) error {
+	for _, file := range []struct {
+		path     string
+		name     string
+		required bool
+	}{
+		{path: path, name: "database", required: true},
+		{path: path + "-wal", name: "database WAL", required: false},
+		{path: path + "-shm", name: "database shared-memory file", required: false},
+	} {
+		info, err := os.Lstat(file.path)
+		if errors.Is(err, os.ErrNotExist) && !file.required {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect %s permissions: %w", file.name, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s must be a regular non-symlink file: %s", file.name, file.path)
+		}
+		if info.Mode().Perm() == 0o600 {
+			continue
+		}
+		if err := os.Chmod(file.path, 0o600); err != nil {
+			return fmt.Errorf("restrict %s permissions to owner-only access: %w", file.name, err)
+		}
+	}
+	return nil
 }
 
 type databaseMarkerFile interface {
@@ -172,10 +360,22 @@ func cleanFailedDatabaseMarker(file databaseMarkerFile, marker string, cause err
 }
 
 func validateDatabaseMarker(marker string) error {
-	body, err := os.ReadFile(marker)
+	info, err := os.Lstat(marker)
 	if errors.Is(err, os.ErrNotExist) {
 		return errors.New("refusing an existing database without the Factory control-plane marker")
 	}
+	if err != nil {
+		return fmt.Errorf("inspect Factory database marker: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("refusing an existing database with a non-regular Factory control-plane marker")
+	}
+	if info.Mode().Perm() != 0o600 {
+		if err := os.Chmod(marker, 0o600); err != nil {
+			return fmt.Errorf("restrict Factory database marker permissions to owner-only access: %w", err)
+		}
+	}
+	body, err := os.ReadFile(marker)
 	if err != nil {
 		return fmt.Errorf("read Factory database marker: %w", err)
 	}
