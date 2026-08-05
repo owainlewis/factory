@@ -83,6 +83,8 @@ type healthResponse struct {
 	Status string `json:"status"`
 }
 
+type emptyRequest struct{}
+
 func body(description string, schemas ...schemaRoot) bodyContract {
 	return bodyContract{description: description, schemas: schemas}
 }
@@ -139,8 +141,8 @@ var apiRouteDefinitions = []apiRouteDefinition{
 	route("Automations", "getAutomation", "GET", "/api/v1/automations/{automation_id}", "Get one automation.", body("none"), body("200 AutomationDetail JSON", schema[protocol.AutomationDetail]()), "none", (*API).getAutomation),
 	route("Automations", "updateAutomation", "PUT", "/api/v1/automations/{automation_id}", "Update an automation with optimistic versioning.", body("UpdateAutomationRequest JSON", schema[protocol.UpdateAutomationRequest]()), body("200 AutomationDetail JSON", schema[protocol.AutomationDetail]()), "none", (*API).updateAutomation),
 	route("Automations", "setAutomationEnabled", "PUT", "/api/v1/automations/{automation_id}/enabled", "Enable or disable an automation.", body("SetAutomationEnabledRequest JSON", schema[protocol.SetAutomationEnabledRequest]()), body("200 AutomationDetail JSON", schema[protocol.AutomationDetail]()), "none", (*API).setAutomationEnabled),
-	route("Automations", "testAutomation", "POST", "/api/v1/automations/{automation_id}/test", "Test an automation without dispatch.", body("empty JSON object"), body("200 TestAutomationResult JSON", schema[protocol.TestAutomationResult]()), "none", (*API).testAutomation),
-	route("Automations", "checkAutomation", "POST", "/api/v1/automations/{automation_id}/check", "Request an immediate provider check.", body("empty JSON object"), body("202 AutomationDetail JSON", schema[protocol.AutomationDetail]()), "none", (*API).checkAutomation),
+	route("Automations", "testAutomation", "POST", "/api/v1/automations/{automation_id}/test", "Test an automation without dispatch.", body("EmptyRequest JSON", namedSchema("EmptyRequest", emptyRequest{})), body("200 TestAutomationResult JSON", schema[protocol.TestAutomationResult]()), "none", (*API).testAutomation),
+	route("Automations", "checkAutomation", "POST", "/api/v1/automations/{automation_id}/check", "Request an immediate provider check.", body("EmptyRequest JSON", namedSchema("EmptyRequest", emptyRequest{})), body("202 AutomationDetail JSON", schema[protocol.AutomationDetail]()), "none", (*API).checkAutomation),
 	route("Automations", "runAutomation", "POST", "/api/v1/automations/{automation_id}/run", "Run a schedule automation now.", body("RunAutomationRequest JSON", schema[protocol.RunAutomationRequest]()), body("202 AutomationDetail JSON", schema[protocol.AutomationDetail]()), "none", (*API).runAutomation),
 	route("Automations", "listAutomationOccurrences", "GET", "/api/v1/automations/{automation_id}/occurrences", "List retained automation occurrences.", body("none"), body("200 ListAutomationOccurrencesResponse JSON", namedSchema("ListAutomationOccurrencesResponse", listAutomationOccurrencesResponse{})), "Query: limit 1..200 and opaque cursor; stable created-at/ID ordering", (*API).listAutomationOccurrences),
 
@@ -149,17 +151,17 @@ var apiRouteDefinitions = []apiRouteDefinition{
 	route("Legacy migration", "activeLegacyPollerMigration", "GET", "/api/v1/migrations/legacy-poller/active", "Get the active legacy migration.", body("none"), body("200 ActiveLegacyPollerMigrationResponse JSON", schema[protocol.ActiveLegacyPollerMigrationResponse]()), "none", (*API).activeLegacyPollerMigration),
 	route("Legacy migration", "getLegacyPollerMigration", "GET", "/api/v1/migrations/legacy-poller/{migration_id}", "Get one legacy migration.", body("none"), body("200 LegacyPollerMigration JSON", schema[protocol.LegacyPollerMigration]()), "none", (*API).getLegacyPollerMigration),
 	route("Legacy migration", "finalizeLegacyPoller", "POST", "/api/v1/migrations/legacy-poller/{migration_id}/finalize", "Finalize and archive a legacy migration.", body("FinalizeLegacyPollerRequest JSON", schema[protocol.FinalizeLegacyPollerRequest]()), body("200 LegacyPollerMigration JSON", schema[protocol.LegacyPollerMigration]()), "none", (*API).finalizeLegacyPoller),
-	route("Legacy migration", "resumeLegacyPollerOccurrence", "POST", "/api/v1/occurrences/{occurrence_id}/resume", "Resume one pending legacy occurrence.", body("empty JSON object"), body("200 AutomationOccurrence JSON", schema[protocol.AutomationOccurrence]()), "none", (*API).resumeLegacyPollerOccurrence),
-	route("Legacy migration", "skipLegacyPollerOccurrence", "POST", "/api/v1/occurrences/{occurrence_id}/skip", "Skip one pending legacy occurrence.", body("empty JSON object"), body("200 AutomationOccurrence JSON", schema[protocol.AutomationOccurrence]()), "none", (*API).skipLegacyPollerOccurrence),
+	route("Legacy migration", "resumeLegacyPollerOccurrence", "POST", "/api/v1/occurrences/{occurrence_id}/resume", "Resume one pending legacy occurrence.", body("EmptyRequest JSON", namedSchema("EmptyRequest", emptyRequest{})), body("200 AutomationOccurrence JSON", schema[protocol.AutomationOccurrence]()), "none", (*API).resumeLegacyPollerOccurrence),
+	route("Legacy migration", "skipLegacyPollerOccurrence", "POST", "/api/v1/occurrences/{occurrence_id}/skip", "Skip one pending legacy occurrence.", body("EmptyRequest JSON", namedSchema("EmptyRequest", emptyRequest{})), body("200 AutomationOccurrence JSON", schema[protocol.AutomationOccurrence]()), "none", (*API).skipLegacyPollerOccurrence),
 
 	route("Metrics", "getMetrics", "GET", "/api/v1/metrics/summary", "Get bounded execution metrics.", body("none"), body("200 MetricsSummary JSON", schema[protocol.MetricsSummary]()), "Query: window is 24h, 7d, 30d, or all; default 7d", (*API).getMetrics),
 
 	route("Tasks", "listTasks", "GET", "/api/v1/tasks", "List retained task summaries.", body("none"), body("200 ListTasksResponse JSON", namedSchema("ListTasksResponse", listTasksResponse{})), "Query: limit 1..200 and opaque cursor; stable created-at/ID ordering", (*API).listTasks),
 	route("Tasks", "createTask", "POST", "/api/v1/tasks", "Create or replay a task.", body("CreateTaskRequest JSON", schema[protocol.CreateTaskRequest]()), body("200 or 201 TaskDetail JSON", schema[protocol.TaskDetail]()), "none", (*API).createTask),
 	route("Tasks", "getTask", "GET", "/api/v1/tasks/{task_id}", "Get task, execution, attempts, and resolved prompt.", body("none"), body("200 TaskDetail JSON", schema[protocol.TaskDetail]()), "none", (*API).getTask),
-	route("Tasks", "deleteTask", "DELETE", "/api/v1/tasks/{task_id}", "Delete eligible terminal task history.", body("empty JSON object or empty body"), body("200 DeleteTaskResponse JSON", namedSchema("DeleteTaskResponse", deleteTaskResponse{})), "none", (*API).deleteTask),
-	route("Tasks", "cancelTask", "POST", "/api/v1/tasks/{task_id}/cancel", "Request task cancellation.", body("empty JSON object or empty body"), body("200 TaskDetail JSON", schema[protocol.TaskDetail]()), "none", (*API).cancelTask),
-	route("Executions", "retryExecution", "POST", "/api/v1/executions/{execution_id}/retry", "Retry a terminal execution.", body("empty JSON object or empty body"), body("200 TaskDetail JSON", schema[protocol.TaskDetail]()), "none", (*API).retryExecution),
+	route("Tasks", "deleteTask", "DELETE", "/api/v1/tasks/{task_id}", "Delete eligible terminal task history.", body("EmptyRequest JSON or empty body", namedSchema("EmptyRequest", emptyRequest{})), body("200 DeleteTaskResponse JSON", namedSchema("DeleteTaskResponse", deleteTaskResponse{})), "none", (*API).deleteTask),
+	route("Tasks", "cancelTask", "POST", "/api/v1/tasks/{task_id}/cancel", "Request task cancellation.", body("EmptyRequest JSON or empty body", namedSchema("EmptyRequest", emptyRequest{})), body("200 TaskDetail JSON", schema[protocol.TaskDetail]()), "none", (*API).cancelTask),
+	route("Executions", "retryExecution", "POST", "/api/v1/executions/{execution_id}/retry", "Retry a terminal execution.", body("EmptyRequest JSON or empty body", namedSchema("EmptyRequest", emptyRequest{})), body("200 TaskDetail JSON", schema[protocol.TaskDetail]()), "none", (*API).retryExecution),
 
 	route("Attempts and events", "getAttempt", "GET", "/api/v1/attempts/{attempt_id}", "Get one attempt.", body("none"), body("200 Attempt JSON", schema[protocol.Attempt]()), "none", (*API).getAttempt),
 	route("Attempts and events", "startAttempt", "POST", "/api/v1/attempts/{attempt_id}/start", "Record attempt startup and worktree metadata.", body("StartAttemptRequest JSON", schema[protocol.StartAttemptRequest]()), body("200 Attempt JSON", schema[protocol.Attempt]()), "none", (*API).startAttempt),
@@ -446,6 +448,7 @@ func renderSchemaFields(typeOf reflect.Type, lines *[]string) {
 		for _, option := range tag[1:] {
 			optional = optional || option == "omitempty"
 		}
+		optional = optional || field.Tag.Get("contract") == "optional"
 		fieldType := schemaTypeName(field.Type)
 		if name == "enabled" && isPresenceValidatedEnabledRequest(typeOf) {
 			fieldType = "boolean"
@@ -487,7 +490,9 @@ func schemaTypeName(typeOf reflect.Type) string {
 		return "number"
 	case reflect.String:
 		return "string"
-	case reflect.Slice, reflect.Array:
+	case reflect.Slice:
+		return schemaTypeName(typeOf.Elem()) + "[] | null"
+	case reflect.Array:
 		return schemaTypeName(typeOf.Elem()) + "[]"
 	case reflect.Map:
 		return "object<string," + schemaTypeName(typeOf.Elem()) + ">"

@@ -3,7 +3,10 @@
   "routes": {
     "DELETE /api/v1/tasks/{task_id}": {
       "operation": "deleteTask",
-      "request": "empty JSON object or empty body",
+      "request": "EmptyRequest JSON or empty body",
+      "request_schemas": [
+        "EmptyRequest"
+      ],
       "response": "200 DeleteTaskResponse JSON",
       "response_schemas": [
         "DeleteTaskResponse"
@@ -242,7 +245,10 @@
     },
     "POST /api/v1/automations/{automation_id}/check": {
       "operation": "checkAutomation",
-      "request": "empty JSON object",
+      "request": "EmptyRequest JSON",
+      "request_schemas": [
+        "EmptyRequest"
+      ],
       "response": "202 AutomationDetail JSON",
       "response_schemas": [
         "AutomationDetail"
@@ -265,7 +271,10 @@
     },
     "POST /api/v1/automations/{automation_id}/test": {
       "operation": "testAutomation",
-      "request": "empty JSON object",
+      "request": "EmptyRequest JSON",
+      "request_schemas": [
+        "EmptyRequest"
+      ],
       "response": "200 TestAutomationResult JSON",
       "response_schemas": [
         "TestAutomationResult"
@@ -275,7 +284,10 @@
     },
     "POST /api/v1/executions/{execution_id}/retry": {
       "operation": "retryExecution",
-      "request": "empty JSON object or empty body",
+      "request": "EmptyRequest JSON or empty body",
+      "request_schemas": [
+        "EmptyRequest"
+      ],
       "response": "200 TaskDetail JSON",
       "response_schemas": [
         "TaskDetail"
@@ -324,7 +336,10 @@
     },
     "POST /api/v1/occurrences/{occurrence_id}/resume": {
       "operation": "resumeLegacyPollerOccurrence",
-      "request": "empty JSON object",
+      "request": "EmptyRequest JSON",
+      "request_schemas": [
+        "EmptyRequest"
+      ],
       "response": "200 AutomationOccurrence JSON",
       "response_schemas": [
         "AutomationOccurrence"
@@ -334,7 +349,10 @@
     },
     "POST /api/v1/occurrences/{occurrence_id}/skip": {
       "operation": "skipLegacyPollerOccurrence",
-      "request": "empty JSON object",
+      "request": "EmptyRequest JSON",
+      "request_schemas": [
+        "EmptyRequest"
+      ],
       "response": "200 AutomationOccurrence JSON",
       "response_schemas": [
         "AutomationOccurrence"
@@ -370,7 +388,10 @@
     },
     "POST /api/v1/tasks/{task_id}/cancel": {
       "operation": "cancelTask",
-      "request": "empty JSON object or empty body",
+      "request": "EmptyRequest JSON or empty body",
+      "request_schemas": [
+        "EmptyRequest"
+      ],
       "response": "200 TaskDetail JSON",
       "response_schemas": [
         "TaskDetail"
@@ -503,10 +524,10 @@
     "Attempt": "{\n  id: string\n  execution_id: string\n  worker_id: string\n  attempt_number: integer\n  state: string\n  lease_expires_at: string (RFC3339 timestamp)\n  supervisor_pid: integer | null (optional)\n  process_identity: string (optional)\n  process_group_id: integer | null (optional)\n  result: string (optional)\n  error: string (optional)\n  started_at: string (RFC3339 timestamp) | null (optional)\n  completed_at: string (RFC3339 timestamp) | null (optional)\n  created_at: string (RFC3339 timestamp)\n}",
     "AttemptEvent": "{\n  sequence: integer\n  kind: string\n  payload: any JSON value\n  server_time: string (RFC3339 timestamp) (optional)\n}",
     "Automation": "{\n  id: string\n  title: string\n  workflow_id: string\n  workflow_title: string\n  workflow_revision: integer\n  repository_id: string\n  repository_identity: string\n  context: string\n  timeout_seconds: integer\n  enabled: boolean\n  version: integer\n  trigger: GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger\n  health: AutomationHealth\n  last_checked_at: string (RFC3339 timestamp) | null (optional)\n  next_check_at: string (RFC3339 timestamp) | null (optional)\n  next_due_at: string (RFC3339 timestamp) | null (optional)\n  matched_count: integer\n  skipped_count: integer\n  dispatched_count: integer\n  latest_task: AutomationTaskSummary | null (optional)\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
-    "AutomationDetail": "{\n  automation: Automation\n  occurrences: AutomationOccurrence[]\n}",
+    "AutomationDetail": "{\n  automation: Automation\n  occurrences: AutomationOccurrence[] | null\n}",
     "AutomationHealth": "{\n  status: string\n  code: string (optional)\n  message: string (optional)\n}",
-    "AutomationMatch": "{\n  number: integer\n  title: string\n  url: string\n  state: string\n  labels: string[]\n  is_draft: boolean | null (optional)\n  base_branch: string (optional)\n  head_commit: string (optional)\n}",
-    "AutomationOccurrence": "{\n  id: string\n  automation_id: string\n  automation_version: integer\n  state: string\n  issue_number: integer (optional)\n  issue_url: string (optional)\n  issue_title: string (optional)\n  observed_state: string (optional)\n  observed_labels: string[] (optional)\n  pull_request_number: integer (optional)\n  pull_request_url: string (optional)\n  pull_request_title: string (optional)\n  observed_draft: boolean | null (optional)\n  observed_base_branch: string (optional)\n  observed_head_commit: string (optional)\n  kind: string (optional)\n  scheduled_at: string (RFC3339 timestamp) | null (optional)\n  run_request_key: string (optional)\n  cron: string (optional)\n  timezone: string (optional)\n  task_request_key: string\n  task: AutomationTaskSummary | null (optional)\n  task_id_snapshot: string (optional)\n  diagnostic: string (optional)\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
+    "AutomationMatch": "{\n  number: integer\n  title: string\n  url: string\n  state: string\n  labels: string[] | null\n  is_draft: boolean | null (optional)\n  base_branch: string (optional)\n  head_commit: string (optional)\n}",
+    "AutomationOccurrence": "{\n  id: string\n  automation_id: string\n  automation_version: integer\n  state: string\n  issue_number: integer (optional)\n  issue_url: string (optional)\n  issue_title: string (optional)\n  observed_state: string (optional)\n  observed_labels: string[] | null (optional)\n  pull_request_number: integer (optional)\n  pull_request_url: string (optional)\n  pull_request_title: string (optional)\n  observed_draft: boolean | null (optional)\n  observed_base_branch: string (optional)\n  observed_head_commit: string (optional)\n  kind: string (optional)\n  scheduled_at: string (RFC3339 timestamp) | null (optional)\n  run_request_key: string (optional)\n  cron: string (optional)\n  timezone: string (optional)\n  task_request_key: string\n  task: AutomationTaskSummary | null (optional)\n  task_id_snapshot: string (optional)\n  diagnostic: string (optional)\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
     "AutomationTaskSummary": "{\n  id: string\n  title: string\n  state: string\n}",
     "AutomationTrigger": "GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger",
     "Claim": "{\n  attempt: Attempt\n  execution: Execution\n  task: Task\n  repository: Repository\n}",
@@ -514,35 +535,36 @@
     "CompleteAttemptRequest": "{\n  lease_token: string\n  state: string\n  result: string (optional)\n  error: string (optional)\n}",
     "CreateAutomationRequest": "{\n  request_key: string\n  title: string\n  workflow_id: string\n  repository_id: string\n  context: string\n  timeout_seconds: integer\n  trigger: GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger\n}",
     "CreateManagedRepositoryRequest": "{\n  remote_identity: string\n}",
-    "CreateTaskRequest": "{\n  request_key: string\n  title: string\n  description: string (optional)\n  context: string (optional)\n  worker_id: string (optional)\n  repository_id: string (optional)\n  route: TaskRoute | null (optional)\n  timeout_seconds: integer\n  workflow_revision_id: string (optional)\n}",
+    "CreateTaskRequest": "{\n  request_key: string\n  title: string\n  description: string (optional)\n  context: string (optional)\n  worker_id: string (optional)\n  repository_id: string (optional)\n  route: TaskRoute | null (optional)\n  timeout_seconds: integer (optional)\n  workflow_revision_id: string (optional)\n}",
     "CreateWorkflowRequest": "{\n  request_key: string\n  title: string\n  summary: string\n  instructions: string\n}",
     "CreateWorkflowRevisionRequest": "{\n  request_key: string\n  expected_revision_id: string\n  title: string\n  summary: string\n  instructions: string\n}",
     "DeleteTaskResponse": "{\n  deleted: boolean\n}",
+    "EmptyRequest": "{}",
     "ErrorBody": "{\n  error: APIError\n}",
-    "EventBatchRequest": "{\n  lease_token: string\n  events: AttemptEvent[]\n}",
+    "EventBatchRequest": "{\n  lease_token: string\n  events: AttemptEvent[] | null\n}",
     "Execution": "{\n  id: string\n  task_id: string\n  assigned_worker_id: string\n  required_runtime: string\n  state: string\n  cancellation_requested: boolean\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
     "FinalizeLegacyPollerRequest": "{\n  config_path: string (optional)\n  data_home: string (optional)\n  working_directory: string (optional)\n  confirm_stopped: boolean\n  migration_id: string\n  snapshot_digest: string\n}",
-    "GitHubIssueTrigger": "{\n  type: string\n  state: string\n  required_labels: string[]\n  poll_interval_seconds: integer\n}",
-    "GitHubPullRequestTrigger": "{\n  type: string\n  state: string\n  include_drafts: boolean\n  required_labels: string[]\n  base_branches: string[]\n  poll_interval_seconds: integer\n}",
+    "GitHubIssueTrigger": "{\n  type: string\n  state: string\n  required_labels: string[] | null\n  poll_interval_seconds: integer\n}",
+    "GitHubPullRequestTrigger": "{\n  type: string\n  state: string\n  include_drafts: boolean\n  required_labels: string[] | null\n  base_branches: string[] | null\n  poll_interval_seconds: integer\n}",
     "HealthResponse": "{\n  status: string\n}",
     "HeartbeatResponse": "{\n  lease_expires_at: string (RFC3339 timestamp)\n  cancellation_requested: boolean\n}",
-    "ImportLegacyPollerRequest": "{\n  config_path: string (optional)\n  data_home: string (optional)\n  working_directory: string (optional)\n  confirm_stopped: boolean\n  migration_id: string\n  snapshot_digest: string\n  mappings: LegacyPollerQueueMapping[]\n}",
+    "ImportLegacyPollerRequest": "{\n  config_path: string (optional)\n  data_home: string (optional)\n  working_directory: string (optional)\n  confirm_stopped: boolean\n  migration_id: string\n  snapshot_digest: string\n  mappings: LegacyPollerQueueMapping[] | null\n}",
     "LeaseRequest": "{\n  lease_token: string\n}",
     "LegacyPollerCounts": "{\n  queues: integer\n  supported_queues: integer\n  unsupported_queues: integer\n  pending_observations: integer\n  submitted_observations: integer\n}",
-    "LegacyPollerMigration": "{\n  id: string\n  snapshot_digest: string\n  status: string\n  config_path: string\n  data_home: string\n  working_directory: string\n  data_directory: string\n  ledger_path: string\n  archive_root: string\n  archive_path: string (optional)\n  counts: LegacyPollerCounts\n  queues: LegacyPollerQueue[]\n  automations: Automation[]\n  occurrences: AutomationOccurrence[]\n  errors: string[]\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
-    "LegacyPollerQueue": "{\n  queue_id: string\n  name: string\n  source: string\n  project: string\n  state: string\n  required_labels: string[]\n  poll_interval_seconds: integer\n  timeout_seconds: integer\n  repository_id: string (optional)\n  repository_identity: string (optional)\n  workflow_title: string\n  automation_title: string\n  pending_observations: integer\n  submitted_observations: integer\n  supported: boolean\n  blocking: boolean\n  errors: string[]\n}",
+    "LegacyPollerMigration": "{\n  id: string\n  snapshot_digest: string\n  status: string\n  config_path: string\n  data_home: string\n  working_directory: string\n  data_directory: string\n  ledger_path: string\n  archive_root: string\n  archive_path: string (optional)\n  counts: LegacyPollerCounts\n  queues: LegacyPollerQueue[] | null\n  automations: Automation[] | null\n  occurrences: AutomationOccurrence[] | null\n  errors: string[] | null\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
+    "LegacyPollerQueue": "{\n  queue_id: string\n  name: string\n  source: string\n  project: string\n  state: string\n  required_labels: string[] | null\n  poll_interval_seconds: integer\n  timeout_seconds: integer\n  repository_id: string (optional)\n  repository_identity: string (optional)\n  workflow_title: string\n  automation_title: string\n  pending_observations: integer\n  submitted_observations: integer\n  supported: boolean\n  blocking: boolean\n  errors: string[] | null\n}",
     "LegacyPollerQueueMapping": "{\n  queue_id: string\n  workflow_title: string\n  automation_title: string\n}",
     "LegacyPollerSelection": "{\n  config_path: string (optional)\n  data_home: string (optional)\n  working_directory: string (optional)\n  confirm_stopped: boolean\n}",
-    "LegacyWorkerResponse": "{\n  id: string\n  name: string\n  worker_version: string\n  codex_version: string\n  capacity: integer\n  active_count: integer\n  health: string\n  online: boolean\n  repositories: Repository[]\n  retained_worktrees: RetainedWorktree[]\n  current_task_title: string (optional)\n  registered_at: string (RFC3339 timestamp)\n  last_heartbeat: string (RFC3339 timestamp)\n}",
-    "ListAttemptEventsResponse": "{\n  events: AttemptEvent[]\n  next_after: integer\n  has_more: boolean\n}",
-    "ListAutomationOccurrencesResponse": "{\n  occurrences: AutomationOccurrence[]\n  next_cursor: string | null\n}",
-    "ListAutomationsResponse": "{\n  automations: Automation[]\n  next_cursor: string | null\n}",
-    "ListManagedRepositoriesResponse": "{\n  repositories: ManagedRepository[]\n}",
-    "ListTasksResponse": "{\n  tasks: Task[]\n  next_cursor: string | null\n}",
-    "ListWorkersResponse": "{\n  workers: Worker[]\n}",
-    "ListWorkflowsResponse": "{\n  workflows: Workflow[]\n  next_cursor: string | null\n}",
+    "LegacyWorkerResponse": "{\n  id: string\n  name: string\n  worker_version: string\n  codex_version: string\n  capacity: integer\n  active_count: integer\n  health: string\n  online: boolean\n  repositories: Repository[] | null\n  retained_worktrees: RetainedWorktree[] | null\n  current_task_title: string (optional)\n  registered_at: string (RFC3339 timestamp)\n  last_heartbeat: string (RFC3339 timestamp)\n}",
+    "ListAttemptEventsResponse": "{\n  events: AttemptEvent[] | null\n  next_after: integer\n  has_more: boolean\n}",
+    "ListAutomationOccurrencesResponse": "{\n  occurrences: AutomationOccurrence[] | null\n  next_cursor: string | null\n}",
+    "ListAutomationsResponse": "{\n  automations: Automation[] | null\n  next_cursor: string | null\n}",
+    "ListManagedRepositoriesResponse": "{\n  repositories: ManagedRepository[] | null\n}",
+    "ListTasksResponse": "{\n  tasks: Task[] | null\n  next_cursor: string | null\n}",
+    "ListWorkersResponse": "{\n  workers: Worker[] | null\n}",
+    "ListWorkflowsResponse": "{\n  workflows: Workflow[] | null\n  next_cursor: string | null\n}",
     "ManagedRepository": "{\n  id: string\n  remote_identity: string\n  enabled: boolean\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
-    "ManagedRepositoryReadiness": "{\n  routing_ready: boolean\n  workers: ManagedRepositoryWorkerReadiness[]\n}",
+    "ManagedRepositoryReadiness": "{\n  routing_ready: boolean\n  workers: ManagedRepositoryWorkerReadiness[] | null\n}",
     "ManagedRepositoryWorkerReadiness": "{\n  id: string\n  name: string\n  cached: boolean\n  advertised: boolean\n  ready: boolean\n  reason: string\n}",
     "MetricsSummary": "{\n  window: string\n  generated_at: string (RFC3339 timestamp)\n  executions_created: integer\n  executions_completed: integer\n  succeeded: integer\n  failed: integer\n  cancelled: integer\n  queued: integer\n  running: integer\n  success_rate: number | null\n  retry_rate: number | null\n  median_cycle_time_seconds: number | null\n  workers_online: integer\n  workers_total: integer\n  weekly_limit: WeeklyLimit | null (optional)\n}",
     "PreviewLegacyPollerRequest": "{\n  config_path: string (optional)\n  data_home: string (optional)\n  working_directory: string (optional)\n  confirm_stopped: boolean\n}",
@@ -557,16 +579,16 @@
     "SourceAccess": "{\n  provider: string\n  hostname: string\n}",
     "StartAttemptRequest": "{\n  lease_token: string\n  supervisor_pid: integer | null (optional)\n  process_identity: string (optional)\n  process_group_id: integer | null (optional)\n}",
     "Task": "{\n  id: string\n  request_key: string\n  title: string\n  description: string (optional)\n  worker_id: string\n  repository_id: string\n  timeout_seconds: integer\n  state: string\n  created_at: string (RFC3339 timestamp)\n}",
-    "TaskDetail": "{\n  task: Task\n  context: string\n  execution: Execution\n  repository: Repository\n  repository_available: boolean\n  attempts: Attempt[]\n  workflow: TaskWorkflowSnapshot | null (optional)\n  resolved_prompt: string\n}",
+    "TaskDetail": "{\n  task: Task\n  context: string\n  execution: Execution\n  repository: Repository\n  repository_available: boolean\n  attempts: Attempt[] | null\n  workflow: TaskWorkflowSnapshot | null (optional)\n  resolved_prompt: string\n}",
     "TaskRoute": "{\n  repository_remote_identity: string\n  source_access: SourceAccess\n}",
     "TaskWorkflowSnapshot": "{\n  id: string\n  revision_id: string\n  title: string\n  revision_number: integer\n}",
-    "TestAutomationResult": "{\n  matches: AutomationMatch[]\n  next_due_at: string (RFC3339 timestamp) | null (optional)\n}",
+    "TestAutomationResult": "{\n  matches: AutomationMatch[] | null\n  next_due_at: string (RFC3339 timestamp) | null (optional)\n}",
     "UpdateAutomationRequest": "{\n  expected_version: integer\n  title: string\n  workflow_id: string\n  context: string\n  timeout_seconds: integer\n  trigger: GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger\n}",
     "WeeklyLimit": "{\n  used_percent: integer\n  resets_at: string (RFC3339 timestamp)\n}",
-    "Worker": "{\n  id: string\n  name: string\n  worker_version: string\n  runtime: string\n  runtime_version: string\n  capacity: integer\n  active_count: integer\n  health: string\n  online: boolean\n  repositories: Repository[]\n  source_access: SourceAccess[] (optional)\n  accepts_managed_repositories: boolean (optional)\n  repository_cache_count: integer (optional)\n  retained_worktrees: RetainedWorktree[]\n  current_task_title: string (optional)\n  registered_at: string (RFC3339 timestamp)\n  last_heartbeat: string (RFC3339 timestamp)\n}",
-    "WorkerRegistrationRequest": "{\n  name: string\n  worker_version: string\n  runtime: string | null (optional)\n  runtime_version: string | null (optional)\n  codex_version: string | null (optional)\n  capacity: integer\n  active_count: integer\n  health: string\n  repositories: RepositoryRegistration[]\n  source_access: SourceAccess[] (optional)\n  accepts_managed_repositories: boolean (optional)\n  managed_repository_ids: string[] (optional)\n  retained_worktrees: RetainedWorktree[]\n  capacity_handoff_version: integer (optional)\n  disposed_attempt_ids: string[] (optional)\n  weekly_limit: WeeklyLimit | null (optional)\n}",
+    "Worker": "{\n  id: string\n  name: string\n  worker_version: string\n  runtime: string\n  runtime_version: string\n  capacity: integer\n  active_count: integer\n  health: string\n  online: boolean\n  repositories: Repository[] | null\n  source_access: SourceAccess[] | null (optional)\n  accepts_managed_repositories: boolean (optional)\n  repository_cache_count: integer (optional)\n  retained_worktrees: RetainedWorktree[] | null\n  current_task_title: string (optional)\n  registered_at: string (RFC3339 timestamp)\n  last_heartbeat: string (RFC3339 timestamp)\n}",
+    "WorkerRegistrationRequest": "{\n  name: string\n  worker_version: string\n  runtime: string | null (optional)\n  runtime_version: string | null (optional)\n  codex_version: string | null (optional)\n  capacity: integer\n  active_count: integer\n  health: string\n  repositories: RepositoryRegistration[] | null\n  source_access: SourceAccess[] | null (optional)\n  accepts_managed_repositories: boolean (optional)\n  managed_repository_ids: string[] | null (optional)\n  retained_worktrees: RetainedWorktree[] | null\n  capacity_handoff_version: integer (optional)\n  disposed_attempt_ids: string[] | null (optional)\n  weekly_limit: WeeklyLimit | null (optional)\n}",
     "Workflow": "{\n  id: string\n  enabled: boolean\n  current_revision: WorkflowRevision\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
-    "WorkflowDetail": "{\n  workflow: Workflow\n  revisions: WorkflowRevision[]\n}",
+    "WorkflowDetail": "{\n  workflow: Workflow\n  revisions: WorkflowRevision[] | null\n}",
     "WorkflowRevision": "{\n  id: string\n  workflow_id: string\n  revision_number: integer\n  title: string\n  summary: string\n  instructions: string (optional)\n  created_at: string (RFC3339 timestamp)\n}"
   }
 }

@@ -155,7 +155,7 @@ type CreateTaskRequest struct {
 	WorkerID                   string     `json:"worker_id,omitempty"`
 	RepositoryID               string     `json:"repository_id,omitempty"`
 	Route                      *TaskRoute `json:"route,omitempty"`
-	TimeoutSeconds             int        `json:"timeout_seconds"`
+	TimeoutSeconds             int        `json:"timeout_seconds" contract:"optional"`
 	WorkflowRevisionID         string     `json:"workflow_revision_id,omitempty"`
 	DescriptionProvided        bool       `json:"-"`
 	ContextProvided            bool       `json:"-"`

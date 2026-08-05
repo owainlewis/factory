@@ -110,6 +110,15 @@ func TestCheckedInAPICompatibilityBaseline(t *testing.T) {
 			t.Fatalf("%s schema = %q, want a required non-null boolean", name, got)
 		}
 	}
+	if got := baseline.Schemas["CreateTaskRequest"]; !strings.Contains(got, "timeout_seconds: integer (optional)") {
+		t.Fatalf("CreateTaskRequest does not describe the defaulted timeout as optional: %q", got)
+	}
+	if got := baseline.Schemas["ListWorkersResponse"]; !strings.Contains(got, "workers: Worker[] | null") {
+		t.Fatalf("ListWorkersResponse does not describe a nil slice as nullable: %q", got)
+	}
+	if got := baseline.Schemas["EmptyRequest"]; got != "{}" {
+		t.Fatalf("EmptyRequest schema = %q, want {}", got)
+	}
 
 	var changed compatibilityContract
 	if err := json.Unmarshal(body, &changed); err != nil {

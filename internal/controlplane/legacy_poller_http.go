@@ -84,7 +84,7 @@ func (a *API) resumeLegacyPollerOccurrence(w http.ResponseWriter, r *http.Reques
 	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
 		return
 	}
-	var input struct{}
+	var input emptyRequest
 	if !decodeJSON(w, r, &input) {
 		return
 	}
@@ -100,7 +100,7 @@ func (a *API) skipLegacyPollerOccurrence(w http.ResponseWriter, r *http.Request)
 	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
 		return
 	}
-	var input struct{}
+	var input emptyRequest
 	if !decodeJSON(w, r, &input) {
 		return
 	}

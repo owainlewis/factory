@@ -851,15 +851,11 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 func decodeEmptyJSON(w http.ResponseWriter, r *http.Request) bool {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
-	var value map[string]any
+	var value emptyRequest
 	if err := decoder.Decode(&value); errors.Is(err, io.EOF) {
 		return true
 	} else if err != nil {
 		writeDecodeError(w, err)
-		return false
-	}
-	if len(value) != 0 {
-		writeError(w, invalid("invalid_request", "request body must be an empty JSON object"))
 		return false
 	}
 	var extra any

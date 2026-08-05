@@ -125,7 +125,7 @@ func (a *API) testAutomation(w http.ResponseWriter, r *http.Request) {
 	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
 		return
 	}
-	var input struct{}
+	var input emptyRequest
 	if !decodeJSON(w, r, &input) {
 		return
 	}
@@ -141,7 +141,7 @@ func (a *API) checkAutomation(w http.ResponseWriter, r *http.Request) {
 	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
 		return
 	}
-	var input struct{}
+	var input emptyRequest
 	if !decodeJSON(w, r, &input) {
 		return
 	}

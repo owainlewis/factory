@@ -54,8 +54,8 @@ Every error body has this shape:
 | `GET /api/v1/automations/{automation_id}` | getAutomation: Get one automation. | none | 200 AutomationDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `PUT /api/v1/automations/{automation_id}` | updateAutomation: Update an automation with optimistic versioning. | UpdateAutomationRequest JSON | 200 AutomationDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `PUT /api/v1/automations/{automation_id}/enabled` | setAutomationEnabled: Enable or disable an automation. | SetAutomationEnabledRequest JSON | 200 AutomationDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
-| `POST /api/v1/automations/{automation_id}/test` | testAutomation: Test an automation without dispatch. | empty JSON object | 200 TestAutomationResult JSON | none | ErrorBody: {error: {code: string, message: string}} |
-| `POST /api/v1/automations/{automation_id}/check` | checkAutomation: Request an immediate provider check. | empty JSON object | 202 AutomationDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
+| `POST /api/v1/automations/{automation_id}/test` | testAutomation: Test an automation without dispatch. | EmptyRequest JSON | 200 TestAutomationResult JSON | none | ErrorBody: {error: {code: string, message: string}} |
+| `POST /api/v1/automations/{automation_id}/check` | checkAutomation: Request an immediate provider check. | EmptyRequest JSON | 202 AutomationDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/automations/{automation_id}/run` | runAutomation: Run a schedule automation now. | RunAutomationRequest JSON | 202 AutomationDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `GET /api/v1/automations/{automation_id}/occurrences` | listAutomationOccurrences: List retained automation occurrences. | none | 200 ListAutomationOccurrencesResponse JSON | Query: limit 1..200 and opaque cursor; stable created-at/ID ordering | ErrorBody: {error: {code: string, message: string}} |
 
@@ -68,8 +68,8 @@ Every error body has this shape:
 | `GET /api/v1/migrations/legacy-poller/active` | activeLegacyPollerMigration: Get the active legacy migration. | none | 200 ActiveLegacyPollerMigrationResponse JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `GET /api/v1/migrations/legacy-poller/{migration_id}` | getLegacyPollerMigration: Get one legacy migration. | none | 200 LegacyPollerMigration JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/migrations/legacy-poller/{migration_id}/finalize` | finalizeLegacyPoller: Finalize and archive a legacy migration. | FinalizeLegacyPollerRequest JSON | 200 LegacyPollerMigration JSON | none | ErrorBody: {error: {code: string, message: string}} |
-| `POST /api/v1/occurrences/{occurrence_id}/resume` | resumeLegacyPollerOccurrence: Resume one pending legacy occurrence. | empty JSON object | 200 AutomationOccurrence JSON | none | ErrorBody: {error: {code: string, message: string}} |
-| `POST /api/v1/occurrences/{occurrence_id}/skip` | skipLegacyPollerOccurrence: Skip one pending legacy occurrence. | empty JSON object | 200 AutomationOccurrence JSON | none | ErrorBody: {error: {code: string, message: string}} |
+| `POST /api/v1/occurrences/{occurrence_id}/resume` | resumeLegacyPollerOccurrence: Resume one pending legacy occurrence. | EmptyRequest JSON | 200 AutomationOccurrence JSON | none | ErrorBody: {error: {code: string, message: string}} |
+| `POST /api/v1/occurrences/{occurrence_id}/skip` | skipLegacyPollerOccurrence: Skip one pending legacy occurrence. | EmptyRequest JSON | 200 AutomationOccurrence JSON | none | ErrorBody: {error: {code: string, message: string}} |
 
 ## Metrics
 
@@ -84,14 +84,14 @@ Every error body has this shape:
 | `GET /api/v1/tasks` | listTasks: List retained task summaries. | none | 200 ListTasksResponse JSON | Query: limit 1..200 and opaque cursor; stable created-at/ID ordering | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/tasks` | createTask: Create or replay a task. | CreateTaskRequest JSON | 200 or 201 TaskDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `GET /api/v1/tasks/{task_id}` | getTask: Get task, execution, attempts, and resolved prompt. | none | 200 TaskDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
-| `DELETE /api/v1/tasks/{task_id}` | deleteTask: Delete eligible terminal task history. | empty JSON object or empty body | 200 DeleteTaskResponse JSON | none | ErrorBody: {error: {code: string, message: string}} |
-| `POST /api/v1/tasks/{task_id}/cancel` | cancelTask: Request task cancellation. | empty JSON object or empty body | 200 TaskDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
+| `DELETE /api/v1/tasks/{task_id}` | deleteTask: Delete eligible terminal task history. | EmptyRequest JSON or empty body | 200 DeleteTaskResponse JSON | none | ErrorBody: {error: {code: string, message: string}} |
+| `POST /api/v1/tasks/{task_id}/cancel` | cancelTask: Request task cancellation. | EmptyRequest JSON or empty body | 200 TaskDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 
 ## Executions
 
 | Method and path | Operation | Request | Success response | Pagination | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `POST /api/v1/executions/{execution_id}/retry` | retryExecution: Retry a terminal execution. | empty JSON object or empty body | 200 TaskDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
+| `POST /api/v1/executions/{execution_id}/retry` | retryExecution: Retry a terminal execution. | EmptyRequest JSON or empty body | 200 TaskDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 
 ## Attempts and events
 
@@ -191,7 +191,7 @@ These field inventories are generated from the JSON-tagged Go types. A field mar
 ```text
 {
   automation: Automation
-  occurrences: AutomationOccurrence[]
+  occurrences: AutomationOccurrence[] | null
 }
 ```
 
@@ -213,7 +213,7 @@ These field inventories are generated from the JSON-tagged Go types. A field mar
   title: string
   url: string
   state: string
-  labels: string[]
+  labels: string[] | null
   is_draft: boolean | null (optional)
   base_branch: string (optional)
   head_commit: string (optional)
@@ -232,7 +232,7 @@ These field inventories are generated from the JSON-tagged Go types. A field mar
   issue_url: string (optional)
   issue_title: string (optional)
   observed_state: string (optional)
-  observed_labels: string[] (optional)
+  observed_labels: string[] | null (optional)
   pull_request_number: integer (optional)
   pull_request_url: string (optional)
   pull_request_title: string (optional)
@@ -333,7 +333,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
   worker_id: string (optional)
   repository_id: string (optional)
   route: TaskRoute | null (optional)
-  timeout_seconds: integer
+  timeout_seconds: integer (optional)
   workflow_revision_id: string (optional)
 }
 ```
@@ -369,6 +369,12 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 }
 ```
 
+### EmptyRequest
+
+```text
+{}
+```
+
 ### ErrorBody
 
 ```text
@@ -382,7 +388,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 ```text
 {
   lease_token: string
-  events: AttemptEvent[]
+  events: AttemptEvent[] | null
 }
 ```
 
@@ -420,7 +426,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 {
   type: string
   state: string
-  required_labels: string[]
+  required_labels: string[] | null
   poll_interval_seconds: integer
 }
 ```
@@ -432,8 +438,8 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
   type: string
   state: string
   include_drafts: boolean
-  required_labels: string[]
-  base_branches: string[]
+  required_labels: string[] | null
+  base_branches: string[] | null
   poll_interval_seconds: integer
 }
 ```
@@ -465,7 +471,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
   confirm_stopped: boolean
   migration_id: string
   snapshot_digest: string
-  mappings: LegacyPollerQueueMapping[]
+  mappings: LegacyPollerQueueMapping[] | null
 }
 ```
 
@@ -504,10 +510,10 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
   archive_root: string
   archive_path: string (optional)
   counts: LegacyPollerCounts
-  queues: LegacyPollerQueue[]
-  automations: Automation[]
-  occurrences: AutomationOccurrence[]
-  errors: string[]
+  queues: LegacyPollerQueue[] | null
+  automations: Automation[] | null
+  occurrences: AutomationOccurrence[] | null
+  errors: string[] | null
   created_at: string (RFC3339 timestamp)
   updated_at: string (RFC3339 timestamp)
 }
@@ -522,7 +528,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
   source: string
   project: string
   state: string
-  required_labels: string[]
+  required_labels: string[] | null
   poll_interval_seconds: integer
   timeout_seconds: integer
   repository_id: string (optional)
@@ -533,7 +539,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
   submitted_observations: integer
   supported: boolean
   blocking: boolean
-  errors: string[]
+  errors: string[] | null
 }
 ```
 
@@ -570,8 +576,8 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
   active_count: integer
   health: string
   online: boolean
-  repositories: Repository[]
-  retained_worktrees: RetainedWorktree[]
+  repositories: Repository[] | null
+  retained_worktrees: RetainedWorktree[] | null
   current_task_title: string (optional)
   registered_at: string (RFC3339 timestamp)
   last_heartbeat: string (RFC3339 timestamp)
@@ -582,7 +588,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 
 ```text
 {
-  events: AttemptEvent[]
+  events: AttemptEvent[] | null
   next_after: integer
   has_more: boolean
 }
@@ -592,7 +598,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 
 ```text
 {
-  occurrences: AutomationOccurrence[]
+  occurrences: AutomationOccurrence[] | null
   next_cursor: string | null
 }
 ```
@@ -601,7 +607,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 
 ```text
 {
-  automations: Automation[]
+  automations: Automation[] | null
   next_cursor: string | null
 }
 ```
@@ -610,7 +616,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 
 ```text
 {
-  repositories: ManagedRepository[]
+  repositories: ManagedRepository[] | null
 }
 ```
 
@@ -618,7 +624,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 
 ```text
 {
-  tasks: Task[]
+  tasks: Task[] | null
   next_cursor: string | null
 }
 ```
@@ -627,7 +633,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 
 ```text
 {
-  workers: Worker[]
+  workers: Worker[] | null
 }
 ```
 
@@ -635,7 +641,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 
 ```text
 {
-  workflows: Workflow[]
+  workflows: Workflow[] | null
   next_cursor: string | null
 }
 ```
@@ -657,7 +663,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 ```text
 {
   routing_ready: boolean
-  workers: ManagedRepositoryWorkerReadiness[]
+  workers: ManagedRepositoryWorkerReadiness[] | null
 }
 ```
 
@@ -828,7 +834,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
   execution: Execution
   repository: Repository
   repository_available: boolean
-  attempts: Attempt[]
+  attempts: Attempt[] | null
   workflow: TaskWorkflowSnapshot | null (optional)
   resolved_prompt: string
 }
@@ -858,7 +864,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 
 ```text
 {
-  matches: AutomationMatch[]
+  matches: AutomationMatch[] | null
   next_due_at: string (RFC3339 timestamp) | null (optional)
 }
 ```
@@ -898,11 +904,11 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
   active_count: integer
   health: string
   online: boolean
-  repositories: Repository[]
-  source_access: SourceAccess[] (optional)
+  repositories: Repository[] | null
+  source_access: SourceAccess[] | null (optional)
   accepts_managed_repositories: boolean (optional)
   repository_cache_count: integer (optional)
-  retained_worktrees: RetainedWorktree[]
+  retained_worktrees: RetainedWorktree[] | null
   current_task_title: string (optional)
   registered_at: string (RFC3339 timestamp)
   last_heartbeat: string (RFC3339 timestamp)
@@ -921,13 +927,13 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
   capacity: integer
   active_count: integer
   health: string
-  repositories: RepositoryRegistration[]
-  source_access: SourceAccess[] (optional)
+  repositories: RepositoryRegistration[] | null
+  source_access: SourceAccess[] | null (optional)
   accepts_managed_repositories: boolean (optional)
-  managed_repository_ids: string[] (optional)
-  retained_worktrees: RetainedWorktree[]
+  managed_repository_ids: string[] | null (optional)
+  retained_worktrees: RetainedWorktree[] | null
   capacity_handoff_version: integer (optional)
-  disposed_attempt_ids: string[] (optional)
+  disposed_attempt_ids: string[] | null (optional)
   weekly_limit: WeeklyLimit | null (optional)
 }
 ```
@@ -949,7 +955,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 ```text
 {
   workflow: Workflow
-  revisions: WorkflowRevision[]
+  revisions: WorkflowRevision[] | null
 }
 ```
 
