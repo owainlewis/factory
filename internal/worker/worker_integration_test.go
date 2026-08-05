@@ -58,9 +58,14 @@ echo "$$" > "$FACTORY_TEST_CODEX_LOG/$attempt.pid"
 echo '{"type":"thread.started","thread_id":"test-thread"}'
 case "$prompt" in
   *FAKE_MODE=success*)
-    printf 'completed by fake Codex' > "$result"
-    echo '{"type":"item.completed","item":{"type":"agent_message","text":"completed"}}'
-    ;;
+	printf 'completed by fake Codex' > "$result"
+	echo '{"type":"item.completed","item":{"type":"agent_message","text":"completed"}}'
+	;;
+	*FAKE_MODE=barrier*)
+	touch "$FACTORY_TEST_CODEX_LOG/$attempt.running"
+	while [ "$(find "$FACTORY_TEST_CODEX_LOG" -name '*.running' | wc -l)" -lt 2 ]; do sleep 0.01; done
+	printf 'completed after runtime overlap' > "$result"
+	;;
   *FAKE_MODE=long*)
     head -c 68157440 /dev/zero | tr '\000' x
     echo
@@ -1126,6 +1131,46 @@ func TestMultiRepositorySuccessAndBoundedOutput(t *testing.T) {
 		if !strings.Contains(string(prompt), expected) {
 			t.Fatalf("Codex prompt does not contain %q:\n%s", expected, prompt)
 		}
+	}
+}
+
+func TestSameRepositoryRuntimeAndCleanupCanOverlap(t *testing.T) {
+	repository := createRepository(t, "same-repository-overlap")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"shared": repository}, 2)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy"
+	})
+	first := createTask(t, fixture.store, worker, "shared", "barrier", 60)
+	second := createTask(t, fixture.store, worker, "shared", "barrier", 60)
+	first = waitForTaskState(t, fixture.store, first.Task.ID, "succeeded")
+	second = waitForTaskState(t, fixture.store, second.Task.ID, "succeeded")
+	for _, detail := range []protocol.TaskDetail{first, second} {
+		if len(detail.Attempts) != 1 || detail.Attempts[0].Result != "completed after runtime overlap" {
+			t.Fatalf("overlapping attempt = %#v", detail.Attempts)
+		}
+		attempt := detail.Attempts[0]
+		path := filepath.Join(manager.dataDirectory, "worktrees", attempt.ID)
+		waitFor(t, 5*time.Second, func() bool {
+			_, err := os.Stat(path)
+			return errors.Is(err, os.ErrNotExist)
+		})
+	}
+	waitFor(t, 5*time.Second, func() bool { return manager.repositoryLocks.count() == 0 })
+	entries, err := listGitWorktrees(context.Background(), "git", repository.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalRepository, err := filepath.EvalSymlinks(repository.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Path != canonicalRepository {
+		t.Fatalf("worktrees after concurrent cleanup = %#v", entries)
 	}
 }
 

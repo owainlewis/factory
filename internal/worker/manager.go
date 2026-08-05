@@ -58,23 +58,22 @@ type Manager struct {
 	manifests         *manifestStore
 	slots             chan struct{}
 
-	stateMutex           sync.Mutex
-	health               health
-	active               map[string]*attemptHandle
-	seen                 map[string]bool
-	retained             map[string]protocol.RetainedWorktree
-	retainedCounts       map[string]int
-	managedRepositoryIDs map[string]bool
-	disposed             map[string]bool
-	pending              map[string]context.CancelFunc
-	fatalHealth          error
-	registered           bool
-	closed               bool
+	stateMutex                    sync.Mutex
+	health                        health
+	active                        map[string]*attemptHandle
+	seen                          map[string]bool
+	retained                      map[string]protocol.RetainedWorktree
+	retainedCounts                map[string]int
+	managedRepositoryIDs          map[string]bool
+	managedRepositoryReservations map[string]bool
+	disposed                      map[string]bool
+	pending                       map[string]context.CancelFunc
+	fatalHealth                   error
+	registered                    bool
+	closed                        bool
 
-	randomMutex sync.Mutex
-	// repositoryCacheMutex bounds clone/fetch activity to one repository at a
-	// time per worker and protects cache creation from concurrent claims.
-	repositoryCacheMutex sync.Mutex
+	randomMutex     sync.Mutex
+	repositoryLocks repositoryLockSet
 	// registrationMutex keeps a periodic registration from overtaking the
 	// terminal-attempt to retained-worktree capacity handoff.
 	registrationMutex sync.Mutex
@@ -130,25 +129,26 @@ func New(config Config, options Options, logger *slog.Logger) (*Manager, error) 
 	}
 	cleanupLock = false
 	return &Manager{
-		config:               config,
-		options:              options,
-		logger:               logger,
-		id:                   id,
-		dataDirectory:        dataDirectory,
-		lock:                 lock,
-		repositories:         repositories,
-		repositoriesByKey:    byKey,
-		client:               newClient(config.Server, options.HTTPClient),
-		manifests:            newManifestStore(dataDirectory, id),
-		slots:                make(chan struct{}, config.MaxConcurrent),
-		health:               health{State: "unhealthy"},
-		active:               make(map[string]*attemptHandle),
-		seen:                 make(map[string]bool),
-		retained:             make(map[string]protocol.RetainedWorktree),
-		retainedCounts:       make(map[string]int),
-		managedRepositoryIDs: managedRepositoryIDs,
-		disposed:             make(map[string]bool),
-		pending:              make(map[string]context.CancelFunc),
+		config:                        config,
+		options:                       options,
+		logger:                        logger,
+		id:                            id,
+		dataDirectory:                 dataDirectory,
+		lock:                          lock,
+		repositories:                  repositories,
+		repositoriesByKey:             byKey,
+		client:                        newClient(config.Server, options.HTTPClient),
+		manifests:                     newManifestStore(dataDirectory, id),
+		slots:                         make(chan struct{}, config.MaxConcurrent),
+		health:                        health{State: "unhealthy"},
+		active:                        make(map[string]*attemptHandle),
+		seen:                          make(map[string]bool),
+		retained:                      make(map[string]protocol.RetainedWorktree),
+		retainedCounts:                make(map[string]int),
+		managedRepositoryIDs:          managedRepositoryIDs,
+		managedRepositoryReservations: make(map[string]bool),
+		disposed:                      make(map[string]bool),
+		pending:                       make(map[string]context.CancelFunc),
 	}, nil
 }
 

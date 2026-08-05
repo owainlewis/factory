@@ -64,10 +64,17 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		manager.finishWithoutWorktree(claim, token, handle, terminalForStop(handle), stoppedAttemptError(handle, err))
 		return
 	}
+	repositoryKey := repositoryCoordinationKey(repository)
+	releaseRepository, err := manager.repositoryLocks.acquire(handle.context, repositoryKey)
+	if err != nil {
+		manager.finishWithoutWorktree(claim, token, handle, terminalForStop(handle), stoppedAttemptError(handle, err))
+		return
+	}
 	worktreeRoot := filepath.Join(manager.dataDirectory, "worktrees")
 	value, err := prepareWorktree(handle.context, manager.options.GitExecutable, worktreeRoot,
 		repository, claim.Task.ID, claim.Attempt.ID)
 	if err != nil {
+		releaseRepository()
 		manager.finishWithoutWorktree(claim, token, handle, terminalForStop(handle), stoppedAttemptError(handle, err))
 		return
 	}
@@ -80,6 +87,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		LeaseDeadline: claim.Attempt.LeaseExpiresAt, Lifecycle: manifestPreparing,
 	}
 	if err := manager.manifests.create(manifest); err != nil {
+		releaseRepository()
 		manager.markUnhealthy("manifest_write", err)
 		manager.finishWithoutWorktree(claim, token, handle, "failed", err)
 		return
@@ -92,18 +100,23 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		}
 		err = stoppedAttemptError(handle, err)
 		persisted, loadErr := manager.manifests.load(claim.Attempt.ID)
+		inspectionContext, cancelInspection := context.WithTimeout(context.Background(), 2*gitCommandTimeout)
 		inspection, inspectErr := inspectManifestWorktree(
-			context.Background(), manager.options.GitExecutable, manager.dataDirectory, persisted)
+			inspectionContext, manager.options.GitExecutable, manager.dataDirectory, persisted)
+		cancelInspection()
 		if loadErr != nil || inspectErr != nil {
 			identityErr := errors.Join(loadErr, inspectErr)
 			_ = manager.persistLifecycle(claim.Attempt.ID, manifestInconsistent, func(manifest *attemptManifest) {
 				manifest.RetentionReason = boundedText(identityErr.Error(), 1000)
 			})
 			manager.markUnhealthy("worktree_identity", identityErr)
+			manager.repositoryLocks.poison(repositoryKey, identityErr)
+			releaseRepository()
 			manager.complete(claim.Attempt.ID, token, state, "", err.Error(), handle)
 			return
 		}
 		if inspection.PathExists && inspection.Registered {
+			releaseRepository()
 			manager.finishWithWorktree(claim, token, handle, repository, value, state, "", err.Error())
 			return
 		}
@@ -113,12 +126,16 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 				manifest.RetentionReason = identityErr.Error()
 			})
 			manager.markUnhealthy("worktree_identity", identityErr)
+			manager.repositoryLocks.poison(repositoryKey, identityErr)
+			releaseRepository()
 			manager.complete(claim.Attempt.ID, token, state, "", err.Error(), handle)
 			return
 		}
+		releaseRepository()
 		manager.finishWithoutWorktree(claim, token, handle, state, err)
 		return
 	}
+	releaseRepository()
 	if err := manager.persistLifecycle(claim.Attempt.ID, manifestWorktreeCreated, nil); err != nil {
 		manager.markUnhealthy("manifest_write", err)
 		manager.finishWithWorktree(claim, token, handle, repository, value, "failed", "", err.Error())
@@ -569,12 +586,19 @@ func (manager *Manager) retain(claim protocol.Claim, repository Repository, valu
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*gitCommandTimeout)
+	releaseRepository, lockErr := manager.repositoryLocks.acquire(ctx, manager.coordinationKeyForManifest(manifest))
+	if lockErr != nil {
+		cancel()
+		manager.markUnhealthy("worktree_identity", lockErr)
+		return
+	}
 	inspection, inspectErr := inspectManifestWorktree(
 		ctx,
 		manager.options.GitExecutable,
 		manager.dataDirectory,
 		manifest,
 	)
+	releaseRepository()
 	cancel()
 	if inspectErr != nil || !inspection.PathExists || !inspection.Registered {
 		if inspectErr == nil {

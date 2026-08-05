@@ -118,10 +118,18 @@ the same control-plane result contract.
 Runtime output and API event payloads are bounded. Oversized output is truncated
 or summarized so one agent cannot grow a request without limit.
 
-Managed caches live at `DATA_DIRECTORY/repositories/REPOSITORY_ID`. Clone and
-fetch operations are serialized per worker, have a five-minute bound, and
-complete before the agent starts. A worker keeps at most 100 repository cache
-entries. This version does not evict caches automatically.
+Managed caches live at `DATA_DIRECTORY/repositories/REPOSITORY_ID`. Preparation
+is coordinated per repository: clone installation, origin and base resolution,
+fetch, worktree add and remove, and managed branch cleanup serialize only with
+other Git metadata operations for that same repository. Unrelated repositories
+prepare concurrently. The repository lock is released before Codex or Claude
+Code starts, so sessions using distinct worktrees from one repository can run
+in parallel. Clone and fetch have a five-minute bound.
+
+A short cache-accounting lock reserves capacity before a first-time clone
+starts. This keeps the worker at no more than 100 managed repository entries
+even when unrelated clones overlap. Failed or cancelled clones release their
+reservation. This version does not evict caches automatically.
 Interrupted `.clone-*` directories are removed during startup after the worker
 has locked its data directory, so hard crashes cannot bypass the cache bound.
 On the next registration, the control plane releases an uncached dynamic
