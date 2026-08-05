@@ -54,9 +54,8 @@ Codex or Claude Code session with its own worktree and process group. Preparing
 an attempt also consumes a slot. Choose a lower value when local CPU, memory, or
 provider limits require it.
 
-The fresh SQLite schema accepts the expanded worker capacity range. Delete and
-recreate existing development databases made by an older release before starting
-this version.
+Factory migrates existing SQLite databases to the expanded worker capacity
+range when the control plane starts.
 
 With this `~/.factory/worker.toml` filename, Factory defaults durable worker
 state to `~/.factory/workers/worker`. The config filename, rather than `name`,

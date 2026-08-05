@@ -1011,6 +1011,94 @@ func TestFreshSchemaAcceptsWorkerCapacityRange(t *testing.T) {
 	}
 }
 
+func TestWorkerCapacityMigrationUpgradesExistingDatabase(t *testing.T) {
+	path := t.TempDir() + "/worker-capacity.sqlite3"
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := migrations.Files.ReadFile("001_controlplane.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial = []byte(strings.Replace(
+		string(initial),
+		"capacity BETWEEN 1 AND 100",
+		"capacity BETWEEN 1 AND 4",
+		1,
+	))
+	if _, err := database.Exec(string(initial)); err != nil {
+		t.Fatalf("apply legacy schema: %v", err)
+	}
+	for version, migrationName := range []string{
+		"002_attempt_capacity_handoff.sql", "003_task_list_pagination.sql",
+		"004_worker_runtime.sql", "005_metrics_indexes.sql", "006_execution_retries.sql",
+		"007_worker_source_access.sql", "008_managed_repositories.sql", "009_workflows.sql",
+		"010_github_issue_automations.sql", "011_github_pull_request_automations.sql",
+		"012_schedule_automations.sql", "013_legacy_poller_migration.sql",
+		"014_workflow_automation_titles.sql", "015_codex_weekly_limit.sql",
+	} {
+		body, readErr := migrations.Files.ReadFile(migrationName)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, execErr := database.Exec(string(body)); execErr != nil {
+			t.Fatalf("apply %s: %v", migrationName, execErr)
+		}
+		if _, execErr := database.Exec(
+			`INSERT INTO schema_migrations(version, applied_at) VALUES (?, 1)`,
+			version+2,
+		); execErr != nil {
+			t.Fatalf("record %s: %v", migrationName, execErr)
+		}
+	}
+	if _, err := database.Exec(`
+		INSERT INTO schema_migrations(version, applied_at) VALUES (1, 1);
+		INSERT INTO workers(
+			id, name, worker_version, runtime_version, runtime, capacity, active_count,
+			health, retained_worktrees_json, registered_at, last_heartbeat
+		) VALUES ('existing-worker', 'Existing worker', 'old', 'old', 'codex', 4, 0,
+			'healthy', '[]', 1, 1);
+		INSERT INTO repositories(id, remote_identity, created_at)
+		VALUES ('existing-repository', 'github.com/example/existing', 1);
+		INSERT INTO worker_repositories(
+			worker_id, display_key, repository_id, updated_at
+		) VALUES ('existing-worker', 'existing', 'existing-repository', 1);
+	`); err != nil {
+		t.Fatalf("seed legacy database: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := createDatabaseMarker(path + ".v2-control-plane"); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("open upgraded database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	worker := registerTestWorker(t, store, "existing-worker", 10)
+	if worker.Capacity != 10 {
+		t.Fatalf("upgraded worker capacity = %d; want 10", worker.Capacity)
+	}
+	var repositoryCount int
+	if err := store.db.QueryRow(`
+		SELECT COUNT(*) FROM worker_repositories
+		WHERE worker_id = 'existing-worker' AND repository_id = 'existing-repository'
+	`).Scan(&repositoryCount); err != nil {
+		t.Fatal(err)
+	}
+	if repositoryCount != 1 {
+		t.Fatalf("migrated worker repository rows = %d; want 1", repositoryCount)
+	}
+}
+
 func createManagedTestRepository(t *testing.T, store *Store, remoteIdentity string) protocol.ManagedRepository {
 	t.Helper()
 	repository, _, err := store.CreateManagedRepository(

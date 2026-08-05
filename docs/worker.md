@@ -23,8 +23,8 @@ launches a fresh runtime process and owns its own worktree, manifest, lease, and
 supervisor process group. `max_concurrent` accepts values from 1 through 100;
 preparing attempts consume slots as well as running attempts.
 
-This release changes the fresh SQLite schema capacity range. Existing
-development databases created by an older release must be removed and recreated.
+Factory migrates existing SQLite databases to the expanded worker capacity
+range when the control plane starts.
 
 When `data_directory` is omitted, Factory derives an absolute path beside the
 configuration as `workers/<config filename without .toml>`. For example,
