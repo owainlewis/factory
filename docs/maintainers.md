@@ -23,8 +23,9 @@ allow a pull-request author to approve their own change.
 There is no routine bypass. If a GitHub Actions outage or broken workflow makes
 the required check impossible to satisfy, the repository owner may temporarily
 disable the `main` ruleset in **Settings > Rules > Rulesets**. Record the reason
-on the affected pull request, restore the ruleset immediately after recovery,
-and verify that it is active before merging any later change. Do not weaken or
+on the affected pull request, merge only that reviewed change, and restore the
+ruleset immediately after the exceptional merge even if the outage continues.
+Verify that it is active before merging any later change. Do not weaken or
 disable the policy to merge a failing change.
 
 When the workflow or its required check name changes, update the ruleset and
