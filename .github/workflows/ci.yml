@@ -46,6 +46,10 @@ jobs:
         run: just format-check
       - name: Run Go vet
         run: just vet
+      - name: Check reachable Go vulnerabilities
+        run: just vuln
+      - name: Run staticcheck correctness checks
+        run: just staticcheck
       - name: Check worker-control-plane boundary
         run: just boundary
       - name: Run Go server and worker tests
