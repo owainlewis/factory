@@ -1218,17 +1218,8 @@ func TestRepositoryKeyRemapStopsStableWorkerFromClaiming(t *testing.T) {
 
 func TestHealthFailureCancelsRetryingClaimBeforeServerRecovery(t *testing.T) {
 	claimStarted := make(chan struct{})
-	releaseClaim := make(chan struct{})
-	var blocked atomic.Bool
-	fixture := newServerFixture(t, func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-			if strings.HasSuffix(request.URL.Path, "/claims") && blocked.CompareAndSwap(false, true) {
-				close(claimStarted)
-				<-releaseClaim
-			}
-			next.ServeHTTP(w, request)
-		})
-	})
+	claimCancelled := make(chan struct{})
+	fixture := newServerFixture(t, nil)
 	repository := createRepository(t, "health-claim")
 	codexPath := filepath.Join(t.TempDir(), "codex")
 	writeFakeCodex(t, codexPath)
@@ -1236,6 +1227,18 @@ func TestHealthFailureCancelsRetryingClaimBeforeServerRecovery(t *testing.T) {
 		map[string]repositoryFixture{"health": repository}, 1)
 	manager.options.HealthInterval = 20 * time.Millisecond
 	manager.options.RegistrationInterval = 5 * time.Second
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	t.Cleanup(transport.CloseIdleConnections)
+	var blocked atomic.Bool
+	manager.client.http = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(request.URL.Path, "/claims") && blocked.CompareAndSwap(false, true) {
+			close(claimStarted)
+			<-request.Context().Done()
+			close(claimCancelled)
+			return nil, request.Context().Err()
+		}
+		return transport.RoundTrip(request)
+	})}
 	startManager(t, manager)
 	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
 		return worker.Health == "healthy"
@@ -1254,7 +1257,11 @@ func TestHealthFailureCancelsRetryingClaimBeforeServerRecovery(t *testing.T) {
 		defer manager.stateMutex.Unlock()
 		return manager.health.State == "unhealthy"
 	})
-	close(releaseClaim)
+	select {
+	case <-claimCancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("claim request was not cancelled after the worker became unhealthy")
+	}
 
 	time.Sleep(300 * time.Millisecond)
 	detail, err := fixture.store.Task(context.Background(), task.Task.ID)

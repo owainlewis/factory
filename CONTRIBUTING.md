@@ -39,6 +39,7 @@ just format-check
 just vet
 just boundary
 just test
+just test-worker-race
 just test-tooling
 just test-launcher
 ```

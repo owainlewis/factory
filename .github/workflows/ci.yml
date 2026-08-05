@@ -65,3 +65,43 @@ jobs:
             web/playwright-report/
           if-no-files-found: ignore
           retention-days: 14
+
+  macos:
+    name: macos (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: amd64
+            runner: macos-15-intel
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: extractions/setup-just@v4
+      - name: Confirm native Darwin architecture
+        run: test "$(go env GOOS)/$(go env GOARCH)" = "darwin/${{ matrix.arch }}"
+      - name: Run Go tests
+        run: go test -timeout 5m ./...
+      - name: Run worker tests with the race detector
+        run: just test-worker-race
+      - name: Build and inspect native binaries
+        env:
+          FACTORY_BUILD_DIR: ${{ runner.temp }}/factory-bin
+        run: |
+          just build
+          test -x "$FACTORY_BUILD_DIR/factory-server"
+          test -x "$FACTORY_BUILD_DIR/factory-worker"
+          go version -m "$FACTORY_BUILD_DIR/factory-server" | grep -F "GOARCH=${{ matrix.arch }}"
+          go version -m "$FACTORY_BUILD_DIR/factory-worker" | grep -F "GOARCH=${{ matrix.arch }}"
+      - name: Test launcher process cleanup
+        run: just test-launcher
