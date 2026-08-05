@@ -110,6 +110,15 @@ SQLite runs with foreign keys, WAL journaling, a five-second busy timeout, and
 at most eight open connections. The default database is
 `~/.factory/server/factory.sqlite3`.
 
+`factory-server -backup` opens only an existing source in read-only mode and
+uses SQLite `VACUUM INTO` to create a standalone, mode-`0600` online snapshot
+that includes committed WAL state. `factory-server -restore` opens a marked
+snapshot in immutable mode and rejects sibling WAL or shared-memory files. Both
+paths validate integrity, migration ledgers, and the complete expected schema.
+They build in an owner-only staging directory and publish the database and
+marker without replacement. Restore applies supported migrations before that
+publication, so startup never sees a partial or structurally invalid target.
+
 ### Legacy poller migration
 
 The retired standalone poller has no binary, startup path, command, or current
@@ -562,6 +571,8 @@ and a reviewed tenant model.
   terminal state when the server remains available.
 - Server shutdown drains HTTP requests, stops the lease sweeper, checkpoints
   the SQLite WAL, and closes the database.
+- Online backups need no downtime. Restore requires a stopped server and
+  workers, a fresh data home, and post-start health and retained-state checks.
 - A worker data directory is locked to one running worker identity.
 - Worktree reconciliation and cleanup prefer retention over destructive action.
 - Repository capacity counts active work, retained work, and completed attempts

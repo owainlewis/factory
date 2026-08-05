@@ -19,7 +19,7 @@ does not include user authentication.
 
 Requirements:
 
-- Go 1.25 or newer
+- Go 1.25.12 or newer on the 1.25 release line, or Go 1.26.5 or newer
 - Git
 - `curl`
 - `just`
