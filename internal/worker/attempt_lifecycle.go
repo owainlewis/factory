@@ -456,9 +456,8 @@ func (manager *Manager) finishWithoutWorktree(
 	state string,
 	cause error,
 ) {
-	manager.registrationMutex.Lock()
-	defer manager.registrationMutex.Unlock()
-	defer manager.registerAfterAttempt(handle)
+	manager.beginCapacityHandoff()
+	defer manager.finishCapacityHandoff(handle)
 
 	errorText := ""
 	if cause != nil {
@@ -490,9 +489,8 @@ func (manager *Manager) finishWithWorktree(
 	result string,
 	errorText string,
 ) {
-	manager.registrationMutex.Lock()
-	defer manager.registrationMutex.Unlock()
-	defer manager.registerAfterAttempt(handle)
+	manager.beginCapacityHandoff()
+	defer manager.finishCapacityHandoff(handle)
 
 	result = boundedText(result, protocol.MaxResultBytes)
 	errorText = boundedText(errorText, protocol.MaxErrorBytes)
@@ -533,6 +531,22 @@ func (manager *Manager) registerAfterAttempt(handle *attemptHandle) {
 	registerContext, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 	manager.registerLocked(registerContext)
+}
+
+func (manager *Manager) beginCapacityHandoff() {
+	manager.registrationMutex.Lock()
+	manager.capacityHandoffs++
+	manager.registrationMutex.Unlock()
+}
+
+func (manager *Manager) finishCapacityHandoff(handle *attemptHandle) {
+	handle.stopHeartbeat()
+	manager.registrationMutex.Lock()
+	defer manager.registrationMutex.Unlock()
+	manager.capacityHandoffs--
+	if manager.capacityHandoffs == 0 {
+		manager.registerAfterAttempt(handle)
+	}
 }
 
 func (handle *attemptHandle) processStillActive() bool {

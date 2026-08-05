@@ -1244,6 +1244,75 @@ func TestSameRepositoryRuntimeAndCleanupCanOverlap(t *testing.T) {
 	}
 }
 
+func TestBlockedCleanupDoesNotDelayUnrelatedRepository(t *testing.T) {
+	firstRepository := createRepository(t, "blocked-cleanup-first")
+	secondRepository := createRepository(t, "blocked-cleanup-second")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{
+			"first":  firstRepository,
+			"second": secondRepository,
+		}, 2)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy"
+	})
+	first := createTask(t, fixture.store, worker, "first", "barrier", 60)
+	second := createTask(t, fixture.store, worker, "second", "barrier", 60)
+	first = waitForTaskState(t, fixture.store, first.Task.ID, "running")
+	second = waitForTaskState(t, fixture.store, second.Task.ID, "running")
+	logDirectory := os.Getenv("FACTORY_TEST_CODEX_LOG")
+	for _, detail := range []protocol.TaskDetail{first, second} {
+		waitFor(t, 10*time.Second, func() bool {
+			_, err := os.Stat(filepath.Join(logDirectory, detail.Attempts[0].ID+".ready"))
+			return err == nil
+		})
+	}
+
+	waitContext, cancelWait := context.WithTimeout(context.Background(), 5*time.Second)
+	releaseFirstRepository, err := manager.repositoryLocks.acquire(
+		waitContext,
+		repositoryCoordinationKey(manager.repositoriesByKey["first"]),
+	)
+	cancelWait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseFirstRepository()
+	if err := os.WriteFile(
+		filepath.Join(logDirectory, first.Attempts[0].ID+".release"),
+		[]byte("release\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskState(t, fixture.store, first.Task.ID, "succeeded")
+
+	if err := os.WriteFile(
+		filepath.Join(logDirectory, second.Attempts[0].ID+".release"),
+		[]byte("release\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	second = waitForTaskState(t, fixture.store, second.Task.ID, "succeeded")
+	secondWorktree := filepath.Join(manager.dataDirectory, "worktrees", second.Attempts[0].ID)
+	waitFor(t, 5*time.Second, func() bool {
+		_, err := os.Stat(secondWorktree)
+		return errors.Is(err, os.ErrNotExist)
+	})
+
+	releaseFirstRepository()
+	firstWorktree := filepath.Join(manager.dataDirectory, "worktrees", first.Attempts[0].ID)
+	waitFor(t, 5*time.Second, func() bool {
+		_, err := os.Stat(firstWorktree)
+		return errors.Is(err, os.ErrNotExist)
+	})
+	waitFor(t, 5*time.Second, func() bool { return manager.repositoryLocks.count() == 0 })
+}
+
 func TestIdleWorkerMakesOneClaimPerPollingInterval(t *testing.T) {
 	var claimMutex sync.Mutex
 	var claimTimes []time.Time

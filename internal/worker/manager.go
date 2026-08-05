@@ -75,9 +75,11 @@ type Manager struct {
 
 	randomMutex     sync.Mutex
 	repositoryLocks repositoryLockSet
-	// registrationMutex keeps a periodic registration from overtaking the
-	// terminal-attempt to retained-worktree capacity handoff.
+	// registrationMutex serializes registrations and protects capacityHandoffs.
+	// A positive handoff count pauses periodic registration without serializing
+	// repository-local cleanup for unrelated attempts.
 	registrationMutex sync.Mutex
+	capacityHandoffs  int
 	waitGroup         sync.WaitGroup
 }
 
