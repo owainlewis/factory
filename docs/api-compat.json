@@ -4,7 +4,10 @@
     "DELETE /api/v1/tasks/{task_id}": {
       "operation": "deleteTask",
       "request": "empty JSON object or empty body",
-      "response": "200 {deleted: true}",
+      "response": "200 DeleteTaskResponse JSON",
+      "response_schemas": [
+        "DeleteTaskResponse"
+      ],
       "pagination": "none",
       "errors": "ErrorBody: {error: {code: string, message: string}}"
     },
@@ -511,6 +514,7 @@
     "CreateTaskRequest": "{\n  request_key: string\n  title: string\n  description: string (optional)\n  context: string (optional)\n  worker_id: string (optional)\n  repository_id: string (optional)\n  route: TaskRoute | null (optional)\n  timeout_seconds: integer\n  workflow_revision_id: string (optional)\n}",
     "CreateWorkflowRequest": "{\n  request_key: string\n  title: string\n  summary: string\n  instructions: string\n}",
     "CreateWorkflowRevisionRequest": "{\n  request_key: string\n  expected_revision_id: string\n  title: string\n  summary: string\n  instructions: string\n}",
+    "DeleteTaskResponse": "{\n  deleted: boolean\n}",
     "ErrorBody": "{\n  error: APIError\n}",
     "EventBatchRequest": "{\n  lease_token: string\n  events: AttemptEvent[]\n}",
     "Execution": "{\n  id: string\n  task_id: string\n  assigned_worker_id: string\n  required_runtime: string\n  state: string\n  cancellation_requested: boolean\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
@@ -544,7 +548,7 @@
     "RunAutomationRequest": "{\n  request_key: string\n}",
     "ScheduleTrigger": "{\n  type: string\n  cron: string\n  timezone: string\n}",
     "SetAutomationEnabledRequest": "{\n  enabled: boolean | null\n  confirm_legacy_poller_stopped: boolean (optional)\n}",
-    "SetManagedRepositoryEnabledRequest": "{\n  enabled: boolean\n}",
+    "SetManagedRepositoryEnabledRequest": "{\n  enabled: boolean | null\n}",
     "SetWorkflowEnabledRequest": "{\n  enabled: boolean | null\n}",
     "SourceAccess": "{\n  provider: string\n  hostname: string\n}",
     "StartAttemptRequest": "{\n  lease_token: string\n  supervisor_pid: integer | null (optional)\n  process_identity: string (optional)\n  process_group_id: integer | null (optional)\n}",

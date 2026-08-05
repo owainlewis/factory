@@ -97,6 +97,10 @@ type listAttemptEventsResponse struct {
 	HasMore   bool                    `json:"has_more"`
 }
 
+type deleteTaskResponse struct {
+	Deleted bool `json:"deleted"`
+}
+
 func body(description string, schemas ...schemaRoot) bodyContract {
 	return bodyContract{description: description, schemas: schemas}
 }
@@ -171,7 +175,7 @@ var apiRouteDefinitions = []apiRouteDefinition{
 	route("Tasks", "listTasks", "GET", "/api/v1/tasks", "List retained task summaries.", body("none"), body("200 ListTasksResponse JSON", namedSchema("ListTasksResponse", listTasksResponse{})), "Query: limit 1..200 and opaque cursor; stable created-at/ID ordering", (*API).listTasks),
 	route("Tasks", "createTask", "POST", "/api/v1/tasks", "Create or replay a task.", body("CreateTaskRequest JSON", schema[protocol.CreateTaskRequest]()), body("200 or 201 TaskDetail JSON", schema[protocol.TaskDetail]()), "none", (*API).createTask),
 	route("Tasks", "getTask", "GET", "/api/v1/tasks/{task_id}", "Get task, execution, attempts, and resolved prompt.", body("none"), body("200 TaskDetail JSON", schema[protocol.TaskDetail]()), "none", (*API).getTask),
-	route("Tasks", "deleteTask", "DELETE", "/api/v1/tasks/{task_id}", "Delete eligible terminal task history.", body("empty JSON object or empty body"), body(`200 {deleted: true}`), "none", (*API).deleteTask),
+	route("Tasks", "deleteTask", "DELETE", "/api/v1/tasks/{task_id}", "Delete eligible terminal task history.", body("empty JSON object or empty body"), body("200 DeleteTaskResponse JSON", namedSchema("DeleteTaskResponse", deleteTaskResponse{})), "none", (*API).deleteTask),
 	route("Tasks", "cancelTask", "POST", "/api/v1/tasks/{task_id}/cancel", "Request task cancellation.", body("empty JSON object or empty body"), body("200 TaskDetail JSON", schema[protocol.TaskDetail]()), "none", (*API).cancelTask),
 	route("Executions", "retryExecution", "POST", "/api/v1/executions/{execution_id}/retry", "Retry a terminal execution.", body("empty JSON object or empty body"), body("200 TaskDetail JSON", schema[protocol.TaskDetail]()), "none", (*API).retryExecution),
 

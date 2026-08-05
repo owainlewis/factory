@@ -151,7 +151,7 @@ func TestHTTPManagedRepositoryCatalog(t *testing.T) {
 		"/api/v1/repositories/"+repository.ID+"/enabled",
 		"application/json",
 		"",
-		protocol.SetManagedRepositoryEnabledRequest{Enabled: false},
+		protocol.SetManagedRepositoryEnabledRequest{Enabled: new(bool)},
 	)
 	requireStatus(t, response, http.StatusOK)
 	disabled := decodeResponse[protocol.ManagedRepository](t, response)

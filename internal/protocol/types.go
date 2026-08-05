@@ -124,7 +124,7 @@ type CreateManagedRepositoryRequest struct {
 }
 
 type SetManagedRepositoryEnabledRequest struct {
-	Enabled bool `json:"enabled"`
+	Enabled *bool `json:"enabled"`
 }
 
 type Worker struct {

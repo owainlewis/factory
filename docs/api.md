@@ -84,7 +84,7 @@ Every error body has this shape:
 | `GET /api/v1/tasks` | listTasks: List retained task summaries. | none | 200 ListTasksResponse JSON | Query: limit 1..200 and opaque cursor; stable created-at/ID ordering | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/tasks` | createTask: Create or replay a task. | CreateTaskRequest JSON | 200 or 201 TaskDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `GET /api/v1/tasks/{task_id}` | getTask: Get task, execution, attempts, and resolved prompt. | none | 200 TaskDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
-| `DELETE /api/v1/tasks/{task_id}` | deleteTask: Delete eligible terminal task history. | empty JSON object or empty body | 200 {deleted: true} | none | ErrorBody: {error: {code: string, message: string}} |
+| `DELETE /api/v1/tasks/{task_id}` | deleteTask: Delete eligible terminal task history. | empty JSON object or empty body | 200 DeleteTaskResponse JSON | none | ErrorBody: {error: {code: string, message: string}} |
 | `POST /api/v1/tasks/{task_id}/cancel` | cancelTask: Request task cancellation. | empty JSON object or empty body | 200 TaskDetail JSON | none | ErrorBody: {error: {code: string, message: string}} |
 
 ## Executions
@@ -358,6 +358,14 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
   title: string
   summary: string
   instructions: string
+}
+```
+
+### DeleteTaskResponse
+
+```text
+{
+  deleted: boolean
 }
 ```
 
@@ -755,7 +763,7 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
 
 ```text
 {
-  enabled: boolean
+  enabled: boolean | null
 }
 ```
 

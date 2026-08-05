@@ -478,9 +478,7 @@ func (a *API) setManagedRepositoryEnabled(w http.ResponseWriter, r *http.Request
 	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
 		return
 	}
-	var input struct {
-		Enabled *bool `json:"enabled"`
-	}
+	var input protocol.SetManagedRepositoryEnabledRequest
 	if !decodeJSON(w, r, &input) {
 		return
 	}
@@ -571,7 +569,7 @@ func (a *API) deleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.logger.Info("task_history_deleted", "task_id", taskID)
-	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+	writeJSON(w, http.StatusOK, deleteTaskResponse{Deleted: true})
 }
 
 func (a *API) cancelTask(w http.ResponseWriter, r *http.Request) {
