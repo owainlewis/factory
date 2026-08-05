@@ -14,11 +14,12 @@ coordinate remediation and disclosure after the report is understood.
 
 Factory is under active development. Only the latest commit on `main` receives
 security fixes. The `go.mod` file records the minimum supported Go patch. Pull
-request CI scans that exact minimum. The weekly security workflow scans both the
-minimum and the latest available Go 1.25 patch, then opens a pull request updating
-`go.mod` and the matching documentation when a newer patch is available. The
-minimum supported toolchains are Go 1.25.12 on the 1.25 release line and Go 1.26.5
-on the 1.26 release line. Raise these minimums when a later Go security release
+request CI scans that exact minimum. The weekly security workflow scans the
+minimum and latest available Go 1.25 patch plus the minimum and latest Go 1.26
+patch, then opens a pull request updating `go.mod` and the matching documentation
+when a newer Go 1.25 patch is available. The minimum supported toolchains are Go
+1.25.12 on the 1.25 release line and Go 1.26.5 on the 1.26 release line. Raise
+these minimums when a later Go security release
 affects Factory.
 
 Pull requests run a pinned `govulncheck` scan and a scheduled workflow repeats
