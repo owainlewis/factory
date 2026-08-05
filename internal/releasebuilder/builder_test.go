@@ -144,6 +144,44 @@ func TestSPDXModelsVersionedGoReplacement(t *testing.T) {
 	}
 }
 
+func TestDownloadLockedModulesRejectsMissingChecksumWithoutChangingSource(t *testing.T) {
+	root := t.TempDir()
+	moduleFile := []byte("module example.com/release\n\ngo 1.25\n")
+	sumFile := []byte("example.com/dependency v1.0.0/go.mod h1:committed\n")
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), moduleFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.sum"), sumFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := func(_ context.Context, _ string, _ []string, _ string, arguments ...string) error {
+		for _, argument := range arguments {
+			const prefix = "-modfile="
+			if strings.HasPrefix(argument, prefix) {
+				path := strings.TrimPrefix(argument, prefix)
+				resolvedSum := strings.TrimSuffix(path, ".mod") + ".sum"
+				return os.WriteFile(resolvedSum, append(sumFile, []byte("example.com/dependency v1.0.0 h1:resolved\n")...), 0o600)
+			}
+		}
+		return nil
+	}
+	if err := downloadLockedModules(context.Background(), root, runner); err == nil || !strings.Contains(err.Error(), "does not fully lock") {
+		t.Fatalf("incomplete module lock error = %v", err)
+	}
+	for _, file := range []struct {
+		name string
+		want []byte
+	}{{"go.mod", moduleFile}, {"go.sum", sumFile}} {
+		body, err := os.ReadFile(filepath.Join(root, file.name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != string(file.want) {
+			t.Fatalf("%s changed to %q", file.name, body)
+		}
+	}
+}
+
 func TestProductionNPMInventoryIsComplete(t *testing.T) {
 	packages, err := listNPMPackages(filepath.Join("..", ".."))
 	if err != nil {

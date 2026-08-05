@@ -4,14 +4,20 @@ set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 temporary=$(mktemp -d)
-trap 'rm -rf "$temporary"' EXIT
+cleanup() {
+  chmod -R u+w "$temporary" 2>/dev/null || true
+  rm -rf "$temporary"
+}
+trap cleanup EXIT
 version=v0.0.0-test.local
 commit=$(git -C "$root" rev-parse HEAD)
 
-"$root/scripts/release.sh" "$version" "$commit" "$temporary/first"
+FACTORY_RELEASE_GOMODCACHE="$temporary/module-cache-first" \
+  "$root/scripts/release.sh" "$version" "$commit" "$temporary/first"
 GOOS=linux GOARCH=amd64 GOAMD64=v3 GOARM64=v9.5 \
   GODEBUG=installgoroot=all GOENV=/missing/go.env GOEXPERIMENT=none \
   GOFIPS140=latest GOFLAGS=-tags=ambient_release_tag GOWORK=/missing/go.work \
+  FACTORY_RELEASE_GOMODCACHE="$temporary/module-cache-second" \
   "$root/scripts/release.sh" "$version" "$commit" "$temporary/second"
 diff -r "$temporary/first" "$temporary/second"
 

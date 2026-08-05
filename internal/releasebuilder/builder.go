@@ -284,6 +284,9 @@ func gitSourceTime(ctx context.Context, root, commit string) (time.Time, error) 
 }
 
 func listModules(ctx context.Context, root string) ([]module, error) {
+	if err := downloadLockedModules(ctx, root, runCommand); err != nil {
+		return nil, err
+	}
 	command := exec.CommandContext(ctx, "go", "list", "-mod=readonly", "-m", "-json", "all")
 	command.Dir = root
 	command.Env = append(os.Environ(), releaseGoEnvironment()...)
@@ -322,8 +325,54 @@ func listModules(ctx context.Context, root string) ([]module, error) {
 	return modules, nil
 }
 
+type commandRunner func(context.Context, string, []string, string, ...string) error
+
+func downloadLockedModules(ctx context.Context, root string, run commandRunner) error {
+	moduleFile, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		return fmt.Errorf("read go.mod: %w", err)
+	}
+	sumFile, err := os.ReadFile(filepath.Join(root, "go.sum"))
+	if err != nil {
+		return fmt.Errorf("read go.sum: %w", err)
+	}
+
+	directory, err := os.MkdirTemp("", "factory-release-mod-")
+	if err != nil {
+		return fmt.Errorf("create temporary module files: %w", err)
+	}
+	defer os.RemoveAll(directory)
+	temporaryModule := filepath.Join(directory, "release.mod")
+	temporarySum := filepath.Join(directory, "release.sum")
+	if err := os.WriteFile(temporaryModule, moduleFile, 0o600); err != nil {
+		return fmt.Errorf("write temporary go.mod: %w", err)
+	}
+	if err := os.WriteFile(temporarySum, sumFile, 0o600); err != nil {
+		return fmt.Errorf("write temporary go.sum: %w", err)
+	}
+	if err := run(ctx, root, releaseGoEnvironment(), "go", "mod", "download", "-modfile="+temporaryModule, "all"); err != nil {
+		return err
+	}
+
+	resolvedModule, err := os.ReadFile(temporaryModule)
+	if err != nil {
+		return fmt.Errorf("read resolved temporary go.mod: %w", err)
+	}
+	resolvedSum, err := os.ReadFile(temporarySum)
+	if err != nil {
+		return fmt.Errorf("read resolved temporary go.sum: %w", err)
+	}
+	if !bytes.Equal(resolvedModule, moduleFile) || !bytes.Equal(resolvedSum, sumFile) {
+		return errors.New("go.mod or go.sum does not fully lock the release module graph; run go mod download all and commit the result")
+	}
+	return nil
+}
+
 func validateModuleReplacements(modules []module) error {
 	for _, item := range modules {
+		if item.Dir == "" {
+			return fmt.Errorf("module %s %s has no downloaded source directory", item.Path, item.Version)
+		}
 		if item.Replace == nil {
 			continue
 		}
@@ -731,6 +780,9 @@ func releaseGoEnvironment(overrides ...string) []string {
 		"GOFLAGS=",
 		"GOOS=",
 		"GOWORK=off",
+	}
+	if moduleCache := os.Getenv("FACTORY_RELEASE_GOMODCACHE"); moduleCache != "" {
+		environment = append(environment, "GOMODCACHE="+moduleCache)
 	}
 	return append(environment, overrides...)
 }
