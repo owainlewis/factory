@@ -13,16 +13,21 @@ cp "$repository_root/.github/ISSUE_TEMPLATE/bug_report.yml" \
   "$fixture/.github/ISSUE_TEMPLATE/bug_report.yml"
 cp "$repository_root/scripts/update-go-minimum.sh" "$fixture/scripts/update-go-minimum.sh"
 
-lower_output="$("$fixture/scripts/update-go-minimum.sh" go1.25.11)"
-grep -Fq "Refusing to lower Go minimum from 1.25.12 to 1.25.11" <<<"$lower_output"
-grep -qx 'go 1.25.12' "$fixture/go.mod"
+current="$(awk '$1 == "go" { print $2; exit }' "$fixture/go.mod")"
+current_patch="${current##*.}"
+lower="${current%.*}.$((10#$current_patch - 1))"
+higher="${current%.*}.$((10#$current_patch + 1))"
 
-"$fixture/scripts/update-go-minimum.sh" go1.25.12 >/dev/null
-grep -qx 'go 1.25.12' "$fixture/go.mod"
+lower_output="$("$fixture/scripts/update-go-minimum.sh" "go$lower")"
+grep -Fq "Refusing to lower Go minimum from $current to $lower" <<<"$lower_output"
+grep -qx "go $current" "$fixture/go.mod"
 
-"$fixture/scripts/update-go-minimum.sh" go1.25.13 >/dev/null
-grep -qx 'go 1.25.13' "$fixture/go.mod"
-if grep -R -Fq '1.25.12' \
+"$fixture/scripts/update-go-minimum.sh" "go$current" >/dev/null
+grep -qx "go $current" "$fixture/go.mod"
+
+"$fixture/scripts/update-go-minimum.sh" "go$higher" >/dev/null
+grep -qx "go $higher" "$fixture/go.mod"
+if grep -R -Fq "$current" \
   "$fixture/README.md" "$fixture/CONTRIBUTING.md" "$fixture/SECURITY.md" \
   "$fixture/docs/local.md" "$fixture/.github/ISSUE_TEMPLATE/bug_report.yml"; then
   echo "Go minimum updater left stale documentation" >&2
