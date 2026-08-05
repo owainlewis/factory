@@ -336,64 +336,18 @@ and becomes unhealthy when identity cannot be established.
 
 ## 6. Interfaces and data
 
-### Operator API
+### HTTP API
 
-```text
-GET    /healthz
-GET    /api/v1/metrics/summary?window=24h|7d|30d|all
-GET    /api/v1/workers
-GET    /api/v1/workers/{worker_id}
-GET    /api/v1/repositories
-POST   /api/v1/repositories
-GET    /api/v1/repositories/{repository_id}
-PUT    /api/v1/repositories/{repository_id}/enabled
-GET    /api/v1/workflows?title={title}&enabled={bool}&limit={1..200}&cursor={cursor}
-POST   /api/v1/workflows
-GET    /api/v1/workflows/{workflow_id}
-POST   /api/v1/workflows/{workflow_id}/revisions
-PUT    /api/v1/workflows/{workflow_id}/enabled
-GET    /api/v1/automations?limit={1..200}&cursor={cursor}
-POST   /api/v1/automations
-GET    /api/v1/automations/{automation_id}
-PUT    /api/v1/automations/{automation_id}
-PUT    /api/v1/automations/{automation_id}/enabled
-POST   /api/v1/automations/{automation_id}/test
-POST   /api/v1/automations/{automation_id}/check
-POST   /api/v1/automations/{automation_id}/run
-GET    /api/v1/automations/{automation_id}/occurrences?limit={1..200}&cursor={cursor}
-POST   /api/v1/migrations/legacy-poller/preview
-POST   /api/v1/migrations/legacy-poller/import
-GET    /api/v1/migrations/legacy-poller/active
-GET    /api/v1/migrations/legacy-poller/{migration_id}
-POST   /api/v1/migrations/legacy-poller/{migration_id}/finalize
-POST   /api/v1/occurrences/{occurrence_id}/resume
-POST   /api/v1/occurrences/{occurrence_id}/skip
-GET    /api/v1/tasks?limit={1..200}&cursor={cursor}
-POST   /api/v1/tasks
-GET    /api/v1/tasks/{task_id}
-DELETE /api/v1/tasks/{task_id}
-POST   /api/v1/tasks/{task_id}/cancel
-POST   /api/v1/executions/{execution_id}/retry
-GET    /api/v1/attempts/{attempt_id}/events?after={sequence}&limit={1..500}
-```
-
-Task deletion is limited to terminal history whose worktree disposition has
-been acknowledged. It refuses to delete history for a retained worktree.
-
-### Worker API
-
-```text
-PUT    /api/v1/workers/{worker_id}
-POST   /api/v1/workers/{worker_id}/claims
-GET    /api/v1/attempts/{attempt_id}
-POST   /api/v1/attempts/{attempt_id}/start
-PUT    /api/v1/attempts/{attempt_id}/heartbeat
-POST   /api/v1/attempts/{attempt_id}/events
-POST   /api/v1/attempts/{attempt_id}/complete
-```
+The router consumes the typed definitions in `api_contract.go`. The generated
+[HTTP API contract](docs/api.md) is the complete route, request, response,
+pagination, and error inventory. Its generated JSON field catalog changes when
+protocol structs change, and CI fails if the checked-in document drifts.
 
 Mutations require JSON and reject cross-origin browser requests. API requests
-are bounded by operation-specific byte limits.
+are bounded by operation-specific byte limits. Every API response uses
+`Cache-Control: no-store` because task prompts, results, events, and Automation
+details may be sensitive. Task deletion remains limited to terminal history
+whose worktree disposition has been acknowledged.
 
 ### Persistent model
 

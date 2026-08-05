@@ -54,6 +54,32 @@ just test-browser
 changes, rebuild it and commit the generated assets. An operator build must not
 run Node or npm.
 
+When adding or changing an HTTP route, update the route definition and its
+request, response, pagination, and error metadata together. Regenerate the
+[HTTP API contract](docs/api.md), then verify it:
+
+```sh
+just api-contract
+just api-contract-check
+```
+
+The router and generated inventory share one definition table. Go tests also
+snapshot every typed JSON request and response reference. The separate
+`docs/api-compat.json` baseline makes CI reject changes to existing routes or
+field inventories. After a compatible route or schema addition, ratchet the
+baseline. This refuses removals and mutations:
+
+```sh
+just api-contract-ratchet
+```
+
+If a reviewed change is intentionally breaking, use the explicit command and
+call it out in the pull request:
+
+```sh
+just api-contract-accept-breaking
+```
+
 ## Pull requests
 
 - Keep changes focused.

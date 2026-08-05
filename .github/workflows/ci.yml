@@ -48,6 +48,8 @@ jobs:
         run: just vet
       - name: Check worker-control-plane boundary
         run: just boundary
+      - name: Check HTTP API contract
+        run: just api-contract-check
       - name: Run Go server and worker tests
         run: just test
       - name: Install Chromium

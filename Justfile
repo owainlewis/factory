@@ -37,6 +37,46 @@ ui-check:
 test-browser:
     cd web && npm run test:browser
 
+# Regenerate the checked-in HTTP API contract from the live route table.
+api-contract:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    generated=$(mktemp)
+    trap 'rm -f "$generated"' EXIT
+    go run ./cmd/api-contract > "$generated"
+    chmod 0644 "$generated"
+    mv "$generated" docs/api.md
+
+# Record compatible route and schema additions; refuses removals and changes.
+api-contract-ratchet:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    generated=$(mktemp)
+    trap 'rm -f "$generated"' EXIT
+    go run ./cmd/api-contract -ratchet-compatibility docs/api-compat.json > "$generated"
+    chmod 0644 "$generated"
+    mv "$generated" docs/api-compat.json
+
+# Accept the current API as the new compatibility baseline after explicit review.
+api-contract-accept-breaking:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    generated=$(mktemp)
+    trap 'rm -f "$generated"' EXIT
+    go run ./cmd/api-contract -compatibility-baseline > "$generated"
+    chmod 0644 "$generated"
+    mv "$generated" docs/api-compat.json
+
+# Fail when the checked-in HTTP API contract has drifted from routing.
+api-contract-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    generated=$(mktemp)
+    trap 'rm -f "$generated"' EXIT
+    go run ./cmd/api-contract > "$generated"
+    diff -u docs/api.md "$generated"
+    go run ./cmd/api-contract -check-compatibility docs/api-compat.json
+
 # Report Go files that need formatting.
 format-check:
     @test -z "$(find cmd internal migrations web -path web/node_modules -prune -o -name '*.go' -exec gofmt -l {} +)"
@@ -62,4 +102,4 @@ test-launcher:
     ./scripts/test-run-local.sh
 
 # Run the normal local and CI checks, excluding the slower browser suite.
-check: format-check vet boundary test ui-check test-tooling test-launcher
+check: format-check vet boundary api-contract-check test ui-check test-tooling test-launcher

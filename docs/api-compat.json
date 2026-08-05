@@ -1,0 +1,557 @@
+{
+  "version": 1,
+  "routes": {
+    "DELETE /api/v1/tasks/{task_id}": {
+      "operation": "deleteTask",
+      "request": "empty JSON object or empty body",
+      "response": "200 {deleted: true}",
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/attempts/{attempt_id}": {
+      "operation": "getAttempt",
+      "request": "none",
+      "response": "200 Attempt JSON",
+      "response_schemas": [
+        "Attempt"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/attempts/{attempt_id}/events": {
+      "operation": "getEvents",
+      "request": "none",
+      "response": "200 {events: AttemptEvent[], next_after: integer, has_more: boolean}",
+      "response_schemas": [
+        "AttemptEvent"
+      ],
+      "pagination": "Query: after \u003e= -1 and limit 1..500; next page starts after next_after",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/automations": {
+      "operation": "listAutomations",
+      "request": "none",
+      "response": "200 {automations: Automation[], next_cursor: string|null}",
+      "response_schemas": [
+        "Automation"
+      ],
+      "pagination": "Query: limit 1..200 and opaque cursor; stable updated-at/ID ordering",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/automations/{automation_id}": {
+      "operation": "getAutomation",
+      "request": "none",
+      "response": "200 AutomationDetail JSON",
+      "response_schemas": [
+        "AutomationDetail"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/automations/{automation_id}/occurrences": {
+      "operation": "listAutomationOccurrences",
+      "request": "none",
+      "response": "200 {occurrences: AutomationOccurrence[], next_cursor: string|null}",
+      "response_schemas": [
+        "AutomationOccurrence"
+      ],
+      "pagination": "Query: limit 1..200 and opaque cursor; stable created-at/ID ordering",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/metrics/summary": {
+      "operation": "getMetrics",
+      "request": "none",
+      "response": "200 MetricsSummary JSON",
+      "response_schemas": [
+        "MetricsSummary"
+      ],
+      "pagination": "Query: window is 24h, 7d, 30d, or all; default 7d",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/migrations/legacy-poller/active": {
+      "operation": "activeLegacyPollerMigration",
+      "request": "none",
+      "response": "200 ActiveLegacyPollerMigrationResponse JSON",
+      "response_schemas": [
+        "ActiveLegacyPollerMigrationResponse"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/migrations/legacy-poller/{migration_id}": {
+      "operation": "getLegacyPollerMigration",
+      "request": "none",
+      "response": "200 LegacyPollerMigration JSON",
+      "response_schemas": [
+        "LegacyPollerMigration"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/repositories": {
+      "operation": "listManagedRepositories",
+      "request": "none",
+      "response": "200 {repositories: ManagedRepository[]}",
+      "response_schemas": [
+        "ManagedRepository"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/repositories/{repository_id}": {
+      "operation": "getManagedRepository",
+      "request": "none",
+      "response": "200 ManagedRepository JSON",
+      "response_schemas": [
+        "ManagedRepository"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/repositories/{repository_id}/readiness": {
+      "operation": "getManagedRepositoryReadiness",
+      "request": "none",
+      "response": "200 ManagedRepositoryReadiness JSON",
+      "response_schemas": [
+        "ManagedRepositoryReadiness"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/tasks": {
+      "operation": "listTasks",
+      "request": "none",
+      "response": "200 {tasks: Task[], next_cursor: string|null}",
+      "response_schemas": [
+        "Task"
+      ],
+      "pagination": "Query: limit 1..200 and opaque cursor; stable created-at/ID ordering",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/tasks/{task_id}": {
+      "operation": "getTask",
+      "request": "none",
+      "response": "200 TaskDetail JSON",
+      "response_schemas": [
+        "TaskDetail"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/workers": {
+      "operation": "listWorkers",
+      "request": "none",
+      "response": "200 {workers: Worker[]}",
+      "response_schemas": [
+        "Worker"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/workers/{worker_id}": {
+      "operation": "getWorker",
+      "request": "none",
+      "response": "200 Worker JSON",
+      "response_schemas": [
+        "Worker"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/workflows": {
+      "operation": "listWorkflows",
+      "request": "none",
+      "response": "200 {workflows: Workflow[], next_cursor: string|null}",
+      "response_schemas": [
+        "Workflow"
+      ],
+      "pagination": "Query: title, enabled, limit 1..200, opaque cursor; stable updated-at/ID ordering",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /api/v1/workflows/{workflow_id}": {
+      "operation": "getWorkflow",
+      "request": "none",
+      "response": "200 WorkflowDetail JSON",
+      "response_schemas": [
+        "WorkflowDetail"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "GET /healthz": {
+      "operation": "health",
+      "request": "none",
+      "response": "200 {status: \"ok\"}",
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/attempts/{attempt_id}/complete": {
+      "operation": "completeAttempt",
+      "request": "CompleteAttemptRequest JSON",
+      "request_schemas": [
+        "CompleteAttemptRequest"
+      ],
+      "response": "200 Attempt JSON",
+      "response_schemas": [
+        "Attempt"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/attempts/{attempt_id}/events": {
+      "operation": "appendEvents",
+      "request": "EventBatchRequest JSON",
+      "request_schemas": [
+        "EventBatchRequest"
+      ],
+      "response": "204 with no body",
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/attempts/{attempt_id}/start": {
+      "operation": "startAttempt",
+      "request": "StartAttemptRequest JSON",
+      "request_schemas": [
+        "StartAttemptRequest"
+      ],
+      "response": "200 Attempt JSON",
+      "response_schemas": [
+        "Attempt"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/automations": {
+      "operation": "createAutomation",
+      "request": "CreateAutomationRequest JSON",
+      "request_schemas": [
+        "CreateAutomationRequest"
+      ],
+      "response": "200 or 201 AutomationDetail JSON",
+      "response_schemas": [
+        "AutomationDetail"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/automations/{automation_id}/check": {
+      "operation": "checkAutomation",
+      "request": "empty JSON object",
+      "response": "202 AutomationDetail JSON",
+      "response_schemas": [
+        "AutomationDetail"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/automations/{automation_id}/run": {
+      "operation": "runAutomation",
+      "request": "RunAutomationRequest JSON",
+      "request_schemas": [
+        "RunAutomationRequest"
+      ],
+      "response": "202 AutomationDetail JSON",
+      "response_schemas": [
+        "AutomationDetail"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/automations/{automation_id}/test": {
+      "operation": "testAutomation",
+      "request": "empty JSON object",
+      "response": "200 TestAutomationResult JSON",
+      "response_schemas": [
+        "TestAutomationResult"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/executions/{execution_id}/retry": {
+      "operation": "retryExecution",
+      "request": "empty JSON object or empty body",
+      "response": "200 TaskDetail JSON",
+      "response_schemas": [
+        "TaskDetail"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/migrations/legacy-poller/import": {
+      "operation": "importLegacyPoller",
+      "request": "ImportLegacyPollerRequest JSON",
+      "request_schemas": [
+        "ImportLegacyPollerRequest"
+      ],
+      "response": "200 LegacyPollerMigration JSON",
+      "response_schemas": [
+        "LegacyPollerMigration"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/migrations/legacy-poller/preview": {
+      "operation": "previewLegacyPoller",
+      "request": "PreviewLegacyPollerRequest JSON",
+      "request_schemas": [
+        "PreviewLegacyPollerRequest"
+      ],
+      "response": "201 LegacyPollerMigration JSON",
+      "response_schemas": [
+        "LegacyPollerMigration"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/migrations/legacy-poller/{migration_id}/finalize": {
+      "operation": "finalizeLegacyPoller",
+      "request": "FinalizeLegacyPollerRequest JSON",
+      "request_schemas": [
+        "FinalizeLegacyPollerRequest"
+      ],
+      "response": "200 LegacyPollerMigration JSON",
+      "response_schemas": [
+        "LegacyPollerMigration"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/occurrences/{occurrence_id}/resume": {
+      "operation": "resumeLegacyPollerOccurrence",
+      "request": "empty JSON object",
+      "response": "200 AutomationOccurrence JSON",
+      "response_schemas": [
+        "AutomationOccurrence"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/occurrences/{occurrence_id}/skip": {
+      "operation": "skipLegacyPollerOccurrence",
+      "request": "empty JSON object",
+      "response": "200 AutomationOccurrence JSON",
+      "response_schemas": [
+        "AutomationOccurrence"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/repositories": {
+      "operation": "createManagedRepository",
+      "request": "CreateManagedRepositoryRequest JSON",
+      "request_schemas": [
+        "CreateManagedRepositoryRequest"
+      ],
+      "response": "200 or 201 ManagedRepository JSON",
+      "response_schemas": [
+        "ManagedRepository"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/tasks": {
+      "operation": "createTask",
+      "request": "CreateTaskRequest JSON",
+      "request_schemas": [
+        "CreateTaskRequest"
+      ],
+      "response": "200 or 201 TaskDetail JSON",
+      "response_schemas": [
+        "TaskDetail"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/tasks/{task_id}/cancel": {
+      "operation": "cancelTask",
+      "request": "empty JSON object or empty body",
+      "response": "200 TaskDetail JSON",
+      "response_schemas": [
+        "TaskDetail"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/workers/{worker_id}/claims": {
+      "operation": "claim",
+      "request": "ClaimRequest JSON",
+      "request_schemas": [
+        "ClaimRequest"
+      ],
+      "response": "200 Claim JSON or 204 with no body",
+      "response_schemas": [
+        "Claim"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/workflows": {
+      "operation": "createWorkflow",
+      "request": "CreateWorkflowRequest JSON",
+      "request_schemas": [
+        "CreateWorkflowRequest"
+      ],
+      "response": "200 or 201 WorkflowDetail JSON",
+      "response_schemas": [
+        "WorkflowDetail"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "POST /api/v1/workflows/{workflow_id}/revisions": {
+      "operation": "createWorkflowRevision",
+      "request": "CreateWorkflowRevisionRequest JSON",
+      "request_schemas": [
+        "CreateWorkflowRevisionRequest"
+      ],
+      "response": "200 or 201 WorkflowDetail JSON",
+      "response_schemas": [
+        "WorkflowDetail"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "PUT /api/v1/attempts/{attempt_id}/heartbeat": {
+      "operation": "heartbeat",
+      "request": "LeaseRequest JSON",
+      "request_schemas": [
+        "LeaseRequest"
+      ],
+      "response": "200 HeartbeatResponse JSON",
+      "response_schemas": [
+        "HeartbeatResponse"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "PUT /api/v1/automations/{automation_id}": {
+      "operation": "updateAutomation",
+      "request": "UpdateAutomationRequest JSON",
+      "request_schemas": [
+        "UpdateAutomationRequest"
+      ],
+      "response": "200 AutomationDetail JSON",
+      "response_schemas": [
+        "AutomationDetail"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "PUT /api/v1/automations/{automation_id}/enabled": {
+      "operation": "setAutomationEnabled",
+      "request": "SetAutomationEnabledRequest JSON",
+      "request_schemas": [
+        "SetAutomationEnabledRequest"
+      ],
+      "response": "200 AutomationDetail JSON",
+      "response_schemas": [
+        "AutomationDetail"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "PUT /api/v1/repositories/{repository_id}/enabled": {
+      "operation": "setManagedRepositoryEnabled",
+      "request": "SetManagedRepositoryEnabledRequest JSON",
+      "request_schemas": [
+        "SetManagedRepositoryEnabledRequest"
+      ],
+      "response": "200 ManagedRepository JSON",
+      "response_schemas": [
+        "ManagedRepository"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "PUT /api/v1/workers/{worker_id}": {
+      "operation": "registerWorker",
+      "request": "WorkerRegistration JSON; legacy codex_version is accepted only without runtime fields",
+      "request_schemas": [
+        "WorkerRegistration"
+      ],
+      "response": "200 Worker JSON; legacy requests receive LegacyWorkerResponse JSON",
+      "response_schemas": [
+        "Worker",
+        "LegacyWorkerResponse"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    },
+    "PUT /api/v1/workflows/{workflow_id}/enabled": {
+      "operation": "setWorkflowEnabled",
+      "request": "SetWorkflowEnabledRequest JSON",
+      "request_schemas": [
+        "SetWorkflowEnabledRequest"
+      ],
+      "response": "200 WorkflowDetail JSON",
+      "response_schemas": [
+        "WorkflowDetail"
+      ],
+      "pagination": "none",
+      "errors": "ErrorBody: {error: {code: string, message: string}}"
+    }
+  },
+  "schemas": {
+    "APIError": "{\n  code: string\n  message: string\n}",
+    "ActiveLegacyPollerMigrationResponse": "{\n  migration: LegacyPollerMigration | null\n}",
+    "Attempt": "{\n  id: string\n  execution_id: string\n  worker_id: string\n  attempt_number: integer\n  state: string\n  lease_expires_at: string (RFC3339 timestamp)\n  supervisor_pid: integer | null (optional)\n  process_identity: string (optional)\n  process_group_id: integer | null (optional)\n  result: string (optional)\n  error: string (optional)\n  started_at: string (RFC3339 timestamp) | null (optional)\n  completed_at: string (RFC3339 timestamp) | null (optional)\n  created_at: string (RFC3339 timestamp)\n}",
+    "AttemptEvent": "{\n  sequence: integer\n  kind: string\n  payload: any JSON value\n  server_time: string (RFC3339 timestamp) (optional)\n}",
+    "Automation": "{\n  id: string\n  title: string\n  workflow_id: string\n  workflow_title: string\n  workflow_revision: integer\n  repository_id: string\n  repository_identity: string\n  context: string\n  timeout_seconds: integer\n  enabled: boolean\n  version: integer\n  trigger: GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger\n  health: AutomationHealth\n  last_checked_at: string (RFC3339 timestamp) | null (optional)\n  next_check_at: string (RFC3339 timestamp) | null (optional)\n  next_due_at: string (RFC3339 timestamp) | null (optional)\n  matched_count: integer\n  skipped_count: integer\n  dispatched_count: integer\n  latest_task: AutomationTaskSummary | null (optional)\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
+    "AutomationDetail": "{\n  automation: Automation\n  occurrences: AutomationOccurrence[]\n}",
+    "AutomationHealth": "{\n  status: string\n  code: string (optional)\n  message: string (optional)\n}",
+    "AutomationMatch": "{\n  number: integer\n  title: string\n  url: string\n  state: string\n  labels: string[]\n  is_draft: boolean | null (optional)\n  base_branch: string (optional)\n  head_commit: string (optional)\n}",
+    "AutomationOccurrence": "{\n  id: string\n  automation_id: string\n  automation_version: integer\n  state: string\n  issue_number: integer (optional)\n  issue_url: string (optional)\n  issue_title: string (optional)\n  observed_state: string (optional)\n  observed_labels: string[] (optional)\n  pull_request_number: integer (optional)\n  pull_request_url: string (optional)\n  pull_request_title: string (optional)\n  observed_draft: boolean | null (optional)\n  observed_base_branch: string (optional)\n  observed_head_commit: string (optional)\n  kind: string (optional)\n  scheduled_at: string (RFC3339 timestamp) | null (optional)\n  run_request_key: string (optional)\n  cron: string (optional)\n  timezone: string (optional)\n  task_request_key: string\n  task: AutomationTaskSummary | null (optional)\n  task_id_snapshot: string (optional)\n  diagnostic: string (optional)\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
+    "AutomationTaskSummary": "{\n  id: string\n  title: string\n  state: string\n}",
+    "AutomationTrigger": "GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger",
+    "Claim": "{\n  attempt: Attempt\n  execution: Execution\n  task: Task\n  repository: Repository\n}",
+    "ClaimRequest": "{\n  request_id: string\n  lease_token: string\n}",
+    "CompleteAttemptRequest": "{\n  lease_token: string\n  state: string\n  result: string (optional)\n  error: string (optional)\n}",
+    "CreateAutomationRequest": "{\n  request_key: string\n  title: string\n  workflow_id: string\n  repository_id: string\n  context: string\n  timeout_seconds: integer\n  trigger: GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger\n}",
+    "CreateManagedRepositoryRequest": "{\n  remote_identity: string\n}",
+    "CreateTaskRequest": "{\n  request_key: string\n  title: string\n  description: string (optional)\n  context: string (optional)\n  worker_id: string (optional)\n  repository_id: string (optional)\n  route: TaskRoute | null (optional)\n  timeout_seconds: integer\n  workflow_revision_id: string (optional)\n}",
+    "CreateWorkflowRequest": "{\n  request_key: string\n  title: string\n  summary: string\n  instructions: string\n}",
+    "CreateWorkflowRevisionRequest": "{\n  request_key: string\n  expected_revision_id: string\n  title: string\n  summary: string\n  instructions: string\n}",
+    "ErrorBody": "{\n  error: APIError\n}",
+    "EventBatchRequest": "{\n  lease_token: string\n  events: AttemptEvent[]\n}",
+    "Execution": "{\n  id: string\n  task_id: string\n  assigned_worker_id: string\n  required_runtime: string\n  state: string\n  cancellation_requested: boolean\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
+    "FinalizeLegacyPollerRequest": "{\n  config_path: string (optional)\n  data_home: string (optional)\n  working_directory: string (optional)\n  confirm_stopped: boolean\n  migration_id: string\n  snapshot_digest: string\n}",
+    "GitHubIssueTrigger": "{\n  type: string\n  state: string\n  required_labels: string[]\n  poll_interval_seconds: integer\n}",
+    "GitHubPullRequestTrigger": "{\n  type: string\n  state: string\n  include_drafts: boolean\n  required_labels: string[]\n  base_branches: string[]\n  poll_interval_seconds: integer\n}",
+    "HeartbeatResponse": "{\n  lease_expires_at: string (RFC3339 timestamp)\n  cancellation_requested: boolean\n}",
+    "ImportLegacyPollerRequest": "{\n  config_path: string (optional)\n  data_home: string (optional)\n  working_directory: string (optional)\n  confirm_stopped: boolean\n  migration_id: string\n  snapshot_digest: string\n  mappings: LegacyPollerQueueMapping[]\n}",
+    "LeaseRequest": "{\n  lease_token: string\n}",
+    "LegacyPollerCounts": "{\n  queues: integer\n  supported_queues: integer\n  unsupported_queues: integer\n  pending_observations: integer\n  submitted_observations: integer\n}",
+    "LegacyPollerMigration": "{\n  id: string\n  snapshot_digest: string\n  status: string\n  config_path: string\n  data_home: string\n  working_directory: string\n  data_directory: string\n  ledger_path: string\n  archive_root: string\n  archive_path: string (optional)\n  counts: LegacyPollerCounts\n  queues: LegacyPollerQueue[]\n  automations: Automation[]\n  occurrences: AutomationOccurrence[]\n  errors: string[]\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
+    "LegacyPollerQueue": "{\n  queue_id: string\n  name: string\n  source: string\n  project: string\n  state: string\n  required_labels: string[]\n  poll_interval_seconds: integer\n  timeout_seconds: integer\n  repository_id: string (optional)\n  repository_identity: string (optional)\n  workflow_title: string\n  automation_title: string\n  pending_observations: integer\n  submitted_observations: integer\n  supported: boolean\n  blocking: boolean\n  errors: string[]\n}",
+    "LegacyPollerQueueMapping": "{\n  queue_id: string\n  workflow_title: string\n  automation_title: string\n}",
+    "LegacyPollerSelection": "{\n  config_path: string (optional)\n  data_home: string (optional)\n  working_directory: string (optional)\n  confirm_stopped: boolean\n}",
+    "LegacyWorkerResponse": "{\n  id: string\n  name: string\n  worker_version: string\n  codex_version: string\n  capacity: integer\n  active_count: integer\n  health: string\n  online: boolean\n  repositories: Repository[]\n  retained_worktrees: RetainedWorktree[]\n  current_task_title: string (optional)\n  registered_at: string (RFC3339 timestamp)\n  last_heartbeat: string (RFC3339 timestamp)\n}",
+    "ManagedRepository": "{\n  id: string\n  remote_identity: string\n  enabled: boolean\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
+    "ManagedRepositoryReadiness": "{\n  routing_ready: boolean\n  workers: ManagedRepositoryWorkerReadiness[]\n}",
+    "ManagedRepositoryWorkerReadiness": "{\n  id: string\n  name: string\n  cached: boolean\n  advertised: boolean\n  ready: boolean\n  reason: string\n}",
+    "MetricsSummary": "{\n  window: string\n  generated_at: string (RFC3339 timestamp)\n  executions_created: integer\n  executions_completed: integer\n  succeeded: integer\n  failed: integer\n  cancelled: integer\n  queued: integer\n  running: integer\n  success_rate: number | null\n  retry_rate: number | null\n  median_cycle_time_seconds: number | null\n  workers_online: integer\n  workers_total: integer\n  weekly_limit: WeeklyLimit | null (optional)\n}",
+    "PreviewLegacyPollerRequest": "{\n  config_path: string (optional)\n  data_home: string (optional)\n  working_directory: string (optional)\n  confirm_stopped: boolean\n}",
+    "Repository": "{\n  id: string\n  key: string\n  remote_identity: string\n  retained_count: integer\n}",
+    "RepositoryRegistration": "{\n  key: string\n  remote_identity: string\n  retained_count: integer\n}",
+    "RetainedWorktree": "{\n  attempt_id: string\n  repository_id: string\n  path: string\n  reason: string\n  cleanup_command: string\n}",
+    "RunAutomationRequest": "{\n  request_key: string\n}",
+    "ScheduleTrigger": "{\n  type: string\n  cron: string\n  timezone: string\n}",
+    "SetAutomationEnabledRequest": "{\n  enabled: boolean | null\n  confirm_legacy_poller_stopped: boolean (optional)\n}",
+    "SetManagedRepositoryEnabledRequest": "{\n  enabled: boolean\n}",
+    "SetWorkflowEnabledRequest": "{\n  enabled: boolean | null\n}",
+    "SourceAccess": "{\n  provider: string\n  hostname: string\n}",
+    "StartAttemptRequest": "{\n  lease_token: string\n  supervisor_pid: integer | null (optional)\n  process_identity: string (optional)\n  process_group_id: integer | null (optional)\n}",
+    "Task": "{\n  id: string\n  request_key: string\n  title: string\n  description: string (optional)\n  worker_id: string\n  repository_id: string\n  timeout_seconds: integer\n  state: string\n  created_at: string (RFC3339 timestamp)\n}",
+    "TaskDetail": "{\n  task: Task\n  context: string\n  execution: Execution\n  repository: Repository\n  repository_available: boolean\n  attempts: Attempt[]\n  workflow: TaskWorkflowSnapshot | null (optional)\n  resolved_prompt: string\n}",
+    "TaskRoute": "{\n  repository_remote_identity: string\n  source_access: SourceAccess\n}",
+    "TaskWorkflowSnapshot": "{\n  id: string\n  revision_id: string\n  title: string\n  revision_number: integer\n}",
+    "TestAutomationResult": "{\n  matches: AutomationMatch[]\n  next_due_at: string (RFC3339 timestamp) | null (optional)\n}",
+    "UpdateAutomationRequest": "{\n  expected_version: integer\n  title: string\n  workflow_id: string\n  context: string\n  timeout_seconds: integer\n  trigger: GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger\n}",
+    "WeeklyLimit": "{\n  used_percent: integer\n  resets_at: string (RFC3339 timestamp)\n}",
+    "Worker": "{\n  id: string\n  name: string\n  worker_version: string\n  runtime: string\n  runtime_version: string\n  capacity: integer\n  active_count: integer\n  health: string\n  online: boolean\n  repositories: Repository[]\n  source_access: SourceAccess[] (optional)\n  accepts_managed_repositories: boolean (optional)\n  repository_cache_count: integer (optional)\n  retained_worktrees: RetainedWorktree[]\n  current_task_title: string (optional)\n  registered_at: string (RFC3339 timestamp)\n  last_heartbeat: string (RFC3339 timestamp)\n}",
+    "WorkerRegistration": "{\n  name: string\n  worker_version: string\n  runtime: string\n  runtime_version: string\n  capacity: integer\n  active_count: integer\n  health: string\n  repositories: RepositoryRegistration[]\n  source_access: SourceAccess[] (optional)\n  accepts_managed_repositories: boolean (optional)\n  managed_repository_ids: string[] (optional)\n  retained_worktrees: RetainedWorktree[]\n  capacity_handoff_version: integer (optional)\n  disposed_attempt_ids: string[] (optional)\n  weekly_limit: WeeklyLimit | null (optional)\n}",
+    "Workflow": "{\n  id: string\n  enabled: boolean\n  current_revision: WorkflowRevision\n  created_at: string (RFC3339 timestamp)\n  updated_at: string (RFC3339 timestamp)\n}",
+    "WorkflowDetail": "{\n  workflow: Workflow\n  revisions: WorkflowRevision[]\n}",
+    "WorkflowRevision": "{\n  id: string\n  workflow_id: string\n  revision_number: integer\n  title: string\n  summary: string\n  instructions: string (optional)\n  created_at: string (RFC3339 timestamp)\n}"
+  }
+}

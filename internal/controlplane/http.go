@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -71,51 +72,55 @@ func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *Au
 	}
 	api := &API{store: store, logger: logger, automations: automations}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", api.health)
-	mux.HandleFunc("PUT /api/v1/workers/{worker_id}", api.registerWorker)
-	mux.HandleFunc("POST /api/v1/workers/{worker_id}/claims", api.claim)
-	mux.HandleFunc("GET /api/v1/workers", api.listWorkers)
-	mux.HandleFunc("GET /api/v1/workers/{worker_id}", api.getWorker)
-	mux.HandleFunc("GET /api/v1/repositories", api.listManagedRepositories)
-	mux.HandleFunc("POST /api/v1/repositories", api.createManagedRepository)
-	mux.HandleFunc("GET /api/v1/repositories/{repository_id}", api.getManagedRepository)
-	mux.HandleFunc("GET /api/v1/repositories/{repository_id}/readiness", api.getManagedRepositoryReadiness)
-	mux.HandleFunc("PUT /api/v1/repositories/{repository_id}/enabled", api.setManagedRepositoryEnabled)
-	mux.HandleFunc("GET /api/v1/workflows", api.listWorkflows)
-	mux.HandleFunc("POST /api/v1/workflows", api.createWorkflow)
-	mux.HandleFunc("GET /api/v1/workflows/{workflow_id}", api.getWorkflow)
-	mux.HandleFunc("POST /api/v1/workflows/{workflow_id}/revisions", api.createWorkflowRevision)
-	mux.HandleFunc("PUT /api/v1/workflows/{workflow_id}/enabled", api.setWorkflowEnabled)
-	mux.HandleFunc("GET /api/v1/automations", api.listAutomations)
-	mux.HandleFunc("POST /api/v1/automations", api.createAutomation)
-	mux.HandleFunc("GET /api/v1/automations/{automation_id}", api.getAutomation)
-	mux.HandleFunc("PUT /api/v1/automations/{automation_id}", api.updateAutomation)
-	mux.HandleFunc("PUT /api/v1/automations/{automation_id}/enabled", api.setAutomationEnabled)
-	mux.HandleFunc("POST /api/v1/automations/{automation_id}/test", api.testAutomation)
-	mux.HandleFunc("POST /api/v1/automations/{automation_id}/check", api.checkAutomation)
-	mux.HandleFunc("POST /api/v1/automations/{automation_id}/run", api.runAutomation)
-	mux.HandleFunc("GET /api/v1/automations/{automation_id}/occurrences", api.listAutomationOccurrences)
-	mux.HandleFunc("POST /api/v1/migrations/legacy-poller/preview", api.previewLegacyPoller)
-	mux.HandleFunc("POST /api/v1/migrations/legacy-poller/import", api.importLegacyPoller)
-	mux.HandleFunc("GET /api/v1/migrations/legacy-poller/active", api.activeLegacyPollerMigration)
-	mux.HandleFunc("GET /api/v1/migrations/legacy-poller/{migration_id}", api.getLegacyPollerMigration)
-	mux.HandleFunc("POST /api/v1/migrations/legacy-poller/{migration_id}/finalize", api.finalizeLegacyPoller)
-	mux.HandleFunc("POST /api/v1/occurrences/{occurrence_id}/resume", api.resumeLegacyPollerOccurrence)
-	mux.HandleFunc("POST /api/v1/occurrences/{occurrence_id}/skip", api.skipLegacyPollerOccurrence)
-	mux.HandleFunc("GET /api/v1/metrics/summary", api.getMetrics)
-	mux.HandleFunc("GET /api/v1/tasks", api.listTasks)
-	mux.HandleFunc("POST /api/v1/tasks", api.createTask)
-	mux.HandleFunc("GET /api/v1/tasks/{task_id}", api.getTask)
-	mux.HandleFunc("DELETE /api/v1/tasks/{task_id}", api.deleteTask)
-	mux.HandleFunc("POST /api/v1/tasks/{task_id}/cancel", api.cancelTask)
-	mux.HandleFunc("POST /api/v1/executions/{execution_id}/retry", api.retryExecution)
-	mux.HandleFunc("GET /api/v1/attempts/{attempt_id}", api.getAttempt)
-	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/start", api.startAttempt)
-	mux.HandleFunc("PUT /api/v1/attempts/{attempt_id}/heartbeat", api.heartbeat)
-	mux.HandleFunc("GET /api/v1/attempts/{attempt_id}/events", api.getEvents)
-	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/events", api.appendEvents)
-	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/complete", api.completeAttempt)
+	for _, route := range apiRouteDefinitions {
+		route := route
+		mux.HandleFunc(route.Method+" "+route.Path, func(w http.ResponseWriter, r *http.Request) {
+			route.Handler(api, w, r)
+		})
+	}
+	mux.HandleFunc("/api", api.apiRouteFallback)
+	mux.HandleFunc("/api/", api.apiRouteFallback)
 	return api.requestLog(mux)
+}
+
+func (a *API) apiRouteFallback(w http.ResponseWriter, r *http.Request) {
+	allowed := make([]string, 0, 1)
+	for _, route := range apiRouteDefinitions {
+		if strings.HasPrefix(route.Path, "/api/") && contractPathMatches(route.Path, r.URL.Path) {
+			allowed = append(allowed, route.Method)
+			if route.Method == http.MethodGet {
+				allowed = append(allowed, http.MethodHead)
+			}
+		}
+	}
+	if len(allowed) > 0 {
+		slices.Sort(allowed)
+		w.Header().Set("Allow", strings.Join(allowed, ", "))
+		writeError(w, &ServiceError{Code: "method_not_allowed", Message: "method is not allowed for this API route", Status: http.StatusMethodNotAllowed})
+		return
+	}
+	writeError(w, ErrNotFound)
+}
+
+func contractPathMatches(pattern, path string) bool {
+	patternParts := strings.Split(strings.TrimPrefix(pattern, "/"), "/")
+	pathParts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(patternParts) != len(pathParts) {
+		return false
+	}
+	for index := range patternParts {
+		part := patternParts[index]
+		if strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}") {
+			if pathParts[index] == "" {
+				return false
+			}
+			continue
+		}
+		if part != pathParts[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *API) listWorkflows(w http.ResponseWriter, r *http.Request) {
@@ -300,6 +305,9 @@ func (w *responseRecorder) Write(body []byte) (int, error) {
 
 func (a *API) requestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		requestID, err := newID()
 		if err != nil {
 			requestID = "unavailable"
@@ -870,6 +878,7 @@ func writeError(w http.ResponseWriter, err error) {
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(body); err != nil {
