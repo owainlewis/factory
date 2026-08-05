@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/owainlewis/factory/internal/protocol"
+	"github.com/owainlewis/factory/migrations"
 )
 
 func TestBackupAndRestorePreserveDurableControlPlaneState(t *testing.T) {
@@ -201,7 +202,16 @@ func TestRestoreRejectsForgedLedgerAndSiblingWAL(t *testing.T) {
 	if _, err := database.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
-	for version := 1; version <= 15; version++ {
+	entries, err := migrations.Files.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		version++
 		if _, err := database.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)`, version); err != nil {
 			t.Fatal(err)
 		}
