@@ -11,7 +11,7 @@ Report vulnerabilities through [SECURITY.md](SECURITY.md), not a public issue.
 
 Install:
 
-- Go 1.25 or newer
+- Go 1.25.12 or newer on the 1.25 release line, or Go 1.26.5 or newer
 - Git
 - just
 - Node.js 22 and npm when changing the UI
@@ -37,6 +37,7 @@ Run backend, tooling, and launcher checks:
 ```sh
 just format-check
 just vet
+just vuln
 just boundary
 just test
 just test-tooling
