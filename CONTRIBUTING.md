@@ -54,6 +54,12 @@ just test-browser
 changes, rebuild it and commit the generated assets. An operator build must not
 run Node or npm.
 
+The release inventory treats every non-development package in
+`web/package-lock.json` as shipped code. When that set changes, update the
+matching license mapping and committed license text under `third_party/npm`,
+then run `just test-release`. The check fails if a production package is
+missing or if the mapping contains stale entries.
+
 ## Pull requests
 
 - Keep changes focused.

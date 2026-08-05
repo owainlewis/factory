@@ -61,5 +61,13 @@ test-tooling:
 test-launcher:
     ./scripts/test-run-local.sh
 
+# Build a tagged release set from the current checkout.
+release version commit output="dist":
+    ./scripts/release.sh "{{version}}" "{{commit}}" "{{output}}"
+
+# Rebuild twice and verify every release target and native version output.
+test-release:
+    ./scripts/test-release.sh
+
 # Run the normal local and CI checks, excluding the slower browser suite.
 check: format-check vet boundary test ui-check test-tooling test-launcher

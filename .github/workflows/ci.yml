@@ -40,6 +40,8 @@ jobs:
         run: just test-tooling
       - name: Build Go binaries
         run: just build
+      - name: Test reproducible release artifacts
+        run: just test-release
       - name: Test local startup workflow
         run: just test-launcher
       - name: Check Go formatting

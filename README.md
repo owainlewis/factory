@@ -68,7 +68,9 @@ FACTORY_WORKER_CONFIG=~/.factory/claude-worker.toml \
 ```
 
 See the [local guide](docs/local.md) for a complete setup and the
-[worker guide](docs/worker.md) for runtime and worktree behavior.
+[worker guide](docs/worker.md) for runtime and worktree behavior. Tagged binary
+installation, upgrades, compatibility, rollback, and release verification are
+covered by the [release guide](docs/release.md).
 
 ## Architecture
 

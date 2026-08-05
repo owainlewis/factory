@@ -14,12 +14,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/owainlewis/factory/internal/buildinfo"
 	"github.com/owainlewis/factory/internal/controlplane"
 	"github.com/owainlewis/factory/internal/statepath"
 	factoryweb "github.com/owainlewis/factory/web"
 )
 
 func main() {
+	if buildinfo.Requested(os.Args[1:]) {
+		fmt.Fprintln(os.Stdout, buildinfo.String("factory-server"))
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "factory-server:", err)
 		os.Exit(1)
