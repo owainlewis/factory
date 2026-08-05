@@ -125,10 +125,14 @@ additional worker directly:
 
 ## Delegate a task
 
-The current manual delegation screen lists optional legacy checkouts advertised
-by workers. Add a `[repositories.<key>]` entry when you need that path. Cattle
-workers with no static checkout receive centrally routed work from typed
-Automations and API task creation.
+The manual delegation screen lists both optional legacy checkouts advertised by
+the selected worker and every repository in the central catalog. An enabled
+central repository is selectable when that worker is online, healthy, reports
+the required GitHub access, and can acquire managed repositories. Factory
+reserves it for that worker when the task is created. Repositories that are
+disabled or unavailable remain visible with the reason. Add a
+`[repositories.<key>]` entry only when delegation must use an existing local
+checkout.
 
 In the UI:
 

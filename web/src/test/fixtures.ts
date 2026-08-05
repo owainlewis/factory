@@ -33,6 +33,13 @@ export const managedRepositories: ManagedRepository[] = [
     updated_at: "2026-07-29T10:00:00Z",
   },
   {
+    id: "repo-managed",
+    remote_identity: "github.com/example/managed",
+    enabled: true,
+    created_at: "2026-07-29T10:00:00Z",
+    updated_at: "2026-07-29T10:00:00Z",
+  },
+  {
     id: "repo-disabled",
     remote_identity: "github.com/example/disabled",
     enabled: false,
@@ -1053,6 +1060,52 @@ export function mockControlPlane(
         );
       }
       return Response.json({ workers: [worker, offlineWorker] });
+    }
+    const workerRepositoryOptions = path.match(/^\/api\/v1\/workers\/([^/]+)\/repository-options$/);
+    if (workerRepositoryOptions) {
+      const selectedWorker = [worker, offlineWorker].find((candidate) => candidate.id === workerRepositoryOptions[1]);
+      if (!selectedWorker) {
+        return Response.json({ error: { code: "not_found", message: "not found" } }, { status: 404 });
+      }
+      const advertisedByID = new Map(selectedWorker.repositories.map((repository) => [repository.id, repository]));
+      const configuredIDs = new Set(repositoryItems.map((repository) => repository.id));
+      const configured = repositoryItems.map((repository) => {
+        const advertised = advertisedByID.get(repository.id);
+        const ready = repository.enabled && selectedWorker.online && selectedWorker.health === "healthy";
+        return {
+          id: repository.id,
+          key: advertised?.key,
+          remote_identity: repository.remote_identity,
+          enabled: repository.enabled,
+          cached: repository.id === "repo-factory",
+          advertised: Boolean(advertised),
+          ready,
+          reason: !repository.enabled
+            ? "Repository routing is disabled."
+            : !selectedWorker.online
+              ? "Worker is offline."
+              : ready
+                ? advertised
+                  ? "Online, healthy, with GitHub access and this repository advertised."
+                  : "Online, healthy, with GitHub access and managed cache headroom."
+                : "Worker is unhealthy.",
+        };
+      });
+      const advertisedOnly = selectedWorker.repositories
+        .filter((repository) => !configuredIDs.has(repository.id))
+        .map((repository) => ({
+          id: repository.id,
+          key: repository.key,
+          remote_identity: repository.remote_identity,
+          enabled: true,
+          cached: false,
+          advertised: true,
+          ready: selectedWorker.online && selectedWorker.health === "healthy",
+          reason: selectedWorker.online
+            ? "Online, healthy, with GitHub access and this repository advertised."
+            : "Worker is offline.",
+        }));
+      return Response.json({ repositories: [...configured, ...advertisedOnly] });
     }
     if (path === `/api/v1/workers/${worker.id}`) return Response.json(worker);
     throw new Error(`Unhandled request: ${path}`);

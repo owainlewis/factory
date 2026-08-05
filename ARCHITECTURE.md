@@ -23,9 +23,9 @@ The current task contract is a title, either a legacy free-text description or
 a pinned Workflow revision plus free-text context, assigned worker, repository,
 and timeout. The control plane snapshots one resolved prompt in the existing
 task description field before creating the task. Callers may name the
-assignment directly or ask the control-plane scheduler to choose from cattle
-workers. The deployment is limited to a trusted user and loopback HTTP on one
-host.
+assignment directly, constrain a routed assignment to one cattle worker, or
+ask the control-plane scheduler to choose from all eligible cattle workers. The
+deployment is limited to a trusted user and loopback HTTP on one host.
 
 ## 2. System context
 

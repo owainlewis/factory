@@ -26,7 +26,7 @@ const identifiers: Record<string, string> = {};
 interface TaskDetail {
   task: { id: string; title: string; description?: string; state?: string };
   context?: string;
-  execution: { id: string };
+  execution: { id: string; assigned_worker_id: string };
   repository: { id: string };
   attempts: Array<{ id: string; state?: string; result?: string; error?: string }>;
   workflow?: { id: string; revision_id: string; name: string; revision_number: number };
@@ -782,6 +782,22 @@ test("manages repository routing end to end and preserves add input while pollin
   expect(enabledRoute.status()).toBe(201);
   const enabledTask = await enabledRoute.json() as { execution: { assigned_worker_id: string } };
   expect([managedWorker, realWorker]).toContain(enabledTask.execution.assigned_worker_id);
+
+  await page.getByRole("button", { name: "Delegate task" }).click();
+  const delegate = page.getByRole("dialog", { name: "Delegate task" });
+  await delegate.getByLabel("Title").fill("Delegate configured managed repository");
+  await delegate.getByLabel("Context").fill("Acquire this repository on the selected worker.");
+  await delegate.getByLabel("Worker").selectOption(managedWorker);
+  const repositoryPicker = delegate.getByLabel("Repository");
+  const managedOption = repositoryPicker.locator("option").filter({ hasText: "github.com/example/browser-managed" });
+  await expect(managedOption).toBeEnabled();
+  await expect(managedOption).toContainText("acquired on demand");
+  await repositoryPicker.selectOption((await managedOption.getAttribute("value"))!);
+  await delegate.getByRole("button", { name: "Delegate task" }).click();
+  await expect(page.getByRole("heading", { name: "Delegate configured managed repository" })).toBeVisible();
+  const delegatedTaskID = new URL(page.url()).pathname.split("/").at(-1)!;
+  const delegatedTask = await json<TaskDetail>(await api.get(`/api/v1/tasks/${delegatedTaskID}`));
+  expect(delegatedTask.execution.assigned_worker_id).toBe(managedWorker);
   await api.dispose();
   browser.assertClean();
 });

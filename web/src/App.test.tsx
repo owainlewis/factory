@@ -862,12 +862,15 @@ describe("App", () => {
     await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
     const repository = within(dialog).getByLabelText("Repository");
     expect(within(repository).getByRole("option", { name: /factory/ })).toBeInTheDocument();
+    expect(within(repository).getByRole("option", { name: /github.com\/example\/managed/ })).toBeEnabled();
+    expect(within(repository).getByRole("option", { name: /github.com\/example\/disabled/ })).toBeDisabled();
     expect(within(repository).queryByRole("option", { name: /archive/ })).not.toBeInTheDocument();
 
     await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-offline");
     expect(within(dialog).getByText(/task will queue until it returns/i)).toBeVisible();
     expect(within(repository).getByRole("option", { name: /archive/ })).toBeInTheDocument();
-    expect(within(repository).queryByRole("option", { name: /factory/ })).not.toBeInTheDocument();
+    expect(within(repository).getByRole("option", { name: /github.com\/example\/managed/ })).toBeDisabled();
+    expect(within(repository).getByRole("option", { name: /github.com\/example\/factory/ })).toBeDisabled();
   });
 
   it("confirms permanent deletion only for terminal task history", async () => {
@@ -957,6 +960,38 @@ describe("App", () => {
       repository_id: "repo-factory",
       timeout_seconds: 7200,
     });
+  });
+
+  it("delegates a configured managed repository to the selected worker", async () => {
+    const fetch = mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Delegate task" }));
+    const dialog = screen.getByRole("dialog", { name: "Delegate task" });
+    await user.type(within(dialog).getByLabelText("Title"), "Work in managed repository");
+    await user.type(within(dialog).getByLabelText("Context"), "Acquire the configured repository on demand.");
+    await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
+    const repositoryPicker = within(dialog).getByLabelText("Repository");
+    expect(await within(repositoryPicker).findByRole("option", { name: /github\.com\/example\/managed · acquired on demand/ })).toBeEnabled();
+    expect(within(repositoryPicker).getByRole("option", { name: /github\.com\/example\/disabled · Repository routing is disabled\./ })).toBeDisabled();
+    expect(within(repositoryPicker).getByRole("option", { name: /docs · github\.com\/example\/docs/ })).toBeEnabled();
+    await user.selectOptions(repositoryPicker, "repo-managed");
+    await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));
+
+    expect(await screen.findByRole("heading", { name: "Work in managed repository" })).toBeVisible();
+    const createCall = fetch.mock.calls.find(([input, init]) => input === "/api/v1/tasks" && init?.method === "POST");
+    expect(createCall).toBeDefined();
+    const createBody = JSON.parse(String(createCall?.[1]?.body));
+    expect(createBody).toMatchObject({
+      title: "Work in managed repository",
+      worker_id: "worker-online",
+      route: {
+        repository_remote_identity: "github.com/example/managed",
+        source_access: { provider: "github", hostname: "github.com" },
+      },
+    });
+    expect(createBody).not.toHaveProperty("repository_id");
   });
 
   it("closes the keyboard-accessible drawer with Escape", async () => {

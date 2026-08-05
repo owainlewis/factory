@@ -117,6 +117,17 @@ type ManagedRepositoryWorkerReadiness struct {
 	Reason     string `json:"reason"`
 }
 
+type WorkerRepositoryOption struct {
+	ID             string `json:"id"`
+	Key            string `json:"key,omitempty"`
+	RemoteIdentity string `json:"remote_identity"`
+	Enabled        bool   `json:"enabled"`
+	Cached         bool   `json:"cached"`
+	Advertised     bool   `json:"advertised"`
+	Ready          bool   `json:"ready"`
+	Reason         string `json:"reason"`
+}
+
 type CreateManagedRepositoryRequest struct {
 	RemoteIdentity string `json:"remote_identity"`
 }

@@ -40,7 +40,11 @@ export function DelegateModal({
   const [workflowRevisionID, setWorkflowRevisionID] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const selectedWorker = workers.find((worker) => worker.id === workerID);
-  const repositories = selectedWorker?.repositories ?? [];
+  const repositoryOptions = useQuery({
+    queryKey: ["workers", workerID, "repository-options"],
+    queryFn: () => api.workerRepositoryOptions(workerID),
+    enabled: Boolean(workerID),
+  });
   const workflows = useQuery({
     queryKey: ["workflows", "enabled"],
     queryFn: api.allEnabledWorkflows,
@@ -85,23 +89,36 @@ export function DelegateModal({
     const form = new FormData(event.currentTarget);
     const title = String(form.get("title") ?? "").trim();
     const context = String(form.get("description") ?? "");
+    const repository = repositoryOptions.data?.find((option) => option.id === repositoryID);
     const nextErrors: Record<string, string> = {};
     if (!title) nextErrors.title = "Enter a task title.";
     else if (Array.from(title).length > 200) nextErrors.title = "Keep the title to 200 characters.";
     if (!context.trim()) nextErrors.description = "Enter task context.";
     if (!workerID) nextErrors.worker = "Choose a worker.";
     if (!repositoryID) nextErrors.repository = "Choose a repository.";
+    else if (!repository) nextErrors.repository = "Choose an available repository.";
+    else if (!repository.advertised && !repository.ready) nextErrors.repository = `This repository is unavailable: ${repository.reason}`;
     const timeoutSeconds = Number(timeout);
     if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 28_800) {
       nextErrors.timeout = "Choose a timeout from one minute to eight hours.";
     }
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) return;
+    const assignment = repository?.advertised ? {
+      worker_id: workerID,
+      repository_id: repository.id,
+    } : repository ? {
+      worker_id: workerID,
+      route: {
+        repository_remote_identity: repository.remote_identity,
+        source_access: { provider: "github", hostname: "github.com" },
+      },
+    } : undefined;
+    if (!assignment) return;
     const payload = {
       title,
-      worker_id: workerID,
-      repository_id: repositoryID,
       timeout_seconds: timeoutSeconds,
+      ...assignment,
       ...(workflowRevisionID
         ? { context, workflow_revision_id: workflowRevisionID }
         : { description: context }),
@@ -191,11 +208,22 @@ export function DelegateModal({
               <div className="warning-banner compact"><AlertCircle size={16} /> This worker is unhealthy and will not claim work until it recovers.</div>
             )}
             <Field label="Repository" htmlFor="delegate-repository" error={errors.repository}>
-              <select id="delegate-repository" value={repositoryID} onChange={(event) => setRepositoryID(event.target.value)} disabled={!workerID}>
-                <option value="">{workerID ? (repositories.length ? "Choose a repository" : "No repositories advertised") : "Choose a worker first"}</option>
-                {repositories.map((repo) => <option key={repo.id} value={repo.id}>{repo.key} · {repo.remote_identity}</option>)}
+              <select id="delegate-repository" value={repositoryID} onChange={(event) => setRepositoryID(event.target.value)} disabled={!workerID || repositoryOptions.isPending}>
+                <option value="">{workerID ? repositoryOptions.isPending ? "Loading repositories…" : repositoryOptions.data?.length ? "Choose a repository" : "No repositories configured" : "Choose a worker first"}</option>
+                {(repositoryOptions.data ?? []).map((repository) => (
+                  <option
+                    key={repository.id}
+                    value={repository.id}
+                    disabled={!repository.advertised && !repository.ready}
+                  >
+                    {repository.advertised
+                      ? `${repository.key ?? repository.remote_identity} · ${repository.remote_identity}`
+                      : `${repository.remote_identity} · ${repository.ready ? "acquired on demand" : repository.reason}`}
+                  </option>
+                ))}
               </select>
             </Field>
+            {repositoryOptions.error && <InlineError error={repositoryOptions.error} />}
             <Field label="Timeout" htmlFor="delegate-timeout" error={errors.timeout}>
               <select id="delegate-timeout" value={timeout} onChange={(event) => setTimeout(event.target.value)}>
                 <option value="1800">30 minutes</option>

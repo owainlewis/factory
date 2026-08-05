@@ -6,6 +6,7 @@ import type {
   MetricsWindow,
   ManagedRepository,
   ManagedRepositoryReadiness,
+  WorkerRepositoryOption,
   TaskPage,
   TaskDetail,
   Worker,
@@ -84,6 +85,10 @@ export const api = {
       .map(normalizeWorker),
   worker: async (id: string) =>
     normalizeWorker(await request<Worker>(`/api/v1/workers/${encodeURIComponent(id)}`)),
+  workerRepositoryOptions: async (id: string) =>
+    (await request<{ repositories: WorkerRepositoryOption[] | null }>(
+      `/api/v1/workers/${encodeURIComponent(id)}/repository-options`,
+    )).repositories ?? [],
   repositories: async () =>
     (await request<{ repositories: ManagedRepository[] | null }>("/api/v1/repositories"))
       .repositories ?? [],
