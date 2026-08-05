@@ -585,13 +585,16 @@ func (manager *Manager) retain(claim protocol.Claim, repository Repository, valu
 		manager.markUnhealthy("manifest_read", err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*gitCommandTimeout)
-	releaseRepository, lockErr := manager.repositoryLocks.acquire(ctx, manager.coordinationKeyForManifest(manifest))
+	waitContext, cancelWait := context.WithTimeout(context.Background(), repositoryAcquisitionTimeout)
+	releaseRepository, lockErr := manager.repositoryLocks.acquire(
+		waitContext, manager.coordinationKeyForManifest(manifest),
+	)
+	cancelWait()
 	if lockErr != nil {
-		cancel()
 		manager.markUnhealthy("worktree_identity", lockErr)
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*gitCommandTimeout)
 	inspection, inspectErr := inspectManifestWorktree(
 		ctx,
 		manager.options.GitExecutable,

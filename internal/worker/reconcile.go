@@ -497,13 +497,17 @@ func (manager *Manager) cleanCompletedWorktree(attemptID string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*gitCommandTimeout)
-	defer cancel()
-	releaseRepository, err := manager.repositoryLocks.acquire(ctx, manager.coordinationKeyForManifest(manifest))
+	waitContext, cancelWait := context.WithTimeout(context.Background(), repositoryAcquisitionTimeout)
+	releaseRepository, err := manager.repositoryLocks.acquire(
+		waitContext, manager.coordinationKeyForManifest(manifest),
+	)
+	cancelWait()
 	if err != nil {
 		return err
 	}
 	defer releaseRepository()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*gitCommandTimeout)
+	defer cancel()
 	inspection, err := inspectManifestWorktree(ctx, manager.options.GitExecutable, manager.dataDirectory, manifest)
 	if err != nil {
 		return err
