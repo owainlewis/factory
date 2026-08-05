@@ -344,7 +344,7 @@ func (a *API) health(w http.ResponseWriter, r *http.Request) {
 		writeError(w, unavailable(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, healthResponse{Status: "ok"})
 }
 
 func (a *API) registerWorker(w http.ResponseWriter, r *http.Request) {

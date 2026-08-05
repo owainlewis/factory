@@ -184,7 +184,10 @@
     "GET /healthz": {
       "operation": "health",
       "request": "none",
-      "response": "200 {status: \"ok\"}",
+      "response": "200 HealthResponse JSON",
+      "response_schemas": [
+        "HealthResponse"
+      ],
       "pagination": "none",
       "errors": "ErrorBody: {error: {code: string, message: string}}"
     },
@@ -521,6 +524,7 @@
     "FinalizeLegacyPollerRequest": "{\n  config_path: string (optional)\n  data_home: string (optional)\n  working_directory: string (optional)\n  confirm_stopped: boolean\n  migration_id: string\n  snapshot_digest: string\n}",
     "GitHubIssueTrigger": "{\n  type: string\n  state: string\n  required_labels: string[]\n  poll_interval_seconds: integer\n}",
     "GitHubPullRequestTrigger": "{\n  type: string\n  state: string\n  include_drafts: boolean\n  required_labels: string[]\n  base_branches: string[]\n  poll_interval_seconds: integer\n}",
+    "HealthResponse": "{\n  status: string\n}",
     "HeartbeatResponse": "{\n  lease_expires_at: string (RFC3339 timestamp)\n  cancellation_requested: boolean\n}",
     "ImportLegacyPollerRequest": "{\n  config_path: string (optional)\n  data_home: string (optional)\n  working_directory: string (optional)\n  confirm_stopped: boolean\n  migration_id: string\n  snapshot_digest: string\n  mappings: LegacyPollerQueueMapping[]\n}",
     "LeaseRequest": "{\n  lease_token: string\n}",

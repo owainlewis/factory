@@ -14,7 +14,7 @@ Every error body has this shape:
 
 | Method and path | Operation | Request | Success response | Pagination | Errors |
 | --- | --- | --- | --- | --- | --- |
-| `GET /healthz` | health: Check SQLite availability. | none | 200 {status: "ok"} | none | ErrorBody: {error: {code: string, message: string}} |
+| `GET /healthz` | health: Check SQLite availability. | none | 200 HealthResponse JSON | none | ErrorBody: {error: {code: string, message: string}} |
 
 ## Workers
 
@@ -435,6 +435,14 @@ GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger
   required_labels: string[]
   base_branches: string[]
   poll_interval_seconds: integer
+}
+```
+
+### HealthResponse
+
+```text
+{
+  status: string
 }
 ```
 
