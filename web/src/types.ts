@@ -203,6 +203,7 @@ export interface Automation {
 	skipped_count: number;
 	dispatched_count: number;
 	latest_task?: AutomationTaskSummary;
+	latest_run?: AutomationOccurrence;
 	created_at: string;
 	updated_at: string;
 }

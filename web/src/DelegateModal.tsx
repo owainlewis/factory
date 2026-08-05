@@ -133,7 +133,7 @@ export function DelegateModal({
               <input ref={titleRef} id={titleID} name="title" aria-invalid={Boolean(errors.title)} placeholder="Fix stale worker status" />
             </Field>
             <Field
-              label="Workflow"
+              label="Runbook"
               htmlFor={workflowID}
               hint="Blank task uses the context as the complete prompt."
             >
@@ -158,10 +158,10 @@ export function DelegateModal({
               error={errors.description}
               hint={selectedWorker
                 ? workflowRevisionID
-                  ? `Factory combines this with the selected Workflow for ${runtimeLabel(selectedWorker.runtime)}.`
+                  ? `Factory combines this with the selected runbook for ${runtimeLabel(selectedWorker.runtime)}.`
                   : `This becomes the ${runtimeLabel(selectedWorker.runtime)} prompt.`
                 : workflowRevisionID
-                  ? "Factory combines this with the selected Workflow."
+                  ? "Factory combines this with the selected runbook."
                   : "This becomes the selected worker runtime prompt."}
             >
               <textarea id={descriptionID} name="description" rows={6} aria-invalid={Boolean(errors.description)} placeholder="Describe the outcome, constraints, and checks…" />

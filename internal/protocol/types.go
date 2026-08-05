@@ -469,6 +469,7 @@ type Automation struct {
 	SkippedCount       int64                  `json:"skipped_count"`
 	DispatchedCount    int64                  `json:"dispatched_count"`
 	LatestTask         *AutomationTaskSummary `json:"latest_task,omitempty"`
+	LatestRun          *AutomationOccurrence  `json:"latest_run,omitempty"`
 	CreatedAt          time.Time              `json:"created_at"`
 	UpdatedAt          time.Time              `json:"updated_at"`
 }

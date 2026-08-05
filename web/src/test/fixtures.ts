@@ -162,6 +162,9 @@ export function mockControlPlane(
     growingTaskHistory?: boolean;
     incrementalEvents?: boolean;
     ledgerOnlyMigration?: boolean;
+    automationRunWithoutTaskState?: "pending" | "failed" | "skipped" | "task_deleted";
+    automationTaskState?: Task["state"];
+    multiRepositoryAutomations?: boolean;
     paginatedAutomations?: boolean;
     paginatedAutomationOccurrences?: boolean;
     paginatedAutomationWorkflows?: boolean;
@@ -203,6 +206,69 @@ export function mockControlPlane(
   let repositoryItems = managedRepositories.map((repository) => ({ ...repository }));
   let workflowDetail = structuredClone(initialWorkflowDetail);
   let automationDetail = structuredClone(initialAutomationDetail);
+  if (options.automationTaskState) {
+    const task = {
+      id: "task-automation-run",
+      title: "Review pull request #184",
+      state: options.automationTaskState,
+    };
+    automationDetail = {
+      automation: {
+        ...automationDetail.automation,
+        dispatched_count: 1,
+        latest_task: task,
+        latest_run: undefined,
+      },
+      occurrences: [{
+        id: "automation-run",
+        automation_id: automationDetail.automation.id,
+        automation_version: 1,
+        state: "dispatched",
+        issue_number: 184,
+        issue_url: "https://github.com/example/factory/issues/184",
+        issue_title: "Typed Automation run state",
+        observed_state: "open",
+        observed_labels: ["factory:ready"],
+        task_request_key: "automation:automation-ready:github_issue:184",
+        task,
+        task_id_snapshot: task.id,
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+    };
+    automationDetail.automation.latest_run = automationDetail.occurrences[0];
+  }
+  if (options.automationRunWithoutTaskState) {
+    const olderTask = {
+      id: "task-older-automation-run",
+      title: "Older dispatched task",
+      state: "succeeded",
+    };
+    const latestRun: AutomationOccurrence = {
+      id: "automation-run-without-task",
+      automation_id: automationDetail.automation.id,
+      automation_version: 1,
+      state: options.automationRunWithoutTaskState,
+      issue_number: 185,
+      issue_url: "https://github.com/example/factory/issues/185",
+      issue_title: "Newest run without task",
+      observed_state: "open",
+      observed_labels: ["factory:ready"],
+      task_request_key: "automation:automation-ready:github_issue:185",
+      task_id_snapshot: options.automationRunWithoutTaskState === "task_deleted" ? "task-deleted" : undefined,
+      diagnostic: options.automationRunWithoutTaskState === "failed" ? "No eligible worker." : undefined,
+      created_at: "2026-08-02T08:00:00Z",
+      updated_at: "2026-08-02T08:00:00Z",
+    };
+    automationDetail = {
+      automation: {
+        ...automationDetail.automation,
+        latest_task: olderTask,
+        latest_run: latestRun,
+      },
+      occurrences: [latestRun],
+    };
+  }
   let legacyMigration: LegacyPollerMigration | undefined;
   const automationOccurrence = (id: string, issue: number, createdAt: string): AutomationOccurrence => ({
     id,
@@ -419,8 +485,19 @@ export function mockControlPlane(
       return Response.json(workflowDetail);
     }
     if (path === "/api/v1/automations?limit=200") {
+      const docsAutomation = {
+        ...automationDetail.automation,
+        id: "automation-docs",
+        title: "Docs review",
+        repository_id: "repo-disabled",
+        repository_identity: "github.com/example/disabled",
+        enabled: true,
+        health: { status: "healthy" as const, message: "Waiting for the next GitHub check." },
+      };
       return Response.json({
-        automations: [automationDetail.automation],
+        automations: options.multiRepositoryAutomations
+          ? [automationDetail.automation, docsAutomation]
+          : [automationDetail.automation],
         next_cursor: options.paginatedAutomations ? "automation-history" : null,
       });
     }

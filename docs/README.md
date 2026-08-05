@@ -14,6 +14,8 @@ Start with the root [README](../README.md) to run Factory.
 
 ## Active design work
 
+- [Coding automation experience](automation-experience/design.md): current
+  Runbook-first UX and proposed multi-repository Run model.
 - [Unified CLI](cli/design.md)
 
 ## Superseded designs

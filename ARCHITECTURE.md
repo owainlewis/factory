@@ -174,7 +174,11 @@ event and completion contract.
 ### Browser UI
 
 `web/src` is a React and TypeScript application with Overview, Work, Workers,
-managed Repositories, Workflows, Task detail, and Delegate task views.
+managed Repositories, Runbooks, Automations, Task detail, and Delegate task
+views. Runbook is the browser term for the versioned Workflow resource.
+Automation detail projects each durable Occurrence as a Run and, after task
+creation, derives its visible state from the linked Task instead of persisting a
+second run lifecycle.
 Repository detail combines the central catalog with the control plane's current
 routing and acquisition readiness facts. It polls the same-origin API.
 

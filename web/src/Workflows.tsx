@@ -51,13 +51,13 @@ export function WorkflowsView({ onWorkflow }: { onWorkflow: (id: string) => void
   const activeCursor = nextCursor === undefined ? workflows.data?.next_cursor : nextCursor;
   const items = mergeWorkflows(workflows.data?.workflows ?? [], history);
 
-  if (workflows.isPending) return <LoadingState label="Loading workflows" />;
+  if (workflows.isPending) return <LoadingState label="Loading runbooks" />;
   if (!workflows.data) return <ErrorState error={workflows.error} onRetry={() => void workflows.refetch()} />;
 
   return (
     <div className="page">
       <ViewHeader
-        title="Workflows"
+        title="Runbooks"
         fetching={workflows.isFetching}
         updatedAt={workflows.dataUpdatedAt}
         onRefresh={() => {
@@ -68,17 +68,17 @@ export function WorkflowsView({ onWorkflow }: { onWorkflow: (id: string) => void
       />
       {workflows.error && <StaleBanner error={workflows.error} />}
       <div className="view-toolbar">
-        <p>Reusable Markdown instructions with immutable numbered revisions.</p>
+        <p>Reusable Markdown instructions for tasks and Automations, with immutable numbered revisions.</p>
         <button className="button button-primary" onClick={() => setCreateOpen(true)}>
-          <Plus size={15} /> Create workflow
+          <Plus size={15} /> Create runbook
         </button>
       </div>
       {items.length === 0 ? (
         <EmptyState
           icon={<BookOpenText size={22} />}
-          title="No workflows yet"
+          title="No runbooks yet"
           description="Create trusted instructions once, then pin them when delegating tasks."
-          action={<button className="button button-primary" onClick={() => setCreateOpen(true)}>Create workflow</button>}
+          action={<button className="button button-primary" onClick={() => setCreateOpen(true)}>Create runbook</button>}
         />
       ) : (
         <div className="workflow-list">
@@ -109,7 +109,7 @@ export function WorkflowsView({ onWorkflow }: { onWorkflow: (id: string) => void
               headCursor: previousHeadCursor.current ?? null,
             })}
           >
-            {loadMore.isPending ? "Loading…" : "Load more workflows"}
+            {loadMore.isPending ? "Loading…" : "Load more runbooks"}
           </button>
         </div>
       )}
@@ -135,14 +135,14 @@ export function WorkflowDetail({ id, onBack }: { id: string; onBack: () => void 
       await invalidateControlPlane(queryClient);
     },
   });
-  if (detail.isPending) return <LoadingState label="Loading workflow" />;
+  if (detail.isPending) return <LoadingState label="Loading runbook" />;
   if (!detail.data) return <ErrorState error={detail.error} onRetry={() => void detail.refetch()} />;
   const data = detail.data;
   const current = data.workflow.current_revision;
 
   return (
     <div className="page detail-page">
-      <button className="back-button" onClick={onBack}><ArrowLeft size={16} /> All workflows</button>
+      <button className="back-button" onClick={onBack}><ArrowLeft size={16} /> All runbooks</button>
       <div className="detail-heading">
         <div>
           <span className={`status-badge ${data.workflow.enabled ? "status-succeeded" : "status-cancelled"}`}>
@@ -168,7 +168,7 @@ export function WorkflowDetail({ id, onBack }: { id: string; onBack: () => void 
       {enabled.error && <InlineError error={enabled.error} />}
       {confirmEnabled !== undefined && (
         <div className="confirm-action workflow-confirm" role="alert">
-          <span>{confirmEnabled ? "Enable this workflow for new tasks?" : "Disable it for new tasks? Existing tasks and retries keep their snapshot."}</span>
+          <span>{confirmEnabled ? "Enable this runbook for new tasks?" : "Disable it for new tasks? Existing tasks and retries keep their snapshot."}</span>
           <button
             className={confirmEnabled ? "button button-primary" : "button button-danger"}
             disabled={enabled.isPending}
@@ -185,7 +185,7 @@ export function WorkflowDetail({ id, onBack }: { id: string; onBack: () => void 
           <div className="long-copy">{current.instructions}</div>
         </section>
         <section className="panel">
-          <PanelHeading title="Workflow" />
+          <PanelHeading title="Runbook" />
           <dl className="metadata">
             <div><dt>Summary</dt><dd>{current.summary || "No summary"}</dd></div>
             <div><dt>Created</dt><dd>{new Date(data.workflow.created_at).toLocaleString()}</dd></div>
@@ -262,10 +262,10 @@ function WorkflowForm({
     const summary = String(form.get("summary") ?? "").trim();
     const instructions = String(form.get("instructions") ?? "");
     const nextErrors: Record<string, string> = {};
-    if (!title) nextErrors.title = "Enter a workflow title.";
+    if (!title) nextErrors.title = "Enter a runbook title.";
     else if (Array.from(title).length > 100) nextErrors.title = "Keep the title to 100 characters.";
     if (Array.from(summary).length > 500) nextErrors.summary = "Keep the summary to 500 characters.";
-    if (!instructions.trim()) nextErrors.instructions = "Enter workflow instructions.";
+    if (!instructions.trim()) nextErrors.instructions = "Enter runbook instructions.";
     else if (new TextEncoder().encode(instructions).length > 48 * 1024) nextErrors.instructions = "Keep instructions to 48 KiB.";
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) return;
@@ -278,10 +278,10 @@ function WorkflowForm({
   };
   return (
     <div className="modal-layer">
-      <button className="modal-scrim" aria-label="Close workflow form" onClick={onClose} />
+      <button className="modal-scrim" aria-label="Close runbook form" onClick={onClose} />
       <div className="modal" role="dialog" aria-modal="true" aria-labelledby="workflow-form-heading">
         <div className="modal-header">
-          <h2 id="workflow-form-heading">{mode === "create" ? "Create workflow" : "Create revision"}</h2>
+          <h2 id="workflow-form-heading">{mode === "create" ? "Create runbook" : "Create revision"}</h2>
           <button className="icon-button" aria-label="Close" onClick={onClose}><X size={19} /></button>
         </div>
         <form onSubmit={submit} noValidate>
@@ -300,7 +300,7 @@ function WorkflowForm({
           <div className="modal-footer">
             <button type="button" className="button button-secondary" onClick={onClose}>Cancel</button>
             <button type="submit" className="button button-primary" disabled={save.isPending}>
-              {save.isPending ? <><LoaderCircle size={16} className="spin" /> Saving…</> : <><Plus size={16} /> {mode === "create" ? "Create workflow" : "Create revision"}</>}
+              {save.isPending ? <><LoaderCircle size={16} className="spin" /> Saving…</> : <><Plus size={16} /> {mode === "create" ? "Create runbook" : "Create revision"}</>}
             </button>
           </div>
         </form>

@@ -454,6 +454,9 @@ func (s *Store) AutomationsPage(
 		if err := s.loadLatestAutomationTask(ctx, &page.Automations[index]); err != nil {
 			return protocol.AutomationPage{}, err
 		}
+		if err := s.loadLatestAutomationRun(ctx, &page.Automations[index]); err != nil {
+			return protocol.AutomationPage{}, err
+		}
 	}
 	return page, nil
 }
@@ -474,7 +477,21 @@ func (s *Store) Automation(ctx context.Context, automationID string) (protocol.A
 	if err != nil {
 		return protocol.AutomationDetail{}, err
 	}
+	if len(occurrences) > 0 {
+		automation.LatestRun = &occurrences[0]
+	}
 	return protocol.AutomationDetail{Automation: automation, Occurrences: occurrences}, nil
+}
+
+func (s *Store) loadLatestAutomationRun(ctx context.Context, automation *protocol.Automation) error {
+	occurrences, err := s.AutomationOccurrences(ctx, automation.ID, 1)
+	if err != nil {
+		return err
+	}
+	if len(occurrences) > 0 {
+		automation.LatestRun = &occurrences[0]
+	}
+	return nil
 }
 
 func (s *Store) loadLatestAutomationTask(ctx context.Context, automation *protocol.Automation) error {

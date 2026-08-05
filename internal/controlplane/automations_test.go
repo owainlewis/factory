@@ -449,6 +449,49 @@ func TestRepeatedDependencyEnablePreservesInFlightAutomationEvaluation(t *testin
 	}
 }
 
+func TestAutomationListReturnsNewestRunWithoutHidingItBehindOlderTask(t *testing.T) {
+	store, detail := createAutomationFixture(t, true)
+	enableAutomation(t, store, detail.Automation.ID)
+	first := reserveAutomation(t, store)
+	if err := store.completeAutomationSuccess(context.Background(), first, []protocol.GitHubIssueMatch{testIssue}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.dispatchPendingOccurrences(context.Background(), 100); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.RequestAutomationCheck(context.Background(), detail.Automation.ID); err != nil {
+		t.Fatal(err)
+	}
+	second := reserveAutomation(t, store)
+	newestIssue := testIssue
+	newestIssue.Number = 185
+	newestIssue.Title = "Newer run without a task"
+	newestIssue.URL = "https://github.com/owainlewis/factory/issues/185"
+	if err := store.completeAutomationSuccess(context.Background(), second, []protocol.GitHubIssueMatch{newestIssue}); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := store.Automations(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var automation *protocol.Automation
+	for index := range page.Automations {
+		if page.Automations[index].ID == detail.Automation.ID {
+			automation = &page.Automations[index]
+			break
+		}
+	}
+	if automation == nil || automation.LatestTask == nil {
+		t.Fatalf("Automation list omitted the older dispatched task: %#v", page.Automations)
+	}
+	if automation.LatestRun == nil || automation.LatestRun.IssueNumber != 185 ||
+		automation.LatestRun.State != "pending" || automation.LatestRun.Task != nil {
+		t.Fatalf("Automation latest Run = %#v, want pending issue 185 without a task", automation.LatestRun)
+	}
+}
+
 func TestAutomationRestartRecoversReservedCheckAndPendingOccurrence(t *testing.T) {
 	store, detail := createAutomationFixture(t, true)
 	enableAutomation(t, store, detail.Automation.ID)
