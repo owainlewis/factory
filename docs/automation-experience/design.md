@@ -139,7 +139,7 @@ Future parent Runs must be terminal only when every target is terminal. A partia
 
 The trusted local-host boundary is unchanged. GitHub metadata remains untrusted and bounded. Runbook instructions and trusted Automation context remain operator-authored. Repository and Workflow dependencies continue to be validated by the control plane.
 
-List filtering is local and uses already-loaded bounded pages. Existing polling intervals and request limits are unchanged. The runbook detail request is the existing bounded Workflow detail endpoint.
+List filtering is local and uses already-loaded bounded pages. Existing polling intervals and request limits are unchanged. The latest Run projection is loaded in one bounded query for the whole Automation page, not one query per row. The runbook detail request is the existing bounded Workflow detail endpoint.
 
 ## 9. Acceptance criteria
 
