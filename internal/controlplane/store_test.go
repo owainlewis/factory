@@ -962,6 +962,55 @@ func registerTestWorker(t *testing.T, store *Store, id string, capacity int, rep
 	return worker
 }
 
+func TestWorkerRegistrationUsesSharedCapacityRange(t *testing.T) {
+	store := newTestStore(t)
+	for index, capacity := range []int{protocol.MinWorkerCapacity, protocol.MaxWorkerCapacity} {
+		worker := registerTestWorker(t, store, fmt.Sprintf("capacity-worker-%d", index), capacity)
+		if worker.Capacity != capacity {
+			t.Fatalf("registered capacity = %d; want %d", worker.Capacity, capacity)
+		}
+	}
+
+	for _, test := range []struct {
+		name        string
+		capacity    int
+		activeCount int
+	}{
+		{name: "below minimum", capacity: protocol.MinWorkerCapacity - 1},
+		{name: "above maximum", capacity: protocol.MaxWorkerCapacity + 1},
+		{name: "active exceeds capacity", capacity: 10, activeCount: 11},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := store.RegisterWorker(context.Background(), "invalid-"+test.name, protocol.WorkerRegistration{
+				Name: "invalid", WorkerVersion: "test", RuntimeVersion: "test",
+				Capacity: test.capacity, ActiveCount: test.activeCount, Health: "healthy",
+			})
+			assertErrorCode(t, err, "invalid_capacity")
+			if err == nil || !strings.Contains(err.Error(), "capacity must be 1 through 100") {
+				t.Fatalf("capacity error = %v", err)
+			}
+		})
+	}
+}
+
+func TestFreshSchemaAcceptsWorkerCapacityRange(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.db.Exec(`
+		INSERT INTO workers(
+			id, name, worker_version, runtime_version, runtime, capacity, active_count,
+			health, retained_worktrees_json, registered_at, last_heartbeat
+		) VALUES ('schema-capacity', 'schema', 'test', 'test', 'codex', 100, 0,
+			'healthy', '[]', 1, 1)
+	`); err != nil {
+		t.Fatalf("fresh schema rejected capacity 100: %v", err)
+	}
+	if _, err := store.db.Exec(`
+		UPDATE workers SET capacity = 101 WHERE id = 'schema-capacity'
+	`); err == nil {
+		t.Fatal("fresh schema accepted capacity 101")
+	}
+}
+
 func createManagedTestRepository(t *testing.T, store *Store, remoteIdentity string) protocol.ManagedRepository {
 	t.Helper()
 	repository, _, err := store.CreateManagedRepository(

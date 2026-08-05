@@ -45,8 +45,18 @@ Edit `~/.factory/worker.toml`:
 server = "http://127.0.0.1:7337"
 name = "local-codex"
 runtime = "codex"
-max_concurrent = 1
+# Optional. Defaults to 10 and accepts values from 1 through 100.
+max_concurrent = 10
 ```
+
+One worker is a pool for its configured runtime. Each slot runs an independent
+Codex or Claude Code session with its own worktree and process group. Preparing
+an attempt also consumes a slot. Choose a lower value when local CPU, memory, or
+provider limits require it.
+
+The fresh SQLite schema accepts the expanded worker capacity range. Delete and
+recreate existing development databases made by an older release before starting
+this version.
 
 With this `~/.factory/worker.toml` filename, Factory defaults durable worker
 state to `~/.factory/workers/worker`. The config filename, rather than `name`,
@@ -70,7 +80,7 @@ For Claude Code, use another config and identity:
 server = "http://127.0.0.1:7337"
 name = "local-claude"
 runtime = "claude-code"
-max_concurrent = 1
+max_concurrent = 10
 ```
 
 Saved as `~/.factory/claude-worker.toml`, this worker uses

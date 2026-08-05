@@ -1,9 +1,11 @@
 # Worker contract
 
-A Factory worker is one stable identity, one runtime, and a capacity limit. It
-can run on a developer machine, VM, or Unix container. Workers are cattle: the
-control plane owns repository scope, and an eligible worker acquires an assigned
-repository into its bounded local cache. Windows is not supported.
+A Factory worker is one stable identity and a pool of independent agent sessions
+for one runtime. Its capacity limit controls the number of sessions that may
+prepare or run at once. It can run on a developer machine, VM, or Unix
+container. Workers are cattle: the control plane owns repository scope, and an
+eligible worker acquires an assigned repository into its bounded local cache.
+Windows is not supported.
 
 ## Configuration
 
@@ -11,11 +13,18 @@ repository into its bounded local cache. Windows is not supported.
 server = "http://127.0.0.1:7337"
 name = "local-codex"
 runtime = "codex"
-max_concurrent = 1
+# Optional. Defaults to 10.
+max_concurrent = 10
 ```
 
 `runtime` is `codex` or `claude-code`. A worker never switches runtime per task.
-Run two workers when you want to send the same task to both agents.
+Run two workers when you want to send the same task to both agents. Each task
+launches a fresh runtime process and owns its own worktree, manifest, lease, and
+supervisor process group. `max_concurrent` accepts values from 1 through 100;
+preparing attempts consume slots as well as running attempts.
+
+This release changes the fresh SQLite schema capacity range. Existing
+development databases created by an older release must be removed and recreated.
 
 When `data_directory` is omitted, Factory derives an absolute path beside the
 configuration as `workers/<config filename without .toml>`. For example,
@@ -75,7 +84,10 @@ Print the configured identity without starting the worker:
 
 ## Claiming
 
-Workers poll the loopback API for compatible work. A claim succeeds only when:
+Workers poll the loopback API for compatible work. An idle worker makes at most
+one empty claim request per polling interval. Each successful claim immediately
+starts another claim while a slot remains, so queued work fills the pool without
+waiting one polling interval per slot. A claim succeeds only when:
 
 - the task targets that worker;
 - the repository assignment is frozen to that worker;

@@ -7,7 +7,7 @@ export const worker: Worker = {
   worker_version: "2.0.0",
   runtime: "codex",
   runtime_version: "0.42.0",
-  capacity: 2,
+  capacity: 10,
   active_count: 1,
   health: "healthy",
   online: true,

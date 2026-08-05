@@ -879,8 +879,11 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	if len(input.RuntimeVersion) > 1024 {
 		return protocol.Worker{}, invalid("invalid_runtime_version", "runtime_version must be at most 1024 bytes")
 	}
-	if input.Capacity < 1 || input.Capacity > 4 || input.ActiveCount < 0 || input.ActiveCount > input.Capacity {
-		return protocol.Worker{}, invalid("invalid_capacity", "capacity must be 1 through 4 and active_count cannot exceed it")
+	if input.Capacity < protocol.MinWorkerCapacity || input.Capacity > protocol.MaxWorkerCapacity ||
+		input.ActiveCount < 0 || input.ActiveCount > input.Capacity {
+		return protocol.Worker{}, invalid("invalid_capacity", fmt.Sprintf(
+			"capacity must be %d through %d and active_count cannot exceed it",
+			protocol.MinWorkerCapacity, protocol.MaxWorkerCapacity))
 	}
 	if input.Health != "healthy" && input.Health != "unhealthy" {
 		return protocol.Worker{}, invalid("invalid_health", "health must be healthy or unhealthy")

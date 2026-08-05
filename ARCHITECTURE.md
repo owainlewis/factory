@@ -13,9 +13,10 @@ It separates durable coordination from agent execution:
 - `factory-server` stores work, assigns it, evaluates typed GitHub issue and
   pull-request Automations through `gh`, admits schedule Automations from its
   clock, exposes the HTTP API, and serves the embedded browser UI.
-- `factory-worker` has one stable identity and one agent runtime. It advertises
-  runtime capacity and provider access, acquires centrally managed repositories
-  on demand, and runs attempts in isolated Git worktrees.
+- `factory-worker` has one stable identity and a configurable pool for one agent
+  runtime. It advertises runtime capacity and provider access, acquires centrally
+  managed repositories on demand, and runs concurrent attempts in isolated Git
+  worktrees.
 - Codex or Claude Code performs the repository work as a child process of the
   worker.
 
@@ -41,7 +42,7 @@ factory-server
            ^
            | registration, polling, leases, events, completion
            |
-factory-worker (one identity and one runtime)
+factory-worker (one identity, one runtime, N agent slots)
    |-- bounded on-demand repository cache
    |-- optional legacy static checkouts
    |-- attempt manifests and owned Git worktrees
@@ -55,7 +56,7 @@ the system does not use WebSockets.
 ## 3. Architectural invariants
 
 1. One worker identity has one immutable runtime, either `codex` or
-   `claude-code`.
+   `claude-code`, and runs independent sessions up to its configured capacity.
 2. Every task freezes one worker and one control-plane repository. Routed work
    may select a cattle worker before that repository exists in its local cache.
 3. Only a healthy, recently registered worker with free capacity can claim its
@@ -153,7 +154,8 @@ manual cleanup, or starts the internal attempt supervisor. The manager:
 - registers every ten seconds and polls for claims every two seconds with
   jitter;
 - renews active leases every ten seconds;
-- runs up to the configured capacity, from one to four attempts;
+- runs up to the configured capacity, from one to 100 attempts, defaulting to
+  ten;
 - reconciles manifests, worktrees, and process groups after restart.
 
 The supervisor is a subprocess of `factory-worker`. It owns the runtime process

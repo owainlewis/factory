@@ -17,8 +17,7 @@ import (
 
 const (
 	defaultServer        = "http://127.0.0.1:7337"
-	defaultMaxConcurrent = 1
-	maxConcurrent        = 4
+	defaultMaxConcurrent = 10
 )
 
 type RepositoryConfig struct {
@@ -65,7 +64,7 @@ func LoadConfig(path string) (Config, error) {
 	if config.Runtime == "" {
 		config.Runtime = protocol.RuntimeCodex
 	}
-	if config.MaxConcurrent == 0 {
+	if !metadata.IsDefined("max_concurrent") {
 		config.MaxConcurrent = defaultMaxConcurrent
 	}
 	config.path, err = filepath.Abs(path)
@@ -112,8 +111,9 @@ func validateConfig(config Config) error {
 	if config.Runtime != "" && !protocol.SupportedRuntime(config.Runtime) {
 		return errors.New("runtime must be codex or claude-code")
 	}
-	if config.MaxConcurrent < 1 || config.MaxConcurrent > maxConcurrent {
-		return fmt.Errorf("max_concurrent must be between 1 and %d", maxConcurrent)
+	if config.MaxConcurrent < protocol.MinWorkerCapacity || config.MaxConcurrent > protocol.MaxWorkerCapacity {
+		return fmt.Errorf("max_concurrent must be between %d and %d",
+			protocol.MinWorkerCapacity, protocol.MaxWorkerCapacity)
 	}
 	if strings.TrimSpace(config.DataDirectory) == "" {
 		return errors.New("data_directory is required")

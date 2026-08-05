@@ -658,7 +658,8 @@ describe("App", () => {
 
     await user.click(await screen.findByRole("button", { name: /^Workers$/ }));
     const summary = screen.getByLabelText("Fleet summary");
-    expect(within(summary).getByText("Available slots").closest("div")).toHaveTextContent("1");
+    expect(within(summary).getByText("Available slots").closest("div")).toHaveTextContent("9");
+    expect(screen.getByLabelText("1 of 10 slots active")).toBeVisible();
   });
 
   it("loads another bounded task page without duplicating existing work", async () => {
