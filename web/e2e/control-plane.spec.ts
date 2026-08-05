@@ -589,7 +589,7 @@ test("delegates with worker-specific repositories and preserves the task on refr
   await expect(dialog.getByText(/task will queue until it returns/i)).toBeVisible();
   await expect(dialog.getByText("This becomes the Claude Code prompt.")).toBeVisible();
   await expect(dialog.getByLabel("Repository").getByRole("option", { name: /archive/ })).toHaveCount(1);
-  await expect(dialog.getByLabel("Repository").getByRole("option", { name: /factory/ })).toHaveCount(0);
+  await expect(dialog.getByLabel("Repository").locator(`option[value="${identifiers.factoryRepository}"]`)).toBeDisabled();
   await dialog.getByLabel("Title").fill("Durable delegated browser task");
   await dialog.getByLabel("Context").fill("Created in the real UI and stored by the real Go server.");
   await dialog.getByLabel("Repository").selectOption(identifiers.offlineRepository);
