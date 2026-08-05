@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -67,9 +68,14 @@ echo "$$" > "$FACTORY_TEST_CODEX_LOG/$attempt.pid"
 echo '{"type":"thread.started","thread_id":"test-thread"}'
 case "$prompt" in
   *FAKE_MODE=success*)
-    printf 'completed by fake Codex' > "$result"
-    echo '{"type":"item.completed","item":{"type":"agent_message","text":"completed"}}'
-    ;;
+	printf 'completed by fake Codex' > "$result"
+	echo '{"type":"item.completed","item":{"type":"agent_message","text":"completed"}}'
+	;;
+	*FAKE_MODE=runtime-overlap*)
+	touch "$FACTORY_TEST_CODEX_LOG/$attempt.running"
+	while [ "$(find "$FACTORY_TEST_CODEX_LOG" -name '*.running' | wc -l)" -lt 2 ]; do sleep 0.01; done
+	printf 'completed after runtime overlap' > "$result"
+	;;
   *FAKE_MODE=long*)
     head -c 68157440 /dev/zero | tr '\000' x
     echo
@@ -84,6 +90,12 @@ case "$prompt" in
   *FAKE_MODE=fail*)
     echo "deterministic failure" >&2
     exit 17
+    ;;
+  *FAKE_MODE=barrier*)
+    : > "$FACTORY_TEST_CODEX_LOG/$attempt.ready"
+    while [ ! -f "$FACTORY_TEST_CODEX_LOG/$attempt.release" ]; do sleep 0.02; done
+    printf 'completed after barrier' > "$result"
+    echo '{"type":"item.completed","item":{"type":"agent_message","text":"completed after barrier"}}'
     ;;
   *FAKE_MODE=dirty*)
     echo "dirty" > worker-output.txt
@@ -138,10 +150,26 @@ if [ "${1:-}" != "--print" ] ||
   exit 90
 fi
 prompt="$(cat)"
-if [ "$prompt" != "complete this task" ]; then
-  echo "unexpected fake Claude Code prompt" >&2
-  exit 91
-fi
+attempt="$(basename "$PWD")"
+case "$prompt" in
+  *FAKE_MODE=barrier*)
+    mkdir -p "$FACTORY_TEST_CODEX_LOG"
+    printf '%s' "$prompt" > "$FACTORY_TEST_CODEX_LOG/$attempt.prompt"
+    echo "$$" > "$FACTORY_TEST_CODEX_LOG/$attempt.pid"
+    : > "$FACTORY_TEST_CODEX_LOG/$attempt.ready"
+    while [ ! -f "$FACTORY_TEST_CODEX_LOG/$attempt.release" ]; do sleep 0.02; done
+    echo '{"type":"system","subtype":"init"}'
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"completed after barrier"}]}}'
+    echo '{"type":"result","subtype":"success","result":"completed after barrier"}'
+    exit 0
+    ;;
+  "complete this task")
+    ;;
+  *)
+    echo "unexpected fake Claude Code prompt" >&2
+    exit 91
+    ;;
+esac
 if [ "${FACTORY_TEST_CLAUDE_OVERSIZED_RESULT:-}" = "1" ]; then
   printf '{"type":"result","subtype":"success","result":"'
   head -c 1100000 /dev/zero | tr '\000' x
@@ -873,6 +901,19 @@ func newTestManager(
 	repositories map[string]repositoryFixture,
 	maxConcurrent int,
 ) *Manager {
+	return newTestRuntimeManager(t, fixture, protocol.RuntimeCodex, codexPath,
+		dataDirectory, repositories, maxConcurrent)
+}
+
+func newTestRuntimeManager(
+	t *testing.T,
+	fixture *serverFixture,
+	runtimeName string,
+	runtimePath string,
+	dataDirectory string,
+	repositories map[string]repositoryFixture,
+	maxConcurrent int,
+) *Manager {
 	t.Helper()
 	t.Setenv("FACTORY_TEST_SUPERVISOR", "1")
 	logDirectory := filepath.Join(t.TempDir(), "codex-log")
@@ -882,16 +923,39 @@ func newTestManager(
 		configured[key] = RepositoryConfig{Path: repository.path}
 	}
 	manager, err := New(Config{
-		Server: fixture.server.URL, Name: "test-worker", MaxConcurrent: maxConcurrent,
+		Server: fixture.server.URL, Name: "test-worker", Runtime: runtimeName, MaxConcurrent: maxConcurrent,
 		DataDirectory: dataDirectory, Repositories: configured,
-	}, testOptions(codexPath), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}, testOptions(runtimePath), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return manager
 }
 
+func pinTestRepositoryBases(t *testing.T, manager *Manager) {
+	t.Helper()
+	for index, repository := range manager.repositories {
+		repository.BaseBranch = "main"
+		repository.BaseCommit = runGitTest(t, repository.Path, "rev-parse", "HEAD")
+		manager.repositories[index] = repository
+		manager.repositoriesByKey[repository.Key] = repository
+	}
+}
+
+func usePoolTestIntervals(manager *Manager) {
+	manager.options.PollInterval = time.Hour
+	manager.options.HealthInterval = time.Hour
+	manager.options.RegistrationInterval = time.Hour
+	manager.options.LeaseRenewInterval = 10 * time.Second
+}
+
 func startManager(t *testing.T, manager *Manager) (context.CancelFunc, <-chan error) {
+	t.Helper()
+	_, cancel, done := startManagerWithContext(t, manager)
+	return cancel, done
+}
+
+func startManagerWithContext(t *testing.T, manager *Manager) (context.Context, context.CancelFunc, <-chan error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -910,7 +974,7 @@ func startManager(t *testing.T, manager *Manager) (context.CancelFunc, <-chan er
 			t.Error("worker did not stop")
 		}
 	})
-	return cancel, done
+	return ctx, cancel, done
 }
 
 func waitForWorker(t *testing.T, store *controlplane.Store, workerID string, predicate func(protocol.Worker) bool) protocol.Worker {
@@ -1136,6 +1200,373 @@ func TestMultiRepositorySuccessAndBoundedOutput(t *testing.T) {
 	} {
 		if !strings.Contains(string(prompt), expected) {
 			t.Fatalf("Codex prompt does not contain %q:\n%s", expected, prompt)
+		}
+	}
+}
+
+func TestSameRepositoryRuntimeAndCleanupCanOverlap(t *testing.T) {
+	repository := createRepository(t, "same-repository-overlap")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"shared": repository}, 2)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy"
+	})
+	first := createTask(t, fixture.store, worker, "shared", "runtime-overlap", 60)
+	second := createTask(t, fixture.store, worker, "shared", "runtime-overlap", 60)
+	first = waitForTaskState(t, fixture.store, first.Task.ID, "succeeded")
+	second = waitForTaskState(t, fixture.store, second.Task.ID, "succeeded")
+	for _, detail := range []protocol.TaskDetail{first, second} {
+		if len(detail.Attempts) != 1 || detail.Attempts[0].Result != "completed after runtime overlap" {
+			t.Fatalf("overlapping attempt = %#v", detail.Attempts)
+		}
+		attempt := detail.Attempts[0]
+		path := filepath.Join(manager.dataDirectory, "worktrees", attempt.ID)
+		waitFor(t, 5*time.Second, func() bool {
+			_, err := os.Stat(path)
+			return errors.Is(err, os.ErrNotExist)
+		})
+	}
+	waitFor(t, 5*time.Second, func() bool { return manager.repositoryLocks.count() == 0 })
+	entries, err := listGitWorktrees(context.Background(), "git", repository.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalRepository, err := filepath.EvalSymlinks(repository.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Path != canonicalRepository {
+		t.Fatalf("worktrees after concurrent cleanup = %#v", entries)
+	}
+}
+
+func TestBlockedCleanupDoesNotDelayUnrelatedRepository(t *testing.T) {
+	firstRepository := createRepository(t, "blocked-cleanup-first")
+	secondRepository := createRepository(t, "blocked-cleanup-second")
+	fixture := newServerFixture(t, nil)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{
+			"first":  firstRepository,
+			"second": secondRepository,
+		}, 2)
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy"
+	})
+	first := createTask(t, fixture.store, worker, "first", "barrier", 60)
+	second := createTask(t, fixture.store, worker, "second", "barrier", 60)
+	first = waitForTaskState(t, fixture.store, first.Task.ID, "running")
+	second = waitForTaskState(t, fixture.store, second.Task.ID, "running")
+	logDirectory := os.Getenv("FACTORY_TEST_CODEX_LOG")
+	for _, detail := range []protocol.TaskDetail{first, second} {
+		waitFor(t, 10*time.Second, func() bool {
+			_, err := os.Stat(filepath.Join(logDirectory, detail.Attempts[0].ID+".ready"))
+			return err == nil
+		})
+	}
+
+	waitContext, cancelWait := context.WithTimeout(context.Background(), 5*time.Second)
+	releaseFirstRepository, err := manager.repositoryLocks.acquire(
+		waitContext,
+		repositoryCoordinationKey(manager.repositoriesByKey["first"]),
+	)
+	cancelWait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseFirstRepository()
+	if err := os.WriteFile(
+		filepath.Join(logDirectory, first.Attempts[0].ID+".release"),
+		[]byte("release\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskState(t, fixture.store, first.Task.ID, "succeeded")
+
+	if err := os.WriteFile(
+		filepath.Join(logDirectory, second.Attempts[0].ID+".release"),
+		[]byte("release\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	second = waitForTaskState(t, fixture.store, second.Task.ID, "succeeded")
+	secondWorktree := filepath.Join(manager.dataDirectory, "worktrees", second.Attempts[0].ID)
+	waitFor(t, 5*time.Second, func() bool {
+		_, err := os.Stat(secondWorktree)
+		return errors.Is(err, os.ErrNotExist)
+	})
+
+	releaseFirstRepository()
+	firstWorktree := filepath.Join(manager.dataDirectory, "worktrees", first.Attempts[0].ID)
+	waitFor(t, 5*time.Second, func() bool {
+		_, err := os.Stat(firstWorktree)
+		return errors.Is(err, os.ErrNotExist)
+	})
+	waitFor(t, 5*time.Second, func() bool { return manager.repositoryLocks.count() == 0 })
+}
+
+func TestIdleWorkerMakesOneClaimPerPollingInterval(t *testing.T) {
+	var claimMutex sync.Mutex
+	var claimTimes []time.Time
+	fixture := newServerFixture(t, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			if strings.HasSuffix(request.URL.Path, "/claims") {
+				claimMutex.Lock()
+				claimTimes = append(claimTimes, time.Now())
+				claimMutex.Unlock()
+			}
+			next.ServeHTTP(writer, request)
+		})
+	})
+	repository := createRepository(t, "idle-claim-pool")
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"idle-claim-pool": repository}, 10)
+	manager.options.PollInterval = 120 * time.Millisecond
+	cancel, done := startManager(t, manager)
+	waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy" && worker.Capacity == 10
+	})
+	waitFor(t, 3*time.Second, func() bool {
+		claimMutex.Lock()
+		defer claimMutex.Unlock()
+		return len(claimTimes) >= 5
+	})
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	claimMutex.Lock()
+	times := append([]time.Time(nil), claimTimes...)
+	claimMutex.Unlock()
+	for index := 1; index < len(times); index++ {
+		if gap := times[index].Sub(times[index-1]); gap < 60*time.Millisecond {
+			t.Fatalf("empty claims %d and %d were only %s apart; claim traffic scaled with capacity",
+				index-1, index, gap)
+		}
+	}
+}
+
+func TestCodexWorkerPoolRunsTenAttemptsAndRefillsReleasedSlot(t *testing.T) {
+	var claimMutex sync.Mutex
+	var claimTimes []time.Time
+	fixture := newServerFixture(t, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			if strings.HasSuffix(request.URL.Path, "/claims") {
+				claimMutex.Lock()
+				claimTimes = append(claimTimes, time.Now())
+				claimMutex.Unlock()
+			}
+			next.ServeHTTP(writer, request)
+		})
+	})
+	repositories := make(map[string]repositoryFixture, 11)
+	for index := range 11 {
+		key := fmt.Sprintf("pool-%02d", index)
+		repositories[key] = createRepository(t, key)
+	}
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		repositories, 10)
+	pinTestRepositoryBases(t, manager)
+	usePoolTestIntervals(manager)
+	managerContext, _, _ := startManagerWithContext(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy" && worker.Capacity == 10
+	})
+	waitFor(t, 3*time.Second, func() bool {
+		claimMutex.Lock()
+		claimed := len(claimTimes) >= 1
+		claimMutex.Unlock()
+		manager.stateMutex.Lock()
+		idle := !manager.claiming && len(manager.pending) == 0
+		manager.stateMutex.Unlock()
+		return claimed && idle
+	})
+
+	tasks := make([]protocol.TaskDetail, 0, 10)
+	for index := range 10 {
+		tasks = append(tasks, createTask(t, fixture.store, worker, fmt.Sprintf("pool-%02d", index), "barrier", 300))
+	}
+	overflowTask := createTask(t, fixture.store, worker, "pool-10", "barrier", 300)
+	claimMutex.Lock()
+	baselineClaims := len(claimTimes)
+	claimMutex.Unlock()
+	manager.reserveAndClaim(managerContext)
+	waitFor(t, 5*time.Second, func() bool {
+		claimMutex.Lock()
+		defer claimMutex.Unlock()
+		return len(claimTimes) >= baselineClaims+10
+	})
+	claimMutex.Lock()
+	fillDuration := claimTimes[baselineClaims+9].Sub(claimTimes[baselineClaims])
+	claimMutex.Unlock()
+	if fillDuration >= manager.options.PollInterval {
+		t.Fatalf("ten slots filled in %s; successful claims waited for the %s polling interval",
+			fillDuration, manager.options.PollInterval)
+	}
+
+	logDirectory := os.Getenv("FACTORY_TEST_CODEX_LOG")
+	waitFor(t, 4*time.Minute, func() bool {
+		entries, err := os.ReadDir(logDirectory)
+		if err != nil {
+			return false
+		}
+		ready := 0
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), ".ready") {
+				ready++
+			}
+		}
+		return ready == 10
+	})
+	running := make([]protocol.TaskDetail, 0, 10)
+	var queued protocol.TaskDetail
+	candidates := append(append([]protocol.TaskDetail(nil), tasks...), overflowTask)
+	for _, task := range candidates {
+		detail, err := fixture.store.Task(context.Background(), task.Task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case detail.Execution.State == "running" && len(detail.Attempts) == 1:
+			running = append(running, detail)
+		case detail.Execution.State == "queued" && len(detail.Attempts) == 0 && queued.Task.ID == "":
+			queued = detail
+		default:
+			t.Fatalf("unexpected capacity task state: %#v", detail)
+		}
+	}
+	if len(running) != 10 || queued.Task.ID == "" {
+		t.Fatalf("capacity split = %d running, queued %#v", len(running), queued)
+	}
+	manager.register(managerContext)
+	waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.ActiveCount == 10 && worker.Capacity == 10
+	})
+
+	attemptIDs := make(map[string]bool)
+	worktreePaths := make(map[string]bool)
+	supervisorGroups := make(map[int64]bool)
+	runtimePIDs := make(map[int]bool)
+	for _, detail := range running {
+		if len(detail.Attempts) != 1 {
+			t.Fatalf("running task attempt count = %d", len(detail.Attempts))
+		}
+		attempt := detail.Attempts[0]
+		manifest, err := manager.manifests.load(attempt.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if manifest.AttemptID != attempt.ID || manifest.TaskID != detail.Task.ID ||
+			manifest.WorktreePath != filepath.Join(manager.dataDirectory, "worktrees", attempt.ID) {
+			t.Fatalf("attempt manifest is not isolated: %#v", manifest)
+		}
+		if attemptIDs[attempt.ID] || worktreePaths[manifest.WorktreePath] {
+			t.Fatalf("duplicate attempt or worktree: %s %s", attempt.ID, manifest.WorktreePath)
+		}
+		attemptIDs[attempt.ID] = true
+		worktreePaths[manifest.WorktreePath] = true
+		if attempt.SupervisorPID == nil || attempt.ProcessGroupID == nil || *attempt.ProcessGroupID <= 0 ||
+			supervisorGroups[*attempt.ProcessGroupID] {
+			t.Fatalf("attempt has no distinct supervisor process group: %#v", attempt)
+		}
+		supervisorGroups[*attempt.ProcessGroupID] = true
+		readyPath := filepath.Join(logDirectory, attempt.ID+".ready")
+		waitFor(t, 10*time.Second, func() bool {
+			_, err := os.Stat(readyPath)
+			return err == nil
+		})
+		runtimePID := readPID(t, filepath.Join(logDirectory, attempt.ID+".pid"))
+		if runtimePIDs[runtimePID] {
+			t.Fatalf("runtime PID %d was reused by concurrent attempts", runtimePID)
+		}
+		runtimePIDs[runtimePID] = true
+	}
+
+	if _, err := fixture.store.CancelTask(context.Background(), running[0].Task.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskState(t, fixture.store, running[0].Task.ID, "cancelled")
+	queuedRunning := waitForTaskState(t, fixture.store, queued.Task.ID, "running")
+	for _, task := range running[1:] {
+		detail, err := fixture.store.Task(context.Background(), task.Task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if detail.Execution.State != "running" {
+			t.Fatalf("cancelling one attempt changed peer task %s to %s", task.Task.ID, detail.Execution.State)
+		}
+	}
+
+	remaining := append([]protocol.TaskDetail(nil), running[1:]...)
+	remaining = append(remaining, queuedRunning)
+	for _, detail := range remaining {
+		attemptID := detail.Attempts[0].ID
+		if err := os.WriteFile(filepath.Join(logDirectory, attemptID+".release"), []byte("release\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, task := range remaining {
+		waitForTaskState(t, fixture.store, task.Task.ID, "succeeded")
+	}
+}
+
+func TestClaudeCodeWorkerUsesTheSameConcurrentPool(t *testing.T) {
+	fixture := newServerFixture(t, nil)
+	repositories := make(map[string]repositoryFixture, 3)
+	for index := range 3 {
+		key := fmt.Sprintf("claude-pool-%d", index)
+		repositories[key] = createRepository(t, key)
+	}
+	claudePath := filepath.Join(t.TempDir(), "claude")
+	writeFakeClaude(t, claudePath)
+	manager := newTestRuntimeManager(t, fixture, protocol.RuntimeClaudeCode, claudePath,
+		filepath.Join(t.TempDir(), "worker"), repositories, 3)
+	pinTestRepositoryBases(t, manager)
+	usePoolTestIntervals(manager)
+	managerContext, _, _ := startManagerWithContext(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy" && worker.Runtime == protocol.RuntimeClaudeCode && worker.Capacity == 3
+	})
+
+	tasks := make([]protocol.TaskDetail, 0, 3)
+	for index := range 3 {
+		tasks = append(tasks, createTask(t, fixture.store, worker, fmt.Sprintf("claude-pool-%d", index), "barrier", 300))
+	}
+	manager.reserveAndClaim(managerContext)
+	logDirectory := os.Getenv("FACTORY_TEST_CODEX_LOG")
+	running := make([]protocol.TaskDetail, 0, len(tasks))
+	for _, task := range tasks {
+		detail := waitForTaskState(t, fixture.store, task.Task.ID, "running")
+		running = append(running, detail)
+		attemptID := detail.Attempts[0].ID
+		waitFor(t, 10*time.Second, func() bool {
+			_, err := os.Stat(filepath.Join(logDirectory, attemptID+".ready"))
+			return err == nil
+		})
+	}
+	for _, detail := range running {
+		attemptID := detail.Attempts[0].ID
+		if err := os.WriteFile(filepath.Join(logDirectory, attemptID+".release"), []byte("release\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, task := range tasks {
+		detail := waitForTaskState(t, fixture.store, task.Task.ID, "succeeded")
+		if detail.Attempts[0].Result != "completed after barrier" {
+			t.Fatalf("Claude Code barrier result = %q", detail.Attempts[0].Result)
 		}
 	}
 }
@@ -1686,24 +2117,37 @@ func TestServerLossStopsCodexBeforeLeaseExpiry(t *testing.T) {
 	}
 }
 
-func TestGracefulShutdownStopsActiveGroup(t *testing.T) {
-	repository := createRepository(t, "shutdown")
+func TestGracefulShutdownStopsEveryActiveGroup(t *testing.T) {
+	repositories := make(map[string]repositoryFixture, 4)
+	for index := range 4 {
+		key := fmt.Sprintf("shutdown-%d", index)
+		repositories[key] = createRepository(t, key)
+	}
 	fixture := newServerFixture(t, nil)
 	codexPath := filepath.Join(t.TempDir(), "codex")
 	writeFakeCodex(t, codexPath)
 	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
-		map[string]repositoryFixture{"shutdown": repository}, 1)
+		repositories, 3)
+	pinTestRepositoryBases(t, manager)
+	usePoolTestIntervals(manager)
+	manager.options.PollInterval = 20 * time.Millisecond
 	cancel, done := startManager(t, manager)
 	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool { return worker.Health == "healthy" })
-	task := createTask(t, fixture.store, worker, "shutdown", "fork", 60)
-	running := waitForTaskState(t, fixture.store, task.Task.ID, "running")
-	queued := createTask(t, fixture.store, worker, "shutdown", "success", 60)
-	childPath := filepath.Join(os.Getenv("FACTORY_TEST_CODEX_LOG"), running.Attempts[0].ID+".child")
-	waitFor(t, 5*time.Second, func() bool {
-		_, err := os.Stat(childPath)
-		return err == nil
-	})
-	childPID := readPID(t, childPath)
+	tasks := make([]protocol.TaskDetail, 0, 3)
+	for index := range 3 {
+		tasks = append(tasks, createTask(t, fixture.store, worker, fmt.Sprintf("shutdown-%d", index), "fork", 300))
+	}
+	childPIDs := make([]int, 0, len(tasks))
+	for _, task := range tasks {
+		detail := waitForTaskState(t, fixture.store, task.Task.ID, "running")
+		childPath := filepath.Join(os.Getenv("FACTORY_TEST_CODEX_LOG"), detail.Attempts[0].ID+".child")
+		waitFor(t, 5*time.Second, func() bool {
+			_, err := os.Stat(childPath)
+			return err == nil
+		})
+		childPIDs = append(childPIDs, readPID(t, childPath))
+	}
+	queued := createTask(t, fixture.store, worker, "shutdown-3", "success", 60)
 	started := time.Now()
 	cancel()
 	if err := <-done; err != nil {
@@ -1712,10 +2156,12 @@ func TestGracefulShutdownStopsActiveGroup(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > 15*time.Second {
 		t.Fatalf("graceful shutdown took %s", elapsed)
 	}
-	waitForProcessGone(t, childPID, 3*time.Second)
-	detail := waitForTaskState(t, fixture.store, task.Task.ID, "cancelled")
-	if detail.Attempts[0].State != "cancelled" {
-		t.Fatalf("shutdown attempt state = %s", detail.Attempts[0].State)
+	for index, childPID := range childPIDs {
+		waitForProcessGone(t, childPID, 3*time.Second)
+		detail := waitForTaskState(t, fixture.store, tasks[index].Task.ID, "cancelled")
+		if detail.Attempts[0].State != "cancelled" {
+			t.Fatalf("shutdown attempt %s state = %s", detail.Attempts[0].ID, detail.Attempts[0].State)
+		}
 	}
 	queuedDetail, err := fixture.store.Task(context.Background(), queued.Task.ID)
 	if err != nil {
@@ -1795,14 +2241,15 @@ func TestRetiredWorktreeAndStateIsolation(t *testing.T) {
 
 func readPID(t *testing.T, path string) int {
 	t.Helper()
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(body)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	var pid int
+	waitFor(t, 5*time.Second, func() bool {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return false
+		}
+		pid, err = strconv.Atoi(strings.TrimSpace(string(body)))
+		return err == nil && pid > 0
+	})
 	return pid
 }
 
@@ -1860,6 +2307,33 @@ base_branch = "release/2026.07"
 	}
 	if _, err := LoadConfig(configPath); err == nil || !strings.Contains(err.Error(), "unknown") {
 		t.Fatalf("unknown field error = %v", err)
+	}
+}
+
+func TestWorkerWithoutConfiguredCapacityRegistersTenSlots(t *testing.T) {
+	fixture := newServerFixture(t, nil)
+	configPath := filepath.Join(t.TempDir(), "default-pool.toml")
+	body := fmt.Sprintf("server = %q\nname = \"default-pool\"\n", fixture.server.URL)
+	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	t.Setenv("FACTORY_TEST_SUPERVISOR", "1")
+	manager, err := New(config, testOptions(codexPath), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy" && worker.Capacity == 10
+	})
+	if worker.ActiveCount != 0 {
+		t.Fatalf("idle default worker active_count = %d; want 0", worker.ActiveCount)
 	}
 }
 

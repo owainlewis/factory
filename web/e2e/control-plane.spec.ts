@@ -565,7 +565,22 @@ test("shows worker capacity, current work, retained cleanup, and saves Workers",
   await expect(page.getByRole("heading", { name: "Build Mac" })).toBeVisible();
   await expect(workersNavigation).toHaveClass(/active/);
   await expect(workersNavigation).not.toHaveAttribute("aria-current");
+  const profileTabs = page.getByRole("tablist", { name: "Worker profile" });
+  await expect(profileTabs.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("region", { name: "Worker summary" })).toBeVisible();
+
+  await profileTabs.getByRole("tab", { name: "Work" }).click();
   await expect(page.getByText("factory-worker cleanup attempt-retained-001 --confirm")).toBeVisible();
+
+  await profileTabs.getByRole("tab", { name: "Capabilities" }).click();
+  await expect(page.getByRole("tabpanel")).toContainText("0.42.0-test");
+  await expect(page.getByRole("tabpanel")).toContainText("github.com/example/factory");
+
+  await profileTabs.getByRole("tab", { name: "Settings" }).click();
+  await expect(page.getByRole("heading", { name: "Execution" })).toBeVisible();
+  await expect(page.getByText("Read only")).toBeVisible();
+  await expect(page.getByRole("meter", { name: "Worker concurrency" })).toHaveAttribute("max", "2");
+  await expect(page.getByRole("tabpanel")).toContainText("restart the worker");
   const assign = page.getByRole("button", { name: "Assign work" });
   await assign.click();
   await expect(page.getByRole("dialog").getByLabel("Worker")).toHaveValue(workerOnline);

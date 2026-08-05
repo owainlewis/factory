@@ -79,26 +79,35 @@ func (manager *Manager) acquireManagedRepository(
 		return Repository{}, errors.New("claim contains a non-canonical managed repository identity")
 	}
 
-	manager.repositoryCacheMutex.Lock()
-	defer manager.repositoryCacheMutex.Unlock()
+	waitContext, cancelWait := context.WithTimeout(ctx, repositoryAcquisitionTimeout)
+	release, err := manager.repositoryLocks.acquire(
+		waitContext, managedRepositoryCoordinationKey(claimRepository.ID),
+	)
+	cancelWait()
+	if err != nil {
+		return Repository{}, err
+	}
+	defer release()
+	acquisitionContext, cancelAcquisition := context.WithTimeout(ctx, repositoryAcquisitionTimeout)
+	defer cancelAcquisition()
 
-	acquisitionContext, cancel := context.WithTimeout(ctx, repositoryAcquisitionTimeout)
-	defer cancel()
 	cacheRoot, err := manager.prepareRepositoryCacheRoot()
 	if err != nil {
 		return Repository{}, err
 	}
 	target := filepath.Join(cacheRoot, claimRepository.ID)
 	if info, inspectErr := os.Lstat(target); errors.Is(inspectErr, os.ErrNotExist) {
-		if err := enforceRepositoryCacheLimit(cacheRoot); err != nil {
-			return Repository{}, err
+		reserved, reserveErr := manager.reserveManagedRepositoryCache(claimRepository.ID)
+		if reserveErr != nil {
+			return Repository{}, reserveErr
 		}
-		if err := manager.cloneManagedRepository(acquisitionContext, cacheRoot, target, slug); err != nil {
-			return Repository{}, err
+		installed, cloneErr := manager.cloneManagedRepository(acquisitionContext, cacheRoot, target, slug)
+		if reserved || installed {
+			manager.finishManagedRepositoryCacheReservation(claimRepository.ID, installed)
 		}
-		manager.stateMutex.Lock()
-		manager.managedRepositoryIDs[claimRepository.ID] = true
-		manager.stateMutex.Unlock()
+		if cloneErr != nil {
+			return Repository{}, cloneErr
+		}
 	} else if inspectErr != nil {
 		return Repository{}, fmt.Errorf("inspect managed repository cache: %w", inspectErr)
 	} else if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
@@ -115,12 +124,14 @@ func (manager *Manager) acquireManagedRepository(
 	if !strings.EqualFold(repository.RemoteIdentity, identity) {
 		return Repository{}, errors.New("managed repository cache origin does not match the assigned repository")
 	}
+	repository.coordinationKey = managedRepositoryCoordinationKey(claimRepository.ID)
 	repository.BaseBranch, repository.BaseCommit, err = resolveBaseCommit(
 		acquisitionContext, manager.options.GitExecutable, repository,
 	)
 	if err != nil {
 		return Repository{}, fmt.Errorf("resolve managed repository base: %w", err)
 	}
+	manager.finishManagedRepositoryCacheReservation(claimRepository.ID, true)
 	return repository, nil
 }
 
@@ -196,14 +207,19 @@ func managedRepositoryCacheIDsFromRoot(root string) (map[string]bool, error) {
 	return ids, nil
 }
 
-func (manager *Manager) cloneManagedRepository(ctx context.Context, root, target, slug string) (resultErr error) {
+func (manager *Manager) cloneManagedRepository(
+	ctx context.Context,
+	root, target, slug string,
+) (installed bool, resultErr error) {
 	temporaryRoot, err := os.MkdirTemp(root, ".clone-")
 	if err != nil {
-		return fmt.Errorf("create managed repository clone directory: %w", err)
+		return false, fmt.Errorf("create managed repository clone directory: %w", err)
 	}
 	defer func() {
-		if err := os.RemoveAll(temporaryRoot); err != nil && resultErr == nil {
-			resultErr = fmt.Errorf("remove managed repository clone directory: %w", err)
+		if temporaryRoot != "" {
+			if err := os.RemoveAll(temporaryRoot); err != nil && resultErr == nil {
+				resultErr = fmt.Errorf("remove managed repository clone directory: %w", err)
+			}
 		}
 	}()
 	clonePath := filepath.Join(temporaryRoot, "repository")
@@ -215,18 +231,23 @@ func (manager *Manager) cloneManagedRepository(ctx context.Context, root, target
 		"repo", "clone", slug, clonePath, "--", "--no-checkout",
 	)
 	if err != nil {
-		return commandFailure("clone managed GitHub repository", stdout, stderr, err)
+		return false, commandFailure("clone managed GitHub repository", stdout, stderr, err)
 	}
 	repository, err := resolveRepository(slug, clonePath, manager.options.GitExecutable)
 	if err != nil {
-		return fmt.Errorf("validate cloned managed repository: %w", err)
+		return false, fmt.Errorf("validate cloned managed repository: %w", err)
 	}
 	expectedIdentity := "github.com/" + slug
 	if !strings.EqualFold(repository.RemoteIdentity, expectedIdentity) {
-		return errors.New("cloned managed repository origin does not match the assigned repository")
+		return false, errors.New("cloned managed repository origin does not match the assigned repository")
 	}
 	if err := os.Rename(clonePath, target); err != nil {
-		return fmt.Errorf("install managed repository cache entry: %w", err)
+		return false, fmt.Errorf("install managed repository cache entry: %w", err)
 	}
-	return nil
+	installed = true
+	if err := os.Remove(temporaryRoot); err != nil {
+		return true, fmt.Errorf("remove managed repository clone directory: %w", err)
+	}
+	temporaryRoot = ""
+	return true, nil
 }
