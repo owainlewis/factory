@@ -18,8 +18,9 @@ does not include user authentication.
 
 Read the [product vision](docs/software-factory/vision.md), the
 [target architecture](docs/software-factory/design.md), and the
-[current implementation architecture](ARCHITECTURE.md). The target design is a
-direction, not a claim about current behavior.
+[current implementation architecture](ARCHITECTURE.md). Planned work follows
+the [project workflow](WORKFLOW.md). The target design is a direction, not a
+claim about current behavior.
 
 ## Quick start
 

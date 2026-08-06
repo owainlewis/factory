@@ -6,6 +6,7 @@ the embedded UI.
 Before starting a change, search existing issues, keep the scope focused, and
 do not include credentials, private repository data, or sensitive task content.
 Report vulnerabilities through [SECURITY.md](SECURITY.md), not a public issue.
+Use [WORKFLOW.md](WORKFLOW.md) for project statuses and repository labels.
 
 ## Setup
 
