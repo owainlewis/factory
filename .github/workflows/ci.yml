@@ -10,7 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  linux:
+    name: Linux checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -111,3 +112,17 @@ jobs:
           go version -m "$FACTORY_BUILD_DIR/factory-worker" | grep -F "GOARCH=${{ matrix.arch }}"
       - name: Test launcher process cleanup
         run: just test-launcher
+
+  check:
+    name: check
+    if: always()
+    needs: [linux, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every platform check
+        env:
+          LINUX_RESULT: ${{ needs.linux.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+        run: |
+          test "$LINUX_RESULT" = success
+          test "$MACOS_RESULT" = success
