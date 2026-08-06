@@ -102,7 +102,7 @@ func legacyRunRequestDigest(value normalizedRunRequest) ([]byte, error) {
 }
 
 func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) (protocol.RunDetail, bool, error) {
-	return s.createRun(ctx, input, "manual", nil)
+	return s.createRun(ctx, input, "manual", nil, "", "")
 }
 
 func (s *Store) createScheduledRun(
@@ -110,7 +110,17 @@ func (s *Store) createScheduledRun(
 	input protocol.CreateRunRequest,
 	snapshot protocol.DefinitionSnapshot,
 ) (protocol.RunDetail, bool, error) {
-	return s.createRun(ctx, input, "schedule", &snapshot)
+	return s.createRun(ctx, input, "schedule", &snapshot, "", "")
+}
+
+func (s *Store) createWebhookRun(
+	ctx context.Context,
+	input protocol.CreateRunRequest,
+	snapshot protocol.DefinitionSnapshot,
+	resolvedPrompt string,
+	occurrenceID string,
+) (protocol.RunDetail, bool, error) {
+	return s.createRun(ctx, input, "webhook", &snapshot, resolvedPrompt, occurrenceID)
 }
 
 func (s *Store) createRun(
@@ -118,6 +128,8 @@ func (s *Store) createRun(
 	input protocol.CreateRunRequest,
 	sourceKind string,
 	frozenSnapshot *protocol.DefinitionSnapshot,
+	resolvedPrompt string,
+	webhookOccurrenceID string,
 ) (protocol.RunDetail, bool, error) {
 	value, digest, err := normalizeRunRequest(input)
 	if err != nil {
@@ -146,6 +158,15 @@ func (s *Store) createRun(
 		}
 		if !matches {
 			return protocol.RunDetail{}, false, conflict("request_key_conflict", "request_key was already used with different Run inputs")
+		}
+		if webhookOccurrenceID != "" {
+			result, err := tx.ExecContext(ctx, `UPDATE automation_github_webhook_occurrences SET run_id = ? WHERE occurrence_id = ?`, existingID, webhookOccurrenceID)
+			if err != nil {
+				return protocol.RunDetail{}, false, unavailable(err)
+			}
+			if changed, _ := result.RowsAffected(); changed != 1 {
+				return protocol.RunDetail{}, false, conflict("webhook_occurrence_missing", "webhook occurrence was not available for Run admission")
+			}
 		}
 		if err := tx.Commit(); err != nil {
 			return protocol.RunDetail{}, false, unavailable(err)
@@ -186,6 +207,9 @@ func (s *Store) createRun(
 		}
 		parameters[key] = parameter
 	}
+	if resolvedPrompt == "" {
+		resolvedPrompt = snapshot.Prompt
+	}
 
 	type runTarget struct {
 		id       string
@@ -214,7 +238,7 @@ func (s *Store) createRun(
 		if err != nil {
 			return protocol.RunDetail{}, false, unavailable(err)
 		}
-		if !protocol.AgentPromptFits(snapshot.Name, repositoryIdentity, snapshot.Prompt) {
+		if !protocol.AgentPromptFits(snapshot.Name, repositoryIdentity, resolvedPrompt) {
 			return protocol.RunDetail{}, false, invalid("agent_prompt_too_large", "the complete agent prompt exceeds 72 KiB")
 		}
 		targets = append(targets, runTarget{id: repositoryID, identity: repositoryIdentity})
@@ -236,10 +260,10 @@ func (s *Store) createRun(
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO runs(
 			id, request_key, request_digest, source_kind, definition_id,
-			definition_snapshot, parameters, concurrency_limit, admitted_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			definition_snapshot, parameters, concurrency_limit, admitted_at, updated_at, resolved_prompt
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, runID, value.RequestKey, digest, sourceKind, snapshot.ID, snapshotJSON, parametersJSON,
-		value.ConcurrencyLimit, now, now); err != nil {
+		value.ConcurrencyLimit, now, now, resolvedPrompt); err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
 	materialized := 0
@@ -255,7 +279,7 @@ func (s *Store) createRun(
 			selection, routeErr := s.selectRunRoute(ctx, tx, target.id, target.identity, now, "", snapshot.Runtime, snapshot.AllowedTools)
 			blockedReason = "Waiting for a healthy compatible Runner with repository access."
 			if routeErr == nil {
-				taskID, executionID, err = s.insertRunJobExecution(ctx, tx, runID, jobID, snapshot, snapshotJSON, selection, now)
+				taskID, executionID, err = s.insertRunJobExecution(ctx, tx, runID, jobID, snapshot, snapshotJSON, resolvedPrompt, selection, now)
 				if err != nil {
 					return protocol.RunDetail{}, false, err
 				}
@@ -274,6 +298,15 @@ func (s *Store) createRun(
 		`, jobID, runID, target.id, target.identity, nullableString(taskID), nullableString(executionID),
 			jobState, nullableString(blockedReason), now, now); err != nil {
 			return protocol.RunDetail{}, false, unavailable(err)
+		}
+	}
+	if webhookOccurrenceID != "" {
+		result, err := tx.ExecContext(ctx, `UPDATE automation_github_webhook_occurrences SET run_id = ? WHERE occurrence_id = ?`, runID, webhookOccurrenceID)
+		if err != nil {
+			return protocol.RunDetail{}, false, unavailable(err)
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			return protocol.RunDetail{}, false, conflict("webhook_occurrence_missing", "webhook occurrence was not available for Run admission")
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -367,6 +400,7 @@ func (s *Store) insertRunJobExecution(
 	jobID string,
 	snapshot protocol.DefinitionSnapshot,
 	snapshotJSON []byte,
+	resolvedPrompt string,
 	selection taskRouteCandidate,
 	now int64,
 ) (string, string, error) {
@@ -384,7 +418,7 @@ func (s *Store) insertRunJobExecution(
 			id, request_key, title, description, repository_id, timeout_seconds,
 			created_at, context, definition_id, definition_snapshot
 		) VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?)
-	`, taskID, requestKey, snapshot.Name, snapshot.Prompt, selection.repositoryID,
+	`, taskID, requestKey, snapshot.Name, resolvedPrompt, selection.repositoryID,
 		snapshot.TimeoutSeconds, now, snapshot.ID, snapshotJSON); err != nil {
 		return "", "", unavailable(err)
 	}
@@ -406,19 +440,21 @@ func (s *Store) materializeBlockedJobForWorker(
 ) error {
 	const pageSize = 200
 	type candidate struct {
-		jobID        string
-		runID        string
-		repositoryID string
-		identity     string
-		snapshotJSON []byte
-		admittedAt   int64
+		jobID          string
+		runID          string
+		repositoryID   string
+		identity       string
+		snapshotJSON   []byte
+		resolvedPrompt string
+		admittedAt     int64
 	}
 	var cursorAt int64
 	var cursorID string
 	for {
 		query := `
-			SELECT job.id, job.run_id, repository.id, job.repository_identity,
-			       run.definition_snapshot, job.admitted_at
+			SELECT job.id, job.run_id, repository.id, job.repository_identity, run.definition_snapshot,
+			       COALESCE(NULLIF(run.resolved_prompt, ''), json_extract(run.definition_snapshot, '$.prompt')),
+			       job.admitted_at
 			FROM jobs job
 			JOIN runs run ON run.id = job.run_id
 			JOIN repositories repository ON repository.id = job.repository_id
@@ -446,7 +482,7 @@ func (s *Store) materializeBlockedJobForWorker(
 			var value candidate
 			if err := rows.Scan(
 				&value.jobID, &value.runID, &value.repositoryID, &value.identity,
-				&value.snapshotJSON, &value.admittedAt,
+				&value.snapshotJSON, &value.resolvedPrompt, &value.admittedAt,
 			); err != nil {
 				rows.Close()
 				return unavailable(err)
@@ -471,7 +507,7 @@ func (s *Store) materializeBlockedJobForWorker(
 				return err
 			}
 			taskID, executionID, err := s.insertRunJobExecution(
-				ctx, tx, value.runID, value.jobID, snapshot, value.snapshotJSON, selection, now,
+				ctx, tx, value.runID, value.jobID, snapshot, value.snapshotJSON, value.resolvedPrompt, selection, now,
 			)
 			if err != nil {
 				return err
@@ -670,6 +706,16 @@ func (s *Store) Run(ctx context.Context, runID string) (protocol.RunDetail, erro
 	}
 	detail.Run.AdmittedAt = fromMillis(admittedAt)
 	detail.Run.UpdatedAt = fromMillis(updatedAt)
+	if detail.Run.SourceKind == "webhook" {
+		err := s.db.QueryRowContext(ctx, `
+			SELECT delivery_id, event, action, pull_request_number, pull_request_url, head_commit
+			FROM automation_github_webhook_occurrences WHERE run_id = ?
+		`, detail.Run.ID).Scan(&detail.Run.DeliveryID, &detail.Run.Event, &detail.Run.Action,
+			&detail.Run.PullRequestNumber, &detail.Run.PullRequestURL, &detail.Run.ObservedHeadCommit)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return detail, unavailable(err)
+		}
+	}
 
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM jobs WHERE run_id = ? ORDER BY admitted_at, id`, detail.Run.ID)
 	if err != nil {
@@ -737,7 +783,8 @@ func (s *Store) Job(ctx context.Context, jobID string) (protocol.JobDetail, erro
 		detail.Job.BlockedReason = blockedReason.String
 	}
 	var snapshotJSON []byte
-	if err := s.db.QueryRowContext(ctx, `SELECT definition_snapshot FROM runs WHERE id = ?`, detail.Job.RunID).Scan(&snapshotJSON); err != nil {
+	var resolvedPrompt string
+	if err := s.db.QueryRowContext(ctx, `SELECT definition_snapshot, resolved_prompt FROM runs WHERE id = ?`, detail.Job.RunID).Scan(&snapshotJSON, &resolvedPrompt); err != nil {
 		return detail, unavailable(err)
 	}
 	var snapshot protocol.DefinitionSnapshot
@@ -745,7 +792,10 @@ func (s *Store) Job(ctx context.Context, jobID string) (protocol.JobDetail, erro
 		return detail, unavailable(errors.New("stored Run Definition snapshot is invalid"))
 	}
 	detail.Job.RequiredRuntime = snapshot.Runtime
-	detail.ResolvedPrompt = snapshot.Prompt
+	if resolvedPrompt == "" {
+		resolvedPrompt = snapshot.Prompt
+	}
+	detail.ResolvedPrompt = resolvedPrompt
 	if !taskID.Valid {
 		return detail, nil
 	}

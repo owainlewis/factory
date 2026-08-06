@@ -129,8 +129,8 @@ Implemented:
 - durable tasks, executions, attempts, leases, events, and cancellation;
 - Pi, Codex, and Claude Code Runner capabilities;
 - reusable versioned Workflows;
-- disabled-first typed GitHub issue, GitHub pull-request, and schedule
-  Automations evaluated by the control plane;
+- disabled-first schedule and signed GitHub webhook Automations backed by
+  shared Definitions, plus legacy GitHub polling Automations;
 - a central managed-repository catalog, bounded worker caches, and isolated Git
   worktrees;
 - bounded list APIs and retained-data metrics;

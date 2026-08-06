@@ -927,6 +927,38 @@ describe("App", () => {
     });
   });
 
+  it("creates a Definition-backed GitHub webhook Automation", async () => {
+    window.history.replaceState({}, "", "/automations");
+    const fetch = mockControlPlane({ scheduleDefinition: true });
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Create Automation" }));
+    const dialog = screen.getByRole("dialog", { name: "Create Automation" });
+    await user.type(within(dialog).getByLabelText("Title"), "Review incoming pull requests");
+    await user.selectOptions(within(dialog).getByLabelText("Trigger"), "github_webhook");
+    await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-maintenance");
+    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
+    expect(within(dialog).getByDisplayValue("Opened and updated")).toBeVisible();
+    await user.click(within(dialog).getByRole("button", { name: "Create Automation" }));
+
+    expect(await screen.findByRole("heading", { name: "Review incoming pull requests" })).toBeVisible();
+    expect(screen.getByText("Pull request · opened, synchronize")).toBeVisible();
+    expect(screen.getByText("/api/v1/webhooks/github")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Test trigger" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Check now" })).not.toBeInTheDocument();
+    const request = fetch.mock.calls.find(([input, init]) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return path === "/api/v1/automations" && init?.method === "POST";
+    });
+    expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({
+      definition_id: "definition-maintenance",
+      repository_ids: ["repo-factory"],
+      concurrency_limit: 1,
+      trigger: { type: "github_webhook", actions: ["opened", "synchronize"] },
+    });
+  });
+
   it("preserves Automation form focus and typed input during background refresh", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

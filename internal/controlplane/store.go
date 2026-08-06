@@ -1127,7 +1127,7 @@ func (s *Store) SetManagedRepositoryEnabled(
 			    health_status = CASE WHEN enabled = 1 THEN 'pending' ELSE health_status END,
 			    health_code = CASE WHEN enabled = 1 THEN '' ELSE health_code END,
 			    health_message = CASE WHEN enabled = 1 THEN 'Repository enabled; waiting for a GitHub check.' ELSE health_message END
-			WHERE repository_id = ? AND trigger_type != 'schedule'
+			WHERE repository_id = ? AND trigger_type IN ('github_issue', 'github_pull_request')
 		`, now, repositoryID)
 	} else {
 		_, err = tx.ExecContext(ctx, `
@@ -1137,7 +1137,7 @@ func (s *Store) SetManagedRepositoryEnabled(
 			    health_status = CASE WHEN enabled = 1 THEN 'blocked' ELSE health_status END,
 			    health_code = CASE WHEN enabled = 1 THEN 'repository_disabled' ELSE health_code END,
 			    health_message = CASE WHEN enabled = 1 THEN 'Enable the selected repository before checks can run.' ELSE health_message END
-			WHERE repository_id = ? AND trigger_type != 'schedule'
+			WHERE repository_id = ? AND trigger_type IN ('github_issue', 'github_pull_request')
 		`, now+time.Minute.Milliseconds(), repositoryID)
 	}
 	if err != nil {
@@ -1158,6 +1158,28 @@ func (s *Store) SetManagedRepositoryEnabled(
 			    health_code = CASE WHEN enabled = 1 THEN 'repository_disabled' ELSE health_code END,
 			    health_message = CASE WHEN enabled = 1 THEN 'Scheduled instants will be recorded without tasks until the repository is enabled.' ELSE health_message END
 			WHERE repository_id = ? AND trigger_type = 'schedule'
+		`, repositoryID)
+	}
+	if err != nil {
+		return protocol.ManagedRepository{}, unavailable(err)
+	}
+	if enabled {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE automations
+			SET health_status = CASE WHEN enabled = 1 THEN 'healthy' ELSE health_status END,
+			    health_code = CASE WHEN enabled = 1 THEN '' ELSE health_code END,
+			    health_message = CASE WHEN enabled = 1 THEN 'Repository enabled; waiting for a signed GitHub webhook.' ELSE health_message END,
+			    next_check_at = NULL
+			WHERE repository_id = ? AND trigger_type = 'github_webhook'
+		`, repositoryID)
+	} else {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE automations
+			SET health_status = CASE WHEN enabled = 1 THEN 'blocked' ELSE health_status END,
+			    health_code = CASE WHEN enabled = 1 THEN 'repository_disabled' ELSE health_code END,
+			    health_message = CASE WHEN enabled = 1 THEN 'Enable the selected repository before webhook deliveries can run.' ELSE health_message END,
+			    next_check_at = NULL
+			WHERE repository_id = ? AND trigger_type = 'github_webhook'
 		`, repositoryID)
 	}
 	if err != nil {

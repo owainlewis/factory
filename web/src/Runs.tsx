@@ -292,6 +292,14 @@ export function RunDetail({ id, initialJobID = "", onBack }: { id: string; initi
       {confirmRetry && <div className="warning-banner" role="alert"><AlertCircle size={17} /><span>{job.job.retry_may_repeat_effects ? "The first agent process started and may already have changed GitHub. Retrying can repeat external effects." : "Retry this failed Job?"}</span><button className="button button-primary" onClick={() => retry.mutate()} disabled={retry.isPending}>{retry.isPending ? "Retrying…" : "Confirm retry"}</button><button className="button button-secondary" onClick={() => setConfirmRetry(false)}>Cancel</button></div>}
       {(detail.error || cancel.error || retry.error) && <InlineError error={detail.error ?? cancel.error ?? retry.error} />}
       {job.job.blocked_reason && <div className="warning-banner"><Clock3 size={17} /> {job.job.blocked_reason}</div>}
+      {data.run.source_kind === "webhook" && <section className="panel">
+        <PanelHeading title="GitHub webhook" aside={`${data.run.event} · ${data.run.action}`} />
+        <dl className="metadata">
+          <div><dt>Delivery</dt><dd className="mono break-anywhere">{data.run.delivery_id}</dd></div>
+          <div><dt>Pull request</dt><dd>{data.run.pull_request_url ? <a href={data.run.pull_request_url} target="_blank" rel="noreferrer">#{data.run.pull_request_number}</a> : `#${data.run.pull_request_number}`}</dd></div>
+          <div><dt>Revision</dt><dd className="mono break-anywhere">{data.run.observed_head_commit}</dd></div>
+        </dl>
+      </section>}
       <section className="panel run-jobs-panel">
         <PanelHeading title="Repositories" aside={`${terminalJobs}/${data.run.job_count} complete`} />
         <div className="run-job-list">

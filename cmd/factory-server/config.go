@@ -12,12 +12,16 @@ import (
 )
 
 type serverBootstrapConfig struct {
-	Listen        string `toml:"listen"`
-	Database      string `toml:"database"`
-	RunnerListen  string `toml:"runner_listen"`
-	RunnerTLSCert string `toml:"runner_tls_cert"`
-	RunnerTLSKey  string `toml:"runner_tls_key"`
-	path          string
+	Listen                  string `toml:"listen"`
+	Database                string `toml:"database"`
+	RunnerListen            string `toml:"runner_listen"`
+	RunnerTLSCert           string `toml:"runner_tls_cert"`
+	RunnerTLSKey            string `toml:"runner_tls_key"`
+	WebhookListen           string `toml:"webhook_listen"`
+	WebhookTLSCert          string `toml:"webhook_tls_cert"`
+	WebhookTLSKey           string `toml:"webhook_tls_key"`
+	GitHubWebhookSecretFile string `toml:"github_webhook_secret_file"`
+	path                    string
 }
 
 func loadServerBootstrapConfig(dataRoot string) (serverBootstrapConfig, error) {
@@ -65,6 +69,10 @@ func loadServerBootstrapConfig(dataRoot string) (serverBootstrapConfig, error) {
 	config.RunnerListen = strings.TrimSpace(config.RunnerListen)
 	config.RunnerTLSCert = resolveConfigPath(absolute, config.RunnerTLSCert)
 	config.RunnerTLSKey = resolveConfigPath(absolute, config.RunnerTLSKey)
+	config.WebhookListen = strings.TrimSpace(config.WebhookListen)
+	config.WebhookTLSCert = resolveConfigPath(absolute, config.WebhookTLSCert)
+	config.WebhookTLSKey = resolveConfigPath(absolute, config.WebhookTLSKey)
+	config.GitHubWebhookSecretFile = resolveConfigPath(absolute, config.GitHubWebhookSecretFile)
 	if config.Database != "" && !filepath.IsAbs(config.Database) {
 		config.Database = filepath.Join(filepath.Dir(absolute), config.Database)
 	}

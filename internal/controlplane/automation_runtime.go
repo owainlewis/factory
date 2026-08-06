@@ -630,6 +630,9 @@ func (service *AutomationService) Test(
 		}
 		return protocol.TestAutomationResult{Matches: []protocol.AutomationMatch{}, NextDueAt: &next}, nil
 	}
+	if detail.Automation.Trigger.Type == protocol.AutomationTriggerGitHubWebhook {
+		return protocol.TestAutomationResult{}, conflict("webhook_test_requires_delivery", "send a signed GitHub pull_request delivery to test this Automation")
+	}
 	if err := service.acquireSlot(ctx); err != nil {
 		return protocol.TestAutomationResult{}, &ServiceError{
 			Code: "automation_test_busy", Message: "Automation Test could not start before the request deadline", Status: 503, Err: err,
@@ -854,7 +857,7 @@ func (s *Store) reserveDueAutomation(ctx context.Context) (automationEvaluation,
 	var id string
 	err = tx.QueryRowContext(ctx, `
 		SELECT id FROM automations
-		WHERE enabled = 1 AND trigger_type != 'schedule' AND evaluation_token IS NULL
+		WHERE enabled = 1 AND trigger_type IN ('github_issue', 'github_pull_request') AND evaluation_token IS NULL
 		  AND next_check_at IS NOT NULL AND next_check_at <= ?
 		ORDER BY next_check_at, id LIMIT 1
 	`, now).Scan(&id)

@@ -343,6 +343,12 @@ type Run struct {
 	JobCount                   int                `json:"job_count"`
 	ConcurrencyLimit           int                `json:"concurrency_limit"`
 	RepositoryRemoteIdentities []string           `json:"repository_remote_identities"`
+	DeliveryID                 string             `json:"delivery_id,omitempty"`
+	Event                      string             `json:"event,omitempty"`
+	Action                     string             `json:"action,omitempty"`
+	PullRequestNumber          int                `json:"pull_request_number,omitempty"`
+	PullRequestURL             string             `json:"pull_request_url,omitempty"`
+	ObservedHeadCommit         string             `json:"observed_head_commit,omitempty"`
 	AdmittedAt                 time.Time          `json:"admitted_at"`
 	UpdatedAt                  time.Time          `json:"updated_at"`
 }
@@ -547,6 +553,7 @@ const (
 	AutomationTriggerGitHubIssue       = "github_issue"
 	AutomationTriggerGitHubPullRequest = "github_pull_request"
 	AutomationTriggerSchedule          = "schedule"
+	AutomationTriggerGitHubWebhook     = "github_webhook"
 )
 
 type GitHubIssueTrigger struct {
@@ -571,6 +578,11 @@ type ScheduleTrigger struct {
 	Timezone string `json:"timezone"`
 }
 
+type GitHubWebhookTrigger struct {
+	Type    string   `json:"type"`
+	Actions []string `json:"actions"`
+}
+
 // AutomationTrigger is a strict flat tagged union. UnmarshalJSON rejects fields
 // that do not belong to the selected concrete trigger type.
 type AutomationTrigger struct {
@@ -582,6 +594,7 @@ type AutomationTrigger struct {
 	PollIntervalSeconds int
 	Cron                string
 	Timezone            string
+	Actions             []string
 }
 
 func (trigger *AutomationTrigger) UnmarshalJSON(body []byte) error {
@@ -625,6 +638,13 @@ func (trigger *AutomationTrigger) UnmarshalJSON(body []byte) error {
 		}
 		*trigger = AutomationTrigger{Type: value.Type, Cron: value.Cron, Timezone: value.Timezone}
 		return nil
+	case AutomationTriggerGitHubWebhook:
+		var value GitHubWebhookTrigger
+		if err := decode(&value); err != nil {
+			return err
+		}
+		*trigger = AutomationTrigger{Type: value.Type, Actions: value.Actions}
+		return nil
 	default:
 		return fmt.Errorf("unsupported Automation trigger type %q", discriminator.Type)
 	}
@@ -645,6 +665,8 @@ func (trigger AutomationTrigger) MarshalJSON() ([]byte, error) {
 		})
 	case AutomationTriggerSchedule:
 		return json.Marshal(ScheduleTrigger{Type: trigger.Type, Cron: trigger.Cron, Timezone: trigger.Timezone})
+	case AutomationTriggerGitHubWebhook:
+		return json.Marshal(GitHubWebhookTrigger{Type: trigger.Type, Actions: trigger.Actions})
 	default:
 		return nil, fmt.Errorf("unsupported Automation trigger type %q", trigger.Type)
 	}
@@ -667,6 +689,10 @@ func (trigger AutomationTrigger) GitHubPullRequest() GitHubPullRequestTrigger {
 
 func (trigger AutomationTrigger) Schedule() ScheduleTrigger {
 	return ScheduleTrigger{Type: trigger.Type, Cron: trigger.Cron, Timezone: trigger.Timezone}
+}
+
+func (trigger AutomationTrigger) GitHubWebhook() GitHubWebhookTrigger {
+	return GitHubWebhookTrigger{Type: trigger.Type, Actions: append([]string(nil), trigger.Actions...)}
 }
 
 type AutomationHealth struct {
@@ -729,6 +755,9 @@ type AutomationOccurrence struct {
 	ObservedDraft      *bool                  `json:"observed_draft,omitempty"`
 	ObservedBaseBranch string                 `json:"observed_base_branch,omitempty"`
 	ObservedHeadCommit string                 `json:"observed_head_commit,omitempty"`
+	DeliveryID         string                 `json:"delivery_id,omitempty"`
+	Event              string                 `json:"event,omitempty"`
+	Action             string                 `json:"action,omitempty"`
 	Kind               string                 `json:"kind,omitempty"`
 	ScheduledAt        *time.Time             `json:"scheduled_at,omitempty"`
 	RunRequestKey      string                 `json:"run_request_key,omitempty"`
