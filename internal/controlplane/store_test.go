@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -960,6 +962,143 @@ func registerTestWorker(t *testing.T, store *Store, id string, capacity int, rep
 		t.Fatal(err)
 	}
 	return worker
+}
+
+func TestWorkerRegistrationUsesSharedCapacityRange(t *testing.T) {
+	store := newTestStore(t)
+	for index, capacity := range []int{protocol.MinWorkerCapacity, protocol.MaxWorkerCapacity} {
+		worker := registerTestWorker(t, store, fmt.Sprintf("capacity-worker-%d", index), capacity)
+		if worker.Capacity != capacity {
+			t.Fatalf("registered capacity = %d; want %d", worker.Capacity, capacity)
+		}
+	}
+
+	for _, test := range []struct {
+		name        string
+		capacity    int
+		activeCount int
+	}{
+		{name: "below minimum", capacity: protocol.MinWorkerCapacity - 1},
+		{name: "above maximum", capacity: protocol.MaxWorkerCapacity + 1},
+		{name: "active exceeds capacity", capacity: 10, activeCount: 11},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := store.RegisterWorker(context.Background(), "invalid-"+test.name, protocol.WorkerRegistration{
+				Name: "invalid", WorkerVersion: "test", RuntimeVersion: "test",
+				Capacity: test.capacity, ActiveCount: test.activeCount, Health: "healthy",
+			})
+			assertErrorCode(t, err, "invalid_capacity")
+			if err == nil || !strings.Contains(err.Error(), "capacity must be 1 through 100") {
+				t.Fatalf("capacity error = %v", err)
+			}
+		})
+	}
+}
+
+func TestFreshSchemaAcceptsWorkerCapacityRange(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.db.Exec(`
+		INSERT INTO workers(
+			id, name, worker_version, runtime_version, runtime, capacity, active_count,
+			health, retained_worktrees_json, registered_at, last_heartbeat
+		) VALUES ('schema-capacity', 'schema', 'test', 'test', 'codex', 100, 0,
+			'healthy', '[]', 1, 1)
+	`); err != nil {
+		t.Fatalf("fresh schema rejected capacity 100: %v", err)
+	}
+	if _, err := store.db.Exec(`
+		UPDATE workers SET capacity = 101 WHERE id = 'schema-capacity'
+	`); err == nil {
+		t.Fatal("fresh schema accepted capacity 101")
+	}
+}
+
+func TestWorkerCapacityMigrationUpgradesExistingDatabase(t *testing.T) {
+	path := t.TempDir() + "/worker-capacity.sqlite3"
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := migrations.Files.ReadFile("001_controlplane.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial = []byte(strings.Replace(
+		string(initial),
+		"capacity BETWEEN 1 AND 100",
+		"capacity BETWEEN 1 AND 4",
+		1,
+	))
+	if _, err := database.Exec(string(initial)); err != nil {
+		t.Fatalf("apply legacy schema: %v", err)
+	}
+	for version, migrationName := range []string{
+		"002_attempt_capacity_handoff.sql", "003_task_list_pagination.sql",
+		"004_worker_runtime.sql", "005_metrics_indexes.sql", "006_execution_retries.sql",
+		"007_worker_source_access.sql", "008_managed_repositories.sql", "009_workflows.sql",
+		"010_github_issue_automations.sql", "011_github_pull_request_automations.sql",
+		"012_schedule_automations.sql", "013_legacy_poller_migration.sql",
+		"014_workflow_automation_titles.sql", "015_codex_weekly_limit.sql",
+	} {
+		body, readErr := migrations.Files.ReadFile(migrationName)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, execErr := database.Exec(string(body)); execErr != nil {
+			t.Fatalf("apply %s: %v", migrationName, execErr)
+		}
+		if _, execErr := database.Exec(
+			`INSERT INTO schema_migrations(version, applied_at) VALUES (?, 1)`,
+			version+2,
+		); execErr != nil {
+			t.Fatalf("record %s: %v", migrationName, execErr)
+		}
+	}
+	if _, err := database.Exec(`
+		INSERT INTO schema_migrations(version, applied_at) VALUES (1, 1);
+		INSERT INTO workers(
+			id, name, worker_version, runtime_version, runtime, capacity, active_count,
+			health, retained_worktrees_json, registered_at, last_heartbeat
+		) VALUES ('existing-worker', 'Existing worker', 'old', 'old', 'codex', 4, 0,
+			'healthy', '[]', 1, 1);
+		INSERT INTO repositories(id, remote_identity, created_at)
+		VALUES ('existing-repository', 'github.com/example/existing', 1);
+		INSERT INTO worker_repositories(
+			worker_id, display_key, repository_id, updated_at
+		) VALUES ('existing-worker', 'existing', 'existing-repository', 1);
+	`); err != nil {
+		t.Fatalf("seed legacy database: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := createDatabaseMarker(path + ".v2-control-plane"); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("open upgraded database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	worker := registerTestWorker(t, store, "existing-worker", 10)
+	if worker.Capacity != 10 {
+		t.Fatalf("upgraded worker capacity = %d; want 10", worker.Capacity)
+	}
+	var repositoryCount int
+	if err := store.db.QueryRow(`
+		SELECT COUNT(*) FROM worker_repositories
+		WHERE worker_id = 'existing-worker' AND repository_id = 'existing-repository'
+	`).Scan(&repositoryCount); err != nil {
+		t.Fatal(err)
+	}
+	if repositoryCount != 1 {
+		t.Fatalf("migrated worker repository rows = %d; want 1", repositoryCount)
+	}
 }
 
 func createManagedTestRepository(t *testing.T, store *Store, remoteIdentity string) protocol.ManagedRepository {
@@ -1944,10 +2083,17 @@ func TestDatabaseUsesWALAndRefusesAnUnmarkedExistingDatabase(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
+	for _, protected := range []string{path, path + ".v2-control-plane"} {
+		if err := os.Chmod(protected, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	reopened, err := Open(context.Background(), path)
 	if err != nil {
 		t.Fatalf("reopen marked database: %v", err)
 	}
+	assertFilePermissions(t, path, 0o600)
+	assertFilePermissions(t, path+".v2-control-plane", 0o600)
 	if err := reopened.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -1966,6 +2112,189 @@ func TestDatabaseUsesWALAndRefusesAnUnmarkedExistingDatabase(t *testing.T) {
 	}
 	if string(after) != string(original) {
 		t.Fatal("unmarked database was modified")
+	}
+}
+
+func TestDatabaseFilesUseOwnerOnlyPermissionsInExistingDirectory(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "configured")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "factory.sqlite3")
+	store, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.db.Exec(`CREATE TABLE permission_test (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, protected := range []string{path, path + ".v2-control-plane", path + "-wal", path + "-shm"} {
+		assertFilePermissions(t, protected, 0o600)
+	}
+}
+
+func TestPrepareDatabasePathCorrectsExistingFilePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "factory.sqlite3")
+	files := map[string]string{
+		path:                       "existing database",
+		path + ".v2-control-plane": "factory-v2-control-plane\n",
+		path + "-wal":              "existing WAL",
+		path + "-shm":              "existing shared memory",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(name, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(name, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := prepareDatabasePath(path); err != nil {
+		t.Fatal(err)
+	}
+	for name := range files {
+		assertFilePermissions(t, name, 0o600)
+	}
+}
+
+func TestPrepareDatabasePathRejectsSymlinkSidecar(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "factory.sqlite3")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".v2-control-plane", []byte("factory-v2-control-plane\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "target")
+	if err := os.WriteFile(target, []byte("do not modify"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path+"-wal"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := prepareDatabasePath(path)
+	if err == nil || !strings.Contains(err.Error(), "database WAL must be a regular non-symlink file") {
+		t.Fatalf("prepare database error = %v", err)
+	}
+	assertFilePermissions(t, target, 0o644)
+}
+
+func TestPrepareDatabasePathRejectsWritableDatabaseDirectory(t *testing.T) {
+	for _, mode := range []os.FileMode{0o770, 0o707} {
+		t.Run(fmt.Sprintf("%#o", mode), func(t *testing.T) {
+			directory := filepath.Join(t.TempDir(), "writable")
+			if err := os.Mkdir(directory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(directory, mode); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(directory, "factory.sqlite3")
+
+			_, err := prepareDatabasePath(path)
+			if err == nil || !strings.Contains(err.Error(), "database directory must not be writable by group or other users") {
+				t.Fatalf("prepare database error = %v", err)
+			}
+			for _, unexpected := range []string{path, path + ".v2-control-plane"} {
+				if _, err := os.Lstat(unexpected); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unsafe directory startup created %s: %v", unexpected, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateDatabaseDirectoryRejectsDifferentOwner(t *testing.T) {
+	directory := t.TempDir()
+	info, err := os.Lstat(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("directory metadata = %T", info.Sys())
+	}
+
+	err = validateDatabaseDirectory(directory, stat.Uid+1)
+	if err == nil || !strings.Contains(err.Error(), "database directory must be owned by effective user") {
+		t.Fatalf("validate database directory error = %v", err)
+	}
+}
+
+func TestPrepareDatabasePathRejectsWritableAncestor(t *testing.T) {
+	ancestor := filepath.Join(t.TempDir(), "writable-ancestor")
+	directory := filepath.Join(ancestor, "database")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(ancestor, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "factory.sqlite3")
+
+	_, err := prepareDatabasePath(path)
+	if err == nil || !strings.Contains(err.Error(), "database path ancestor must not be group or world writable") {
+		t.Fatalf("prepare database error = %v", err)
+	}
+	for _, unexpected := range []string{path, path + ".v2-control-plane"} {
+		if _, err := os.Lstat(unexpected); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unsafe ancestor startup created %s: %v", unexpected, err)
+		}
+	}
+}
+
+func TestPrepareDatabasePathRejectsSymlinkFromWritableSource(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "unsafe-source")
+	target := filepath.Join(root, "safe-target")
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(source, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(source, "database")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(source, "database", "factory.sqlite3")
+
+	_, err := prepareDatabasePath(path)
+	if err == nil || !strings.Contains(err.Error(), "configured database path ancestor must not be group or world writable") {
+		t.Fatalf("prepare database error = %v", err)
+	}
+	for _, unexpected := range []string{
+		filepath.Join(target, "factory.sqlite3"),
+		filepath.Join(target, "factory.sqlite3.v2-control-plane"),
+	} {
+		if _, err := os.Lstat(unexpected); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unsafe source path created %s: %v", unexpected, err)
+		}
+	}
+}
+
+func assertFilePermissions(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s permissions = %#o, want %#o", path, got, want)
 	}
 }
 
@@ -2030,7 +2359,7 @@ func TestDatabaseMarkerInitializationFailuresAreRecoverable(t *testing.T) {
 				t.Fatalf("failed marker still exists: %v", err)
 			}
 
-			if err := prepareDatabasePath(path); err != nil {
+			if _, err := prepareDatabasePath(path); err != nil {
 				t.Fatalf("retry marker initialization: %v", err)
 			}
 			body, err := os.ReadFile(marker)
