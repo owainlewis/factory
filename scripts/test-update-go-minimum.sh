@@ -2,6 +2,10 @@
 set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if ! grep -Eq 'git add go\.mod \.release/go-version ' "$repository_root/.github/workflows/go-security.yml"; then
+  echo "Go security workflow does not stage the release toolchain pin" >&2
+  exit 1
+fi
 fixture="$(mktemp -d)"
 trap 'rm -rf "$fixture"' EXIT
 
