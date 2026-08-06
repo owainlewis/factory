@@ -45,6 +45,14 @@ format-check:
 vet:
     go vet ./...
 
+# Fail on reachable Go vulnerabilities using the supported patched toolchain.
+vuln:
+    go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+# Run correctness and dead-code checks without style-only churn.
+staticcheck:
+    go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 -checks 'SA*,U1000' ./...
+
 # Prove workers do not import control-plane implementation code.
 boundary:
     @! go list -deps ./internal/worker | grep -qx 'github.com/owainlewis/factory/internal/controlplane'
@@ -60,10 +68,19 @@ test-worker-race:
 # Test the Node-free build and Just command surface.
 test-tooling:
     ./scripts/test-build.sh
+    ./scripts/test-update-go-minimum.sh
 
 # Test local startup, readiness, and signal handling.
 test-launcher:
     ./scripts/test-run-local.sh
 
+# Build a tagged release set from the current checkout.
+release version commit output="dist":
+    ./scripts/release.sh "{{version}}" "{{commit}}" "{{output}}"
+
+# Rebuild twice and verify every release target and native version output.
+test-release:
+    ./scripts/test-release.sh
+
 # Run the normal local and CI checks, excluding the slower browser suite.
-check: format-check vet boundary test ui-check test-tooling test-launcher
+check: format-check vet vuln staticcheck boundary test ui-check test-tooling test-launcher
