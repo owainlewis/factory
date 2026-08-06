@@ -2,6 +2,8 @@ package worker
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -110,12 +112,18 @@ func TestUnchangedHealthCheckPreservesPendingClaim(t *testing.T) {
 	}
 }
 
-func TestChangedHealthCheckInvalidatesPendingClaim(t *testing.T) {
+func TestUnrelatedRuntimeHealthChangePreservesPendingClaimForValidation(t *testing.T) {
 	manager := &Manager{
+		config: Config{Runtime: protocol.RuntimeCodex, Runtimes: []string{protocol.RuntimeCodex, protocol.RuntimePi}},
+		options: Options{RuntimeExecutables: map[string]string{
+			protocol.RuntimeCodex: "codex",
+			protocol.RuntimePi:    "pi",
+		}},
 		health: health{
 			State: "healthy",
 			Capabilities: []protocol.Capability{
 				{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
+				{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimePi, Status: protocol.CapabilityReady},
 			},
 		},
 		registered: true,
@@ -136,15 +144,53 @@ func TestChangedHealthCheckInvalidatesPendingClaim(t *testing.T) {
 	manager.setHealth(next)
 	select {
 	case <-claimContext.Done():
+		t.Fatal("unrelated runtime change cancelled the pending claim")
+	default:
+	}
+	select {
+	case eligible := <-result:
+		if !eligible {
+			t.Fatal("healthy claim was discarded before its required runtime could be validated")
+		}
 	case <-time.After(time.Second):
-		t.Fatal("changed health evidence did not cancel the pending claim")
+		t.Fatal("claim did not finish after refreshed capabilities arrived")
+	}
+	if !manager.supportsRuntime(protocol.RuntimePi) {
+		t.Fatal("unchanged Pi runtime became unavailable")
+	}
+	if manager.supportsRuntime(protocol.RuntimeCodex) {
+		t.Fatal("changed Codex runtime remained available")
+	}
+}
+
+func TestUnhealthyHealthCheckInvalidatesPendingClaim(t *testing.T) {
+	manager := &Manager{
+		health:     health{State: "healthy"},
+		logger:     slog.New(slog.DiscardHandler),
+		registered: true,
+		pending:    make(map[string]context.CancelFunc),
+	}
+	claimContext, cancel, eligible := manager.beginClaim(context.Background(), "claim-1")
+	defer cancel()
+	if !eligible || !manager.beginHealthCheck() {
+		t.Fatal("healthy registered Runner did not begin claim and health check")
+	}
+	result := make(chan bool, 1)
+	go func() {
+		result <- manager.endClaim(claimContext, "claim-1")
+	}()
+	manager.setHealth(health{State: "unhealthy", Error: errors.New("runtime unavailable")})
+	select {
+	case <-claimContext.Done():
+	case <-time.After(time.Second):
+		t.Fatal("unhealthy evidence did not cancel the pending claim")
 	}
 	select {
 	case eligible := <-result:
 		if eligible {
-			t.Fatal("claim became eligible after capabilities changed")
+			t.Fatal("claim became eligible after the Runner became unhealthy")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("claim did not finish after capabilities changed")
+		t.Fatal("claim did not finish after the Runner became unhealthy")
 	}
 }

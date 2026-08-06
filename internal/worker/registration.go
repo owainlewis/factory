@@ -27,7 +27,6 @@ func (manager *Manager) setHealth(value health) bool {
 	if registrationChanged {
 		manager.registrationGeneration++
 		manager.registered = false
-		manager.cancelPendingClaimsLocked()
 	}
 	if value.State != "healthy" {
 		manager.cancelPendingClaimsLocked()

@@ -121,7 +121,10 @@ func (manager *Manager) endClaim(ctx context.Context, requestID string) bool {
 		}
 		if !manager.healthCheckPending {
 			delete(manager.pending, requestID)
-			eligible := manager.health.State == "healthy" && manager.registered
+			// The claim began against an advertised registration. If the probe
+			// changed unrelated capabilities, validate the decoded claim against
+			// the refreshed health instead of discarding the committed response.
+			eligible := manager.health.State == "healthy"
 			manager.stateMutex.Unlock()
 			return eligible
 		}
