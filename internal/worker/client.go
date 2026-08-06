@@ -44,7 +44,11 @@ func newClient(server string, httpClient *http.Client) *client {
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
-	return &client{baseURL: strings.TrimRight(server, "/"), http: httpClient}
+	safeClient := *httpClient
+	safeClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &client{baseURL: strings.TrimRight(server, "/"), http: &safeClient}
 }
 
 func (client *client) enroll(ctx context.Context, workerID, enrollmentToken, credentialPath string) error {
