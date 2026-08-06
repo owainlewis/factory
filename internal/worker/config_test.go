@@ -60,6 +60,24 @@ func TestLoadConfigPreservesCodexPrimaryWhenAddingRuntimes(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAcceptsRemoteRunnerSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "remote.toml")
+	body := "server = \"https://factory.example.com:7443\"\nname = \"build-vm\"\n" +
+		"enrollment_token = \"factory_enroll_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n" +
+		"ca_certificate = \"tls/ca.crt\"\n[labels]\nregion = \"eu-west\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.CACertificate != filepath.Join(filepath.Dir(path), "tls", "ca.crt") ||
+		config.Labels["region"] != "eu-west" {
+		t.Fatalf("remote config = %#v", config)
+	}
+}
+
 func TestWorkerCapacityUsesSharedRange(t *testing.T) {
 	for _, capacity := range []int{protocol.MinWorkerCapacity, protocol.MaxWorkerCapacity} {
 		config := Config{

@@ -26,15 +26,18 @@ type RepositoryConfig struct {
 }
 
 type Config struct {
-	Server        string                      `toml:"server"`
-	Name          string                      `toml:"name"`
-	Runtime       string                      `toml:"runtime"`
-	Runtimes      []string                    `toml:"runtimes"`
-	MaxConcurrent int                         `toml:"max_concurrent"`
-	DataDirectory string                      `toml:"data_directory"`
-	SourceAccess  []string                    `toml:"source_access"`
-	Repositories  map[string]RepositoryConfig `toml:"repositories"`
-	path          string
+	Server          string                      `toml:"server"`
+	Name            string                      `toml:"name"`
+	Labels          map[string]string           `toml:"labels"`
+	EnrollmentToken string                      `toml:"enrollment_token"`
+	CACertificate   string                      `toml:"ca_certificate"`
+	Runtime         string                      `toml:"runtime"`
+	Runtimes        []string                    `toml:"runtimes"`
+	MaxConcurrent   int                         `toml:"max_concurrent"`
+	DataDirectory   string                      `toml:"data_directory"`
+	SourceAccess    []string                    `toml:"source_access"`
+	Repositories    map[string]RepositoryConfig `toml:"repositories"`
+	path            string
 }
 
 type Repository struct {
@@ -64,6 +67,11 @@ func LoadConfig(path string) (Config, error) {
 		config.Server = defaultServer
 	}
 	config.Runtime = strings.ToLower(strings.TrimSpace(config.Runtime))
+	config.EnrollmentToken = strings.TrimSpace(config.EnrollmentToken)
+	config.CACertificate = strings.TrimSpace(config.CACertificate)
+	if config.CACertificate != "" && !filepath.IsAbs(config.CACertificate) {
+		config.CACertificate = filepath.Join(filepath.Dir(path), config.CACertificate)
+	}
 	for index := range config.Runtimes {
 		config.Runtimes[index] = strings.ToLower(strings.TrimSpace(config.Runtimes[index]))
 	}
@@ -112,8 +120,23 @@ func validateConfig(config Config) error {
 	if err := validateServerURL(config.Server); err != nil {
 		return err
 	}
+	remote := strings.HasPrefix(config.Server, "https://")
+	if !remote && (config.EnrollmentToken != "" || config.CACertificate != "") {
+		return errors.New("enrollment_token and ca_certificate require a remote HTTPS server")
+	}
+	if config.EnrollmentToken != "" && (len(config.EnrollmentToken) < 32 || len(config.EnrollmentToken) > 1024) {
+		return errors.New("enrollment_token must contain between 32 and 1024 bytes")
+	}
 	if strings.TrimSpace(config.Name) == "" || len(config.Name) > 200 {
 		return errors.New("name is required and must be at most 200 bytes")
+	}
+	if len(config.Labels) > 20 {
+		return errors.New("labels may contain at most 20 entries")
+	}
+	for key, value := range config.Labels {
+		if strings.TrimSpace(key) == "" || key != strings.TrimSpace(key) || len(key) > 100 || len(strings.TrimSpace(value)) > 200 {
+			return errors.New("label keys must be trimmed and at most 100 bytes; values must be at most 200 bytes")
+		}
 	}
 	primaryRuntime := config.Runtime
 	if primaryRuntime == "" {
@@ -186,15 +209,18 @@ func validateServerURL(value string) error {
 	if err != nil {
 		return fmt.Errorf("parse server URL: %w", err)
 	}
-	if parsed.Scheme != "http" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return errors.New("server must be a plain loopback HTTP URL without credentials, query, or fragment")
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("server must be an HTTP or HTTPS URL without credentials, query, or fragment")
 	}
 	if parsed.Path != "" && parsed.Path != "/" {
 		return errors.New("server URL must not contain a path")
 	}
 	host := parsed.Hostname()
 	if host == "" || parsed.Port() == "" {
-		return errors.New("server URL must include a loopback host and port")
+		return errors.New("server URL must include a host and port")
+	}
+	if parsed.Scheme == "https" {
+		return nil
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		if !ip.IsLoopback() {

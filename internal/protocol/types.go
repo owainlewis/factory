@@ -101,6 +101,7 @@ type WeeklyLimit struct {
 
 type WorkerRegistration struct {
 	Name                       string                   `json:"name"`
+	Labels                     map[string]string        `json:"labels,omitempty"`
 	WorkerVersion              string                   `json:"worker_version"`
 	Runtime                    string                   `json:"runtime"`
 	RuntimeVersion             string                   `json:"runtime_version"`
@@ -169,6 +170,7 @@ type SetManagedRepositoryEnabledRequest struct {
 type Worker struct {
 	ID                         string             `json:"id"`
 	Name                       string             `json:"name"`
+	Labels                     map[string]string  `json:"labels,omitempty"`
 	WorkerVersion              string             `json:"worker_version"`
 	Runtime                    string             `json:"runtime"`
 	RuntimeVersion             string             `json:"runtime_version"`
@@ -185,6 +187,25 @@ type Worker struct {
 	CurrentTaskTitle           string             `json:"current_task_title,omitempty"`
 	RegisteredAt               time.Time          `json:"registered_at"`
 	LastHeartbeat              time.Time          `json:"last_heartbeat"`
+}
+
+type RunnerEnrollment struct {
+	WorkerID        string    `json:"worker_id"`
+	EnrollmentToken string    `json:"enrollment_token"`
+	ExpiresAt       time.Time `json:"expires_at"`
+}
+
+type CreateRunnerEnrollmentRequest struct {
+	WorkerID string `json:"worker_id"`
+}
+
+type ExchangeRunnerEnrollmentRequest struct {
+	WorkerID        string `json:"worker_id"`
+	EnrollmentToken string `json:"enrollment_token"`
+}
+
+type RunnerCredential struct {
+	Credential string `json:"credential"`
 }
 
 type CreateTaskRequest struct {

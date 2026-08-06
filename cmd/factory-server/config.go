@@ -12,9 +12,12 @@ import (
 )
 
 type serverBootstrapConfig struct {
-	Listen   string `toml:"listen"`
-	Database string `toml:"database"`
-	path     string
+	Listen        string `toml:"listen"`
+	Database      string `toml:"database"`
+	RunnerListen  string `toml:"runner_listen"`
+	RunnerTLSCert string `toml:"runner_tls_cert"`
+	RunnerTLSKey  string `toml:"runner_tls_key"`
+	path          string
 }
 
 func loadServerBootstrapConfig(dataRoot string) (serverBootstrapConfig, error) {
@@ -59,8 +62,19 @@ func loadServerBootstrapConfig(dataRoot string) (serverBootstrapConfig, error) {
 	config.path = absolute
 	config.Listen = strings.TrimSpace(config.Listen)
 	config.Database = strings.TrimSpace(config.Database)
+	config.RunnerListen = strings.TrimSpace(config.RunnerListen)
+	config.RunnerTLSCert = resolveConfigPath(absolute, config.RunnerTLSCert)
+	config.RunnerTLSKey = resolveConfigPath(absolute, config.RunnerTLSKey)
 	if config.Database != "" && !filepath.IsAbs(config.Database) {
 		config.Database = filepath.Join(filepath.Dir(absolute), config.Database)
 	}
 	return config, nil
+}
+
+func resolveConfigPath(configPath, value string) string {
+	value = strings.TrimSpace(value)
+	if value != "" && !filepath.IsAbs(value) {
+		return filepath.Join(filepath.Dir(configPath), value)
+	}
+	return value
 }
