@@ -7,22 +7,33 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 
 	"github.com/owainlewis/factory/internal/protocol"
 )
 
 type normalizedRunRequest struct {
+	RequestKey       string            `json:"request_key"`
+	DefinitionID     string            `json:"definition_id"`
+	RepositoryIDs    []string          `json:"repository_ids"`
+	ConcurrencyLimit int               `json:"concurrency_limit"`
+	Parameters       map[string]string `json:"parameters"`
+}
+
+type legacyNormalizedRunRequest struct {
 	RequestKey   string            `json:"request_key"`
 	DefinitionID string            `json:"definition_id"`
 	RepositoryID string            `json:"repository_id"`
 	Parameters   map[string]string `json:"parameters"`
 }
 
+const defaultRunConcurrency = 3
+
 func normalizeRunRequest(input protocol.CreateRunRequest) (normalizedRunRequest, []byte, error) {
 	value := normalizedRunRequest{
 		RequestKey: strings.TrimSpace(input.RequestKey), DefinitionID: strings.TrimSpace(input.DefinitionID),
-		RepositoryID: strings.TrimSpace(input.RepositoryID), Parameters: input.Parameters,
+		ConcurrencyLimit: input.ConcurrencyLimit, Parameters: input.Parameters,
 	}
 	if value.RequestKey == "" || len(value.RequestKey) > 200 {
 		return value, nil, invalid("invalid_request_key", "request_key is required and limited to 200 bytes")
@@ -30,8 +41,37 @@ func normalizeRunRequest(input protocol.CreateRunRequest) (normalizedRunRequest,
 	if value.DefinitionID == "" {
 		return value, nil, invalid("definition_required", "definition_id is required")
 	}
-	if value.RepositoryID == "" {
-		return value, nil, invalid("repository_required", "repository_id is required")
+	if strings.TrimSpace(input.RepositoryID) != "" && len(input.RepositoryIDs) > 0 {
+		return value, nil, invalid("ambiguous_repositories", "use repository_ids or repository_id, not both")
+	}
+	value.RepositoryIDs = append([]string(nil), input.RepositoryIDs...)
+	if len(value.RepositoryIDs) == 0 && strings.TrimSpace(input.RepositoryID) != "" {
+		value.RepositoryIDs = []string{input.RepositoryID}
+	}
+	seen := make(map[string]struct{}, len(value.RepositoryIDs))
+	for index, repositoryID := range value.RepositoryIDs {
+		repositoryID = strings.TrimSpace(repositoryID)
+		if repositoryID == "" {
+			return value, nil, invalid("repository_required", "repository_ids cannot contain an empty value")
+		}
+		if _, duplicate := seen[repositoryID]; duplicate {
+			return value, nil, invalid("duplicate_repository", "each repository may be selected only once")
+		}
+		seen[repositoryID] = struct{}{}
+		value.RepositoryIDs[index] = repositoryID
+	}
+	if len(value.RepositoryIDs) == 0 {
+		return value, nil, invalid("repository_required", "at least one repository_id is required")
+	}
+	if len(value.RepositoryIDs) > 200 {
+		return value, nil, invalid("too_many_repositories", "a Run is limited to 200 repositories")
+	}
+	sort.Strings(value.RepositoryIDs)
+	if value.ConcurrencyLimit == 0 {
+		value.ConcurrencyLimit = defaultRunConcurrency
+	}
+	if value.ConcurrencyLimit < 1 || value.ConcurrencyLimit > 100 {
+		return value, nil, invalid("invalid_concurrency_limit", "concurrency_limit must be between 1 and 100")
 	}
 	parameters, err := normalizeDefinitionInputs(value.Parameters)
 	if err != nil {
@@ -44,6 +84,21 @@ func normalizeRunRequest(input protocol.CreateRunRequest) (normalizedRunRequest,
 	}
 	digest := sha256.Sum256(body)
 	return value, digest[:], nil
+}
+
+func legacyRunRequestDigest(value normalizedRunRequest) ([]byte, error) {
+	if len(value.RepositoryIDs) != 1 || value.ConcurrencyLimit != defaultRunConcurrency {
+		return nil, nil
+	}
+	body, err := json.Marshal(legacyNormalizedRunRequest{
+		RequestKey: value.RequestKey, DefinitionID: value.DefinitionID,
+		RepositoryID: value.RepositoryIDs[0], Parameters: value.Parameters,
+	})
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	digest := sha256.Sum256(body)
+	return digest[:], nil
 }
 
 func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) (protocol.RunDetail, bool, error) {
@@ -61,7 +116,15 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 	err = tx.QueryRowContext(ctx, `SELECT id, request_digest FROM runs WHERE request_key = ?`, value.RequestKey).
 		Scan(&existingID, &storedDigest)
 	if err == nil {
-		if !bytes.Equal(storedDigest, digest) {
+		matches := bytes.Equal(storedDigest, digest)
+		if !matches {
+			legacyDigest, digestErr := legacyRunRequestDigest(value)
+			if digestErr != nil {
+				return protocol.RunDetail{}, false, digestErr
+			}
+			matches = legacyDigest != nil && bytes.Equal(storedDigest, legacyDigest)
+		}
+		if !matches {
 			return protocol.RunDetail{}, false, conflict("request_key_conflict", "request_key was already used with different Run inputs")
 		}
 		if err := tx.Commit(); err != nil {
@@ -100,38 +163,43 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
 
-	var repositoryIdentity string
-	var repositoryEnabled, repositoryCentrallyManaged, repositoryAdvertised int
-	err = tx.QueryRowContext(ctx, `
-		SELECT repository.remote_identity, repository.enabled, repository.centrally_managed,
-		       EXISTS (
-		           SELECT 1 FROM worker_repositories available
-		           WHERE available.repository_id = repository.id
-		             AND available.advertised = 1
-		             AND available.dynamic = 0
-		       )
-		FROM repositories repository
-		WHERE repository.id = ?
-	`, value.RepositoryID).
-		Scan(&repositoryIdentity, &repositoryEnabled, &repositoryCentrallyManaged, &repositoryAdvertised)
-	if errors.Is(err, sql.ErrNoRows) {
-		return protocol.RunDetail{}, false, conflict("repository_not_available", "repository is not configured on a Runner or enabled for managed acquisition")
+	type runTarget struct {
+		id       string
+		identity string
 	}
-	if err != nil {
-		return protocol.RunDetail{}, false, unavailable(err)
-	}
-	if !runRepositoryAvailable(repositoryIdentity, repositoryEnabled, repositoryCentrallyManaged, repositoryAdvertised) {
-		return protocol.RunDetail{}, false, conflict("repository_not_available", "repository is not configured on a Runner or enabled for managed acquisition")
-	}
-	if !protocol.AgentPromptFits(snapshot.Name, repositoryIdentity, resolvedPrompt) {
-		return protocol.RunDetail{}, false, invalid("agent_prompt_too_large", "the complete agent prompt exceeds 72 KiB")
+	targets := make([]runTarget, 0, len(value.RepositoryIDs))
+	for _, repositoryID := range value.RepositoryIDs {
+		var repositoryIdentity string
+		var repositoryEnabled, repositoryCentrallyManaged, repositoryAdvertised int
+		err = tx.QueryRowContext(ctx, `
+			SELECT repository.remote_identity, repository.enabled, repository.centrally_managed,
+			       EXISTS (
+			           SELECT 1 FROM worker_repositories available
+			           WHERE available.repository_id = repository.id
+			             AND available.advertised = 1
+			             AND available.dynamic = 0
+			       )
+			FROM repositories repository
+			WHERE repository.id = ?
+		`, repositoryID).Scan(
+			&repositoryIdentity, &repositoryEnabled, &repositoryCentrallyManaged, &repositoryAdvertised,
+		)
+		if errors.Is(err, sql.ErrNoRows) {
+			return protocol.RunDetail{}, false, conflict("repository_not_available", "every repository must be configured on a Runner or enabled for managed acquisition")
+		}
+		if err != nil {
+			return protocol.RunDetail{}, false, unavailable(err)
+		}
+		if !runRepositoryAvailable(repositoryIdentity, repositoryEnabled, repositoryCentrallyManaged, repositoryAdvertised) {
+			return protocol.RunDetail{}, false, conflict("repository_not_available", "every repository must be configured on a Runner or enabled for managed acquisition")
+		}
+		if !protocol.AgentPromptFits(snapshot.Name, repositoryIdentity, resolvedPrompt) {
+			return protocol.RunDetail{}, false, invalid("agent_prompt_too_large", "the complete agent prompt exceeds 72 KiB")
+		}
+		targets = append(targets, runTarget{id: repositoryID, identity: repositoryIdentity})
 	}
 
 	runID, err := newID()
-	if err != nil {
-		return protocol.RunDetail{}, false, unavailable(err)
-	}
-	jobID, err := newID()
 	if err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
@@ -147,36 +215,47 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO runs(
 			id, request_key, request_digest, source_kind, definition_id,
-			definition_snapshot, parameters, admitted_at, updated_at
-		) VALUES (?, ?, ?, 'manual', ?, ?, ?, ?, ?)
-	`, runID, value.RequestKey, digest, snapshot.ID, snapshotJSON, parametersJSON, now, now); err != nil {
+			definition_snapshot, parameters, concurrency_limit, admitted_at, updated_at
+		) VALUES (?, ?, ?, 'manual', ?, ?, ?, ?, ?, ?)
+	`, runID, value.RequestKey, digest, snapshot.ID, snapshotJSON, parametersJSON,
+		value.ConcurrencyLimit, now, now); err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
-
-	selection, routeErr := s.selectRunRoute(ctx, tx, value.RepositoryID, now, "", snapshot.Runtime, snapshot.AllowedTools)
-	jobState := "blocked"
-	blockedReason := "Waiting for a healthy compatible Runner with repository access."
-	var taskID, executionID string
-	if routeErr == nil {
-		taskID, executionID, err = s.insertRunJobExecution(
-			ctx, tx, runID, jobID, snapshot, snapshotJSON, resolvedPrompt, selection, now,
-		)
+	materialized := 0
+	for _, target := range targets {
+		jobID, err := newID()
 		if err != nil {
-			return protocol.RunDetail{}, false, err
+			return protocol.RunDetail{}, false, unavailable(err)
 		}
-		jobState = "queued"
-		blockedReason = ""
-	} else if !serviceErrorCode(routeErr, "no_eligible_worker") {
-		return protocol.RunDetail{}, false, routeErr
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO jobs(
-			id, run_id, repository_id, task_id, execution_id, state,
-			blocked_reason, admitted_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, jobID, runID, value.RepositoryID, nullableString(taskID), nullableString(executionID),
-		jobState, nullableString(blockedReason), now, now); err != nil {
-		return protocol.RunDetail{}, false, unavailable(err)
+		jobState := "blocked"
+		blockedReason := "Waiting for an available Run concurrency slot."
+		var taskID, executionID string
+		if materialized < value.ConcurrencyLimit {
+			selection, routeErr := s.selectRunRoute(ctx, tx, target.id, now, "", snapshot.Runtime, snapshot.AllowedTools)
+			blockedReason = "Waiting for a healthy compatible Runner with repository access."
+			if routeErr == nil {
+				taskID, executionID, err = s.insertRunJobExecution(
+					ctx, tx, runID, jobID, snapshot, snapshotJSON, resolvedPrompt, selection, now,
+				)
+				if err != nil {
+					return protocol.RunDetail{}, false, err
+				}
+				jobState = "queued"
+				blockedReason = ""
+				materialized++
+			} else if !serviceErrorCode(routeErr, "no_eligible_worker") {
+				return protocol.RunDetail{}, false, routeErr
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO jobs(
+				id, run_id, repository_id, repository_identity, task_id, execution_id, state,
+				blocked_reason, admitted_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, jobID, runID, target.id, target.identity, nullableString(taskID), nullableString(executionID),
+			jobState, nullableString(blockedReason), now, now); err != nil {
+			return protocol.RunDetail{}, false, unavailable(err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
@@ -338,6 +417,13 @@ func (s *Store) materializeBlockedJobForWorker(
 			JOIN runs run ON run.id = job.run_id
 			JOIN repositories repository ON repository.id = job.repository_id
 			WHERE job.state = 'blocked' AND job.task_id IS NULL
+			  AND (
+			      SELECT COUNT(*)
+			      FROM jobs active_job
+			      JOIN executions active_execution ON active_execution.id = active_job.execution_id
+			      WHERE active_job.run_id = job.run_id
+			        AND active_execution.state IN ('queued', 'preparing', 'running')
+			  ) < run.concurrency_limit
 		`
 		args := make([]any, 0, 4)
 		if cursor.jobID != "" {
@@ -674,11 +760,12 @@ func (s *Store) Run(ctx context.Context, runID string) (protocol.RunDetail, erro
 	var snapshotJSON, parametersJSON []byte
 	var admittedAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, request_key, source_kind, definition_snapshot, parameters, admitted_at, updated_at
+		SELECT id, request_key, source_kind, definition_snapshot, parameters,
+		       concurrency_limit, admitted_at, updated_at
 		FROM runs WHERE id = ?
 	`, strings.TrimSpace(runID)).Scan(
 		&detail.Run.ID, &detail.Run.RequestKey, &detail.Run.SourceKind, &snapshotJSON,
-		&parametersJSON, &admittedAt, &updatedAt,
+		&parametersJSON, &detail.Run.ConcurrencyLimit, &admittedAt, &updatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return detail, ErrNotFound
@@ -734,7 +821,8 @@ func (s *Store) Job(ctx context.Context, jobID string) (protocol.JobDetail, erro
 	var taskID, executionID, blockedReason sql.NullString
 	var admittedAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT job.id, job.run_id, job.repository_id, repository.remote_identity,
+		SELECT job.id, job.run_id, job.repository_id,
+		       CASE WHEN job.repository_identity = '' THEN repository.remote_identity ELSE job.repository_identity END,
 		       job.task_id, job.execution_id, job.state, job.blocked_reason,
 		       job.admitted_at, job.updated_at
 		FROM jobs job

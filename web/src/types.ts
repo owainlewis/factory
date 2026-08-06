@@ -199,6 +199,7 @@ export interface Run {
   definition: DefinitionSnapshot;
   state: RunState;
   job_count: number;
+  concurrency_limit: number;
   repository_remote_identities: string[];
   admitted_at: string;
   updated_at: string;
@@ -249,7 +250,8 @@ export interface RunRepository {
 export interface CreateRunInput {
   request_key: string;
   definition_id: string;
-  repository_id: string;
+  repository_ids: string[];
+  concurrency_limit: number;
   parameters?: Record<string, string>;
 }
 

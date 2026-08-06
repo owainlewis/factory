@@ -299,10 +299,12 @@ type TaskDetail struct {
 }
 
 type CreateRunRequest struct {
-	RequestKey   string            `json:"request_key"`
-	DefinitionID string            `json:"definition_id"`
-	RepositoryID string            `json:"repository_id"`
-	Parameters   map[string]string `json:"parameters,omitempty"`
+	RequestKey       string            `json:"request_key"`
+	DefinitionID     string            `json:"definition_id"`
+	RepositoryID     string            `json:"repository_id,omitempty"`
+	RepositoryIDs    []string          `json:"repository_ids,omitempty"`
+	ConcurrencyLimit int               `json:"concurrency_limit,omitempty"`
+	Parameters       map[string]string `json:"parameters,omitempty"`
 }
 
 type RunRepository struct {
@@ -317,6 +319,7 @@ type Run struct {
 	Definition                 DefinitionSnapshot `json:"definition"`
 	State                      string             `json:"state"`
 	JobCount                   int                `json:"job_count"`
+	ConcurrencyLimit           int                `json:"concurrency_limit"`
 	RepositoryRemoteIdentities []string           `json:"repository_remote_identities"`
 	AdmittedAt                 time.Time          `json:"admitted_at"`
 	UpdatedAt                  time.Time          `json:"updated_at"`

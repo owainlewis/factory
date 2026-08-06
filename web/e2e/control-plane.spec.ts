@@ -463,7 +463,7 @@ test("creates, edits, and archives one shared Definition", async ({ page }) => {
   browser.assertClean();
 });
 
-test("runs one shared Definition against one repository end to end", async ({ page }) => {
+test("runs one shared Definition across multiple repositories end to end", async ({ page }) => {
   const browser = observeBrowser(page);
   const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
   const definition = await json<{ id: string }>(
@@ -483,12 +483,16 @@ test("runs one shared Definition against one repository end to end", async ({ pa
   await page.goto("/runs?new=true");
   const dialog = page.getByRole("dialog", { name: "Run once" });
   await dialog.getByLabel("Definition", { exact: true }).selectOption(definition.id);
-  await dialog.getByLabel("Repository", { exact: true }).selectOption(identifiers.realFactoryRepository);
+  await dialog.getByLabel("Repositories", { exact: true }).selectOption([
+    identifiers.realFactoryRepository,
+    identifiers.realHandbookRepository,
+  ]);
+  await expect(dialog.getByRole("region", { name: "Run preview" })).toContainText("2 Jobs");
   await dialog.getByRole("button", { name: "Start Run" }).click();
 
   await expect(page.getByRole("heading", { name: "E2E inspect one repository" })).toBeVisible();
-  await expect(page.getByText(identifiers.realFactoryIdentity, { exact: true })).toBeVisible();
-  await expect(page.getByText("Succeeded", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: `View ${identifiers.realFactoryIdentity} Job` })).toBeVisible();
+  await expect(page.getByText("2 of 2 Jobs complete", { exact: false })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("Completed by deterministic fake Codex.", { exact: false })).toBeVisible();
   await expect(page.getByText("Created deterministic worktree evidence.", { exact: false })).toBeVisible();
 
@@ -500,14 +504,14 @@ test("runs one shared Definition against one repository end to end", async ({ pa
       attempts: Array<{ state: string; result: string }>;
     }>;
   }>(await api.get(`/api/v1/runs/${runID}`));
-  expect(run.run).toMatchObject({ id: runID, state: "succeeded", job_count: 1 });
-  expect(run.jobs).toHaveLength(1);
-  expect(run.jobs[0].job).toMatchObject({
-    state: "succeeded",
-    repository_remote_identity: identifiers.realFactoryIdentity,
-  });
-  expect(run.jobs[0].attempts).toHaveLength(1);
-  expect(run.jobs[0].attempts[0].result).toContain("Completed by deterministic fake Codex.");
+  expect(run.run).toMatchObject({ id: runID, state: "succeeded", job_count: 2 });
+  expect(run.jobs).toHaveLength(2);
+  expect(run.jobs.map((job) => job.job.state)).toEqual(["succeeded", "succeeded"]);
+  expect(run.jobs.map((job) => job.job.repository_remote_identity)).toContain(identifiers.realFactoryIdentity);
+  for (const job of run.jobs) {
+    expect(job.attempts).toHaveLength(1);
+    expect(job.attempts[0].result).toContain("Completed by deterministic fake Codex.");
+  }
   await api.dispose();
   browser.assertClean();
 });

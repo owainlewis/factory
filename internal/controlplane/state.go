@@ -687,6 +687,34 @@ func (s *Store) RetryExecution(ctx context.Context, executionID string) (protoco
 	if state != "failed" && state != "cancelled" {
 		return protocol.TaskDetail{}, conflict("retry_not_allowed", "only a failed or cancelled execution can be retried")
 	}
+	var runID string
+	var concurrencyLimit int
+	err = tx.QueryRowContext(ctx, `
+		SELECT job.run_id, run.concurrency_limit
+		FROM jobs job
+		JOIN runs run ON run.id = job.run_id
+		WHERE job.execution_id = ?
+	`, executionID).Scan(&runID, &concurrencyLimit)
+	if err == nil {
+		var activeJobs int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM jobs job
+			JOIN executions execution ON execution.id = job.execution_id
+			WHERE job.run_id = ?
+			  AND execution.state IN ('queued', 'preparing', 'running')
+		`, runID).Scan(&activeJobs); err != nil {
+			return protocol.TaskDetail{}, unavailable(err)
+		}
+		if activeJobs >= concurrencyLimit {
+			return protocol.TaskDetail{}, conflict(
+				"run_concurrency_full",
+				"retry this Job after another active Job in the Run reaches a terminal state",
+			)
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return protocol.TaskDetail{}, unavailable(err)
+	}
 	var capabilities []protocol.Capability
 	if err := json.Unmarshal(encodedCapabilities, &capabilities); err != nil {
 		return protocol.TaskDetail{}, unavailable(err)
