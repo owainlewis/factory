@@ -61,6 +61,10 @@ boundary:
 test:
     go test -timeout 5m ./...
 
+# Race-check worker coordination and process cancellation paths.
+test-worker-race:
+    go test -timeout 5m -race ./internal/worker -run '^(TestPeriodicRegistrationCannotOvertakeRetainedCapacityHandoff|TestConfigurationStableIdentityLockAndHealthRecovery|TestHealthFailureCancelsRetryingClaimBeforeServerRecovery|TestCommittedClaimBecomesFailedWhenHealthChangesBeforeResponse|TestCancellationStopsCompleteProcessGroup)$'
+
 # Test the Node-free build and Just command surface.
 test-tooling:
     ./scripts/test-build.sh

@@ -10,7 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  linux:
+    name: Linux checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -71,3 +72,57 @@ jobs:
             web/playwright-report/
           if-no-files-found: ignore
           retention-days: 14
+
+  macos:
+    name: macos (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: amd64
+            runner: macos-15-intel
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+      - name: Confirm native Darwin architecture
+        run: test "$(go env GOOS)/$(go env GOARCH)" = "darwin/${{ matrix.arch }}"
+      - name: Run Go tests
+        run: go test -timeout 5m ./...
+      - name: Run worker tests with the race detector
+        run: just test-worker-race
+      - name: Build and inspect native binaries
+        env:
+          FACTORY_BUILD_DIR: ${{ runner.temp }}/factory-bin
+        run: |
+          just build
+          test -x "$FACTORY_BUILD_DIR/factory-server"
+          test -x "$FACTORY_BUILD_DIR/factory-worker"
+          go version -m "$FACTORY_BUILD_DIR/factory-server" | grep -F "GOARCH=${{ matrix.arch }}"
+          go version -m "$FACTORY_BUILD_DIR/factory-worker" | grep -F "GOARCH=${{ matrix.arch }}"
+      - name: Test launcher process cleanup
+        run: just test-launcher
+
+  check:
+    name: check
+    if: always()
+    needs: [linux, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every platform check
+        env:
+          LINUX_RESULT: ${{ needs.linux.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+        run: |
+          test "$LINUX_RESULT" = success
+          test "$MACOS_RESULT" = success

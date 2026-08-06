@@ -13,6 +13,15 @@ This guide starts one control plane and one worker on macOS or Linux.
 
 Node.js is not required for normal startup.
 
+## Platform support
+
+Factory supports macOS and Linux. The server, worker, and local launcher are
+tested on both Apple Silicon and Intel macOS runners. There are no intentional
+macOS feature gaps.
+
+Windows is not supported. The launcher and worker lifecycle depend on Unix
+process signals, executable permissions, and shell tools.
+
 ## Configure the control plane
 
 Most control-plane configuration is stored in SQLite and managed through the

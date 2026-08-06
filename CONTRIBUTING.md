@@ -40,6 +40,7 @@ just vet
 just vuln
 just boundary
 just test
+just test-worker-race
 just test-tooling
 just test-launcher
 ```
