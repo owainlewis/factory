@@ -137,6 +137,16 @@ export const api = {
     }>(`/api/v1/definitions?${query}`);
     return { definitions: page.definitions ?? [], next_cursor: page.next_cursor };
   },
+  allDefinitions: async () => {
+    const definitions: DefinitionPage["definitions"] = [];
+    let cursor = "";
+    do {
+      const page = await api.definitions(cursor);
+      definitions.push(...page.definitions);
+      cursor = page.next_cursor ?? "";
+    } while (cursor);
+    return definitions;
+  },
   definition: (id: string) =>
     request<Definition>(`/api/v1/definitions/${encodeURIComponent(id)}`),
   createDefinition: (input: CreateDefinitionInput) =>

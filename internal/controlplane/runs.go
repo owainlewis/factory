@@ -102,6 +102,23 @@ func legacyRunRequestDigest(value normalizedRunRequest) ([]byte, error) {
 }
 
 func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) (protocol.RunDetail, bool, error) {
+	return s.createRun(ctx, input, "manual", nil)
+}
+
+func (s *Store) createScheduledRun(
+	ctx context.Context,
+	input protocol.CreateRunRequest,
+	snapshot protocol.DefinitionSnapshot,
+) (protocol.RunDetail, bool, error) {
+	return s.createRun(ctx, input, "schedule", &snapshot)
+}
+
+func (s *Store) createRun(
+	ctx context.Context,
+	input protocol.CreateRunRequest,
+	sourceKind string,
+	frozenSnapshot *protocol.DefinitionSnapshot,
+) (protocol.RunDetail, bool, error) {
 	value, digest, err := normalizeRunRequest(input)
 	if err != nil {
 		return protocol.RunDetail{}, false, err
@@ -111,11 +128,14 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
 	defer tx.Rollback()
-	var existingID string
+	var existingID, existingSourceKind string
 	var storedDigest []byte
-	err = tx.QueryRowContext(ctx, `SELECT id, request_digest FROM runs WHERE request_key = ?`, value.RequestKey).
-		Scan(&existingID, &storedDigest)
+	err = tx.QueryRowContext(ctx, `SELECT id, request_digest, source_kind FROM runs WHERE request_key = ?`, value.RequestKey).
+		Scan(&existingID, &storedDigest, &existingSourceKind)
 	if err == nil {
+		if existingSourceKind != sourceKind {
+			return protocol.RunDetail{}, false, conflict("request_key_conflict", "request_key was already used by a different Run source")
+		}
 		matches := bytes.Equal(storedDigest, digest)
 		if !matches {
 			legacyDigest, digestErr := legacyRunRequestDigest(value)
@@ -137,17 +157,25 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
 
-	definition, err := scanDefinition(tx.QueryRowContext(ctx, definitionSelect+` WHERE id = ?`, value.DefinitionID))
-	if errors.Is(err, sql.ErrNoRows) {
-		return protocol.RunDetail{}, false, invalid("definition_not_found", "Definition was not found")
+	var snapshot protocol.DefinitionSnapshot
+	if frozenSnapshot != nil {
+		snapshot = *frozenSnapshot
+		if snapshot.ID != value.DefinitionID {
+			return protocol.RunDetail{}, false, conflict("request_key_conflict", "scheduled Definition snapshot does not match definition_id")
+		}
+	} else {
+		definition, definitionErr := scanDefinition(tx.QueryRowContext(ctx, definitionSelect+` WHERE id = ?`, value.DefinitionID))
+		if errors.Is(definitionErr, sql.ErrNoRows) {
+			return protocol.RunDetail{}, false, invalid("definition_not_found", "Definition was not found")
+		}
+		if definitionErr != nil {
+			return protocol.RunDetail{}, false, unavailable(definitionErr)
+		}
+		if definition.Archived {
+			return protocol.RunDetail{}, false, conflict("definition_archived", "archived Definitions cannot start new Runs")
+		}
+		snapshot = definition.Snapshot()
 	}
-	if err != nil {
-		return protocol.RunDetail{}, false, unavailable(err)
-	}
-	if definition.Archived {
-		return protocol.RunDetail{}, false, conflict("definition_archived", "archived Definitions cannot start new Runs")
-	}
-	snapshot := definition.Snapshot()
 	parameters := make(map[string]string, len(snapshot.Inputs))
 	for key, defaultValue := range snapshot.Inputs {
 		parameters[key] = defaultValue
@@ -209,8 +237,8 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 		INSERT INTO runs(
 			id, request_key, request_digest, source_kind, definition_id,
 			definition_snapshot, parameters, concurrency_limit, admitted_at, updated_at
-		) VALUES (?, ?, ?, 'manual', ?, ?, ?, ?, ?, ?)
-	`, runID, value.RequestKey, digest, snapshot.ID, snapshotJSON, parametersJSON,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, runID, value.RequestKey, digest, sourceKind, snapshot.ID, snapshotJSON, parametersJSON,
 		value.ConcurrencyLimit, now, now); err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
 	}

@@ -71,10 +71,10 @@ export function AutomationsView({ onAutomation }: { onAutomation: (id: string) =
   const activeCursor = nextCursor === undefined ? query.data?.next_cursor : nextCursor;
   const items = mergeAutomations(query.data?.automations ?? [], history);
   const repositoryOptions = useMemo(() => Array.from(new Set(
-    items.map((automation) => automation.repository_identity),
+    items.flatMap(automationRepositoryIdentities),
   )).sort(), [items]);
   const visibleItems = items.filter((automation) => {
-    if (repositoryFilter !== "all" && automation.repository_identity !== repositoryFilter) return false;
+    if (repositoryFilter !== "all" && !automationRepositoryIdentities(automation).includes(repositoryFilter)) return false;
     if (statusFilter === "enabled" && !automation.enabled) return false;
     if (statusFilter === "disabled" && automation.enabled) return false;
     return true;
@@ -93,7 +93,7 @@ export function AutomationsView({ onAutomation }: { onAutomation: (id: string) =
       />
       {query.error && <StaleBanner error={query.error} />}
       <div className="view-toolbar">
-        <p>Run coding agents from a saved Markdown runbook, GitHub state, or a schedule.</p>
+        <p>Run shared agent Definitions on demand or on a schedule across your repositories.</p>
         <div className="detail-actions">
           <button className="button button-secondary" onClick={() => setMigrationOpen(true)}>
             <DatabaseBackup size={15} /> Migrate legacy poller
@@ -150,7 +150,7 @@ export function AutomationsView({ onAutomation }: { onAutomation: (id: string) =
               <button className="automation-row" key={automation.id} onClick={() => onAutomation(automation.id)}>
                 <span className="workflow-identity">
                   <strong>{automation.title}</strong>
-                  <small>{automation.repository_identity} · {triggerSummary(automation)}</small>
+                  <small>{automationRepositorySummary(automation)} · {triggerSummary(automation)}</small>
                 </span>
                 <span className="automation-list-health"><HealthBadge automation={automation} /><small>{automation.health.message || "No health detail."}</small></span>
                 <span className="automation-list-copy">
@@ -203,10 +203,12 @@ export function AutomationDetail({
   id,
   onBack,
   onTask,
+  onRun,
 }: {
   id: string;
   onBack: () => void;
   onTask: (id: string) => void;
+  onRun: (id: string) => void;
 }) {
   const queryClient = useQueryClient();
   const interval = useVisibleInterval(3_000);
@@ -297,7 +299,7 @@ export function AutomationDetail({
         <div>
           <HealthBadge automation={automation} />
           <h1>{automation.title}</h1>
-          <p>{triggerSummary(automation)} · {automation.repository_identity}</p>
+          <p>{triggerSummary(automation)} · {automationRepositorySummary(automation)}</p>
         </div>
         <div className="detail-actions">
           <button className="button button-secondary" onClick={() => test.mutate()} disabled={test.isPending}>
@@ -334,8 +336,8 @@ export function AutomationDetail({
           <div>
             <strong>{confirmEnabled ? "Enable this Automation?" : "Disable this Automation?"}</strong>
             <p>{confirmEnabled
-              ? `${automation.workflow_title} · ${automation.repository_identity} · ${triggerSummary(automation)}`
-              : "Future checks and pending dispatches stop. Existing tasks continue."}</p>
+              ? `${automation.definition_name ?? automation.workflow_title} · ${automationRepositorySummary(automation)} · ${triggerSummary(automation)}`
+              : "Future checks and pending dispatches stop. Existing runs continue."}</p>
           </div>
           <button
             className={confirmEnabled ? "button button-primary" : "button button-danger"}
@@ -365,6 +367,7 @@ export function AutomationDetail({
           <span><strong>Latest run</strong><small>{latestRun ? occurrenceIdentity(latestRun) : "No durable run yet."}</small></span>
           {latestRun && latestRunState && <>
             <span className={`status-badge status-${latestRunState.style}`}><span className="status-dot" />{latestRunState.label}</span>
+            {latestRun.run_id && <button className="button button-secondary" onClick={() => onRun(latestRun.run_id!)}>Open latest Run</button>}
             {latestRun.task && <button className="button button-secondary" onClick={() => onTask(latestRun.task!.id)}>Open latest task</button>}
           </>}
         </div>
@@ -387,13 +390,16 @@ export function AutomationDetail({
         <section className="panel detail-main">
           <PanelHeading title="Configuration" aside={`Version ${automation.version}`} />
           <dl className="metadata">
-            <div><dt>Runbook</dt><dd>{automation.workflow_title} · revision {automation.workflow_revision}</dd></div>
-            <div><dt>Repository</dt><dd className="mono">{automation.repository_identity}</dd></div>
             {automation.trigger.type === "schedule" ? <>
+              <div><dt>Definition</dt><dd>{automation.definition_name} · generation {automation.definition_generation}</dd></div>
+              <div><dt>Repositories</dt><dd className="mono">{automationRepositoryIdentities(automation).join(", ")}</dd></div>
+              <div><dt>Concurrency</dt><dd>{automation.concurrency_limit}</dd></div>
               <div><dt>Cron</dt><dd className="mono">{automation.trigger.cron}</dd></div>
               <div><dt>Timezone</dt><dd>{automation.trigger.timezone}</dd></div>
               <div><dt>Next due UTC</dt><dd>{automation.next_due_at ? new Date(automation.next_due_at).toISOString() : "Disabled"}</dd></div>
             </> : <>
+              <div><dt>Runbook</dt><dd>{automation.workflow_title} · revision {automation.workflow_revision}</dd></div>
+              <div><dt>Repository</dt><dd className="mono">{automation.repository_identity}</dd></div>
               <div><dt>{automation.trigger.type === "github_pull_request" ? "Pull request state" : "Issue state"}</dt><dd>{automation.trigger.state}</dd></div>
             {automation.trigger.type === "github_pull_request" && <>
               <div><dt>Drafts</dt><dd>{automation.trigger.include_drafts ? "Included" : "Excluded"}</dd></div>
@@ -402,12 +408,14 @@ export function AutomationDetail({
             <div><dt>Required labels</dt><dd>{automation.trigger.required_labels.join(", ") || "None"}</dd></div>
             <div><dt>Polling</dt><dd>Every {automation.trigger.poll_interval_seconds} seconds</dd></div>
             </>}
-            <div><dt>Timeout</dt><dd>{automation.timeout_seconds} seconds</dd></div>
+            {!automation.definition_id && <div><dt>Timeout</dt><dd>{automation.timeout_seconds} seconds</dd></div>}
           </dl>
         </section>
         <section className="panel">
-          <PanelHeading title="Runbook" aside={runbook.data ? `Revision ${runbook.data.workflow.current_revision.revision_number}` : undefined} />
-          {runbook.isPending ? (
+          <PanelHeading title={automation.definition_id ? "Definition" : "Runbook"} aside={automation.definition_id ? `Generation ${automation.definition_generation}` : runbook.data ? `Revision ${runbook.data.workflow.current_revision.revision_number}` : undefined} />
+          {automation.definition_id ? (
+            <><p><strong>{automation.definition_name}</strong></p><p className="muted">Parameters: {Object.keys(automation.parameters ?? {}).length ? Object.entries(automation.parameters ?? {}).map(([key, value]) => `${key}=${value}`).join(", ") : "defaults"}</p></>
+          ) : runbook.isPending ? (
             <p className="muted">Loading Markdown instructions…</p>
           ) : runbook.data ? (
             <pre className="runbook-copy">{runbook.data.workflow.current_revision.instructions}</pre>
@@ -417,10 +425,10 @@ export function AutomationDetail({
         </section>
       </div>
 
-      <section className="panel automation-context-panel">
+      {!automation.definition_id && <section className="panel automation-context-panel">
         <PanelHeading title="Context for this Automation" />
         <div className="long-copy">{automation.context || "No additional context."}</div>
-      </section>
+      </section>}
 
       <section className="panel">
         <PanelHeading title="Runs" aside={`${occurrenceItems.length} loaded`} />
@@ -444,7 +452,11 @@ export function AutomationDetail({
                         <ExternalLink size={13} /> GitHub source
                       </a>
                     )}
-                    {occurrence.task ? (
+                    {occurrence.run_id ? (
+                      <button className="button button-secondary" onClick={() => onRun(occurrence.run_id!)}>
+                        Open Run
+                      </button>
+                    ) : occurrence.task ? (
                       <button className="button button-secondary" onClick={() => onTask(occurrence.task!.id)}>
                         Open task
                       </button>
@@ -730,6 +742,7 @@ function AutomationForm({
   const queryClient = useQueryClient();
   const titleID = useId();
   const workflowID = useId();
+  const definitionID = useId();
   const repositoryID = useId();
   const triggerTypeID = useId();
   const stateID = useId();
@@ -742,6 +755,7 @@ function AutomationForm({
   const cronID = useId();
   const timezoneID = useId();
   const timeoutID = useId();
+  const concurrencyID = useId();
   const contextID = useId();
   const titleRef = useRef<HTMLInputElement>(null);
   const advancedRef = useRef<HTMLDetailsElement>(null);
@@ -750,9 +764,15 @@ function AutomationForm({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const workflows = useQuery({ queryKey: ["workflows", "automation-form"], queryFn: api.allWorkflows });
   const repositories = useQuery({ queryKey: ["repositories"], queryFn: api.repositories });
+  const definitions = useQuery({ queryKey: ["definitions", "automation-form"], queryFn: api.allDefinitions });
+  const runRepositories = useQuery({ queryKey: ["run-repositories", "automation-form"], queryFn: api.runRepositories });
   const current = detail?.automation;
   const [triggerType, setTriggerType] = useState<AutomationTrigger["type"]>(current?.trigger.type ?? "github_issue");
   const [workflowSelection, setWorkflowSelection] = useState(current?.workflow_id ?? "");
+  const [definitionSelection, setDefinitionSelection] = useState(current?.definition_id ?? "");
+  const [repositorySelections, setRepositorySelections] = useState(() => new Set(
+    current?.repositories?.map((repository) => repository.id) ?? [],
+  ));
   const initialSchedule = scheduleEditorState(current?.trigger);
   const [schedulePreset, setSchedulePreset] = useState<SchedulePreset>(initialSchedule.preset);
   const [scheduleTime, setScheduleTime] = useState(initialSchedule.time);
@@ -764,6 +784,7 @@ function AutomationForm({
     queryFn: () => api.workflow(workflowSelection),
     enabled: Boolean(workflowSelection),
   });
+  const selectedDefinition = definitions.data?.find((definition) => definition.id === definitionSelection);
   useEffect(() => {
     closeRef.current = onClose;
   }, [onClose]);
@@ -782,6 +803,11 @@ function AutomationForm({
             expected_version: current!.version,
             title: input.title,
             workflow_id: input.workflow_id,
+            repository_id: input.repository_id,
+            definition_id: input.definition_id,
+            repository_ids: input.repository_ids,
+            parameters: input.parameters,
+            concurrency_limit: input.concurrency_limit,
             context: input.context,
             timeout_seconds: input.timeout_seconds,
             trigger: input.trigger,
@@ -798,6 +824,13 @@ function AutomationForm({
     const title = String(form.get("title") ?? "").trim();
     const workflow = workflowSelection;
     const repository = current?.repository_id ?? String(form.get("repository_id") ?? "");
+    const repositoryIDs = Array.from(repositorySelections);
+    const definition = definitionSelection;
+    const parameters = Object.fromEntries(Object.keys(selectedDefinition?.inputs ?? {}).map((key) => [
+      key,
+      String(form.get(`parameter:${key}`) ?? "").trim(),
+    ]).filter(([, value]) => value !== ""));
+    const concurrency = Number(form.get("concurrency_limit") || current?.concurrency_limit || 3);
     const context = String(form.get("context") ?? "");
     const timeout = Number(form.get("timeout_seconds"));
     const pollInterval = Number(form.get("poll_interval_seconds"));
@@ -809,19 +842,22 @@ function AutomationForm({
     const nextErrors: Record<string, string> = {};
     if (!title) nextErrors.title = "Enter an Automation title.";
     else if (Array.from(title).length > 100) nextErrors.title = "Keep the title to 100 characters.";
-    if (!workflow) nextErrors.workflow = "Choose a runbook.";
-    if (!repository) nextErrors.repository = "Choose a repository.";
+    if (isSchedule && !definition) nextErrors.definition = "Choose a Definition.";
+    if (!isSchedule && !workflow) nextErrors.workflow = "Choose a runbook.";
+    if (isSchedule && repositoryIDs.length === 0) nextErrors.repository = "Choose at least one repository.";
+    if (!isSchedule && !repository) nextErrors.repository = "Choose a repository.";
     if (!isSchedule && (labels.length > 20 || labels.some((label) => new TextEncoder().encode(label).length > 200))) nextErrors.labels = "Use at most 20 labels of 200 bytes each.";
     if (isPullRequest && (baseBranches.length > 20 || baseBranches.some((branch) => new TextEncoder().encode(branch).length > 255))) nextErrors.branches = "Use at most 20 base branches of 255 bytes each.";
     if (!isSchedule && (!Number.isInteger(pollInterval) || pollInterval < 10 || pollInterval > 86_400)) nextErrors.interval = "Use 10 to 86,400 seconds.";
     if (isSchedule && schedulePreset !== "custom" && !/^\d{2}:\d{2}$/.test(scheduleTime)) nextErrors.schedule = "Choose a schedule time.";
     if (isSchedule && cron.split(" ").length !== 5) nextErrors.cron = "Enter exactly five cron fields, with no seconds field.";
     if (isSchedule && !timezone) nextErrors.timezone = "Enter an IANA timezone, such as Europe/London.";
-    if (!Number.isInteger(timeout) || timeout < 1 || timeout > 28_800) nextErrors.timeout = "Use 1 to 28,800 seconds.";
-    if (new TextEncoder().encode(context).length > 8 * 1024) nextErrors.context = "Keep context to 8 KiB.";
+    if (isSchedule && (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 100)) nextErrors.concurrency = "Use 1 to 100 concurrent Jobs.";
+    if (!isSchedule && (!Number.isInteger(timeout) || timeout < 1 || timeout > 28_800)) nextErrors.timeout = "Use 1 to 28,800 seconds.";
+    if (!isSchedule && new TextEncoder().encode(context).length > 8 * 1024) nextErrors.context = "Keep context to 8 KiB.";
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) {
-      if (nextErrors.interval || nextErrors.cron || nextErrors.timeout) advancedRef.current?.setAttribute("open", "");
+      if (nextErrors.interval || nextErrors.cron || nextErrors.timeout || nextErrors.concurrency) advancedRef.current?.setAttribute("open", "");
       return;
     }
     const trigger: AutomationTrigger = isSchedule ? {
@@ -841,7 +877,14 @@ function AutomationForm({
       required_labels: labels,
       poll_interval_seconds: pollInterval,
     };
-    const payload = {
+    const payload: Omit<CreateAutomationInput, "request_key"> = isSchedule ? {
+      title,
+      definition_id: definition,
+      repository_ids: repositoryIDs,
+      parameters,
+      concurrency_limit: concurrency,
+      trigger,
+    } : {
       title,
       workflow_id: workflow,
       repository_id: repository,
@@ -857,6 +900,8 @@ function AutomationForm({
   };
   const workflowItems = workflows.data ?? [];
   const repositoryItems = repositories.data ?? [];
+  const definitionItems = definitions.data ?? [];
+  const runRepositoryItems = runRepositories.data ?? [];
   const selectedWorkflow = workflowItems.find((workflow) => workflow.id === workflowSelection);
   const selectedRepository = current
     ? repositoryItems.find((repository) => repository.id === current.repository_id)
@@ -874,13 +919,26 @@ function AutomationForm({
             <section className="automation-form-section">
               <div className="automation-section-heading">
                 <span>1</span>
-                <div><strong>What should run?</strong><small>Choose the versioned Markdown instructions the agent will follow.</small></div>
+                <div><strong>What should run?</strong><small>{isSchedule ? "Choose the shared Definition every agent will run." : "Choose the legacy runbook the agent will follow."}</small></div>
               </div>
               <div className="automation-form-grid">
                 <Field label="Title" htmlFor={titleID} error={errors.title}>
                   <input ref={titleRef} id={titleID} name="title" autoComplete="off" defaultValue={current?.title ?? ""} aria-invalid={Boolean(errors.title)} />
                 </Field>
-                <Field label="Runbook" htmlFor={workflowID} error={errors.workflow} hint="Saved Markdown with immutable revisions.">
+                {isSchedule ? <Field label="Definition" htmlFor={definitionID} error={errors.definition} hint="Saved prompt, runtime, tools, and inputs.">
+                  <select
+                    id={definitionID}
+                    value={definitionSelection}
+                    onChange={(event) => setDefinitionSelection(event.target.value)}
+                    aria-invalid={Boolean(errors.definition)}
+                  >
+                    <option value="">Choose a Definition</option>
+                    {current?.definition_id && !definitionItems.some((definition) => definition.id === current.definition_id) && (
+                      <option value={current.definition_id}>{current.definition_name}</option>
+                    )}
+                    {definitionItems.map((definition) => <option key={definition.id} value={definition.id}>{definition.name}</option>)}
+                  </select>
+                </Field> : <Field label="Runbook" htmlFor={workflowID} error={errors.workflow} hint="Legacy Markdown workflow.">
                   <select
                     id={workflowID}
                     name="workflow_id"
@@ -894,9 +952,15 @@ function AutomationForm({
                     )}
                     {workflowItems.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.current_revision.title}{workflow.enabled ? "" : " (disabled)"}</option>)}
                   </select>
-                </Field>
+                </Field>}
               </div>
-              {workflowSelection && (
+              {isSchedule && selectedDefinition && (
+                <div className="runbook-preview" aria-live="polite">
+                  <div><BookOpenText size={14} /><strong>{selectedDefinition.name}</strong><span>Generation {selectedDefinition.generation} · {selectedDefinition.runtime}</span></div>
+                  <pre>{selectedDefinition.prompt}</pre>
+                </div>
+              )}
+              {!isSchedule && workflowSelection && (
                 <div className="runbook-preview" aria-live="polite">
                   <div><BookOpenText size={14} /><strong>{selectedRunbook.data?.workflow.current_revision.title ?? selectedWorkflow?.current_revision.title ?? current?.workflow_title ?? "Runbook"}</strong><span>{selectedRunbook.data ? `Revision ${selectedRunbook.data.workflow.current_revision.revision_number}` : "Loading…"}</span></div>
                   {selectedRunbook.data ? <pre>{selectedRunbook.data.workflow.current_revision.instructions}</pre> : selectedRunbook.error ? <InlineError error={selectedRunbook.error as Error} /> : null}
@@ -907,9 +971,23 @@ function AutomationForm({
             <section className="automation-form-section">
               <div className="automation-section-heading">
                 <span>2</span>
-                <div><strong>Where should it run?</strong><small>Each run is isolated in one managed Git repository.</small></div>
+                <div><strong>Where should it run?</strong><small>{isSchedule ? "A Run creates one isolated Job per selected repository." : "Each task uses one managed Git repository."}</small></div>
               </div>
-              <Field label="Repository" htmlFor={repositoryID} error={errors.repository} hint={mode === "edit" ? "Repository identity is immutable." : "Choose one target now. Workspace filters make many repositories easy to manage."}>
+              {isSchedule ? <Field label="Repositories" htmlFor={repositoryID} error={errors.repository} hint={`${repositorySelections.size} selected · local and remote Runner routes are supported`}>
+                <select
+                  id={repositoryID}
+                  multiple
+                  size={Math.min(6, Math.max(3, runRepositoryItems.length))}
+                  value={Array.from(repositorySelections)}
+                  onChange={(event) => setRepositorySelections(new Set(Array.from(event.target.selectedOptions, (option) => option.value)))}
+                  aria-invalid={Boolean(errors.repository)}
+                >
+                  {current?.repositories?.filter((repository) => !runRepositoryItems.some((item) => item.id === repository.id)).map((repository) => (
+                    <option key={repository.id} value={repository.id}>{repository.remote_identity}</option>
+                  ))}
+                  {runRepositoryItems.map((repository) => <option key={repository.id} value={repository.id}>{repository.remote_identity}</option>)}
+                </select>
+              </Field> : <Field label="Repository" htmlFor={repositoryID} error={errors.repository} hint={mode === "edit" ? "Repository identity is immutable." : "Choose one target now."}>
                 <select id={repositoryID} name="repository_id" defaultValue={current?.repository_id ?? ""} disabled={mode === "edit"} aria-invalid={Boolean(errors.repository)}>
                   <option value="">Choose a repository</option>
                   {current && <option key={current.repository_id} value={current.repository_id}>
@@ -917,10 +995,19 @@ function AutomationForm({
                   </option>}
                   {repositoryItems.filter((repository) => repository.id !== current?.repository_id).map((repository) => <option key={repository.id} value={repository.id}>{repository.remote_identity}{repository.enabled ? "" : " (disabled)"}</option>)}
                 </select>
-              </Field>
-              <Field label="Context for this Automation" htmlFor={contextID} error={errors.context} hint="Optional repository-specific context · 8 KiB">
+              </Field>}
+              {isSchedule && selectedDefinition && Object.keys(selectedDefinition.inputs).length > 0 && (
+                <div className="automation-form-grid">
+                  {Object.entries(selectedDefinition.inputs).map(([key, defaultValue]) => (
+                    <Field key={key} label={key} htmlFor={`automation-parameter-${key}`} hint={`Default: ${defaultValue || "empty"}`}>
+                      <input id={`automation-parameter-${key}`} name={`parameter:${key}`} defaultValue={current?.parameters?.[key] ?? ""} />
+                    </Field>
+                  ))}
+                </div>
+              )}
+              {!isSchedule && <Field label="Context for this Automation" htmlFor={contextID} error={errors.context} hint="Optional repository-specific context · 8 KiB">
                 <textarea id={contextID} name="context" rows={4} defaultValue={current?.context ?? ""} aria-invalid={Boolean(errors.context)} />
-              </Field>
+              </Field>}
             </section>
 
             <section className="automation-form-section">
@@ -981,7 +1068,7 @@ function AutomationForm({
             </section>
 
             <details ref={advancedRef} className="automation-advanced">
-              <summary><span><SlidersHorizontal size={14} /> Expert settings</span><small>{isSchedule ? `Cron ${schedulePreset === "custom" ? customCron : cronForSchedule(schedulePreset, scheduleTime)}` : `Poll every ${current?.trigger.type === "github_issue" || current?.trigger.type === "github_pull_request" ? current.trigger.poll_interval_seconds : 30}s`} · timeout {current?.timeout_seconds ?? 7200}s</small></summary>
+              <summary><span><SlidersHorizontal size={14} /> Expert settings</span><small>{isSchedule ? `Cron ${schedulePreset === "custom" ? customCron : cronForSchedule(schedulePreset, scheduleTime)} · concurrency ${current?.concurrency_limit ?? 3}` : `Poll every ${current?.trigger.type === "github_issue" || current?.trigger.type === "github_pull_request" ? current.trigger.poll_interval_seconds : 30}s · timeout ${current?.timeout_seconds ?? 7200}s`}</small></summary>
               <div className="automation-form-grid">
                 {isSchedule ? <Field key="schedule-cron" label="Cron (five fields)" htmlFor={cronID} error={errors.cron} hint="Choose Custom cron above to edit the raw expression.">
                   <input
@@ -996,17 +1083,19 @@ function AutomationForm({
                 </Field> : <Field key="provider-poll" label="Poll interval (seconds)" htmlFor={intervalID} error={errors.interval}>
                   <input id={intervalID} name="poll_interval_seconds" type="number" min={10} max={86_400} defaultValue={current?.trigger.type === "github_issue" || current?.trigger.type === "github_pull_request" ? current.trigger.poll_interval_seconds : 30} aria-invalid={Boolean(errors.interval)} />
                 </Field>}
-                <Field label="Task timeout (seconds)" htmlFor={timeoutID} error={errors.timeout}>
+                {isSchedule ? <Field key="schedule-concurrency" label="Concurrent Jobs" htmlFor={concurrencyID} error={errors.concurrency} hint="Maximum repositories running at once · 1 to 100">
+                  <input id={concurrencyID} name="concurrency_limit" type="number" min={1} max={100} defaultValue={current?.concurrency_limit ?? 3} aria-invalid={Boolean(errors.concurrency)} />
+                </Field> : <Field key="provider-timeout" label="Task timeout (seconds)" htmlFor={timeoutID} error={errors.timeout}>
                   <input id={timeoutID} name="timeout_seconds" type="number" min={1} max={28_800} defaultValue={current?.timeout_seconds ?? 7200} aria-invalid={Boolean(errors.timeout)} />
-                </Field>
+                </Field>}
               </div>
             </details>
-            {(workflows.error || repositories.error || save.error) && <InlineError error={(workflows.error || repositories.error || save.error) as Error} />}
+            {(isSchedule ? definitions.error || runRepositories.error || save.error : workflows.error || repositories.error || save.error) && <InlineError error={(isSchedule ? definitions.error || runRepositories.error || save.error : workflows.error || repositories.error || save.error) as Error} />}
           </div>
           <div className="modal-footer">
             <span className="disabled-first-note"><Activity size={14} /> New Automations are disabled.</span>
             <button type="button" className="button button-secondary" onClick={onClose}>Cancel</button>
-            <button type="submit" className="button button-primary" disabled={save.isPending || workflows.isPending || repositories.isPending}>
+            <button type="submit" className="button button-primary" disabled={save.isPending || (isSchedule ? definitions.isPending || runRepositories.isPending : workflows.isPending || repositories.isPending)}>
               {save.isPending ? <><LoaderCircle size={16} className="spin" /> Saving…</> : <><Plus size={16} /> {mode === "create" ? "Create Automation" : "Save changes"}</>}
             </button>
           </div>
@@ -1025,6 +1114,17 @@ function Field({ label, htmlFor, error, hint, children }: { label: string; htmlF
 function HealthBadge({ automation }: { automation: Automation }) {
   const status = automation.enabled ? automation.health.status : "disabled";
   return <span className={`status-badge automation-health status-${status}`}><span className="status-dot" />{status}</span>;
+}
+
+function automationRepositoryIdentities(automation: Automation): string[] {
+  return automation.repositories?.length
+    ? automation.repositories.map((repository) => repository.remote_identity)
+    : [automation.repository_identity];
+}
+
+function automationRepositorySummary(automation: Automation): string {
+  const identities = automationRepositoryIdentities(automation);
+  return identities.length === 1 ? identities[0] : `${identities.length} repositories`;
 }
 
 function Metric({ label, value }: { label: string; value: string | number }) {

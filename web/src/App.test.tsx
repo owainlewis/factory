@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -569,7 +569,9 @@ describe("App", () => {
     await user.selectOptions(within(dialog).getByLabelText("Runbook"), "workflow-implement");
     await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
     await user.type(within(dialog).getByLabelText("Context for this Automation"), "Fetch and revalidate live state.");
+    expect(within(dialog).getByRole("button", { name: "Create Automation" })).toBeEnabled();
     await user.click(within(dialog).getByRole("button", { name: "Create Automation" }));
+    expect(dialog.querySelector(".field-error")?.textContent ?? "").toBe("");
 
     expect(await screen.findByRole("heading", { name: "Factory ready issues" })).toBeVisible();
     expect(screen.getByText("Automation is disabled.")).toBeVisible();
@@ -771,22 +773,31 @@ describe("App", () => {
 
   it("creates, previews, enables, and runs a typed schedule Automation", async () => {
     window.history.replaceState({}, "", "/automations");
-    const fetch = mockControlPlane({ runFailures: 1 });
+    const fetch = mockControlPlane({ runFailures: 1, scheduleDefinition: true });
     const user = userEvent.setup();
     renderApp();
 
     await user.click(await screen.findByRole("button", { name: "Create Automation" }));
     const dialog = screen.getByRole("dialog", { name: "Create Automation" });
     await user.type(within(dialog).getByLabelText("Title"), "Daily Factory maintenance");
-    await user.selectOptions(within(dialog).getByLabelText("Runbook"), "workflow-implement");
-    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
     await user.selectOptions(within(dialog).getByLabelText("Trigger"), "schedule");
+    await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-maintenance");
+    await user.selectOptions(within(dialog).getByLabelText("Repositories"), ["repo-factory", "repo-managed"]);
+    await user.clear(within(dialog).getByLabelText("scope"));
+    await user.type(within(dialog).getByLabelText("scope"), "security and correctness");
     await user.selectOptions(within(dialog).getByLabelText("Frequency"), "custom");
     await user.clear(within(dialog).getByLabelText("Cron (five fields)"));
     await user.type(within(dialog).getByLabelText("Cron (five fields)"), "0 9 * * 1");
     await user.clear(within(dialog).getByLabelText("Timezone"));
     await user.type(within(dialog).getByLabelText("Timezone"), "Europe/London");
+    expect(within(dialog).getByRole("button", { name: "Create Automation" })).toBeEnabled();
     await user.click(within(dialog).getByRole("button", { name: "Create Automation" }));
+    expect(dialog.querySelector(".field-error")?.textContent ?? "").toBe("");
+
+    await waitFor(() => expect(fetch.mock.calls.some(([input, init]) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return path === "/api/v1/automations" && init?.method === "POST";
+    })).toBe(true));
 
     expect(await screen.findByRole("heading", { name: "Daily Factory maintenance" })).toBeVisible();
     expect(screen.getByText("0 9 * * 1")).toBeVisible();
@@ -801,7 +812,7 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Run now" }));
     expect(await screen.findByText("Run now", { selector: ".occurrence-identity strong" })).toBeVisible();
     expect(screen.getAllByText("Run now", { selector: ".occurrence-identity strong" })).toHaveLength(1);
-    expect(screen.getAllByRole("button", { name: "Open task" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Open Run" })).toHaveLength(1);
     const runBodies = fetch.mock.calls
       .filter(([input, init]) => {
         const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;

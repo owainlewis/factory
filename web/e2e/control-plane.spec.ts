@@ -1134,7 +1134,7 @@ test("previews and dispatches one typed GitHub pull-request Automation without d
   browser.assertClean();
 });
 
-test("previews, enables, and runs a schedule Automation through the ordinary task path", async ({ page }) => {
+test("previews, enables, and runs a Definition schedule across repositories", async ({ page }) => {
   const browser = observeBrowser(page);
   const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
   await registerWorker(
@@ -1149,29 +1149,34 @@ test("previews, enables, and runs a schedule Automation through the ordinary tas
     0,
     [],
     "codex",
-    [],
+    [{ provider: "github", hostname: "github.com" }],
   );
-  await page.goto("/workflows");
-  await page.getByRole("button", { name: "Create runbook" }).first().click();
-  const workflow = page.getByRole("dialog", { name: "Create runbook" });
-  await workflow.getByLabel("Title").fill("E2E scheduled maintenance");
-  await workflow.getByLabel("Summary").fill("Run safe scheduled maintenance.");
-  await workflow.getByLabel("Markdown instructions").fill("Inspect the fixture repository and report the scheduled maintenance result.");
-  await workflow.getByRole("button", { name: "Create runbook" }).click();
-  await expect(page.getByRole("heading", { name: "E2E scheduled maintenance" })).toBeVisible();
+  const definition = await json<{ id: string }>(await api.post("/api/v1/definitions", { data: {
+    request_key: "e2e-schedule-definition",
+    name: "E2E scheduled maintenance",
+    prompt: "Inspect {{scope}} and report confirmed problems.",
+    runtime: "codex",
+    allowed_tools: ["git", "gh"],
+    timeout_seconds: 1800,
+    inputs: { scope: "the repository" },
+  } }));
 
-  await page.getByRole("button", { name: "Automations", exact: true }).click();
+  await page.goto("/automations");
   await page.getByRole("button", { name: "Create Automation" }).first().click();
   const automation = page.getByRole("dialog", { name: "Create Automation" });
   await automation.getByLabel("Title").fill("E2E schedule Automation");
-  await automation.getByLabel("Runbook").selectOption({ label: "E2E scheduled maintenance" });
-  await automation.getByLabel("Repository").selectOption(identifiers.automationRepository);
   await automation.getByLabel("Trigger").selectOption("schedule");
+  await automation.getByLabel("Definition").selectOption(definition.id);
+  await automation.getByLabel("Repositories").selectOption([
+    identifiers.automationRepository,
+    identifiers.factoryRepository,
+  ]);
+  await automation.getByLabel("scope").fill("security and correctness");
   await automation.getByLabel("Frequency").selectOption("custom");
   await automation.getByText("Expert settings").click();
   await automation.getByLabel("Cron (five fields)").fill("0 0 1 JAN *");
   await automation.getByLabel("Timezone").fill("Europe/London");
-  await automation.getByLabel("Context for this Automation").fill("Use only the safe synthetic repository.");
+  await automation.getByLabel("Concurrent Jobs").fill("2");
   await automation.getByRole("button", { name: "Create Automation" }).click();
   await expect(page.getByRole("heading", { name: "E2E schedule Automation" })).toBeVisible();
 
@@ -1189,15 +1194,22 @@ test("previews, enables, and runs a schedule Automation through the ordinary tas
 
   await page.getByRole("button", { name: "Run now" }).click();
   await expect(page.locator(".occurrence-list").getByText("Run now", { exact: true })).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByRole("button", { name: "Open task" })).toBeVisible({ timeout: 15_000 });
+  const openRun = page.getByRole("button", { name: "Open Run" });
+  await expect(openRun).toBeVisible({ timeout: 15_000 });
   await expect(page.locator(".automation-latest-task").getByText("Run now", { exact: true })).toBeVisible({ timeout: 15_000 });
   await page.screenshot({ path: "test-results/screenshots/automation-detail-desktop.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.locator(".sidebar")).not.toBeInViewport();
   await page.screenshot({ path: "test-results/screenshots/automation-detail-narrow.png", fullPage: true });
   expect(await page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")).toBe(true);
-  const tasks = await json<{ tasks: Array<{ request_key: string }> }>(await api.get("/api/v1/tasks?limit=200"));
-  expect(tasks.tasks.filter((task) => task.request_key.includes(":schedule:run:"))).toHaveLength(1);
+  await openRun.click();
+  await expect(page).toHaveURL(/\/runs\//);
+  await expect(page.getByText(/2 of 2 Jobs complete/)).toBeVisible();
+  const runID = new URL(page.url()).pathname.split("/").at(-1)!;
+  const run = await json<{ run: { source_kind: string; job_count: number }; jobs: unknown[] }>(await api.get(`/api/v1/runs/${runID}`));
+  expect(run.run.source_kind).toBe("schedule");
+  expect(run.run.job_count).toBe(2);
+  expect(run.jobs).toHaveLength(2);
   await api.dispose();
   browser.assertClean();
 });

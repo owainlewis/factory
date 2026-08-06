@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -50,10 +51,12 @@ func invalid(code, message string) error {
 }
 
 type Store struct {
-	db                    *sql.DB
-	now                   func() time.Time
-	sweepEvery            time.Duration
-	beginLegacyResumeLink func(context.Context) (*sql.Tx, error)
+	db                        *sql.DB
+	now                       func() time.Time
+	sweepEvery                time.Duration
+	beginLegacyResumeLink     func(context.Context) (*sql.Tx, error)
+	automationDispatchMu      sync.Mutex
+	afterScheduleEnabledCheck func()
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {

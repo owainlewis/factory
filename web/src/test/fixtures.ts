@@ -246,6 +246,7 @@ export function mockControlPlane(
     terminalTaskAfter?: number;
     repositoryToggleFailure?: boolean;
     runFailures?: number;
+    scheduleDefinition?: boolean;
     workflowHistoryGate?: Promise<void>;
     workerDetailFailuresAfter?: number;
     workerFailure?: boolean;
@@ -306,7 +307,19 @@ export function mockControlPlane(
       created_at: "2026-08-05T10:00:00Z",
       updated_at: "2026-08-05T10:00:00Z",
     },
-  ] : [];
+  ] : options.scheduleDefinition ? [{
+    id: "definition-maintenance",
+    name: "Repository maintenance",
+    prompt: "Inspect {{scope}} and fix confirmed problems.",
+    runtime: "codex",
+    allowed_tools: ["git", "gh"],
+    timeout_seconds: 1800,
+    inputs: { scope: "the repository" },
+    generation: 2,
+    archived: false,
+    created_at: "2026-08-06T10:00:00Z",
+    updated_at: "2026-08-06T10:00:00Z",
+  }] : [];
   let runDetails: RunDetail[] = [];
   let workflowDetail = structuredClone(initialWorkflowDetail);
   let automationDetail = structuredClone(initialAutomationDetail);
@@ -943,15 +956,29 @@ export function mockControlPlane(
     if (path === "/api/v1/automations" && init?.method === "POST") {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       const trigger = body.trigger as AutomationDetail["automation"]["trigger"];
+      const definition = definitionItems.find((item) => item.id === body.definition_id);
+      const selectedRepositoryIDs = Array.isArray(body.repository_ids) ? body.repository_ids as string[] : [];
       automationDetail = {
         automation: {
           ...automationDetail.automation,
           id: "automation-created",
           title: String(body.title),
-          workflow_id: String(body.workflow_id),
-          repository_id: String(body.repository_id),
-          context: String(body.context),
-          timeout_seconds: Number(body.timeout_seconds),
+          workflow_id: trigger.type === "schedule" ? undefined : String(body.workflow_id),
+          workflow_title: trigger.type === "schedule" ? undefined : automationDetail.automation.workflow_title,
+          workflow_revision: trigger.type === "schedule" ? undefined : automationDetail.automation.workflow_revision,
+          definition_id: definition?.id,
+          definition_name: definition?.name,
+          definition_generation: definition?.generation,
+          repositories: selectedRepositoryIDs.map((id) => ({
+            id,
+            remote_identity: repositoryItems.find((item) => item.id === id)?.remote_identity ?? id,
+          })),
+          parameters: body.parameters as Record<string, string> | undefined,
+          concurrency_limit: Number(body.concurrency_limit) || undefined,
+          repository_id: trigger.type === "schedule" ? selectedRepositoryIDs[0] : String(body.repository_id),
+          repository_identity: trigger.type === "schedule" ? repositoryItems.find((item) => item.id === selectedRepositoryIDs[0])?.remote_identity ?? "" : automationDetail.automation.repository_identity,
+          context: trigger.type === "schedule" ? "" : String(body.context),
+          timeout_seconds: trigger.type === "schedule" ? definition?.timeout_seconds ?? 1800 : Number(body.timeout_seconds),
           trigger,
           updated_at: new Date().toISOString(),
         },
@@ -968,6 +995,11 @@ export function mockControlPlane(
             ...automationDetail.automation,
             title: String(body.title),
             workflow_id: String(body.workflow_id),
+            definition_id: body.definition_id ? String(body.definition_id) : automationDetail.automation.definition_id,
+            definition_name: body.definition_id ? definitionItems.find((item) => item.id === body.definition_id)?.name : automationDetail.automation.definition_name,
+            repositories: Array.isArray(body.repository_ids) ? (body.repository_ids as string[]).map((id) => ({ id, remote_identity: repositoryItems.find((item) => item.id === id)?.remote_identity ?? id })) : automationDetail.automation.repositories,
+            parameters: body.parameters as Record<string, string> | undefined,
+            concurrency_limit: Number(body.concurrency_limit) || automationDetail.automation.concurrency_limit,
             context: String(body.context),
             timeout_seconds: Number(body.timeout_seconds),
             trigger: body.trigger as AutomationDetail["automation"]["trigger"],
@@ -1049,9 +1081,8 @@ export function mockControlPlane(
           run_request_key: body.request_key,
           cron: automationDetail.automation.trigger.type === "schedule" ? automationDetail.automation.trigger.cron : "",
           timezone: automationDetail.automation.trigger.type === "schedule" ? automationDetail.automation.trigger.timezone : "",
+          run_id: "run-schedule-run-now",
           task_request_key: `automation:${automationDetail.automation.id}:schedule:run:${body.request_key}`,
-          task: { id: "task-schedule-run-now", title: "Schedule run now", state: "queued" },
-          task_id_snapshot: "task-schedule-run-now",
           created_at: "2026-08-01T08:00:00Z",
           updated_at: "2026-08-01T08:00:00Z",
         }],
