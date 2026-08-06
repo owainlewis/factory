@@ -436,6 +436,56 @@ describe("App", () => {
     });
   });
 
+  it("runs one shared Definition against one repository and tracks the Job", async () => {
+    mockControlPlane();
+    await globalThis.fetch("/api/v1/definitions", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "create-run-once-definition",
+        name: "Review repository",
+        prompt: "Review this repository and report confirmed bugs.",
+        runtime: "codex",
+        allowed_tools: ["git", "gh"],
+        timeout_seconds: 600,
+        inputs: {},
+      }),
+    });
+    window.history.replaceState({}, "", "/runs?new=true");
+    const user = userEvent.setup();
+    renderApp();
+
+    const dialog = await screen.findByRole("dialog", { name: "Run once" });
+    await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-created");
+    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-managed");
+    await user.click(within(dialog).getByRole("button", { name: "Start Run" }));
+
+    expect(await screen.findByRole("heading", { name: "Review repository" })).toBeVisible();
+    expect(screen.getByText("github.com/example/managed")).toBeVisible();
+    expect(screen.getAllByText("Queued").length).toBeGreaterThan(0);
+    expect(screen.getByText("Review this repository and report confirmed bugs.", { selector: ".long-copy" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Cancel Job" }));
+    await user.click(screen.getByRole("button", { name: "Confirm cancel" }));
+    expect((await screen.findAllByText("Cancelled", { selector: ".status-badge" })).length).toBeGreaterThan(0);
+  });
+
+  it("loads older Runs through stable cursor pagination", async () => {
+    mockControlPlane({ paginatedRuns: true });
+    window.history.replaceState({}, "", "/runs");
+    const user = userEvent.setup();
+    renderApp();
+
+    expect(await screen.findByText("Recent review")).toBeVisible();
+    expect(screen.queryByText("Older review")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Load older Runs" }));
+
+    expect(await screen.findByText("Older review")).toBeVisible();
+    expect(screen.getByText("Recent review")).toBeVisible();
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([input]) =>
+      String(input).includes("cursor=run-history")
+    )).toBe(true);
+  });
+
   it("keeps runbook editor focus during background polling", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

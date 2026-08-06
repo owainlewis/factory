@@ -27,6 +27,10 @@ import type {
   TestAutomationResult,
   LegacyPollerMigration,
   LegacyPollerSelection,
+  CreateRunInput,
+  RunDetail,
+  RunPage,
+  RunRepository,
 } from "./types";
 
 export class APIError extends Error {
@@ -145,6 +149,31 @@ export const api = {
     method: "PUT",
     body: JSON.stringify({ archived, expected_generation: expectedGeneration }),
   }),
+  runs: async (cursor = "") => {
+    const query = new URLSearchParams({ limit: "50" });
+    if (cursor) query.set("cursor", cursor);
+    const page = await request<{ runs: RunPage["runs"] | null; next_cursor: string | null }>(
+      `/api/v1/runs?${query}`,
+    );
+    return { runs: page.runs ?? [], next_cursor: page.next_cursor };
+  },
+  runRepositories: async () =>
+    (await request<{ repositories: RunRepository[] | null }>("/api/v1/run-repositories"))
+      .repositories ?? [],
+  run: (id: string) =>
+    request<RunDetail>(`/api/v1/runs/${encodeURIComponent(id)}`),
+  createRun: (input: CreateRunInput) =>
+    request<RunDetail>("/api/v1/runs", { method: "POST", body: JSON.stringify(input) }),
+  cancelJob: (id: string) =>
+    request<RunDetail>(`/api/v1/jobs/${encodeURIComponent(id)}/cancel`, {
+      method: "POST",
+      body: "{}",
+    }),
+  retryJob: (id: string) =>
+    request<RunDetail>(`/api/v1/jobs/${encodeURIComponent(id)}/retry`, {
+      method: "POST",
+      body: "{}",
+    }),
   workflows: async (cursor = "", enabled?: boolean) => {
     const query = new URLSearchParams({ limit: "200" });
     if (cursor) query.set("cursor", cursor);

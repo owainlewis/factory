@@ -2013,7 +2013,7 @@ func (s *Store) selectTaskRoute(
 	requiredRuntime string,
 	requiredTools []string,
 ) (taskRouteCandidate, error) {
-	return s.selectTaskRouteWithSourceRequirement(ctx, tx, route, now, true, workerID, requiredRuntime, requiredTools)
+	return s.selectTaskRouteWithSourceRequirement(ctx, tx, route, now, true, false, workerID, requiredRuntime, requiredTools)
 }
 
 func (s *Store) selectTaskRouteWithSourceRequirement(
@@ -2022,6 +2022,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 	route protocol.TaskRoute,
 	now int64,
 	requireSourceAccess bool,
+	allowStaticRepository bool,
 	workerID string,
 	requiredRuntime string,
 	requiredTools []string,
@@ -2034,8 +2035,17 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 	err := tx.QueryRowContext(ctx, `
 		SELECT r.id, r.remote_identity
 		FROM repositories r
-		WHERE `+repositoryPredicate+` AND r.enabled = 1
-	`, route.RepositoryRemoteIdentity).Scan(&repositoryID, &repositoryIdentity)
+		WHERE `+repositoryPredicate+`
+		  AND (
+		      r.enabled = 1
+		      OR (? = 1 AND EXISTS (
+		          SELECT 1 FROM worker_repositories available
+		          WHERE available.repository_id = r.id
+		            AND available.advertised = 1
+		            AND available.dynamic = 0
+		      ))
+		  )
+	`, route.RepositoryRemoteIdentity, allowStaticRepository).Scan(&repositoryID, &repositoryIdentity)
 	if errors.Is(err, sql.ErrNoRows) {
 		return taskRouteCandidate{}, conflict(
 			"repository_not_managed",
@@ -2156,7 +2166,8 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		if !toolCapabilitiesReady(capabilities, requiredTools) {
 			continue
 		}
-		if requireSourceAccess && !hasSourceAccess(access, route.SourceAccess) {
+		if requireSourceAccess && !(allowStaticRepository && candidate.repositoryAdvertised) &&
+			!hasSourceAccess(access, route.SourceAccess) {
 			continue
 		}
 		candidate.load = active + queued
@@ -2468,10 +2479,11 @@ func (s *Store) Tasks(ctx context.Context, request protocol.TaskPageRequest) (pr
 		SELECT t.id, t.request_key, t.title, t.repository_id, t.timeout_seconds,
 		       e.assigned_worker_id, e.required_runtime, e.state, t.created_at
 		FROM tasks t JOIN executions e ON e.task_id = t.id
+		WHERE NOT EXISTS (SELECT 1 FROM jobs job WHERE job.task_id = t.id)
 	`
 	args := make([]any, 0, 3)
 	if request.Cursor != nil {
-		query += ` WHERE (t.created_at < ? OR (t.created_at = ? AND t.id < ?))`
+		query += ` AND (t.created_at < ? OR (t.created_at = ? AND t.id < ?))`
 		args = append(args, request.Cursor.CreatedAtMillis, request.Cursor.CreatedAtMillis, request.Cursor.ID)
 	}
 	query += ` ORDER BY t.created_at DESC, t.id DESC LIMIT ?`

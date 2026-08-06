@@ -279,6 +279,33 @@ button { color: inherit; }
 .workflow-identity strong { overflow: hidden; font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .workflow-identity small { margin-top: 3px; overflow: hidden; color: var(--fg-3); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 
+.run-table-head, .run-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(220px, 1fr) 110px 100px 16px;
+  gap: 16px;
+  align-items: center;
+}
+.run-table-head {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-3);
+}
+.run-row {
+  width: 100%;
+  padding: 12px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.run-row:last-child { border-bottom: 0; }
+.run-row:hover { background: var(--panel-2); }
+.run-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .definition-table-head, .definition-row {
   display: grid;
   grid-template-columns: minmax(240px, 1.5fr) 110px minmax(130px, .7fr) 80px minmax(170px, .8fr) 16px;
@@ -875,6 +902,9 @@ button { color: inherit; }
 .attempt-state svg { color: var(--fg-3); transition: transform .12s ease; }
 .attempt-state svg.rotate { transform: rotate(90deg); }
 .attempt-content { padding: 2px 0 14px; }
+.run-attempt { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 14px; align-items: center; padding: 10px 0; }
+.run-attempt > span:first-child strong, .run-attempt > span:first-child small { display: block; }
+.run-attempt > span:first-child small { margin-top: 2px; font-family: var(--mono); font-size: 11px; color: var(--fg-3); }
 
 .attempt-output {
   padding: 10px;
@@ -1326,6 +1356,9 @@ button { color: inherit; }
   .workflow-table-head { display: none; }
   .workflow-row { grid-template-columns: minmax(0, 1fr) 80px 16px; }
   .workflow-row > :nth-child(3), .workflow-row > :nth-child(4) { display: none; }
+  .run-table-head { display: none; }
+  .run-row { grid-template-columns: minmax(0, 1fr) 100px 16px; }
+  .run-row > :nth-child(2), .run-row > :nth-child(4) { display: none; }
   .definition-table-head { display: none; }
   .definition-row { grid-template-columns: minmax(0, 1fr) 100px 16px; }
   .definition-row > :nth-child(3), .definition-row > :nth-child(4), .definition-row > :nth-child(5) { display: none; }

@@ -152,7 +152,7 @@ async function waitForRealWorker(api: APIRequestContext) {
           id: string;
           health: string;
           online: boolean;
-          repositories: Array<{ id: string; key: string }>;
+          repositories: Array<{ id: string; key: string; remote_identity: string }>;
         }> | null;
       };
       const worker = body.workers?.find((candidate) => candidate.id === realWorker);
@@ -189,9 +189,11 @@ function observeBrowser(page: Page) {
 test.beforeAll(async () => {
   const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
   const real = await waitForRealWorker(api);
-  identifiers.realFactoryRepository = real.repositories.find(
+  const realFactoryRepository = real.repositories.find(
     (repository) => repository.key === "factory-demo",
-  )!.id;
+  )!;
+  identifiers.realFactoryRepository = realFactoryRepository.id;
+  identifiers.realFactoryIdentity = realFactoryRepository.remote_identity;
   identifiers.realHandbookRepository = real.repositories.find(
     (repository) => repository.key === "handbook-demo",
   )!.id;
@@ -453,6 +455,55 @@ test("creates, edits, and archives one shared Definition", async ({ page }) => {
     await api.get(`/api/v1/definitions/${definitionID}`),
   );
   expect(restored).toMatchObject({ archived: false, generation: 4 });
+  await api.dispose();
+  browser.assertClean();
+});
+
+test("runs one shared Definition against one repository end to end", async ({ page }) => {
+  const browser = observeBrowser(page);
+  const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
+  const definition = await json<{ id: string }>(
+    await api.post("/api/v1/definitions", {
+      data: {
+        request_key: "e2e-run-once-definition",
+        name: "E2E inspect one repository",
+        prompt: "Inspect this repository and create deterministic evidence.",
+        runtime: "codex",
+        allowed_tools: ["git", "gh"],
+        timeout_seconds: 1800,
+        inputs: {},
+      },
+    }),
+  );
+
+  await page.goto("/runs?new=true");
+  const dialog = page.getByRole("dialog", { name: "Run once" });
+  await dialog.getByLabel("Definition", { exact: true }).selectOption(definition.id);
+  await dialog.getByLabel("Repository", { exact: true }).selectOption(identifiers.realFactoryRepository);
+  await dialog.getByRole("button", { name: "Start Run" }).click();
+
+  await expect(page.getByRole("heading", { name: "E2E inspect one repository" })).toBeVisible();
+  await expect(page.getByText(identifiers.realFactoryIdentity, { exact: true })).toBeVisible();
+  await expect(page.getByText("Succeeded", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("Completed by deterministic fake Codex.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Created deterministic worktree evidence.", { exact: false })).toBeVisible();
+
+  const runID = new URL(page.url()).pathname.split("/").at(-1)!;
+  const run = await json<{
+    run: { id: string; state: string; job_count: number };
+    jobs: Array<{
+      job: { state: string; repository_remote_identity: string; result: string };
+      attempts: Array<{ state: string; result: string }>;
+    }>;
+  }>(await api.get(`/api/v1/runs/${runID}`));
+  expect(run.run).toMatchObject({ id: runID, state: "succeeded", job_count: 1 });
+  expect(run.jobs).toHaveLength(1);
+  expect(run.jobs[0].job).toMatchObject({
+    state: "succeeded",
+    repository_remote_identity: identifiers.realFactoryIdentity,
+  });
+  expect(run.jobs[0].attempts).toHaveLength(1);
+  expect(run.jobs[0].attempts[0].result).toContain("Completed by deterministic fake Codex.");
   await api.dispose();
   browser.assertClean();
 });

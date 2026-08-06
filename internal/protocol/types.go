@@ -43,6 +43,8 @@ const (
 	MaxWorkflowRevisions      = 100
 	DefaultDefinitionPageSize = 50
 	MaxDefinitionPageSize     = 200
+	DefaultRunPageSize        = 50
+	MaxRunPageSize            = 200
 	MaxDefinitions            = 500
 	MaxDefinitionPromptBytes  = 64 << 10
 	MaxDefinitionTools        = 32
@@ -294,6 +296,76 @@ type TaskDetail struct {
 	Workflow            *TaskWorkflowSnapshot `json:"workflow,omitempty"`
 	Definition          *DefinitionSnapshot   `json:"definition,omitempty"`
 	ResolvedPrompt      string                `json:"resolved_prompt"`
+}
+
+type CreateRunRequest struct {
+	RequestKey   string            `json:"request_key"`
+	DefinitionID string            `json:"definition_id"`
+	RepositoryID string            `json:"repository_id"`
+	Parameters   map[string]string `json:"parameters,omitempty"`
+}
+
+type RunRepository struct {
+	ID             string `json:"id"`
+	RemoteIdentity string `json:"remote_identity"`
+}
+
+type Run struct {
+	ID                         string             `json:"id"`
+	RequestKey                 string             `json:"request_key"`
+	SourceKind                 string             `json:"source_kind"`
+	Definition                 DefinitionSnapshot `json:"definition"`
+	State                      string             `json:"state"`
+	JobCount                   int                `json:"job_count"`
+	RepositoryRemoteIdentities []string           `json:"repository_remote_identities"`
+	AdmittedAt                 time.Time          `json:"admitted_at"`
+	UpdatedAt                  time.Time          `json:"updated_at"`
+}
+
+type Job struct {
+	ID                       string     `json:"id"`
+	RunID                    string     `json:"run_id"`
+	RepositoryID             string     `json:"repository_id"`
+	RepositoryRemoteIdentity string     `json:"repository_remote_identity"`
+	TaskID                   string     `json:"task_id,omitempty"`
+	ExecutionID              string     `json:"execution_id,omitempty"`
+	AssignedWorkerID         string     `json:"assigned_worker_id,omitempty"`
+	RequiredRuntime          string     `json:"required_runtime"`
+	State                    string     `json:"state"`
+	BlockedReason            string     `json:"blocked_reason,omitempty"`
+	AdmittedAt               time.Time  `json:"admitted_at"`
+	StartedAt                *time.Time `json:"started_at,omitempty"`
+	TerminalAt               *time.Time `json:"terminal_at,omitempty"`
+	Result                   string     `json:"result,omitempty"`
+	FailureReason            string     `json:"failure_reason,omitempty"`
+	RetryMayRepeatEffects    bool       `json:"retry_may_repeat_effects"`
+}
+
+type JobDetail struct {
+	Job            Job       `json:"job"`
+	Attempts       []Attempt `json:"attempts"`
+	ResolvedPrompt string    `json:"resolved_prompt"`
+}
+
+type RunDetail struct {
+	Run        Run               `json:"run"`
+	Parameters map[string]string `json:"parameters"`
+	Jobs       []JobDetail       `json:"jobs"`
+}
+
+type RunCursor struct {
+	AdmittedAtMillis int64  `json:"admitted_at"`
+	ID               string `json:"id"`
+}
+
+type RunPageRequest struct {
+	Limit  int
+	Cursor *RunCursor
+}
+
+type RunPage struct {
+	Runs       []Run      `json:"runs"`
+	NextCursor *RunCursor `json:"-"`
 }
 
 type TaskWorkflowSnapshot struct {

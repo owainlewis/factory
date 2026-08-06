@@ -1,4 +1,4 @@
-import { BookOpenText, Bot, Boxes, Gauge, GitBranch, ListChecks, Menu, Plus, Workflow as AutomationIcon, X } from "lucide-react";
+import { BookOpenText, Bot, Boxes, Gauge, GitBranch, ListChecks, Menu, Play, Plus, Workflow as AutomationIcon, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
@@ -14,10 +14,13 @@ import { WorkView } from "./Work";
 import { WorkflowDetail, WorkflowsView } from "./Workflows";
 import { AutomationDetail, AutomationsView } from "./Automations";
 import { DefinitionDetail, DefinitionsView } from "./Definitions";
+import { RunDetail, RunsView } from "./Runs";
 
 type Route =
   | { page: "overview" }
   | { page: "work" }
+  | { page: "runs"; create?: boolean }
+  | { page: "run"; id: string }
   | { page: "workers" }
   | { page: "repositories" }
   | { page: "task"; id: string }
@@ -33,6 +36,9 @@ type Route =
 function readRoute(): Route {
   const parts = window.location.pathname.split("/").filter(Boolean);
   const archived = new URLSearchParams(window.location.search).get("archived") === "true";
+  const createRun = new URLSearchParams(window.location.search).get("new") === "true";
+  if (parts[0] === "runs" && parts[1]) return { page: "run", id: parts[1] };
+  if (parts[0] === "runs") return { page: "runs", create: createRun };
   if (parts[0] === "tasks" && parts[1]) return { page: "task", id: parts[1] };
   if (parts[0] === "workers" && parts[1]) return { page: "worker", id: parts[1] };
   if (parts[0] === "definitions" && parts[1]) return { page: "definition", id: parts[1], archived };
@@ -50,6 +56,8 @@ function readRoute(): Route {
 
 function routePath(route: Route): string {
   if (route.page === "task") return `/tasks/${route.id}`;
+  if (route.page === "run") return `/runs/${route.id}`;
+  if (route.page === "runs") return `/runs${route.create ? "?new=true" : ""}`;
   if (route.page === "worker") return `/workers/${route.id}`;
   if (route.page === "definition") return `/definitions/${route.id}${route.archived ? "?archived=true" : ""}`;
   if (route.page === "definitions") return `/definitions${route.archived ? "?archived=true" : ""}`;
@@ -175,6 +183,13 @@ export function App() {
             <Gauge size={17} /> Overview
           </button>
           <button
+            className={`nav-item ${route.page === "runs" || route.page === "run" ? "active" : ""}`}
+            aria-current={route.page === "runs" ? "page" : undefined}
+            onClick={() => navigate({ page: "runs" })}
+          >
+            <Play size={17} /> Runs
+          </button>
+          <button
             className={`nav-item ${route.page === "work" || route.page === "task" ? "active" : ""}`}
             aria-current={route.page === "work" ? "page" : undefined}
             onClick={() => navigate({ page: "work" })}
@@ -236,6 +251,8 @@ export function App() {
           <div className="topbar-title">
             {route.page === "overview" && "Overview"}
             {route.page === "work" && "Work"}
+			{route.page === "runs" && "Runs"}
+			{route.page === "run" && "Run detail"}
 			{route.page === "workers" && "Runners"}
             {route.page === "task" && "Task detail"}
 			{route.page === "worker" && "Runner detail"}
@@ -248,13 +265,26 @@ export function App() {
             {route.page === "automations" && "Automations"}
             {route.page === "automation" && "Automation detail"}
           </div>
-          <button className="button button-primary" onClick={() => openDelegate()}>
-            <Plus size={16} /> Delegate task
-          </button>
+          <div className="detail-actions">
+            <button className="button button-secondary" onClick={() => openDelegate()}>
+              <Plus size={16} /> Delegate task
+            </button>
+            <button className="button button-primary" onClick={() => navigate({ page: "runs", create: true })}>
+              <Play size={16} /> Run once
+            </button>
+          </div>
         </header>
 
         <main>
           {route.page === "overview" && <Overview />}
+          {route.page === "runs" && (
+            <RunsView
+              createOpen={Boolean(route.create)}
+              onCreateOpenChange={(create) => navigate({ page: "runs", create })}
+              onRun={(id) => navigate({ page: "run", id })}
+            />
+          )}
+          {route.page === "run" && <RunDetail id={route.id} onBack={() => navigate({ page: "runs" })} />}
           {route.page === "work" && (
             <WorkView
               tasks={taskItems}

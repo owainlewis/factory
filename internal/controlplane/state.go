@@ -99,6 +99,12 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		}
 		return nil, nil
 	}
+	if err := s.materializeBlockedJobForWorker(ctx, tx, workerID, nowMillis); err != nil {
+		return nil, err
+	}
+	if err := s.rerouteQueuedRunJobForWorker(ctx, tx, workerID, nowMillis); err != nil {
+		return nil, err
+	}
 
 	var executionID string
 	err = tx.QueryRowContext(ctx, `

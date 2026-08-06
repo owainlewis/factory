@@ -189,6 +189,69 @@ export interface DefinitionPage {
   next_cursor: string | null;
 }
 
+export type RunState = "blocked" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type JobState = RunState | "preparing";
+
+export interface Run {
+  id: string;
+  request_key: string;
+  source_kind: "manual";
+  definition: DefinitionSnapshot;
+  state: RunState;
+  job_count: number;
+  repository_remote_identities: string[];
+  admitted_at: string;
+  updated_at: string;
+}
+
+export interface Job {
+  id: string;
+  run_id: string;
+  repository_id: string;
+  repository_remote_identity: string;
+  task_id?: string;
+  execution_id?: string;
+  assigned_worker_id?: string;
+  required_runtime: Runtime;
+  state: JobState;
+  blocked_reason?: string;
+  admitted_at: string;
+  started_at?: string;
+  terminal_at?: string;
+  result?: string;
+  failure_reason?: string;
+  retry_may_repeat_effects: boolean;
+}
+
+export interface JobDetail {
+  job: Job;
+  attempts: Attempt[] | null;
+  resolved_prompt: string;
+}
+
+export interface RunDetail {
+  run: Run;
+  parameters: Record<string, string>;
+  jobs: JobDetail[];
+}
+
+export interface RunPage {
+  runs: Run[];
+  next_cursor: string | null;
+}
+
+export interface RunRepository {
+  id: string;
+  remote_identity: string;
+}
+
+export interface CreateRunInput {
+  request_key: string;
+  definition_id: string;
+  repository_id: string;
+  parameters?: Record<string, string>;
+}
+
 export interface GitHubIssueTrigger {
 	type: "github_issue";
 	state: "open" | "closed";
