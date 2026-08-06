@@ -195,7 +195,7 @@ func (s *Store) ImportLegacyPoller(
 				Type: protocol.AutomationTriggerGitHubIssue, State: queue.Status,
 				RequiredLabels:      append([]string(nil), queue.Labels...),
 				PollIntervalSeconds: queuePreview.PollIntervalSeconds,
-			}, true,
+			}, "", nil, nil, 0, true,
 		)
 		if normalizeErr != nil {
 			return protocol.LegacyPollerMigration{}, normalizeErr

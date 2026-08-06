@@ -1269,6 +1269,10 @@ func (s *Store) hasDispatchableOccurrences(ctx context.Context) (bool, error) {
 }
 
 func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) error {
+	handled, err := s.dispatchDefinitionScheduleOccurrence(ctx, occurrenceID)
+	if handled {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return unavailable(err)
@@ -1449,6 +1453,138 @@ func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) err
 		UPDATE automations SET dispatched_count = dispatched_count + 1 WHERE id = ?
 	`, automationID); err != nil {
 		return unavailable(err)
+	}
+	return tx.Commit()
+}
+
+func (s *Store) dispatchDefinitionScheduleOccurrence(
+	ctx context.Context,
+	occurrenceID string,
+) (bool, error) {
+	s.automationDispatchMu.Lock()
+	defer s.automationDispatchMu.Unlock()
+	var automationID, definitionID, requestKey string
+	var definitionSnapshotJSON, repositoryIDsJSON, parametersJSON []byte
+	var concurrencyLimit, enabled int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT occurrence.automation_id, schedule.definition_id, schedule.definition_snapshot,
+		       schedule.repository_ids_json, schedule.parameters_json,
+		       schedule.concurrency_limit, occurrence.task_request_key,
+		       automation.enabled
+		FROM automation_occurrences occurrence
+		JOIN automation_schedule_occurrences schedule ON schedule.occurrence_id = occurrence.id
+		JOIN automations automation ON automation.id = occurrence.automation_id
+		WHERE occurrence.id = ? AND occurrence.state = 'pending'
+		  AND schedule.definition_id IS NOT NULL
+	`, occurrenceID).Scan(
+		&automationID, &definitionID, &definitionSnapshotJSON, &repositoryIDsJSON, &parametersJSON,
+		&concurrencyLimit, &requestKey, &enabled,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return true, unavailable(err)
+	}
+	if enabled == 0 {
+		return true, nil
+	}
+	if s.afterScheduleEnabledCheck != nil {
+		s.afterScheduleEnabledCheck()
+	}
+	var repositoryIDs []string
+	var parameters map[string]string
+	var definitionSnapshot protocol.DefinitionSnapshot
+	if err := json.Unmarshal(definitionSnapshotJSON, &definitionSnapshot); err != nil {
+		return true, unavailable(err)
+	}
+	if err := json.Unmarshal(repositoryIDsJSON, &repositoryIDs); err != nil {
+		return true, unavailable(err)
+	}
+	if err := json.Unmarshal(parametersJSON, &parameters); err != nil {
+		return true, unavailable(err)
+	}
+	run, _, err := s.createScheduledRun(ctx, protocol.CreateRunRequest{
+		RequestKey: requestKey, DefinitionID: definitionID,
+		RepositoryIDs: repositoryIDs, Parameters: parameters,
+		ConcurrencyLimit: concurrencyLimit,
+	}, definitionSnapshot)
+	if err != nil {
+		var serviceErr *ServiceError
+		if errors.As(err, &serviceErr) && serviceErr.Status < 500 {
+			return true, s.failDefinitionScheduleOccurrence(ctx, occurrenceID, automationID, serviceErr.Code)
+		}
+		return true, err
+	}
+	now := s.now().UnixMilli()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return true, unavailable(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE automation_schedule_occurrences SET run_id = ? WHERE occurrence_id = ?
+	`, run.Run.ID, occurrenceID); err != nil {
+		return true, unavailable(err)
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE automation_occurrences
+		SET state = 'dispatched', diagnostic = '', retry_at = NULL, updated_at = ?
+		WHERE id = ? AND state = 'pending'
+	`, now, occurrenceID)
+	if err != nil {
+		return true, unavailable(err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return true, unavailable(err)
+	}
+	if changed == 1 {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE automations SET dispatched_count = dispatched_count + 1 WHERE id = ?
+		`, automationID); err != nil {
+			return true, unavailable(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return true, unavailable(err)
+	}
+	return true, nil
+}
+
+func (s *Store) failDefinitionScheduleOccurrence(
+	ctx context.Context,
+	occurrenceID string,
+	automationID string,
+	diagnostic string,
+) error {
+	now := s.now().UnixMilli()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return unavailable(err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE automation_occurrences
+		SET state = 'failed', diagnostic = ?, retry_at = NULL, updated_at = ?
+		WHERE id = ? AND state = 'pending'
+	`, diagnostic, now, occurrenceID)
+	if err != nil {
+		return unavailable(err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return unavailable(err)
+	}
+	if changed == 1 {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE automations
+			SET health_status = 'blocked', health_code = ?,
+			    health_message = 'A scheduled Run could not be admitted.', updated_at = ?
+			WHERE id = ?
+		`, diagnostic, now, automationID); err != nil {
+			return unavailable(err)
+		}
 	}
 	return tx.Commit()
 }

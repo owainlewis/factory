@@ -9,6 +9,8 @@ Start with the root [README](../README.md) to run Factory.
 - [Local guide](local.md): build, configure, start, delegate, and troubleshoot.
 - [Worker contract](worker.md): identity, runtimes, claiming, process safety,
   and worktree cleanup.
+- [Scheduled Automations](scheduled-automations.md): create, preview, enable,
+  replay, and inspect Definition Runs across repositories.
 - [Release guide](release.md): install, verify, upgrade, roll back, reproduce,
   and publish tagged releases.
 - [Changelog](../CHANGELOG.md): user-visible changes and compatibility notes.

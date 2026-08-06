@@ -655,29 +655,35 @@ type AutomationHealth struct {
 }
 
 type Automation struct {
-	ID                 string                 `json:"id"`
-	Title              string                 `json:"title"`
-	WorkflowID         string                 `json:"workflow_id"`
-	WorkflowTitle      string                 `json:"workflow_title"`
-	WorkflowRevision   int                    `json:"workflow_revision"`
-	RepositoryID       string                 `json:"repository_id"`
-	RepositoryIdentity string                 `json:"repository_identity"`
-	Context            string                 `json:"context"`
-	TimeoutSeconds     int                    `json:"timeout_seconds"`
-	Enabled            bool                   `json:"enabled"`
-	Version            int                    `json:"version"`
-	Trigger            AutomationTrigger      `json:"trigger"`
-	Health             AutomationHealth       `json:"health"`
-	LastCheckedAt      *time.Time             `json:"last_checked_at,omitempty"`
-	NextCheckAt        *time.Time             `json:"next_check_at,omitempty"`
-	NextDueAt          *time.Time             `json:"next_due_at,omitempty"`
-	MatchedCount       int64                  `json:"matched_count"`
-	SkippedCount       int64                  `json:"skipped_count"`
-	DispatchedCount    int64                  `json:"dispatched_count"`
-	LatestTask         *AutomationTaskSummary `json:"latest_task,omitempty"`
-	LatestRun          *AutomationOccurrence  `json:"latest_run,omitempty"`
-	CreatedAt          time.Time              `json:"created_at"`
-	UpdatedAt          time.Time              `json:"updated_at"`
+	ID                   string                 `json:"id"`
+	Title                string                 `json:"title"`
+	WorkflowID           string                 `json:"workflow_id"`
+	WorkflowTitle        string                 `json:"workflow_title"`
+	WorkflowRevision     int                    `json:"workflow_revision"`
+	RepositoryID         string                 `json:"repository_id"`
+	RepositoryIdentity   string                 `json:"repository_identity"`
+	DefinitionID         string                 `json:"definition_id,omitempty"`
+	DefinitionName       string                 `json:"definition_name,omitempty"`
+	DefinitionGeneration int                    `json:"definition_generation,omitempty"`
+	Repositories         []RunRepository        `json:"repositories,omitempty"`
+	Parameters           map[string]string      `json:"parameters,omitempty"`
+	ConcurrencyLimit     int                    `json:"concurrency_limit,omitempty"`
+	Context              string                 `json:"context"`
+	TimeoutSeconds       int                    `json:"timeout_seconds"`
+	Enabled              bool                   `json:"enabled"`
+	Version              int                    `json:"version"`
+	Trigger              AutomationTrigger      `json:"trigger"`
+	Health               AutomationHealth       `json:"health"`
+	LastCheckedAt        *time.Time             `json:"last_checked_at,omitempty"`
+	NextCheckAt          *time.Time             `json:"next_check_at,omitempty"`
+	NextDueAt            *time.Time             `json:"next_due_at,omitempty"`
+	MatchedCount         int64                  `json:"matched_count"`
+	SkippedCount         int64                  `json:"skipped_count"`
+	DispatchedCount      int64                  `json:"dispatched_count"`
+	LatestTask           *AutomationTaskSummary `json:"latest_task,omitempty"`
+	LatestRun            *AutomationOccurrence  `json:"latest_run,omitempty"`
+	CreatedAt            time.Time              `json:"created_at"`
+	UpdatedAt            time.Time              `json:"updated_at"`
 }
 
 type AutomationTaskSummary struct {
@@ -705,6 +711,7 @@ type AutomationOccurrence struct {
 	Kind               string                 `json:"kind,omitempty"`
 	ScheduledAt        *time.Time             `json:"scheduled_at,omitempty"`
 	RunRequestKey      string                 `json:"run_request_key,omitempty"`
+	RunID              string                 `json:"run_id,omitempty"`
 	Cron               string                 `json:"cron,omitempty"`
 	Timezone           string                 `json:"timezone,omitempty"`
 	TaskRequestKey     string                 `json:"task_request_key"`
@@ -823,22 +830,30 @@ type AutomationOccurrenceCursor struct {
 }
 
 type CreateAutomationRequest struct {
-	RequestKey     string            `json:"request_key"`
-	Title          string            `json:"title"`
-	WorkflowID     string            `json:"workflow_id"`
-	RepositoryID   string            `json:"repository_id"`
-	Context        string            `json:"context"`
-	TimeoutSeconds int               `json:"timeout_seconds"`
-	Trigger        AutomationTrigger `json:"trigger"`
+	RequestKey       string            `json:"request_key"`
+	Title            string            `json:"title"`
+	WorkflowID       string            `json:"workflow_id"`
+	RepositoryID     string            `json:"repository_id"`
+	DefinitionID     string            `json:"definition_id,omitempty"`
+	RepositoryIDs    []string          `json:"repository_ids,omitempty"`
+	Parameters       map[string]string `json:"parameters,omitempty"`
+	ConcurrencyLimit int               `json:"concurrency_limit,omitempty"`
+	Context          string            `json:"context"`
+	TimeoutSeconds   int               `json:"timeout_seconds"`
+	Trigger          AutomationTrigger `json:"trigger"`
 }
 
 type UpdateAutomationRequest struct {
-	ExpectedVersion int               `json:"expected_version"`
-	Title           string            `json:"title"`
-	WorkflowID      string            `json:"workflow_id"`
-	Context         string            `json:"context"`
-	TimeoutSeconds  int               `json:"timeout_seconds"`
-	Trigger         AutomationTrigger `json:"trigger"`
+	ExpectedVersion  int               `json:"expected_version"`
+	Title            string            `json:"title"`
+	WorkflowID       string            `json:"workflow_id"`
+	DefinitionID     string            `json:"definition_id,omitempty"`
+	RepositoryIDs    []string          `json:"repository_ids,omitempty"`
+	Parameters       map[string]string `json:"parameters,omitempty"`
+	ConcurrencyLimit int               `json:"concurrency_limit,omitempty"`
+	Context          string            `json:"context"`
+	TimeoutSeconds   int               `json:"timeout_seconds"`
+	Trigger          AutomationTrigger `json:"trigger"`
 }
 
 type SetAutomationEnabledRequest struct {
