@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/owainlewis/factory/internal/protocol"
@@ -35,25 +36,38 @@ func checkHealth(
 	runtimeExecutables map[string]string,
 ) health {
 	result := health{State: "unhealthy"}
-	gitCapability := versionCapability(ctx, protocol.CapabilityKindTool, "git", gitExecutable)
+	var gitCapability protocol.Capability
+	var githubCapability protocol.Capability
+	runtimeCapabilities := make([]protocol.Capability, len(runtimes))
+	var weeklyLimit *protocol.WeeklyLimit
+	probes := []func(){
+		func() {
+			gitCapability = versionCapability(ctx, protocol.CapabilityKindTool, "git", gitExecutable)
+		},
+		func() {
+			githubCapability = githubHealthCapability(ctx, githubExecutable)
+		},
+	}
+	for index, runtime := range runtimes {
+		index, runtime := index, runtime
+		probes = append(probes, func() {
+			runtimeCapabilities[index] = runtimeCapability(ctx, runtime, runtimeExecutables[runtime])
+		})
+	}
+	if configuredRuntime(runtimes, protocol.RuntimeCodex) {
+		probes = append(probes, func() {
+			limitContext, limitCancel := context.WithTimeout(ctx, healthCheckTimeout)
+			defer limitCancel()
+			weeklyLimit, _ = readCodexWeeklyLimit(limitContext, runtimeExecutables[protocol.RuntimeCodex])
+		})
+	}
+	runHealthProbes(probes...)
+
 	result.Capabilities = append(result.Capabilities, gitCapability)
 	if gitCapability.Status == protocol.CapabilityReady {
 		result.GitVersion = gitCapability.Version
 	}
 
-	githubCapability := versionCapability(ctx, protocol.CapabilityKindTool, "gh", githubExecutable)
-	if githubCapability.Status == protocol.CapabilityReady {
-		githubContext, githubCancel := context.WithTimeout(ctx, healthCheckTimeout)
-		_, _, githubErr := runCommand(
-			githubContext, githubExecutable, "", 64<<10,
-			"auth", "status", "--hostname", "github.com",
-		)
-		githubCancel()
-		if githubErr != nil {
-			githubCapability.Status = protocol.CapabilityUnauthenticated
-			githubCapability.Message = "Run gh auth login --hostname github.com."
-		}
-	}
 	result.Capabilities = append(result.Capabilities, githubCapability)
 	if githubCapability.Status == protocol.CapabilityReady {
 		result.SourceAccess = append(result.SourceAccess, protocol.SourceAccess{
@@ -62,8 +76,8 @@ func checkHealth(
 	}
 
 	readyRuntime := false
-	for _, runtime := range runtimes {
-		capability := runtimeCapability(ctx, runtime, runtimeExecutables[runtime])
+	for index, runtime := range runtimes {
+		capability := runtimeCapabilities[index]
 		result.Capabilities = append(result.Capabilities, capability)
 		if runtime == primaryRuntime {
 			result.RuntimeVersion = capability.Version
@@ -73,9 +87,7 @@ func checkHealth(
 		}
 	}
 	if capabilityReady(result.Capabilities, protocol.CapabilityKindRuntime, protocol.RuntimeCodex) {
-		limitContext, limitCancel := context.WithTimeout(ctx, healthCheckTimeout)
-		result.WeeklyLimit, _ = readCodexWeeklyLimit(limitContext, runtimeExecutables[protocol.RuntimeCodex])
-		limitCancel()
+		result.WeeklyLimit = weeklyLimit
 	}
 	if gitCapability.Status == protocol.CapabilityReady && readyRuntime {
 		result.State = "healthy"
@@ -87,6 +99,45 @@ func checkHealth(
 		result.Error = errors.New("no configured coding agent runtime is ready")
 	}
 	return result
+}
+
+func runHealthProbes(probes ...func()) {
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(len(probes))
+	for _, probe := range probes {
+		go func() {
+			defer waitGroup.Done()
+			probe()
+		}()
+	}
+	waitGroup.Wait()
+}
+
+func configuredRuntime(runtimes []string, target string) bool {
+	for _, runtime := range runtimes {
+		if runtime == target {
+			return true
+		}
+	}
+	return false
+}
+
+func githubHealthCapability(ctx context.Context, executable string) protocol.Capability {
+	capability := versionCapability(ctx, protocol.CapabilityKindTool, "gh", executable)
+	if capability.Status != protocol.CapabilityReady {
+		return capability
+	}
+	githubContext, githubCancel := context.WithTimeout(ctx, healthCheckTimeout)
+	defer githubCancel()
+	_, _, err := runCommand(
+		githubContext, executable, "", 64<<10,
+		"auth", "status", "--hostname", "github.com",
+	)
+	if err != nil {
+		capability.Status = protocol.CapabilityUnauthenticated
+		capability.Message = "Run gh auth login --hostname github.com."
+	}
+	return capability
 }
 
 func versionCapability(

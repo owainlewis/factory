@@ -8,7 +8,7 @@ import { Overview } from "./Overview";
 import { RepositoriesView, RepositoryDetail } from "./Repositories";
 import { TaskDetail } from "./TaskDetail";
 import { useVisibleInterval } from "./polling";
-import type { Task, TaskPage } from "./types";
+import type { Task, TaskPage, Worker } from "./types";
 import { WorkersView, WorkerDetail } from "./Workers";
 import { WorkView } from "./Work";
 import { WorkflowDetail, WorkflowsView } from "./Workflows";
@@ -134,6 +134,12 @@ export function App() {
     : taskHistory.length > 0
       ? taskHistory
       : undefined;
+  const detailWorker = delegateRequest?.workerID
+    ? queryClient.getQueryData<Worker>(["worker", delegateRequest.workerID])
+    : undefined;
+  const delegateWorkers = detailWorker && !(workers.data ?? []).some((worker) => worker.id === detailWorker.id)
+    ? [detailWorker, ...(workers.data ?? [])]
+    : workers.data ?? [];
 
   return (
     <div className="app-shell">
@@ -322,8 +328,8 @@ export function App() {
       )}
       {delegateRequest && (
         <DelegateModal
-          workers={workers.data ?? []}
-          workersPending={workers.isPending}
+          workers={delegateWorkers}
+          workersPending={workers.isPending && delegateWorkers.length === 0}
           initialWorkerID={delegateRequest.workerID}
           onClose={closeDelegate}
           onCreated={(id) => {

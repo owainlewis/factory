@@ -1028,6 +1028,21 @@ describe("App", () => {
     expect(screen.getByLabelText("Repository")).toBeEnabled();
   });
 
+  it("uses loaded Runner detail when the fleet request fails", async () => {
+    window.history.replaceState({}, "", "/workers/worker-online");
+    mockControlPlane({ workerFailure: true });
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Assign work" }));
+
+    expect(screen.getByRole("dialog", { name: "Delegate task" })).toBeVisible();
+    expect(screen.getByLabelText("Runner")).toHaveValue("worker-online");
+    expect(screen.getByLabelText("Coding agent")).toBeEnabled();
+    expect(screen.getByLabelText("Coding agent")).toHaveValue("codex");
+    expect(screen.getByLabelText("Repository")).toBeEnabled();
+  });
+
   it("presents worker facts in accessible profile tabs with read-only execution settings", async () => {
     window.history.replaceState({}, "", "/workers/worker-online");
     mockControlPlane();
