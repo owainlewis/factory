@@ -101,7 +101,7 @@ function RunOnceDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
   const definitionID = useId();
   const repositoryID = useId();
   const firstField = useRef<HTMLSelectElement>(null);
-  const definitions = useQuery({ queryKey: ["definitions", "active", "run-once"], queryFn: () => api.definitions() });
+  const definitions = useQuery({ queryKey: ["definitions", "active", "run-once"], queryFn: loadActiveDefinitions });
   const repositories = useQuery({ queryKey: ["run-repositories"], queryFn: api.runRepositories });
   const [definition, setDefinition] = useState("");
   const [repository, setRepository] = useState("");
@@ -164,6 +164,7 @@ export function RunDetail({ id, onBack }: { id: string; onBack: () => void }) {
   const queryClient = useQueryClient();
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmRetry, setConfirmRetry] = useState(false);
+  const [terminalCatchupAttemptID, setTerminalCatchupAttemptID] = useState<string | null>(null);
   const detail = useQuery({
     queryKey: ["run", id],
     queryFn: () => api.run(id),
@@ -171,12 +172,54 @@ export function RunDetail({ id, onBack }: { id: string; onBack: () => void }) {
   });
   const job = detail.data?.jobs[0];
   const latestAttempt = job?.attempts?.at(-1);
+  const jobIsActive = Boolean(job && ["preparing", "running"].includes(job.job.state));
+  const eventKey = ["events", latestAttempt?.id] as const;
   const events = useQuery({
-    queryKey: ["events", latestAttempt?.id],
-    queryFn: () => loadJobEvents(latestAttempt!.id),
+    queryKey: eventKey,
+    queryFn: async () => {
+      const cached = queryClient.getQueryData<AttemptEvent[]>(eventKey) ?? [];
+      const appended = await loadJobEvents(latestAttempt!.id, cached.at(-1)?.sequence ?? -1);
+      const unique = new Map(cached.map((event) => [event.sequence, event]));
+      for (const event of appended) unique.set(event.sequence, event);
+      return [...unique.values()].sort((left, right) => left.sequence - right.sequence);
+    },
     enabled: Boolean(latestAttempt),
-    refetchInterval: job && ["preparing", "running"].includes(job.job.state) ? interval : false,
+    refetchInterval: jobIsActive ? interval : false,
   });
+  const previousJob = useRef<{ id: string; active: boolean } | undefined>(undefined);
+  useEffect(() => {
+    if (!job) return;
+    let stateTimer: number | undefined;
+    if (previousJob.current?.id === job.job.id && previousJob.current.active && !jobIsActive && latestAttempt) {
+      stateTimer = window.setTimeout(() => setTerminalCatchupAttemptID(latestAttempt.id), 0);
+    } else if (jobIsActive) {
+      stateTimer = window.setTimeout(() => setTerminalCatchupAttemptID(null), 0);
+    }
+    previousJob.current = { id: job.job.id, active: jobIsActive };
+    return () => {
+      if (stateTimer !== undefined) window.clearTimeout(stateTimer);
+    };
+  }, [job, jobIsActive, latestAttempt]);
+  const refetchEvents = events.refetch;
+  useEffect(() => {
+    if (!terminalCatchupAttemptID || terminalCatchupAttemptID !== latestAttempt?.id) return;
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    const catchUp = async () => {
+      const result = await refetchEvents();
+      if (cancelled) return;
+      if (result.isSuccess) {
+        setTerminalCatchupAttemptID((current) => current === terminalCatchupAttemptID ? null : current);
+      } else if (interval !== false) {
+        retryTimer = window.setTimeout(() => void catchUp(), interval);
+      }
+    };
+    void catchUp();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [interval, latestAttempt?.id, refetchEvents, terminalCatchupAttemptID]);
   const cancel = useMutation({
     mutationFn: () => api.cancelJob(job!.job.id),
     onSuccess: async (next) => {
@@ -233,9 +276,20 @@ export function RunDetail({ id, onBack }: { id: string; onBack: () => void }) {
   );
 }
 
-async function loadJobEvents(attemptID: string): Promise<AttemptEvent[]> {
+async function loadActiveDefinitions() {
+  const definitions = [];
+  let cursor = "";
+  do {
+    const page = await api.definitions(cursor);
+    definitions.push(...page.definitions);
+    cursor = page.next_cursor ?? "";
+  } while (cursor);
+  return { definitions, next_cursor: null };
+}
+
+async function loadJobEvents(attemptID: string, initialAfter: number): Promise<AttemptEvent[]> {
   const events: AttemptEvent[] = [];
-  let after = -1;
+  let after = initialAfter;
   for (;;) {
     const previous = after;
     const page = await api.events(attemptID, after);

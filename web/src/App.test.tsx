@@ -469,6 +469,18 @@ describe("App", () => {
     expect((await screen.findAllByText("Cancelled", { selector: ".status-badge" })).length).toBeGreaterThan(0);
   });
 
+  it("loads every active Definition page in the Run once selector", async () => {
+    const fetch = mockControlPlane({ paginatedDefinitions: true });
+    window.history.replaceState({}, "", "/runs?new=true");
+    renderApp();
+
+    const dialog = await screen.findByRole("dialog", { name: "Run once" });
+    expect(await within(dialog).findByRole("option", { name: "Historical Definition" })).toBeVisible();
+    expect(fetch.mock.calls.some(([input]) =>
+      String(input).includes("cursor=definition-history")
+    )).toBe(true);
+  });
+
   it("loads older Runs through stable cursor pagination", async () => {
     mockControlPlane({ paginatedRuns: true });
     window.history.replaceState({}, "", "/runs");
