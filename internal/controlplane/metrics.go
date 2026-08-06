@@ -22,6 +22,12 @@ type metricsQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+type MetricsFilter struct {
+	DefinitionID string
+	RepositoryID string
+	RunnerID     string
+}
+
 func parseMetricsWindow(value string) (string, time.Duration, error) {
 	switch value {
 	case "", metricsWindow7Days:
@@ -41,6 +47,14 @@ func parseMetricsWindow(value string) (string, time.Duration, error) {
 }
 
 func (s *Store) Metrics(ctx context.Context, window string) (protocol.MetricsSummary, error) {
+	return s.MetricsFiltered(ctx, window, MetricsFilter{})
+}
+
+func (s *Store) MetricsFiltered(
+	ctx context.Context,
+	window string,
+	filter MetricsFilter,
+) (protocol.MetricsSummary, error) {
 	window, duration, err := parseMetricsWindow(window)
 	if err != nil {
 		return protocol.MetricsSummary{}, err
@@ -78,6 +92,9 @@ func (s *Store) Metrics(ctx context.Context, window string) (protocol.MetricsSum
 		return protocol.MetricsSummary{}, unavailable(err)
 	}
 	if err := s.loadWeeklyLimit(ctx, tx, now, &summary); err != nil {
+		return protocol.MetricsSummary{}, unavailable(err)
+	}
+	if err := s.loadRunHealthMetrics(ctx, tx, start, now, filter, &summary.RunHealth); err != nil {
 		return protocol.MetricsSummary{}, unavailable(err)
 	}
 	if err := tx.Commit(); err != nil {

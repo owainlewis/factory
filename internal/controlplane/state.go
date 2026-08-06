@@ -132,7 +132,8 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		  AND NOT EXISTS (
 		      SELECT 1
 		      FROM json_each(t.definition_snapshot, '$.allowed_tools') required_tool
-		      WHERE NOT EXISTS (
+		      WHERE required_tool.value IS NOT NULL
+		        AND NOT EXISTS (
 		          SELECT 1
 		          FROM workers tool_worker, json_each(tool_worker.capabilities_json) capability
 		          WHERE tool_worker.id = ?

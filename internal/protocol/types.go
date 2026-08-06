@@ -886,21 +886,59 @@ type TestAutomationResult struct {
 }
 
 type MetricsSummary struct {
-	Window                 string       `json:"window"`
-	GeneratedAt            time.Time    `json:"generated_at"`
-	ExecutionsCreated      int64        `json:"executions_created"`
-	ExecutionsCompleted    int64        `json:"executions_completed"`
-	Succeeded              int64        `json:"succeeded"`
-	Failed                 int64        `json:"failed"`
-	Cancelled              int64        `json:"cancelled"`
-	Queued                 int64        `json:"queued"`
-	Running                int64        `json:"running"`
-	SuccessRate            *float64     `json:"success_rate"`
-	RetryRate              *float64     `json:"retry_rate"`
-	MedianCycleTimeSeconds *float64     `json:"median_cycle_time_seconds"`
-	WorkersOnline          int64        `json:"workers_online"`
-	WorkersTotal           int64        `json:"workers_total"`
-	WeeklyLimit            *WeeklyLimit `json:"weekly_limit,omitempty"`
+	Window                 string           `json:"window"`
+	GeneratedAt            time.Time        `json:"generated_at"`
+	ExecutionsCreated      int64            `json:"executions_created"`
+	ExecutionsCompleted    int64            `json:"executions_completed"`
+	Succeeded              int64            `json:"succeeded"`
+	Failed                 int64            `json:"failed"`
+	Cancelled              int64            `json:"cancelled"`
+	Queued                 int64            `json:"queued"`
+	Running                int64            `json:"running"`
+	SuccessRate            *float64         `json:"success_rate"`
+	RetryRate              *float64         `json:"retry_rate"`
+	MedianCycleTimeSeconds *float64         `json:"median_cycle_time_seconds"`
+	WorkersOnline          int64            `json:"workers_online"`
+	WorkersTotal           int64            `json:"workers_total"`
+	WeeklyLimit            *WeeklyLimit     `json:"weekly_limit,omitempty"`
+	RunHealth              RunHealthMetrics `json:"run_health"`
+}
+
+type MetricFilterOption struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type RunMetricJob struct {
+	JobID                    string     `json:"job_id"`
+	RunID                    string     `json:"run_id"`
+	DefinitionID             string     `json:"definition_id"`
+	DefinitionName           string     `json:"definition_name"`
+	RepositoryID             string     `json:"repository_id"`
+	RepositoryRemoteIdentity string     `json:"repository_remote_identity"`
+	RunnerID                 string     `json:"runner_id,omitempty"`
+	RunnerName               string     `json:"runner_name,omitempty"`
+	State                    string     `json:"state"`
+	AdmittedAt               time.Time  `json:"admitted_at"`
+	StartedAt                *time.Time `json:"started_at,omitempty"`
+	TerminalAt               *time.Time `json:"terminal_at,omitempty"`
+}
+
+type RunHealthMetrics struct {
+	TotalJobs               int64                `json:"total_jobs"`
+	Active                  int64                `json:"active"`
+	Blocked                 int64                `json:"blocked"`
+	Succeeded               int64                `json:"succeeded"`
+	Failed                  int64                `json:"failed"`
+	Cancelled               int64                `json:"cancelled"`
+	SuccessRate             *float64             `json:"success_rate"`
+	AverageQueueTimeSeconds *float64             `json:"average_queue_time_seconds"`
+	AverageCycleTimeSeconds *float64             `json:"average_cycle_time_seconds"`
+	Throughput              int64                `json:"throughput"`
+	Jobs                    []RunMetricJob       `json:"jobs"`
+	Definitions             []MetricFilterOption `json:"definitions"`
+	Repositories            []MetricFilterOption `json:"repositories"`
+	Runners                 []MetricFilterOption `json:"runners"`
 }
 
 type ClaimRequest struct {
