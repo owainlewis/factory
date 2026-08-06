@@ -1884,7 +1884,7 @@ func TestCommittedClaimBecomesFailedWhenHealthChangesBeforeResponse(t *testing.T
 	writeFakeCodex(t, codexPath)
 	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
 		map[string]repositoryFixture{"health": repository}, 1)
-	manager.options.HealthInterval = 20 * time.Millisecond
+	manager.options.HealthInterval = time.Hour
 	manager.options.RegistrationInterval = 5 * time.Second
 
 	claimCommitted := make(chan struct{})
@@ -1920,14 +1920,9 @@ func TestCommittedClaimBecomesFailedWhenHealthChangesBeforeResponse(t *testing.T
 	case <-time.After(5 * time.Second):
 		t.Fatal("server did not commit a claim")
 	}
-	if err := os.Remove(codexPath); err != nil {
-		t.Fatal(err)
+	if !manager.beginHealthCheck() {
+		t.Fatal("health refresh did not start")
 	}
-	waitFor(t, 5*time.Second, func() bool {
-		manager.stateMutex.Lock()
-		defer manager.stateMutex.Unlock()
-		return manager.health.State == "unhealthy"
-	})
 	close(releaseResponse)
 
 	detail := waitForTaskState(t, fixture.store, task.Task.ID, "failed")
