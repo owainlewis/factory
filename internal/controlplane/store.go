@@ -1278,6 +1278,11 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	if input.Name == "" || len(input.Name) > 200 {
 		return protocol.Worker{}, invalid("invalid_worker", "worker name is required and must be at most 200 bytes")
 	}
+	labels, err := normalizeRunnerLabels(input.Labels)
+	if err != nil {
+		return protocol.Worker{}, err
+	}
+	input.Labels = labels
 	input.Runtime = strings.TrimSpace(input.Runtime)
 	input.RuntimeVersion = strings.TrimSpace(input.RuntimeVersion)
 	if input.Runtime == "" {
@@ -1445,6 +1450,10 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 			"invalid_capabilities", "worker capabilities could not be encoded",
 		)
 	}
+	labelsJSON, err := json.Marshal(input.Labels)
+	if err != nil {
+		return protocol.Worker{}, invalid("invalid_labels", "Runner labels could not be encoded")
+	}
 	var weeklyLimitUsedPercent, weeklyLimitResetsAt any
 	if input.WeeklyLimit != nil {
 		weeklyLimitUsedPercent = input.WeeklyLimit.UsedPercent
@@ -1489,14 +1498,15 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO workers(
-			id, name, worker_version, runtime, runtime_version, capacity, active_count,
+			id, name, labels_json, worker_version, runtime, runtime_version, capacity, active_count,
 			health, capabilities_json, source_access_json, accepts_managed_repositories,
 			managed_repository_ids_json, retained_worktrees_json,
 			weekly_limit_used_percent, weekly_limit_resets_at, registered_at, last_heartbeat
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
-			name=excluded.name, worker_version=excluded.worker_version, runtime_version=excluded.runtime_version,
+			name=excluded.name, labels_json=excluded.labels_json,
+			worker_version=excluded.worker_version, runtime_version=excluded.runtime_version,
 			capacity=excluded.capacity, active_count=excluded.active_count, health=excluded.health,
 			capabilities_json=excluded.capabilities_json,
 			source_access_json=excluded.source_access_json,
@@ -1506,7 +1516,7 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 			weekly_limit_used_percent=excluded.weekly_limit_used_percent,
 			weekly_limit_resets_at=excluded.weekly_limit_resets_at,
 			last_heartbeat=excluded.last_heartbeat
-	`, workerID, input.Name, input.WorkerVersion, input.Runtime, input.RuntimeVersion,
+	`, workerID, input.Name, labelsJSON, input.WorkerVersion, input.Runtime, input.RuntimeVersion,
 		input.Capacity, input.ActiveCount, input.Health, capabilitiesJSON, sourceAccessJSON,
 		input.AcceptsManagedRepositories, managedRepositoryIDsJSON, retained,
 		weeklyLimitUsedPercent, weeklyLimitResetsAt, now, now)
@@ -1726,6 +1736,22 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	return s.Worker(ctx, workerID)
 }
 
+func normalizeRunnerLabels(input map[string]string) (map[string]string, error) {
+	if len(input) > 20 {
+		return nil, invalid("invalid_labels", "a Runner may advertise at most 20 labels")
+	}
+	labels := make(map[string]string, len(input))
+	for key, value := range input {
+		trimmedKey := strings.TrimSpace(key)
+		trimmedValue := strings.TrimSpace(value)
+		if trimmedKey == "" || trimmedKey != key || len(trimmedKey) > 100 || len(trimmedValue) > 200 {
+			return nil, invalid("invalid_labels", "Runner label keys must be trimmed and at most 100 bytes; values must be at most 200 bytes")
+		}
+		labels[trimmedKey] = trimmedValue
+	}
+	return labels, nil
+}
+
 func normalizeWorkerCapabilities(input protocol.WorkerRegistration) ([]protocol.Capability, error) {
 	capabilities := append([]protocol.Capability(nil), input.Capabilities...)
 	if len(capabilities) == 0 {
@@ -1787,7 +1813,7 @@ func normalizeWorkerCapabilities(input protocol.WorkerRegistration) ([]protocol.
 
 func (s *Store) Workers(ctx context.Context) ([]protocol.Worker, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT w.id, w.name, w.worker_version, w.runtime, w.runtime_version,
+		SELECT w.id, w.name, w.labels_json, w.worker_version, w.runtime, w.runtime_version,
 		       w.capacity, w.active_count, w.health, w.capabilities_json, w.source_access_json,
 		       w.accepts_managed_repositories, w.managed_repository_ids_json,
 		       w.retained_worktrees_json,
@@ -1831,7 +1857,7 @@ func (s *Store) Workers(ctx context.Context) ([]protocol.Worker, error) {
 
 func (s *Store) Worker(ctx context.Context, id string) (protocol.Worker, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT w.id, w.name, w.worker_version, w.runtime, w.runtime_version,
+		SELECT w.id, w.name, w.labels_json, w.worker_version, w.runtime, w.runtime_version,
 		       w.capacity, w.active_count, w.health, w.capabilities_json, w.source_access_json,
 		       w.accepts_managed_repositories, w.managed_repository_ids_json,
 		       w.retained_worktrees_json,
@@ -1862,14 +1888,17 @@ type scanner interface {
 
 func scanWorker(row scanner, now time.Time) (protocol.Worker, error) {
 	var worker protocol.Worker
-	var capabilities, sourceAccess, managedRepositoryIDs, retained []byte
+	var labels, capabilities, sourceAccess, managedRepositoryIDs, retained []byte
 	var acceptsManagedRepositories int
 	var registered, heartbeat int64
-	if err := row.Scan(&worker.ID, &worker.Name, &worker.WorkerVersion, &worker.Runtime, &worker.RuntimeVersion,
+	if err := row.Scan(&worker.ID, &worker.Name, &labels, &worker.WorkerVersion, &worker.Runtime, &worker.RuntimeVersion,
 		&worker.Capacity, &worker.ActiveCount, &worker.Health, &capabilities, &sourceAccess,
 		&acceptsManagedRepositories, &managedRepositoryIDs,
 		&retained, &registered, &heartbeat,
 		&worker.CurrentTaskTitle); err != nil {
+		return worker, err
+	}
+	if err := json.Unmarshal(labels, &worker.Labels); err != nil {
 		return worker, err
 	}
 	if err := json.Unmarshal(capabilities, &worker.Capabilities); err != nil {

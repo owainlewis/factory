@@ -127,6 +127,21 @@ func TestServerBootstrapConfigRejectsUnknownFieldsAndSymlinks(t *testing.T) {
 	}
 }
 
+func TestRemoteRunnerTLSConfigurationIsAllOrNothing(t *testing.T) {
+	for _, values := range [][3]string{
+		{"0.0.0.0:7443", "", ""},
+		{"", "server.crt", "server.key"},
+		{"0.0.0.0:7443", "server.crt", ""},
+	} {
+		if err := validateRunnerTLSConfig(values[0], values[1], values[2]); err == nil {
+			t.Fatalf("accepted partial remote TLS configuration %#v", values)
+		}
+	}
+	if err := validateRunnerTLSConfig("0.0.0.0:7443", "server.crt", "server.key"); err != nil {
+		t.Fatalf("complete remote TLS configuration rejected: %v", err)
+	}
+}
+
 func TestValidateNoLegacyServerDefaultRefusesLegacyState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -13,8 +13,9 @@ The browser UI provides:
 - registered worker and repository status;
 - task delegation using a title, prompt, repository, and worker.
 
-Factory is local-first today. The server only accepts loopback connections and
-does not include user authentication.
+Factory is local-first. Its browser and operator API accept loopback connections
+only. An optional, separate TLS-authenticated endpoint accepts Runners on remote
+VMs.
 
 Read the [product vision](docs/software-factory/vision.md), the
 [target architecture](docs/software-factory/design.md), and the
@@ -77,7 +78,9 @@ FACTORY_WORKER_CONFIG=~/.factory/worker.toml \
 ```
 
 See the [local guide](docs/local.md) for a complete setup and the
-[worker guide](docs/worker.md) for runtime and worktree behavior. Tagged binary
+[worker guide](docs/worker.md) for runtime and worktree behavior. Use the
+[remote VM guide](docs/remote-runners.md) to enroll a Runner outside the server
+host. Tagged binary
 installation, upgrades, compatibility, rollback, and release verification are
 covered by the [release guide](docs/release.md).
 

@@ -324,6 +324,7 @@ export function WorkerDetail({
                 <div><dt>Runtimes</dt><dd>{readyRuntimes(data).map((capability) => runtimeLabel(capability.name)).join(", ") || "None ready"}</dd></div>
                 <div><dt>Last seen</dt><dd>{timeAgo(data.last_heartbeat)}</dd></div>
                 <div><dt>Registered</dt><dd>{new Date(data.registered_at).toLocaleString()}</dd></div>
+				{Object.entries(data.labels ?? {}).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}
 				<div><dt>Runner ID</dt><dd><span className="worker-id" title={data.id}>{data.id}</span></dd></div>
               </dl>
             </section>

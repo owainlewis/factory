@@ -2978,7 +2978,6 @@ func TestServerURLRejectsNonLoopback(t *testing.T) {
 	for _, value := range []string{
 		"http://0.0.0.0:7337",
 		"http://example.com:7337",
-		"https://127.0.0.1:7337",
 		"http://127.0.0.1:7337/path",
 	} {
 		t.Run(value, func(t *testing.T) {
@@ -2986,6 +2985,9 @@ func TestServerURLRejectsNonLoopback(t *testing.T) {
 				t.Fatalf("accepted %s", value)
 			}
 		})
+	}
+	if err := validateServerURL("https://factory.example.com:7443"); err != nil {
+		t.Fatalf("remote HTTPS server rejected: %v", err)
 	}
 }
 

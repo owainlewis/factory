@@ -152,9 +152,9 @@ issues or pull requests as instructed.
 
 ### Later user journeys
 
-After V1, an operator can add a Runner on a remote VM without changing a
-Definition. This is the first scaling path beyond the local machine. A later
-GitHub webhook Trigger creates a Run when an issue or pull request event arrives,
+An operator can add a Runner on a remote VM without changing a Definition. This
+is the first scaling path beyond the local machine. A later GitHub webhook
+Trigger creates a Run when an issue or pull request event arrives,
 such as running a shared `Review pull request` Definition when a pull request is
 opened.
 
@@ -348,10 +348,10 @@ prompt as a security boundary.
 Factory instance. V1 has no user identity, remote browser access, or per-user
 authorization. Authenticated team access requires a later design.
 
-Remote VM Runners require authenticated TLS and a separate accepted
-implementation design. Managed credentials must be short-lived and scoped to
-the Job repository where the provider supports it. Host-managed credentials
-remain an explicit trusted mode. Future Runner targets must preserve these
+Remote VM Runners use a separate TLS listener containing only enrollment and
+the Runner lifecycle. A ten-minute, one-time token bound to the stable Runner
+identity creates a per-Runner credential. Agent and provider credentials remain
+host-managed trusted inputs. Future Runner targets must preserve these
 boundaries.
 
 A later public webhook listener exposes only signed, bounded delivery routes.

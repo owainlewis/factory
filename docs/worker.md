@@ -16,6 +16,10 @@ runtime = "codex"
 runtimes = ["pi", "codex", "claude-code"]
 # Optional. Defaults to 10.
 max_concurrent = 10
+
+[labels]
+environment = "development"
+host = "laptop"
 ```
 
 `runtimes` lists the coding agents the Runner should discover. Supported values
@@ -68,6 +72,7 @@ Registration advertises:
 - display name, primary runtime, and capability status for each configured tool
   and coding agent;
 - maximum concurrent attempts;
+- optional host labels;
 - worker version;
 - optional legacy repository keys, normalized remote identities, and retained
   counts;
@@ -200,9 +205,12 @@ path.
 
 ## Deployment model
 
-The current control plane accepts loopback workers only. On one VM, run the
-server and one or more workers as supervised Unix services.
+The default control plane accepts loopback Runners only. On one host, run the
+server and one or more Runners as supervised Unix services.
 
-Remote VM and Kubernetes fleets are a planned extension. They require transport
-security and worker authentication before the loopback restriction can be
-removed.
+An optional, separate HTTPS listener accepts authenticated Runners on remote
+VMs. A ten-minute, one-time enrollment creates a per-Runner credential, while
+the browser and operator API remain on loopback. See the [remote VM
+guide](remote-runners.md).
+
+Kubernetes Runner provisioning is not part of the current product.

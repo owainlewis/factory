@@ -2,3 +2,8 @@
 # Automations are created in the Factory UI and stored in SQLite.
 listen = "127.0.0.1:7337"
 database = "server/factory.sqlite3"
+
+# Optional remote VM Runner endpoint. Configure all three values together.
+# runner_listen = "0.0.0.0:7443"
+# runner_tls_cert = "/etc/factory/tls/server.crt"
+# runner_tls_key = "/etc/factory/tls/server.key"

@@ -27,6 +27,7 @@ export interface RetainedWorktree {
 export interface Worker {
   id: string;
   name: string;
+  labels?: Record<string, string>;
   worker_version: string;
   runtime: Runtime;
   runtime_version: string;
