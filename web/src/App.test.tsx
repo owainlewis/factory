@@ -297,9 +297,16 @@ describe("App", () => {
     })).toBe(true);
 
     await user.click(screen.getByRole("button", { name: "View archive" }));
+    expect(window.location.href).toContain("/definitions?archived=true");
     await user.click(await screen.findByRole("button", { name: /Find important bugs/ }));
+    expect(window.location.href).toContain("/definitions/definition-created?archived=true");
     expect(await screen.findByText("Archived", { selector: ".status-badge" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "All Definitions" }));
+    expect(window.location.href).toContain("/definitions?archived=true");
+    await user.click(await screen.findByRole("button", { name: /Find important bugs/ }));
     await user.click(screen.getByRole("button", { name: "Restore Definition" }));
+    expect(window.location.pathname).toBe("/definitions");
+    expect(window.location.search).toBe("");
     expect(await screen.findByRole("heading", { name: "Definitions" })).toBeVisible();
     expect(await screen.findByRole("button", { name: /Find important bugs/ })).toBeVisible();
   });

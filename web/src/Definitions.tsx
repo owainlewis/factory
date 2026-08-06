@@ -24,9 +24,16 @@ import {
   ViewHeader,
 } from "./ui";
 
-export function DefinitionsView({ onDefinition }: { onDefinition: (id: string) => void }) {
+export function DefinitionsView({
+  archived,
+  onArchivedChange,
+  onDefinition,
+}: {
+  archived: boolean;
+  onArchivedChange: (archived: boolean) => void;
+  onDefinition: (id: string) => void;
+}) {
   const [createOpen, setCreateOpen] = useState(false);
-  const [archived, setArchived] = useState(false);
   const [history, setHistory] = useState<Definition[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>();
   const previousHeadCursor = useRef<string | null | undefined>(undefined);
@@ -74,12 +81,7 @@ export function DefinitionsView({ onDefinition }: { onDefinition: (id: string) =
       <div className="view-toolbar">
         <p>{archived ? "Archived Definitions remain available for inspection and restore." : "Shared agent prompts for repeatable software engineering jobs."}</p>
         <div className="detail-actions">
-          <button className="button button-secondary" onClick={() => {
-            setArchived((current) => !current);
-            setHistory([]);
-            setNextCursor(undefined);
-            previousHeadCursor.current = undefined;
-          }}>
+          <button className="button button-secondary" onClick={() => onArchivedChange(!archived)}>
             {archived ? <><ArrowLeft size={15} /> View active</> : <><Archive size={15} /> View archive</>}
           </button>
           {!archived && <button className="button button-primary" onClick={() => setCreateOpen(true)}>
@@ -138,7 +140,15 @@ export function DefinitionsView({ onDefinition }: { onDefinition: (id: string) =
   );
 }
 
-export function DefinitionDetail({ id, onBack }: { id: string; onBack: () => void }) {
+export function DefinitionDetail({
+  id,
+  onBack,
+  onStateChanged,
+}: {
+  id: string;
+  onBack: () => void;
+  onStateChanged: () => void;
+}) {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
@@ -152,7 +162,7 @@ export function DefinitionDetail({ id, onBack }: { id: string; onBack: () => voi
     onSuccess: async (next) => {
       queryClient.setQueryData(["definition", next.id], next);
       await invalidateControlPlane(queryClient);
-      onBack();
+      onStateChanged();
     },
   });
   if (detail.isPending) return <LoadingState label="Loading Definition" />;
