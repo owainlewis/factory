@@ -125,6 +125,11 @@ async function createFakeGH() {
     `#!/bin/sh
 set -eu
 
+if [ "\${1:-}" = "--version" ]; then
+  echo "gh version 2.94.0 (Factory browser fixture)"
+  exit 0
+fi
+
 if [ "\${1:-}" = "auth" ] && [ "\${2:-}" = "status" ]; then
   echo "Logged in to github.com for deterministic Factory browser tests"
   exit 0
