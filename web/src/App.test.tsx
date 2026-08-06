@@ -64,7 +64,7 @@ describe("App", () => {
     renderApp();
 
     const work = await screen.findByRole("button", { name: /^Work$/ });
-    const workers = screen.getByRole("button", { name: /^Workers$/ });
+    const workers = screen.getByRole("button", { name: /^Runners$/ });
     expect(screen.getByRole("button", { name: /^Overview$/ })).not.toHaveAttribute("aria-current");
     expect(work).toHaveAttribute("aria-current", "page");
     expect(workers).not.toHaveAttribute("aria-current");
@@ -84,16 +84,16 @@ describe("App", () => {
     const work = screen.getByRole("button", { name: /^Work$/ });
     expect(work).toHaveClass("active");
     expect(work).not.toHaveAttribute("aria-current");
-    expect(screen.getByRole("button", { name: /^Workers$/ })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("button", { name: /^Runners$/ })).not.toHaveAttribute("aria-current");
   });
 
-  it("highlights the Workers section without marking worker detail as current", async () => {
+  it("highlights the Runners section without marking Runner detail as current", async () => {
     window.history.replaceState({}, "", "/workers/worker-online");
     mockControlPlane();
     renderApp();
 
     await screen.findByRole("heading", { name: "Build Mac" });
-    const workers = screen.getByRole("button", { name: /^Workers$/ });
+    const workers = screen.getByRole("button", { name: /^Runners$/ });
     expect(workers).toHaveClass("active");
     expect(workers).not.toHaveAttribute("aria-current");
     expect(screen.getByRole("button", { name: /^Work$/ })).not.toHaveAttribute("aria-current");
@@ -702,7 +702,7 @@ describe("App", () => {
     await user.type(within(dialog).getByLabelText("Title"), "Implement #183");
     await user.selectOptions(within(dialog).getByLabelText("Runbook"), "workflow-revision-1");
     await user.type(within(dialog).getByLabelText("Context"), "Issue #183 remains ordinary text.");
-    await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
+    await user.selectOptions(within(dialog).getByLabelText("Runner"), "worker-online");
     await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
     await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));
 
@@ -733,7 +733,7 @@ describe("App", () => {
     const user = userEvent.setup();
     renderApp();
 
-    await user.click(await screen.findByRole("button", { name: /^Workers$/ }));
+    await user.click(await screen.findByRole("button", { name: /^Runners$/ }));
     const summary = screen.getByLabelText("Fleet summary");
     expect(within(summary).getByText("Available slots").closest("div")).toHaveTextContent("4");
     expect(screen.getByLabelText("6 of 10 slots active")).toBeVisible();
@@ -860,14 +860,14 @@ describe("App", () => {
 
     await user.click(await screen.findByRole("button", { name: "Delegate task" }));
     const dialog = screen.getByRole("dialog", { name: "Delegate task" });
-    await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
+    await user.selectOptions(within(dialog).getByLabelText("Runner"), "worker-online");
     const repository = within(dialog).getByLabelText("Repository");
     expect(within(repository).getByRole("option", { name: /factory/ })).toBeInTheDocument();
     expect(within(repository).getByRole("option", { name: /github.com\/example\/managed/ })).toBeEnabled();
     expect(within(repository).getByRole("option", { name: /github.com\/example\/disabled/ })).toBeDisabled();
     expect(within(repository).queryByRole("option", { name: /archive/ })).not.toBeInTheDocument();
 
-    await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-offline");
+    await user.selectOptions(within(dialog).getByLabelText("Runner"), "worker-offline");
     expect(within(dialog).getByText(/task will queue until it returns/i)).toBeVisible();
     expect(within(repository).getByRole("option", { name: /archive/ })).toBeInTheDocument();
     expect(within(repository).getByRole("option", { name: /github.com\/example\/managed/ })).toBeDisabled();
@@ -946,18 +946,21 @@ describe("App", () => {
 
     await user.type(within(dialog).getByLabelText("Title"), "Ship the UI");
     await user.type(within(dialog).getByLabelText("Context"), "Build and verify the real interface.");
-    await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
+    await user.selectOptions(within(dialog).getByLabelText("Runner"), "worker-online");
+    expect(within(dialog).getByLabelText("Coding agent")).toHaveValue("codex");
+    await user.selectOptions(within(dialog).getByLabelText("Coding agent"), "pi");
     await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
     await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));
 
     expect(await screen.findByRole("heading", { name: "Ship the UI" })).toBeVisible();
-    expect(screen.getByText("Progress will appear when the worker starts this task.")).toBeVisible();
+    expect(screen.getByText("Progress will appear when the Runner starts this task.")).toBeVisible();
     const createCall = fetch.mock.calls.find(([, init]) => init?.method === "POST");
     expect(createCall).toBeDefined();
     expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({
       title: "Ship the UI",
       description: "Build and verify the real interface.",
       worker_id: "worker-online",
+      runtime: "pi",
       repository_id: "repo-factory",
       timeout_seconds: 7200,
     });
@@ -972,7 +975,7 @@ describe("App", () => {
     const dialog = screen.getByRole("dialog", { name: "Delegate task" });
     await user.type(within(dialog).getByLabelText("Title"), "Work in managed repository");
     await user.type(within(dialog).getByLabelText("Context"), "Acquire the configured repository on demand.");
-    await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
+    await user.selectOptions(within(dialog).getByLabelText("Runner"), "worker-online");
     const repositoryPicker = within(dialog).getByLabelText("Repository");
     expect(await within(repositoryPicker).findByRole("option", { name: /github\.com\/example\/managed · acquired on demand/ })).toBeEnabled();
     expect(within(repositoryPicker).getByRole("option", { name: /github\.com\/example\/disabled · Repository routing is disabled\./ })).toBeDisabled();
@@ -1012,7 +1015,7 @@ describe("App", () => {
     await vi.waitFor(() => expect(trigger).toHaveFocus());
   });
 
-  it("preselects the worker when assigning from worker detail", async () => {
+  it("preselects the Runner when assigning from Runner detail", async () => {
     window.history.replaceState({}, "", "/workers/worker-online");
     mockControlPlane();
     const user = userEvent.setup();
@@ -1021,18 +1024,18 @@ describe("App", () => {
     await user.click(await screen.findByRole("button", { name: "Assign work" }));
 
     expect(screen.getByRole("dialog", { name: "Delegate task" })).toBeVisible();
-    expect(screen.getByLabelText("Worker")).toHaveValue("worker-online");
+    expect(screen.getByLabelText("Runner")).toHaveValue("worker-online");
     expect(screen.getByLabelText("Repository")).toBeEnabled();
   });
 
   it("presents worker facts in accessible profile tabs with read-only execution settings", async () => {
     window.history.replaceState({}, "", "/workers/worker-online");
-    mockControlPlane();
+    mockControlPlane({ workerDetailFailuresAfter: 2 });
     const user = userEvent.setup();
     renderApp();
 
     expect(await screen.findByRole("heading", { name: "Build Mac" })).toBeVisible();
-    const tabs = screen.getByRole("tablist", { name: "Worker profile" });
+    const tabs = screen.getByRole("tablist", { name: "Runner profile" });
     const overview = within(tabs).getByRole("tab", { name: "Overview" });
     const work = within(tabs).getByRole("tab", { name: "Work" });
     const capabilities = within(tabs).getByRole("tab", { name: "Capabilities" });
@@ -1041,7 +1044,7 @@ describe("App", () => {
       expect(document.getElementById(tab.getAttribute("aria-controls") ?? "")).not.toBeNull();
     }
     expect(overview).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("region", { name: "Worker summary" })).toHaveTextContent("6 / 10");
+    expect(screen.getByRole("region", { name: "Runner summary" })).toHaveTextContent("6 / 10");
 
     overview.focus();
     await user.keyboard("{ArrowRight}");
@@ -1057,9 +1060,9 @@ describe("App", () => {
     expect(within(settingsPanel).getByRole("heading", { name: "Execution" })).toBeVisible();
     expect(within(settingsPanel).getByText("Read only")).toBeVisible();
     expect(within(settingsPanel).getByText("6 / 10")).toBeVisible();
-    expect(within(settingsPanel).getByRole("meter", { name: "Worker concurrency" })).toHaveAttribute("max", "10");
+    expect(within(settingsPanel).getByRole("meter", { name: "Runner concurrency" })).toHaveAttribute("max", "10");
     expect(settingsPanel).toHaveTextContent("max_concurrent");
-    expect(settingsPanel).toHaveTextContent("restart the worker");
+    expect(settingsPanel).toHaveTextContent("restart the Runner");
     expect(within(settingsPanel).queryByRole("textbox")).not.toBeInTheDocument();
     expect(within(settingsPanel).queryByRole("spinbutton")).not.toBeInTheDocument();
     expect(within(settingsPanel).queryByRole("combobox")).not.toBeInTheDocument();
@@ -1068,9 +1071,18 @@ describe("App", () => {
     expect(overview).toHaveFocus();
     await user.click(capabilities);
     const capabilitiesPanel = screen.getByRole("tabpanel");
+    expect(capabilitiesPanel).toHaveTextContent("Pi");
     expect(capabilitiesPanel).toHaveTextContent("Codex");
+    expect(capabilitiesPanel).toHaveTextContent("Claude Code");
+    expect(capabilitiesPanel).toHaveTextContent("Missing");
+    expect(capabilitiesPanel).toHaveTextContent("Install Claude Code and make it available on PATH.");
     expect(capabilitiesPanel).toHaveTextContent("github.com");
     expect(capabilitiesPanel).toHaveTextContent("github.com/example/factory");
+
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    expect(await screen.findByText("Runner is online with at least one ready coding agent.")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    expect(await screen.findByText("Runner connection failed. Check its status and capability guidance below.")).toBeVisible();
   });
 
   it("keeps the active delegate field focused while worker data refreshes", async () => {
@@ -1106,7 +1118,7 @@ describe("App", () => {
     const validUnicodeTitle = "😀".repeat(200);
     fireEvent.change(within(dialog).getByLabelText("Title"), { target: { value: validUnicodeTitle } });
     await user.type(within(dialog).getByLabelText("Context"), "Prove idempotent browser retries.");
-    await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
+    await user.selectOptions(within(dialog).getByLabelText("Runner"), "worker-online");
     await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
 
     await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));
@@ -1130,7 +1142,7 @@ describe("App", () => {
     const dialog = screen.getByRole("dialog", { name: "Delegate task" });
     fireEvent.change(within(dialog).getByLabelText("Title"), { target: { value: "😀".repeat(201) } });
     await user.type(within(dialog).getByLabelText("Context"), "This should not submit.");
-    await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
+    await user.selectOptions(within(dialog).getByLabelText("Runner"), "worker-online");
     await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
     await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));
     expect(within(dialog).getByText("Keep the title to 200 characters.")).toBeVisible();

@@ -261,7 +261,15 @@ func (s *Store) loadWeeklyLimit(
 	err := query.QueryRowContext(ctx, `
 		SELECT weekly_limit_used_percent, weekly_limit_resets_at
 		FROM workers
-		WHERE runtime = 'codex'
+		WHERE (
+		    (runtime = 'codex' AND json_array_length(capabilities_json) = 0)
+		    OR EXISTS (
+		        SELECT 1 FROM json_each(workers.capabilities_json) capability
+		        WHERE json_extract(capability.value, '$.kind') = 'runtime'
+		          AND json_extract(capability.value, '$.name') = 'codex'
+		          AND json_extract(capability.value, '$.status') = 'ready'
+		    )
+		)
 		  AND last_heartbeat BETWEEN ? AND ?
 		  AND weekly_limit_used_percent IS NOT NULL
 		  AND weekly_limit_resets_at > ?

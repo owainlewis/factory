@@ -29,8 +29,7 @@ func (manager *Manager) setHealth(value health) {
 	if value.State == "healthy" && previous != "healthy" {
 		manager.logger.Info("worker_healthy",
 			"git_version", value.GitVersion,
-			"runtime", manager.config.Runtime,
-			"runtime_version", value.RuntimeVersion)
+			"runtimes", manager.config.Runtimes)
 	}
 }
 
@@ -80,6 +79,7 @@ func (manager *Manager) registration() protocol.WorkerRegistration {
 		WorkerVersion:              manager.options.WorkerVersion,
 		Runtime:                    manager.config.Runtime,
 		RuntimeVersion:             manager.health.RuntimeVersion,
+		Capabilities:               append([]protocol.Capability(nil), manager.health.Capabilities...),
 		Capacity:                   manager.config.MaxConcurrent,
 		ActiveCount:                len(manager.slots),
 		Health:                     manager.health.State,

@@ -73,11 +73,10 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 	}
 
 	var capacity, healthy int
-	var runtime string
 	var lastHeartbeat int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT capacity, health = 'healthy', last_heartbeat, runtime FROM workers WHERE id = ?
-	`, workerID).Scan(&capacity, &healthy, &lastHeartbeat, &runtime)
+		SELECT capacity, health = 'healthy', last_heartbeat FROM workers WHERE id = ?
+	`, workerID).Scan(&capacity, &healthy, &lastHeartbeat)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -109,7 +108,20 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		JOIN worker_repositories wr
 		  ON wr.worker_id = e.assigned_worker_id AND wr.repository_id = t.repository_id
 		WHERE e.assigned_worker_id = ?
-		  AND e.required_runtime = ?
+		  AND EXISTS (
+		      SELECT 1
+		      FROM workers claim_worker, json_each(claim_worker.capabilities_json) capability
+		      WHERE claim_worker.id = ?
+		        AND json_extract(capability.value, '$.kind') = 'runtime'
+		        AND json_extract(capability.value, '$.name') = e.required_runtime
+		        AND json_extract(capability.value, '$.status') = 'ready'
+		      UNION ALL
+		      SELECT 1
+		      FROM workers legacy_worker
+		      WHERE legacy_worker.id = ?
+		        AND json_array_length(legacy_worker.capabilities_json) = 0
+		        AND legacy_worker.runtime = e.required_runtime
+		  )
 		  AND e.state = 'queued'
 		  AND wr.advertised = 1
 		  AND wr.retained_count + (
@@ -132,7 +144,7 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		  ) < ?
 		ORDER BY e.created_at, e.id
 		LIMIT 1
-	`, workerID, runtime, protocol.MaxRetainedPerRepo).Scan(&executionID)
+	`, workerID, workerID, workerID, protocol.MaxRetainedPerRepo).Scan(&executionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := insertEmptyClaim(ctx, tx, workerID, input.RequestID, digest, nowMillis); err != nil {
 			return nil, err

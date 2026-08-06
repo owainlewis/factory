@@ -178,8 +178,8 @@ while [ "$(date +%s)" -lt "$worker_ready_deadline" ]; do
     echo "Factory worker exited during startup. Check the configuration and error above." >&2
     exit 1
   fi
-  if curl_before_deadline "http://$listen/api/v1/workers" "$worker_ready_deadline" |
-    grep -q "\"id\":\"$worker_id\"[^}]*\"health\":\"healthy\",\"online\":true"; then
+  if curl_before_deadline "http://$listen/api/v1/workers/$worker_id" "$worker_ready_deadline" |
+	grep -q "\"health\":\"healthy\",\"online\":true"; then
     registered=1
     break
   fi

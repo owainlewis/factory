@@ -255,11 +255,11 @@ export function TaskDetail({
         <PanelHeading title="Progress" aside={`${progress.length} updates`} />
         {events.error && <InlineError error={events.error} />}
         {!latestAttempt ? (
-          <div className="quiet-empty">Progress will appear when the worker starts this task.</div>
+          <div className="quiet-empty">Progress will appear when the Runner starts this task.</div>
         ) : events.isPending && events.data === undefined ? (
           <LoadingLine label="Loading progress" />
         ) : events.data === undefined ? null : progress.length === 0 ? (
-          <div className="quiet-empty">Progress will appear when the worker starts this task.</div>
+          <div className="quiet-empty">Progress will appear when the Runner starts this task.</div>
         ) : (
           <ol className="event-list">
             {progress.map(({ event, summary }) => (

@@ -8,6 +8,13 @@ import (
 )
 
 const (
+	CapabilityKindTool        = "tool"
+	CapabilityKindRuntime     = "runtime"
+	CapabilityReady           = "ready"
+	CapabilityMissing         = "missing"
+	CapabilityUnauthenticated = "unauthenticated"
+	CapabilityUnhealthy       = "unhealthy"
+	RuntimePi                 = "pi"
 	RuntimeCodex              = "codex"
 	RuntimeClaudeCode         = "claude-code"
 	MaxBodyBytes              = 1 << 20
@@ -45,7 +52,19 @@ const (
 )
 
 func SupportedRuntime(value string) bool {
-	return value == RuntimeCodex || value == RuntimeClaudeCode
+	return value == RuntimePi || value == RuntimeCodex || value == RuntimeClaudeCode
+}
+
+func SupportedRuntimes() []string {
+	return []string{RuntimePi, RuntimeCodex, RuntimeClaudeCode}
+}
+
+type Capability struct {
+	Kind    string `json:"kind"`
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Version string `json:"version,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type RepositoryRegistration struct {
@@ -77,6 +96,7 @@ type WorkerRegistration struct {
 	WorkerVersion              string                   `json:"worker_version"`
 	Runtime                    string                   `json:"runtime"`
 	RuntimeVersion             string                   `json:"runtime_version"`
+	Capabilities               []Capability             `json:"capabilities,omitempty"`
 	Capacity                   int                      `json:"capacity"`
 	ActiveCount                int                      `json:"active_count"`
 	Health                     string                   `json:"health"`
@@ -144,6 +164,7 @@ type Worker struct {
 	WorkerVersion              string             `json:"worker_version"`
 	Runtime                    string             `json:"runtime"`
 	RuntimeVersion             string             `json:"runtime_version"`
+	Capabilities               []Capability       `json:"capabilities,omitempty"`
 	Capacity                   int                `json:"capacity"`
 	ActiveCount                int                `json:"active_count"`
 	Health                     string             `json:"health"`
@@ -166,6 +187,7 @@ type CreateTaskRequest struct {
 	WorkerID                   string     `json:"worker_id,omitempty"`
 	RepositoryID               string     `json:"repository_id,omitempty"`
 	Route                      *TaskRoute `json:"route,omitempty"`
+	Runtime                    string     `json:"runtime,omitempty"`
 	TimeoutSeconds             int        `json:"timeout_seconds"`
 	WorkflowRevisionID         string     `json:"workflow_revision_id,omitempty"`
 	DescriptionProvided        bool       `json:"-"`

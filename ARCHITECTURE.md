@@ -52,11 +52,11 @@ factory-server
            ^
            | registration, polling, leases, events, completion
            |
-factory-worker (one identity, one runtime, N agent slots)
+factory-worker (one identity, several runtime capabilities, N agent slots)
    |-- bounded on-demand repository cache
    |-- optional legacy static checkouts
    |-- attempt manifests and owned Git worktrees
-   `-- Codex CLI or Claude Code CLI
+   `-- Pi, Codex, or Claude Code CLI
 
 ```
 
@@ -65,10 +65,12 @@ the system does not use WebSockets.
 
 ## 3. Architectural invariants
 
-1. One worker identity has one immutable runtime, either `codex` or
-   `claude-code`, and runs independent sessions up to its configured capacity.
-2. Every task freezes one worker and one control-plane repository. Routed work
-   may select a cattle worker before that repository exists in its local cache.
+1. One Runner identity advertises its configured `pi`, `codex`, and
+   `claude-code` capabilities and runs independent sessions up to its configured
+   capacity. Each execution freezes one ready runtime.
+2. Every task freezes one Runner, one runtime, and one control-plane repository.
+   Routed work may select a cattle Runner before that repository exists in its
+   local cache.
 3. Only a healthy, recently registered worker with free capacity can claim its
    queued work.
 4. A lease token owns one active attempt. Active operations require a matching,

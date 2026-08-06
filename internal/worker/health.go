@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ type health struct {
 	State          string
 	GitVersion     string
 	RuntimeVersion string
+	Capabilities   []protocol.Capability
 	SourceAccess   []protocol.SourceAccess
 	WeeklyLimit    *protocol.WeeklyLimit
 	Error          error
@@ -27,81 +29,153 @@ type health struct {
 func checkHealth(
 	ctx context.Context,
 	gitExecutable string,
-	runtime string,
-	runtimeExecutable string,
 	githubExecutable string,
-	_ []string,
+	primaryRuntime string,
+	runtimes []string,
+	runtimeExecutables map[string]string,
 ) health {
 	result := health{State: "unhealthy"}
-	gitContext, cancel := context.WithTimeout(ctx, healthCheckTimeout)
-	stdout, _, err := runCommand(gitContext, gitExecutable, "", 64<<10, "--version")
-	cancel()
-	if err != nil {
-		result.Error = errors.New("Git health check failed; install Git and make it available on PATH")
-		return result
-	}
-	result.GitVersion = strings.TrimSpace(string(stdout))
-	if result.GitVersion == "" {
-		result.Error = errors.New("Git health check returned no version")
-		return result
+	gitCapability := versionCapability(ctx, protocol.CapabilityKindTool, "git", gitExecutable)
+	result.Capabilities = append(result.Capabilities, gitCapability)
+	if gitCapability.Status == protocol.CapabilityReady {
+		result.GitVersion = gitCapability.Version
 	}
 
-	runtimeContext, cancel := context.WithTimeout(ctx, healthCheckTimeout)
-	stdout, _, err = runCommand(runtimeContext, runtimeExecutable, "", 64<<10, "--version")
-	cancel()
-	if err != nil {
-		result.Error = fmt.Errorf("%s version check failed; install it and make it available on PATH", runtimeDisplayName(runtime))
-		return result
-	}
-	result.RuntimeVersion = strings.TrimSpace(string(stdout))
-	if result.RuntimeVersion == "" {
-		result.Error = fmt.Errorf("%s version check returned no version", runtimeDisplayName(runtime))
-		return result
-	}
-
-	authContext, cancel := context.WithTimeout(ctx, healthCheckTimeout)
-	var authArguments []string
-	if runtime == protocol.RuntimeClaudeCode {
-		authArguments = []string{"auth", "status", "--json"}
-	} else {
-		authArguments = []string{"login", "status"}
-	}
-	stdout, stderr, err := runCommand(authContext, runtimeExecutable, "", 64<<10, authArguments...)
-	cancel()
-	if err != nil {
-		result.Error = fmt.Errorf("%s authentication check failed; authenticate the configured runtime", runtimeDisplayName(runtime))
-		return result
-	}
-	if runtime == protocol.RuntimeClaudeCode {
-		var status struct {
-			LoggedIn bool `json:"loggedIn"`
+	githubCapability := versionCapability(ctx, protocol.CapabilityKindTool, "gh", githubExecutable)
+	if githubCapability.Status == protocol.CapabilityReady {
+		githubContext, githubCancel := context.WithTimeout(ctx, healthCheckTimeout)
+		_, _, githubErr := runCommand(
+			githubContext, githubExecutable, "", 64<<10,
+			"auth", "status", "--hostname", "github.com",
+		)
+		githubCancel()
+		if githubErr != nil {
+			githubCapability.Status = protocol.CapabilityUnauthenticated
+			githubCapability.Message = "Run gh auth login --hostname github.com."
 		}
-		if json.Unmarshal(stdout, &status) != nil || !status.LoggedIn {
-			result.Error = errors.New("Claude Code authentication check reports that the worker is not logged in")
-			return result
-		}
-	} else if strings.TrimSpace(string(stdout))+strings.TrimSpace(string(stderr)) == "" {
-		result.Error = errors.New("Codex authentication check returned no status")
-		return result
 	}
-	githubContext, githubCancel := context.WithTimeout(ctx, healthCheckTimeout)
-	_, _, githubErr := runCommand(
-		githubContext, githubExecutable, "", 64<<10,
-		"auth", "status", "--hostname", "github.com",
-	)
-	githubCancel()
-	if githubErr == nil {
+	result.Capabilities = append(result.Capabilities, githubCapability)
+	if githubCapability.Status == protocol.CapabilityReady {
 		result.SourceAccess = append(result.SourceAccess, protocol.SourceAccess{
 			Provider: "github", Hostname: "github.com",
 		})
 	}
-	if runtime == protocol.RuntimeCodex {
+
+	readyRuntime := false
+	for _, runtime := range runtimes {
+		capability := runtimeCapability(ctx, runtime, runtimeExecutables[runtime])
+		result.Capabilities = append(result.Capabilities, capability)
+		if runtime == primaryRuntime {
+			result.RuntimeVersion = capability.Version
+		}
+		if capability.Status == protocol.CapabilityReady {
+			readyRuntime = true
+		}
+	}
+	if capabilityReady(result.Capabilities, protocol.CapabilityKindRuntime, protocol.RuntimeCodex) {
 		limitContext, limitCancel := context.WithTimeout(ctx, healthCheckTimeout)
-		result.WeeklyLimit, _ = readCodexWeeklyLimit(limitContext, runtimeExecutable)
+		result.WeeklyLimit, _ = readCodexWeeklyLimit(limitContext, runtimeExecutables[protocol.RuntimeCodex])
 		limitCancel()
 	}
-	result.State = "healthy"
+	if gitCapability.Status == protocol.CapabilityReady && readyRuntime {
+		result.State = "healthy"
+		return result
+	}
+	if gitCapability.Status != protocol.CapabilityReady {
+		result.Error = errors.New(gitCapability.Message)
+	} else {
+		result.Error = errors.New("no configured coding agent runtime is ready")
+	}
 	return result
+}
+
+func versionCapability(
+	ctx context.Context,
+	kind string,
+	name string,
+	executable string,
+) protocol.Capability {
+	capability := protocol.Capability{Kind: kind, Name: name, Status: protocol.CapabilityUnhealthy}
+	if strings.TrimSpace(executable) == "" {
+		capability.Status = protocol.CapabilityMissing
+		capability.Message = fmt.Sprintf("Configure the %s executable.", name)
+		return capability
+	}
+	commandContext, cancel := context.WithTimeout(ctx, healthCheckTimeout)
+	stdout, _, err := runCommand(commandContext, executable, "", 64<<10, "--version")
+	cancel()
+	if err != nil {
+		var executableError *exec.Error
+		if errors.As(err, &executableError) || errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
+			capability.Status = protocol.CapabilityMissing
+			capability.Message = fmt.Sprintf("Install %s and make it available on PATH.", name)
+			return capability
+		}
+		capability.Message = fmt.Sprintf("%s version check failed.", name)
+		return capability
+	}
+	capability.Version = strings.TrimSpace(string(stdout))
+	if capability.Version == "" {
+		capability.Message = fmt.Sprintf("%s version check returned no version.", name)
+		return capability
+	}
+	capability.Status = protocol.CapabilityReady
+	return capability
+}
+
+func runtimeCapability(ctx context.Context, runtime, executable string) protocol.Capability {
+	capability := versionCapability(ctx, protocol.CapabilityKindRuntime, runtime, executable)
+	if capability.Status != protocol.CapabilityReady {
+		return capability
+	}
+	commandContext, cancel := context.WithTimeout(ctx, healthCheckTimeout)
+	defer cancel()
+	var stdout, stderr []byte
+	var err error
+	switch runtime {
+	case protocol.RuntimePi:
+		stdout, stderr, err = runCommand(commandContext, executable, "", 64<<10, "--list-models")
+	case protocol.RuntimeClaudeCode:
+		stdout, stderr, err = runCommand(commandContext, executable, "", 64<<10, "auth", "status", "--json")
+	default:
+		stdout, stderr, err = runCommand(commandContext, executable, "", 64<<10, "login", "status")
+	}
+	if err != nil {
+		capability.Status = protocol.CapabilityUnauthenticated
+		capability.Message = fmt.Sprintf("Authenticate %s before running Jobs.", runtimeDisplayName(runtime))
+		return capability
+	}
+	switch runtime {
+	case protocol.RuntimePi:
+		lines := strings.Split(strings.TrimSpace(string(stdout)), "\n")
+		if len(lines) < 2 {
+			capability.Status = protocol.CapabilityUnauthenticated
+			capability.Message = "Configure a Pi provider or subscription before running Jobs."
+		}
+	case protocol.RuntimeClaudeCode:
+		var status struct {
+			LoggedIn bool `json:"loggedIn"`
+		}
+		if json.Unmarshal(stdout, &status) != nil || !status.LoggedIn {
+			capability.Status = protocol.CapabilityUnauthenticated
+			capability.Message = "Authenticate Claude Code before running Jobs."
+		}
+	default:
+		if strings.TrimSpace(string(stdout))+strings.TrimSpace(string(stderr)) == "" {
+			capability.Status = protocol.CapabilityUnauthenticated
+			capability.Message = "Authenticate Codex before running Jobs."
+		}
+	}
+	return capability
+}
+
+func capabilityReady(capabilities []protocol.Capability, kind, name string) bool {
+	for _, capability := range capabilities {
+		if capability.Kind == kind && capability.Name == name && capability.Status == protocol.CapabilityReady {
+			return true
+		}
+	}
+	return false
 }
 
 type codexRateLimitWindow struct {
@@ -228,8 +302,12 @@ func readCodexResponse(scanner *bufio.Scanner, id int, target any) error {
 }
 
 func runtimeDisplayName(runtime string) string {
-	if runtime == protocol.RuntimeClaudeCode {
+	switch runtime {
+	case protocol.RuntimePi:
+		return "Pi"
+	case protocol.RuntimeClaudeCode:
 		return "Claude Code"
+	default:
+		return "Codex"
 	}
-	return "Codex"
 }

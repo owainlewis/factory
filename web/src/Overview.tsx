@@ -82,7 +82,7 @@ function Metrics({ data }: { data: MetricsSummary }) {
       value: data.weekly_limit ? `${100 - data.weekly_limit.used_percent}% left` : "Unavailable",
       detail: data.weekly_limit
         ? formatReset(data.weekly_limit.resets_at)
-        : "Requires an online Codex worker",
+        : "Requires an online Runner with Codex ready",
       remaining: data.weekly_limit ? 100 - data.weekly_limit.used_percent : null,
     },
   ];

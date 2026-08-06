@@ -487,11 +487,94 @@ func writeFakeClaude(t *testing.T, path string) {
 	}
 }
 
+func writeFakePi(t *testing.T, path string) {
+	t.Helper()
+	body := `#!/bin/sh
+set -eu
+case "${1:-}" in
+  --version) echo "0.80.10" ;;
+  --list-models) printf 'provider model\nopenai test-model\n' ;;
+  --print)
+    test "${2:-}" = "--no-session"
+    cat >/dev/null
+    echo "completed by fake Pi"
+    ;;
+  *) exit 91 ;;
+esac
+`
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMultiRuntimeHealthAndPiSupervisorContract(t *testing.T) {
+	piPath := filepath.Join(t.TempDir(), "pi")
+	writeFakePi(t, piPath)
+	value := checkHealth(
+		context.Background(), "git", filepath.Join(t.TempDir(), "missing-gh"), protocol.RuntimePi,
+		[]string{protocol.RuntimePi, protocol.RuntimeCodex},
+		map[string]string{
+			protocol.RuntimePi:    piPath,
+			protocol.RuntimeCodex: filepath.Join(t.TempDir(), "missing-codex"),
+		},
+	)
+	if value.State != "healthy" || value.RuntimeVersion != "0.80.10" ||
+		!capabilityReady(value.Capabilities, protocol.CapabilityKindRuntime, protocol.RuntimePi) {
+		t.Fatalf("multi-runtime health = %#v", value)
+	}
+	var codexStatus string
+	for _, capability := range value.Capabilities {
+		if capability.Kind == protocol.CapabilityKindRuntime && capability.Name == protocol.RuntimeCodex {
+			codexStatus = capability.Status
+		}
+	}
+	if codexStatus != protocol.CapabilityMissing {
+		t.Fatalf("missing Codex status = %q", codexStatus)
+	}
+
+	t.Setenv("FACTORY_TEST_SUPERVISOR", "1")
+	repository := createRepository(t, "pi-supervisor")
+	process, err := startSupervisor(
+		[]string{os.Args[0], "-test.run=TestWorkerSupervisorHelperProcess", "--"},
+		supervisorInit{
+			Runtime: protocol.RuntimePi, RuntimeExecutable: piPath,
+			Worktree: repository.path, ResultPath: filepath.Join(t.TempDir(), "unused-result"),
+			Prompt: "complete this task", TimeoutSeconds: 60,
+		},
+		io.Discard,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.awaitReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.send("start"); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		select {
+		case message := <-process.messages:
+			if message.Type == "exit" {
+				if message.ExitCode != 0 || message.Result != "completed by fake Pi" {
+					t.Fatalf("Pi supervisor exit = %#v", message)
+				}
+				return
+			}
+		case err := <-process.decodeErrors:
+			t.Fatalf("decode Pi supervisor output: %v", err)
+		case <-time.After(10 * time.Second):
+			t.Fatal("Pi supervisor did not exit")
+		}
+	}
+}
+
 func TestClaudeCodeHealthAndSupervisorContract(t *testing.T) {
 	claudePath := filepath.Join(t.TempDir(), "claude")
 	writeFakeClaude(t, claudePath)
 	value := checkHealth(
-		context.Background(), "git", protocol.RuntimeClaudeCode, claudePath, "gh", nil,
+		context.Background(), "git", "gh", protocol.RuntimeClaudeCode,
+		[]string{protocol.RuntimeClaudeCode}, map[string]string{protocol.RuntimeClaudeCode: claudePath},
 	)
 	if value.State != "healthy" || value.RuntimeVersion != "2.1.220 (Claude Code)" {
 		t.Fatalf("Claude Code health = %#v", value)
@@ -552,6 +635,7 @@ func TestGitHubSourceAccessIsAdvertisedOnlyAfterSuccessfulProbe(t *testing.T) {
 	writeProbe := func(exitCode string) {
 		t.Helper()
 		body := "#!/bin/sh\n" +
+			"if [ \"$*\" = \"--version\" ]; then echo 'gh version test'; exit 0; fi\n" +
 			"test \"$*\" = \"auth status --hostname github.com\" || exit 91\n" +
 			"exit " + exitCode + "\n"
 		if err := os.WriteFile(githubPath, []byte(body), 0o700); err != nil {
@@ -561,8 +645,8 @@ func TestGitHubSourceAccessIsAdvertisedOnlyAfterSuccessfulProbe(t *testing.T) {
 
 	writeProbe("0")
 	value := checkHealth(
-		context.Background(), "git", protocol.RuntimeCodex, codexPath,
-		githubPath, nil,
+		context.Background(), "git", githubPath, protocol.RuntimeCodex,
+		[]string{protocol.RuntimeCodex}, map[string]string{protocol.RuntimeCodex: codexPath},
 	)
 	want := []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}}
 	if value.State != "healthy" || !reflect.DeepEqual(value.SourceAccess, want) ||
@@ -573,8 +657,8 @@ func TestGitHubSourceAccessIsAdvertisedOnlyAfterSuccessfulProbe(t *testing.T) {
 
 	writeProbe("1")
 	value = checkHealth(
-		context.Background(), "git", protocol.RuntimeCodex, codexPath,
-		githubPath, []string{"github"},
+		context.Background(), "git", githubPath, protocol.RuntimeCodex,
+		[]string{protocol.RuntimeCodex}, map[string]string{protocol.RuntimeCodex: codexPath},
 	)
 	if value.State != "healthy" || len(value.SourceAccess) != 0 {
 		t.Fatalf("failed GitHub probe health = %#v", value)
@@ -603,6 +687,10 @@ func TestZeroRepositoryWorkerAcquiresCentrallyManagedGitHubRepository(t *testing
 	t.Setenv("FACTORY_TEST_GH_ORIGIN", upstream.origin)
 	githubScript := `#!/bin/sh
 set -eu
+if [ "${1:-}" = "--version" ]; then
+  echo "gh version test"
+  exit 0
+fi
 if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then
   exit 0
 fi

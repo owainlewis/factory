@@ -157,8 +157,8 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 	}
 	defer os.Remove(path)
 	process, err := startSupervisor(manager.options.SupervisorCommand, supervisorInit{
-		Runtime:           manager.config.Runtime,
-		RuntimeExecutable: manager.options.RuntimeExecutable,
+		Runtime:           claim.Execution.RequiredRuntime,
+		RuntimeExecutable: manager.runtimeExecutable(claim.Execution.RequiredRuntime),
 		Worktree:          value.Path,
 		ResultPath:        path,
 		Prompt:            prompt,
@@ -232,7 +232,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 	}
 	manager.logger.Info("attempt_started", "attempt_id", claim.Attempt.ID, "repository", repository.Key,
 		"process", processSummary(process))
-	sender := newEventSender(handle.context, manager.client, claim.Attempt.ID, token, manager.config.Runtime)
+	sender := newEventSender(handle.context, manager.client, claim.Attempt.ID, token, claim.Execution.RequiredRuntime)
 	message := manager.waitForSupervisorWithEvents(process, sender)
 	sender.closeAndWait(5 * time.Second)
 	manager.finishWithWorktree(claim, token, handle, repository, value,
@@ -246,8 +246,8 @@ func (manager *Manager) validateClaim(claim protocol.Claim) error {
 	if claim.Attempt.WorkerID != manager.id || claim.Execution.AssignedWorkerID != manager.id {
 		return errors.New("claim is assigned to a different worker")
 	}
-	if claim.Execution.RequiredRuntime != manager.config.Runtime {
-		return errors.New("claim requires a different worker runtime")
+	if !manager.supportsRuntime(claim.Execution.RequiredRuntime) {
+		return errors.New("claim requires a runtime that is not ready on this worker")
 	}
 	if claim.Task.RepositoryID != claim.Repository.ID {
 		return errors.New("claim repository IDs do not match")
@@ -259,6 +259,18 @@ func (manager *Manager) validateClaim(claim protocol.Claim) error {
 		return errors.New("claim agent prompt exceeds 72 KiB")
 	}
 	return nil
+}
+
+func (manager *Manager) supportsRuntime(runtime string) bool {
+	if manager.runtimeExecutable(runtime) == "" {
+		return false
+	}
+	manager.stateMutex.Lock()
+	defer manager.stateMutex.Unlock()
+	if len(manager.health.Capabilities) == 0 {
+		return runtime == manager.config.Runtime
+	}
+	return capabilityReady(manager.health.Capabilities, protocol.CapabilityKindRuntime, runtime)
 }
 
 func (manager *Manager) heartbeatAttempt(handle *attemptHandle, attemptID, token string) {

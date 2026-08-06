@@ -50,9 +50,10 @@ mkdir -p ~/.factory
 cp examples/worker.toml ~/.factory/worker.toml
 ```
 
-Edit `~/.factory/worker.toml` to select `codex` or `claude-code`. Workers need
-no repository list. They probe local `gh` access and acquire centrally managed
-GitHub repositories on demand. Then start the server and worker:
+Edit `~/.factory/worker.toml` to select any installed `pi`, `codex`, and
+`claude-code` agents. Runners need no repository list. They probe local `gh`
+access and acquire centrally managed GitHub repositories on demand. Then start
+the server and Runner:
 
 ```sh
 just run
@@ -65,13 +66,12 @@ legacy poller** before removing their old configuration. Preview, Import, and
 Finalize each verify and lock the same legacy snapshot. Import creates disabled
 typed Automations and Finalize archives copies without deleting the originals.
 
-One worker has one stable identity and a configurable pool of independent
-sessions for one runtime. The pool defaults to ten slots. Run another worker
-with a different config and data directory when you want both Codex and Claude
-Code:
+One Runner has one stable identity, a configurable set of coding-agent
+capabilities, and a pool of independent sessions. The pool defaults to ten
+slots. A single local Runner can advertise Pi, Codex, and Claude Code:
 
 ```sh
-FACTORY_WORKER_CONFIG=~/.factory/claude-worker.toml \
+FACTORY_WORKER_CONFIG=~/.factory/worker.toml \
   ~/.factory/bin/factory-worker
 ```
 
@@ -92,9 +92,10 @@ Go control plane
    ^
    | registration, claim, heartbeat, events, completion
    |
-Go workers
-  one identity + one runtime + N agent slots + on-demand repository cache
+Go Runners
+  one identity + ready runtime capabilities + N agent slots + repository cache
    |
+   +-- Pi CLI
    +-- Codex CLI
    `-- Claude Code CLI
 ```
@@ -123,7 +124,7 @@ Implemented:
 
 - Go control-plane API and embedded React UI;
 - durable tasks, executions, attempts, leases, events, and cancellation;
-- Codex and Claude Code workers;
+- Pi, Codex, and Claude Code Runner capabilities;
 - reusable versioned Workflows;
 - disabled-first typed GitHub issue, GitHub pull-request, and schedule
   Automations evaluated by the control plane;

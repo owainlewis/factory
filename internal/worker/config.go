@@ -29,6 +29,7 @@ type Config struct {
 	Server        string                      `toml:"server"`
 	Name          string                      `toml:"name"`
 	Runtime       string                      `toml:"runtime"`
+	Runtimes      []string                    `toml:"runtimes"`
 	MaxConcurrent int                         `toml:"max_concurrent"`
 	DataDirectory string                      `toml:"data_directory"`
 	SourceAccess  []string                    `toml:"source_access"`
@@ -62,8 +63,13 @@ func LoadConfig(path string) (Config, error) {
 	if config.Server == "" {
 		config.Server = defaultServer
 	}
+	config.Runtime = strings.ToLower(strings.TrimSpace(config.Runtime))
+	for index := range config.Runtimes {
+		config.Runtimes[index] = strings.ToLower(strings.TrimSpace(config.Runtimes[index]))
+	}
+	config.Runtimes = configuredRuntimes(config)
 	if config.Runtime == "" {
-		config.Runtime = protocol.RuntimeCodex
+		config.Runtime = config.Runtimes[0]
 	}
 	if !metadata.IsDefined("max_concurrent") {
 		config.MaxConcurrent = defaultMaxConcurrent
@@ -109,8 +115,27 @@ func validateConfig(config Config) error {
 	if strings.TrimSpace(config.Name) == "" || len(config.Name) > 200 {
 		return errors.New("name is required and must be at most 200 bytes")
 	}
-	if config.Runtime != "" && !protocol.SupportedRuntime(config.Runtime) {
-		return errors.New("runtime must be codex or claude-code")
+	primaryRuntime := config.Runtime
+	if primaryRuntime == "" {
+		primaryRuntime = configuredRuntimes(config)[0]
+	}
+	if !protocol.SupportedRuntime(primaryRuntime) {
+		return errors.New("runtime must be pi, codex, or claude-code")
+	}
+	seenRuntimes := make(map[string]bool, len(config.Runtimes))
+	primaryFound := false
+	for _, runtime := range configuredRuntimes(config) {
+		if !protocol.SupportedRuntime(runtime) {
+			return errors.New("runtimes may contain only pi, codex, or claude-code")
+		}
+		if seenRuntimes[runtime] {
+			return fmt.Errorf("runtime %q is duplicated", runtime)
+		}
+		seenRuntimes[runtime] = true
+		primaryFound = primaryFound || runtime == primaryRuntime
+	}
+	if !primaryFound {
+		return errors.New("runtime must also appear in runtimes when both fields are set")
 	}
 	if config.MaxConcurrent < protocol.MinWorkerCapacity || config.MaxConcurrent > protocol.MaxWorkerCapacity {
 		return fmt.Errorf("max_concurrent must be between %d and %d",
@@ -144,6 +169,16 @@ func validateConfig(config Config) error {
 		}
 	}
 	return nil
+}
+
+func configuredRuntimes(config Config) []string {
+	if len(config.Runtimes) != 0 {
+		return append([]string(nil), config.Runtimes...)
+	}
+	if config.Runtime != "" {
+		return []string{config.Runtime}
+	}
+	return []string{protocol.RuntimeCodex}
 }
 
 func validateServerURL(value string) error {

@@ -31,6 +31,7 @@ type Options struct {
 	GitExecutable        string
 	GitHubExecutable     string
 	RuntimeExecutable    string
+	RuntimeExecutables   map[string]string
 	SupervisorCommand    []string
 	HTTPClient           *http.Client
 	Random               io.Reader
@@ -90,10 +91,11 @@ func New(config Config, options Options, logger *slog.Logger) (*Manager, error) 
 	if config.Runtime == "" {
 		config.Runtime = protocol.RuntimeCodex
 	}
+	config.Runtimes = configuredRuntimes(config)
 	if err := validateConfig(config); err != nil {
 		return nil, err
 	}
-	options = options.withDefaults(config.Runtime)
+	options = options.withDefaults(config.Runtime, config.Runtimes)
 	if len(options.SupervisorCommand) == 0 {
 		return nil, errors.New("resolve factory-worker executable for attempt supervision")
 	}
@@ -155,18 +157,28 @@ func New(config Config, options Options, logger *slog.Logger) (*Manager, error) 
 	}, nil
 }
 
-func (options Options) withDefaults(runtime string) Options {
+func (options Options) withDefaults(primaryRuntime string, runtimes []string) Options {
 	if options.GitExecutable == "" {
 		options.GitExecutable = "git"
 	}
 	if options.GitHubExecutable == "" {
 		options.GitHubExecutable = "gh"
 	}
-	if options.RuntimeExecutable == "" {
-		if runtime == protocol.RuntimeClaudeCode {
-			options.RuntimeExecutable = "claude"
-		} else {
-			options.RuntimeExecutable = "codex"
+	if options.RuntimeExecutables == nil {
+		options.RuntimeExecutables = make(map[string]string, len(runtimes))
+	} else {
+		copy := make(map[string]string, len(options.RuntimeExecutables)+len(runtimes))
+		for runtime, executable := range options.RuntimeExecutables {
+			copy[runtime] = executable
+		}
+		options.RuntimeExecutables = copy
+	}
+	if options.RuntimeExecutable != "" {
+		options.RuntimeExecutables[primaryRuntime] = options.RuntimeExecutable
+	}
+	for _, runtime := range runtimes {
+		if options.RuntimeExecutables[runtime] == "" {
+			options.RuntimeExecutables[runtime] = defaultRuntimeExecutable(runtime)
 		}
 	}
 	if len(options.SupervisorCommand) == 0 {
@@ -208,6 +220,30 @@ func (options Options) withDefaults(runtime string) Options {
 	return options
 }
 
+func defaultRuntimeExecutable(runtime string) string {
+	switch runtime {
+	case protocol.RuntimePi:
+		return "pi"
+	case protocol.RuntimeClaudeCode:
+		return "claude"
+	default:
+		return "codex"
+	}
+}
+
+func (manager *Manager) runtimeExecutable(runtime string) string {
+	if executable := manager.options.RuntimeExecutables[runtime]; executable != "" {
+		return executable
+	}
+	if runtime == manager.config.Runtime {
+		if manager.options.RuntimeExecutable != "" {
+			return manager.options.RuntimeExecutable
+		}
+		return defaultRuntimeExecutable(runtime)
+	}
+	return ""
+}
+
 func (manager *Manager) ID() string { return manager.id }
 
 func (manager *Manager) Run(ctx context.Context) error {
@@ -231,8 +267,8 @@ func (manager *Manager) Run(ctx context.Context) error {
 		}
 	}
 	manager.setHealth(checkHealth(ctx, manager.options.GitExecutable,
-		manager.config.Runtime, manager.options.RuntimeExecutable,
-		manager.options.GitHubExecutable, manager.config.SourceAccess))
+		manager.options.GitHubExecutable, manager.config.Runtime,
+		manager.config.Runtimes, manager.options.RuntimeExecutables))
 	manager.register(ctx)
 
 	healthTicker := time.NewTicker(manager.options.HealthInterval)
@@ -249,8 +285,8 @@ func (manager *Manager) Run(ctx context.Context) error {
 			return manager.waitForShutdown()
 		case <-healthTicker.C:
 			manager.setHealth(checkHealth(ctx, manager.options.GitExecutable,
-				manager.config.Runtime, manager.options.RuntimeExecutable,
-				manager.options.GitHubExecutable, manager.config.SourceAccess))
+				manager.options.GitHubExecutable, manager.config.Runtime,
+				manager.config.Runtimes, manager.options.RuntimeExecutables))
 		case <-registrationTicker.C:
 			manager.register(ctx)
 		case <-claimTimer.C:

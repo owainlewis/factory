@@ -3,6 +3,7 @@ package worker
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -20,6 +21,26 @@ func TestLoadConfigDefaultsMaxConcurrentToTen(t *testing.T) {
 	}
 	if config.MaxConcurrent != 10 {
 		t.Fatalf("default max_concurrent = %d; want 10", config.MaxConcurrent)
+	}
+	if config.Runtime != protocol.RuntimeCodex || len(config.Runtimes) != 1 ||
+		config.Runtimes[0] != protocol.RuntimeCodex {
+		t.Fatalf("legacy runtime defaults = %q %#v", config.Runtime, config.Runtimes)
+	}
+}
+
+func TestLoadConfigAcceptsSeveralCodingAgentRuntimes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runner.toml")
+	body := "name = \"local\"\nruntime = \"codex\"\nruntimes = [\"pi\", \"codex\", \"claude-code\"]\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{protocol.RuntimePi, protocol.RuntimeCodex, protocol.RuntimeClaudeCode}
+	if config.Runtime != protocol.RuntimeCodex || !reflect.DeepEqual(config.Runtimes, want) {
+		t.Fatalf("multi-runtime config = %q %#v, want codex %#v", config.Runtime, config.Runtimes, want)
 	}
 }
 

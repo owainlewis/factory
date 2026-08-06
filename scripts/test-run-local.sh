@@ -46,8 +46,17 @@ exec node -e '
       setTimeout(() => process.exit(0), 3000);
       return;
     }
+    const registered = existsSync(process.env.FACTORY_TEST_WORKER_MARKER);
+    if (request.url === "/api/v1/workers/new-unhealthy-worker") {
+      response.end(JSON.stringify({
+        id:"new-unhealthy-worker",
+        health:registered && process.env.FACTORY_TEST_HEALTHY_WORKER ? "healthy" : "unhealthy",
+        online:registered
+      }));
+      return;
+    }
     const workers = [{id:"existing-healthy-worker",health:"healthy",online:true}];
-    if (existsSync(process.env.FACTORY_TEST_WORKER_MARKER)) {
+    if (registered) {
       workers.push({
         id:"new-unhealthy-worker",
         health:process.env.FACTORY_TEST_HEALTHY_WORKER ? "healthy" : "unhealthy",

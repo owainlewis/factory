@@ -11,8 +11,17 @@ import {
 import { api } from "./api";
 import { invalidateControlPlane } from "./controlPlaneQueries";
 import { runtimeLabel } from "./format";
-import type { CreateTaskInput, Worker } from "./types";
+import type { CreateTaskInput, Runtime, Worker } from "./types";
 import { InlineError } from "./ui";
+
+function preferredRuntime(worker?: Worker): Runtime | "" {
+  const ready = (worker?.capabilities ?? []).filter(
+    (capability) => capability.kind === "runtime" && capability.status === "ready",
+  );
+  return (ready.find((capability) => capability.name === worker?.runtime)?.name
+    ?? ready[0]?.name
+    ?? "") as Runtime | "";
+}
 
 export function DelegateModal({
   workers,
@@ -31,15 +40,22 @@ export function DelegateModal({
   const titleID = useId();
   const descriptionID = useId();
   const workflowID = useId();
+  const runtimeID = useId();
   const titleRef = useRef<HTMLInputElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   const requestRef = useRef<{ fingerprint: string; key: string } | undefined>(undefined);
   const [workerID, setWorkerID] = useState(initialWorkerID ?? "");
   const [repositoryID, setRepositoryID] = useState("");
+  const [runtime, setRuntime] = useState<Runtime | "">(() =>
+    preferredRuntime(workers.find((worker) => worker.id === initialWorkerID)),
+  );
   const [timeout, setTimeout] = useState("7200");
   const [workflowRevisionID, setWorkflowRevisionID] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const selectedWorker = workers.find((worker) => worker.id === workerID);
+  const availableRuntimes = (selectedWorker?.capabilities ?? [])
+    .filter((capability) => capability.kind === "runtime" && capability.status === "ready")
+    .map((capability) => capability.name as Runtime);
   const repositoryOptions = useQuery({
     queryKey: ["workers", workerID, "repository-options"],
     queryFn: () => api.workerRepositoryOptions(workerID),
@@ -94,7 +110,8 @@ export function DelegateModal({
     if (!title) nextErrors.title = "Enter a task title.";
     else if (Array.from(title).length > 200) nextErrors.title = "Keep the title to 200 characters.";
     if (!context.trim()) nextErrors.description = "Enter task context.";
-    if (!workerID) nextErrors.worker = "Choose a worker.";
+    if (!workerID) nextErrors.worker = "Choose a Runner.";
+    if (!runtime) nextErrors.runtime = "Choose a ready coding agent.";
     if (!repositoryID) nextErrors.repository = "Choose a repository.";
     else if (!repository) nextErrors.repository = "Choose an available repository.";
     else if (!repository.advertised && !repository.ready) nextErrors.repository = `This repository is unavailable: ${repository.reason}`;
@@ -117,6 +134,7 @@ export function DelegateModal({
     if (!assignment) return;
     const payload = {
       title,
+      runtime,
       timeout_seconds: timeoutSeconds,
       ...assignment,
       ...(workflowRevisionID
@@ -147,7 +165,7 @@ export function DelegateModal({
         <form onSubmit={submit} noValidate>
           <div className="modal-body">
             <Field label="Title" htmlFor={titleID} error={errors.title}>
-              <input ref={titleRef} id={titleID} name="title" aria-invalid={Boolean(errors.title)} placeholder="Fix stale worker status" />
+              <input ref={titleRef} id={titleID} name="title" aria-invalid={Boolean(errors.title)} placeholder="Review this repository" />
             </Field>
             <Field
               label="Runbook"
@@ -175,41 +193,56 @@ export function DelegateModal({
               error={errors.description}
               hint={selectedWorker
                 ? workflowRevisionID
-                  ? `Factory combines this with the selected runbook for ${runtimeLabel(selectedWorker.runtime)}.`
-                  : `This becomes the ${runtimeLabel(selectedWorker.runtime)} prompt.`
+                  ? `Factory combines this with the selected runbook for ${runtime ? runtimeLabel(runtime) : "the selected coding agent"}.`
+                  : `This becomes the ${runtime ? runtimeLabel(runtime) : "selected coding agent"} prompt.`
                 : workflowRevisionID
                   ? "Factory combines this with the selected runbook."
-                  : "This becomes the selected worker runtime prompt."}
+                  : "This becomes the selected Runner prompt."}
             >
               <textarea id={descriptionID} name="description" rows={6} aria-invalid={Boolean(errors.description)} placeholder="Describe the outcome, constraints, and checks…" />
             </Field>
-            <Field label="Worker" htmlFor="delegate-worker" error={errors.worker}>
+            <Field label="Runner" htmlFor="delegate-worker" error={errors.worker}>
               <select
                 id="delegate-worker"
                 value={workerID}
                 onChange={(event) => {
                   setWorkerID(event.target.value);
                   setRepositoryID("");
+                  const nextWorker = workers.find((worker) => worker.id === event.target.value);
+                  setRuntime(preferredRuntime(nextWorker));
                 }}
                 disabled={workersPending || workers.length === 0}
               >
-                <option value="">{workersPending ? "Loading workers…" : workers.length ? "Choose a worker" : "No workers registered"}</option>
+                <option value="">{workersPending ? "Loading Runners…" : workers.length ? "Choose a Runner" : "No Runners registered"}</option>
                 {workers.map((worker) => (
                   <option key={worker.id} value={worker.id}>
-                    {worker.name} · {runtimeLabel(worker.runtime)} · {worker.online ? "online" : "offline"}
+                    {worker.name} · {(worker.capabilities ?? [])
+                      .filter((capability) => capability.kind === "runtime" && capability.status === "ready")
+                      .map((capability) => runtimeLabel(capability.name)).join(", ") || "no ready agent"} · {worker.online ? "online" : "offline"}
                   </option>
                 ))}
               </select>
             </Field>
+            <Field label="Coding agent" htmlFor={runtimeID} error={errors.runtime}>
+              <select
+                id={runtimeID}
+                value={runtime}
+                onChange={(event) => setRuntime(event.target.value as Runtime)}
+                disabled={!selectedWorker || availableRuntimes.length === 0}
+              >
+                <option value="">{selectedWorker ? "Choose a coding agent" : "Choose a Runner first"}</option>
+                {availableRuntimes.map((value) => <option key={value} value={value}>{runtimeLabel(value)}</option>)}
+              </select>
+            </Field>
             {selectedWorker && !selectedWorker.online && (
-              <div className="warning-banner compact"><AlertCircle size={16} /> This worker is offline. The task will queue until it returns.</div>
+              <div className="warning-banner compact"><AlertCircle size={16} /> This Runner is offline. The task will queue until it returns.</div>
             )}
             {selectedWorker?.health === "unhealthy" && (
-              <div className="warning-banner compact"><AlertCircle size={16} /> This worker is unhealthy and will not claim work until it recovers.</div>
+              <div className="warning-banner compact"><AlertCircle size={16} /> This Runner is unhealthy and will not claim work until it recovers.</div>
             )}
             <Field label="Repository" htmlFor="delegate-repository" error={errors.repository}>
               <select id="delegate-repository" value={repositoryID} onChange={(event) => setRepositoryID(event.target.value)} disabled={!workerID || repositoryOptions.isPending}>
-                <option value="">{workerID ? repositoryOptions.isPending ? "Loading repositories…" : repositoryOptions.data?.length ? "Choose a repository" : "No repositories configured" : "Choose a worker first"}</option>
+                <option value="">{workerID ? repositoryOptions.isPending ? "Loading repositories…" : repositoryOptions.data?.length ? "Choose a repository" : "No repositories configured" : "Choose a Runner first"}</option>
                 {(repositoryOptions.data ?? []).map((repository) => (
                   <option
                     key={repository.id}

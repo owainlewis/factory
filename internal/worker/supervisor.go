@@ -205,7 +205,11 @@ func superviseRuntime(
 ) error {
 	var arguments []string
 	var claudeResult *claudeResultCapture
+	var piResult *plainResultCapture
 	switch init.Runtime {
+	case protocol.RuntimePi:
+		arguments = []string{"--print", "--no-session"}
+		piResult = &plainResultCapture{}
 	case protocol.RuntimeCodex:
 		arguments = []string{"exec", "--json", "--color", "never", "--output-last-message", init.ResultPath, "-"}
 	case protocol.RuntimeClaudeCode:
@@ -260,6 +264,8 @@ func superviseRuntime(
 	var captureLine func([]byte, bool)
 	if claudeResult != nil {
 		captureLine = claudeResult.capture
+	} else if piResult != nil {
+		captureLine = piResult.capture
 	}
 	readers := sync.WaitGroup{}
 	readers.Add(2)
@@ -361,7 +367,15 @@ func superviseRuntime(
 
 	var result string
 	var truncated bool
-	if claudeResult != nil {
+	if piResult != nil {
+		if piResult.result != nil {
+			result = strings.TrimSpace(piResult.result.String())
+			truncated = piResult.result.Truncated()
+		}
+		if result == "" && reason == "exited" && waitErr == nil {
+			waitErr = errors.New("Pi returned no result")
+		}
+	} else if claudeResult != nil {
 		result = claudeResult.result
 		truncated = claudeResult.truncated
 		if !claudeResult.found && reason == "exited" && waitErr == nil {
@@ -404,6 +418,22 @@ func superviseRuntime(
 		}
 	}
 	return writer.send(message)
+}
+
+type plainResultCapture struct {
+	result *limitBuffer
+}
+
+func (capture *plainResultCapture) capture(fragment []byte, end bool) {
+	if capture.result == nil {
+		capture.result = newLimitBuffer(protocol.MaxResultBytes)
+	}
+	if len(fragment) > 0 {
+		_, _ = capture.result.Write(fragment)
+	}
+	if end {
+		_, _ = capture.result.Write([]byte{'\n'})
+	}
 }
 
 func finishSupervisorStartFailure(anchor *exec.Cmd, identity string, writer *synchronizedEncoder, cause error) error {

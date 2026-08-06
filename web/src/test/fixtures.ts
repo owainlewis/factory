@@ -7,6 +7,13 @@ export const worker: Worker = {
   worker_version: "2.0.0",
   runtime: "codex",
   runtime_version: "0.42.0",
+	capabilities: [
+		{ kind: "tool", name: "git", status: "ready", version: "git version 2.50.1" },
+		{ kind: "tool", name: "gh", status: "ready", version: "gh version 2.94.0" },
+		{ kind: "runtime", name: "pi", status: "ready", version: "0.80.10" },
+		{ kind: "runtime", name: "codex", status: "ready", version: "0.42.0" },
+		{ kind: "runtime", name: "claude-code", status: "missing", message: "Install Claude Code and make it available on PATH." },
+	],
   capacity: 10,
   active_count: 6,
   health: "healthy",
@@ -187,6 +194,7 @@ export function mockControlPlane(
     repositoryToggleFailure?: boolean;
     runFailures?: number;
     workflowHistoryGate?: Promise<void>;
+    workerDetailFailuresAfter?: number;
     workerFailure?: boolean;
   } = {},
 ) {
@@ -197,6 +205,7 @@ export function mockControlPlane(
   let workflowHeadRequests = 0;
   let terminalEventFailures = options.terminalEventFailures ?? 0;
   let taskDetailRequests = 0;
+  let workerDetailRequests = 0;
   const deletedTaskIDs = new Set<string>();
   let resolveStaleHistory: (() => void) | undefined;
   let createdTask: {
@@ -1107,7 +1116,16 @@ export function mockControlPlane(
         }));
       return Response.json({ repositories: [...configured, ...advertisedOnly] });
     }
-    if (path === `/api/v1/workers/${worker.id}`) return Response.json(worker);
+    if (path === `/api/v1/workers/${worker.id}`) {
+      workerDetailRequests += 1;
+      if (options.workerDetailFailuresAfter !== undefined && workerDetailRequests > options.workerDetailFailuresAfter) {
+        return Response.json(
+          { error: { code: "worker_unavailable", message: "Runner connection failed" } },
+          { status: 503 },
+        );
+      }
+      return Response.json(worker);
+    }
     throw new Error(`Unhandled request: ${path}`);
   });
 }

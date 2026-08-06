@@ -13,7 +13,8 @@ export function stateLabel(state: string): string {
 }
 
 export function runtimeLabel(runtime: string): string {
-  return runtime === "claude-code" ? "Claude Code" : "Codex";
+	if (runtime === "pi") return "Pi";
+	return runtime === "claude-code" ? "Claude Code" : "Codex";
 }
 
 export function timeAgo(value: string, now = Date.now()): string {

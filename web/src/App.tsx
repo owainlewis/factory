@@ -181,7 +181,7 @@ export function App() {
             aria-current={route.page === "workers" ? "page" : undefined}
             onClick={() => navigate({ page: "workers" })}
           >
-            <Bot size={17} /> Workers
+			<Bot size={17} /> Runners
           </button>
           <button
             className={`nav-item ${route.page === "repositories" || route.page === "repository" ? "active" : ""}`}
@@ -210,9 +210,9 @@ export function App() {
           <div className="topbar-title">
             {route.page === "overview" && "Overview"}
             {route.page === "work" && "Work"}
-            {route.page === "workers" && "Workers"}
+			{route.page === "workers" && "Runners"}
             {route.page === "task" && "Task detail"}
-            {route.page === "worker" && "Worker detail"}
+			{route.page === "worker" && "Runner detail"}
             {route.page === "repositories" && "Repositories"}
             {route.page === "repository" && "Repository detail"}
             {route.page === "workflows" && "Runbooks"}

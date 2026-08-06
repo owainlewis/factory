@@ -1169,6 +1169,75 @@ func TestWorkerRuntimeDeterminesExecutionAndCannotChange(t *testing.T) {
 	assertErrorCode(t, err, "worker_runtime_changed")
 }
 
+func TestRunnerCapabilitiesSelectAndClaimPiRuntime(t *testing.T) {
+	store := newTestStore(t)
+	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: "multi-runtime-runner", WorkerVersion: "test",
+		Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
+		Capabilities: []protocol.Capability{
+			{Kind: protocol.CapabilityKindTool, Name: "git", Status: protocol.CapabilityReady, Version: "git-test"},
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady, Version: "codex-test"},
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimePi, Status: protocol.CapabilityReady, Version: "pi-test"},
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeClaudeCode, Status: protocol.CapabilityMissing, Message: "Install Claude Code."},
+		},
+		Capacity: 1, Health: "healthy",
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "factory", RemoteIdentity: "github.com/example/factory",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(worker.Capabilities) != 4 || !runtimeCapabilityReady(worker.Capabilities, protocol.RuntimePi) {
+		t.Fatalf("stored capabilities = %#v", worker.Capabilities)
+	}
+	task, created, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+		RequestKey: "pi-task", Title: "Run with Pi", Description: "Inspect the repository.",
+		WorkerID: worker.ID, RepositoryID: worker.Repositories[0].ID,
+		Runtime: protocol.RuntimePi, TimeoutSeconds: 60,
+	})
+	if err != nil || !created {
+		t.Fatalf("create Pi task: created %t, err %v", created, err)
+	}
+	if task.Execution.RequiredRuntime != protocol.RuntimePi {
+		t.Fatalf("execution runtime = %q", task.Execution.RequiredRuntime)
+	}
+	claim := claimTestTask(t, store, worker.ID, "pi-claim", tokenA)
+	if claim.Task.ID != task.Task.ID || claim.Execution.RequiredRuntime != protocol.RuntimePi {
+		t.Fatalf("Pi claim = %#v", claim)
+	}
+}
+
+func TestDirectTaskDefaultsToAReadyRunnerCapability(t *testing.T) {
+	store := newTestStore(t)
+	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: "fallback-runtime-runner", WorkerVersion: "test",
+		Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
+		Capabilities: []protocol.Capability{
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityUnauthenticated},
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimePi, Status: protocol.CapabilityReady, Version: "pi-test"},
+		},
+		Capacity: 1, Health: "healthy",
+		Repositories: []protocol.RepositoryRegistration{{
+			Key: "factory", RemoteIdentity: "github.com/example/factory",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, created, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+		RequestKey: "fallback-runtime-task", Title: "Use a ready runtime",
+		Description: "Do not queue against an unavailable primary runtime.",
+		WorkerID:    worker.ID, RepositoryID: worker.Repositories[0].ID, TimeoutSeconds: 60,
+	})
+	if err != nil || !created {
+		t.Fatalf("create fallback runtime task: created %t, err %v", created, err)
+	}
+	if task.Execution.RequiredRuntime != protocol.RuntimePi {
+		t.Fatalf("fallback execution runtime = %q; want %q", task.Execution.RequiredRuntime, protocol.RuntimePi)
+	}
+}
+
 func createTestTask(t *testing.T, store *Store, requestKey, workerID, repositoryID string) protocol.TaskDetail {
 	t.Helper()
 	task, created, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
@@ -1665,6 +1734,10 @@ func TestRoutedTaskCanTargetOneEligibleWorker(t *testing.T) {
 	}
 	if len(worker.Repositories) != 1 || worker.Repositories[0].ID != repository.ID {
 		t.Fatalf("selected worker repositories = %#v", worker.Repositories)
+	}
+	option := requireWorkerRepositoryOption(t, store, workerB, repository.ID)
+	if option.Advertised || !option.Ready || option.Reason != "Online, healthy, with GitHub access and managed cache headroom." {
+		t.Fatalf("reserved managed repository option = %#v", option)
 	}
 
 	registration.Name = workerA

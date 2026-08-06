@@ -8,7 +8,7 @@ This guide starts one control plane and one worker on macOS or Linux.
 - Git
 - `curl`
 - `just`
-- an authenticated Codex CLI or Claude Code CLI
+- at least one authenticated Pi, Codex, or Claude Code CLI
 - an authenticated `gh` CLI for centrally managed GitHub repositories
 
 Node.js is not required for normal startup.
@@ -68,14 +68,21 @@ Edit `~/.factory/worker.toml`:
 server = "http://127.0.0.1:7337"
 name = "local-codex"
 runtime = "codex"
+runtimes = ["pi", "codex", "claude-code"]
 # Optional. Defaults to 10 and accepts values from 1 through 100.
 max_concurrent = 10
 ```
 
-One worker is a pool for its configured runtime. Each slot runs an independent
-Codex or Claude Code session with its own worktree and process group. Preparing
-an attempt also consumes a slot. Choose a lower value when local CPU, memory, or
-provider limits require it.
+One Runner is a pool for its configured coding agent runtimes. Each slot runs
+an independent Pi, Codex, or Claude Code session with its own worktree and
+process group. Preparing an attempt also consumes a slot. Choose a lower value
+when local CPU, memory, or provider limits require it.
+
+The optional legacy `runtime` field is the default for older clients that do
+not select a runtime. Existing single-runtime files continue to work without a
+`runtimes` field. New configurations can list several runtimes. Factory reports
+each one as ready, missing, unauthenticated, or unhealthy, and the Runner stays
+available while Git and at least one configured runtime are ready.
 
 Factory migrates existing SQLite databases to the expanded worker capacity
 range when the control plane starts.
@@ -96,20 +103,10 @@ configure it under that repository:
 base_branch = "release/2026.07"
 ```
 
-For Claude Code, use another config and identity:
-
-```toml
-server = "http://127.0.0.1:7337"
-name = "local-claude"
-runtime = "claude-code"
-max_concurrent = 10
-```
-
-Saved as `~/.factory/claude-worker.toml`, this worker uses
-`~/.factory/workers/claude-worker`. Different config filenames keep multiple
-worker identities separate on one host. Set `data_directory` only when an
-explicit relative or absolute override is needed; never share one data
-directory between worker identities.
+To run only one coding agent, keep the existing single-runtime form, such as
+`runtime = "claude-code"`. Set `data_directory` only when an explicit relative
+or absolute override is needed; never share one data directory between Runner
+identities.
 
 ## Start
 
@@ -141,14 +138,14 @@ is already frozen. Posting a repository first discovered from a legacy worker
 promotes it into the enabled central fleet. Reposting a centrally managed
 repository does not override an explicit disable.
 
-To start with a different worker config:
+To start with a different Runner config:
 
 ```sh
 just run ~/.factory/claude-worker.toml
 ```
 
-To run more than one worker, start the control plane once and then start each
-additional worker directly:
+To run more than one Runner, start the control plane once and then start each
+additional Runner directly:
 
 ```sh
 ~/.factory/bin/factory-worker \

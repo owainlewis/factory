@@ -1,5 +1,13 @@
 export type TaskState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
-export type Runtime = "codex" | "claude-code";
+export type Runtime = "pi" | "codex" | "claude-code";
+
+export interface Capability {
+  kind: "tool" | "runtime";
+  name: string;
+  status: "ready" | "missing" | "unauthenticated" | "unhealthy";
+  version?: string;
+  message?: string;
+}
 
 export interface Repository {
   id: string;
@@ -22,6 +30,7 @@ export interface Worker {
   worker_version: string;
   runtime: Runtime;
   runtime_version: string;
+  capabilities?: Capability[];
   capacity: number;
   active_count: number;
   health: "healthy" | "unhealthy";
@@ -390,6 +399,7 @@ interface CreateTaskBaseInput {
   request_key: string;
   title: string;
   timeout_seconds: number;
+  runtime?: Runtime;
 }
 
 type CreateTaskAssignment =

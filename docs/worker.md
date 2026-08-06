@@ -1,7 +1,7 @@
 # Worker contract
 
-A Factory worker is one stable identity and a pool of independent agent sessions
-for one runtime. Its capacity limit controls the number of sessions that may
+A Factory Runner is one stable identity, a set of coding-agent capabilities,
+and a pool of independent agent sessions. Its capacity limit controls the number of sessions that may
 prepare or run at once. It can run on a developer machine, VM, or Unix
 container. Workers are cattle: the control plane owns repository scope, and an
 eligible worker acquires an assigned repository into its bounded local cache.
@@ -13,14 +13,17 @@ Windows is not supported.
 server = "http://127.0.0.1:7337"
 name = "local-codex"
 runtime = "codex"
+runtimes = ["pi", "codex", "claude-code"]
 # Optional. Defaults to 10.
 max_concurrent = 10
 ```
 
-`runtime` is `codex` or `claude-code`. A worker never switches runtime per task.
-Run two workers when you want to send the same task to both agents. Each task
-launches a fresh runtime process and owns its own worktree, manifest, lease, and
-supervisor process group. `max_concurrent` accepts values from 1 through 100;
+`runtimes` lists the coding agents the Runner should discover. Supported values
+are `pi`, `codex`, and `claude-code`. `runtime` remains the primary capability
+and preserves compatibility with existing single-runtime configurations. Each
+task selects one ready capability and launches a fresh runtime process with its
+own worktree, manifest, lease, and supervisor process group. `max_concurrent`
+accepts values from 1 through 100;
 preparing attempts consume slots as well as running attempts.
 
 Factory migrates existing SQLite databases to the expanded worker capacity
@@ -62,7 +65,8 @@ authenticate workers, so the ID is identity, not a credential.
 
 Registration advertises:
 
-- display name and runtime;
+- display name, primary runtime, and capability status for each configured tool
+  and coding agent;
 - maximum concurrent attempts;
 - worker version;
 - optional legacy repository keys, normalized remote identities, and retained

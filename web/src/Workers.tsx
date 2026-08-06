@@ -30,6 +30,20 @@ import {
 const workerTabs = ["overview", "work", "capabilities", "settings"] as const;
 type WorkerTab = (typeof workerTabs)[number];
 
+function runtimeCapabilities(worker: Worker) {
+	return (worker.capabilities ?? []).filter((capability) => capability.kind === "runtime");
+}
+
+function readyRuntimes(worker: Worker) {
+	return runtimeCapabilities(worker).filter((capability) => capability.status === "ready");
+}
+
+function capabilityName(kind: string, name: string) {
+	if (kind === "runtime") return runtimeLabel(name);
+	if (name === "gh") return "GitHub CLI";
+	return name === "git" ? "Git" : name;
+}
+
 const workerTabLabel: Record<WorkerTab, string> = {
   overview: "Overview",
   work: "Work",
@@ -51,7 +65,7 @@ export function WorkersView({
   error: Error | null;
   onWorker: (id: string) => void;
 }) {
-  if (pending) return <LoadingState label="Loading workers" />;
+  if (pending) return <LoadingState label="Loading Runners" />;
   if (error && !workers) return <ErrorState error={error} onRetry={onRefresh} />;
   const registered = workers ?? [];
   const online = registered.filter((worker) => worker.online).length;
@@ -75,8 +89,8 @@ export function WorkersView({
       {registered.length === 0 ? (
         <EmptyState
           icon={<Server size={22} />}
-          title="No workers registered"
-          description="Start a Factory worker and its registration will appear here automatically."
+          title="No Runners registered"
+          description="Start a Factory Runner and its registration will appear here automatically."
         />
       ) : (
         <>
@@ -87,7 +101,7 @@ export function WorkersView({
           </div>
           <div className="workers-list">
             <div className="worker-table-head" aria-hidden="true">
-              <span>Worker</span><span>Capacity</span><span>Repositories</span><span>Versions</span><span>Last seen</span><span />
+              <span>Runner</span><span>Capacity</span><span>Repositories</span><span>Runtimes</span><span>Last seen</span><span />
             </div>
             {registered.map((worker) => (
               <button className="worker-row" key={worker.id} onClick={() => onWorker(worker.id)}>
@@ -98,9 +112,11 @@ export function WorkersView({
                       <strong>{worker.name}</strong>
                       <span className={`presence ${worker.online ? "online" : "offline"}`} aria-hidden="true" />
                     </span>
-                    <span className={`runtime-badge runtime-${worker.runtime}`}>
-                      <Play size={10} /> {runtimeLabel(worker.runtime)}
-                    </span>
+                    {readyRuntimes(worker).map((capability) => (
+						<span className={`runtime-badge runtime-${capability.name}`} key={capability.name}>
+							<Play size={10} /> {runtimeLabel(capability.name)}
+						</span>
+					))}
                     <small>
                       {worker.online ? "Online" : "Offline"} ·{" "}
                       <span className={worker.health === "healthy" ? "healthy-text" : "danger-text"}>
@@ -120,8 +136,10 @@ export function WorkersView({
                   {worker.repositories.map((repo) => <span className="tag" key={repo.id}>{repo.key}</span>)}
                 </span>
                 <span className="versions">
-                  <small>{runtimeLabel(worker.runtime)} {worker.runtime_version || "unknown"}</small>
-                  <small>Worker {worker.worker_version || "unknown"}</small>
+					{readyRuntimes(worker).map((capability) => (
+						<small key={capability.name}>{runtimeLabel(capability.name)} {capability.version || "unknown"}</small>
+					))}
+					<small>Runner {worker.worker_version || "unknown"}</small>
                 </span>
                 <span className="last-seen">{timeAgo(worker.last_heartbeat)}</span>
                 <ChevronRight size={16} className="row-chevron" aria-hidden="true" />
@@ -151,9 +169,10 @@ export function WorkerDetail({
   });
   const [copied, setCopied] = useState<string>();
   const [activeTab, setActiveTab] = useState<WorkerTab>("overview");
+	const [connectionTest, setConnectionTest] = useState<"testing" | "passed" | "failed">();
   const tabIDPrefix = useId();
 
-  if (worker.isPending) return <LoadingState label="Loading worker" />;
+  if (worker.isPending) return <LoadingState label="Loading Runner" />;
   if (!worker.data) return <ErrorState error={worker.error} onRetry={() => void worker.refetch()} />;
 
   const data = worker.data;
@@ -196,10 +215,18 @@ export function WorkerDetail({
   );
   const activeSessions = `${data.active_count} active session${data.active_count === 1 ? "" : "s"}`;
   const latestActiveTask = data.active_count > 1 ? `Latest of ${activeSessions}` : activeSessions;
+  const testConnection = async () => {
+    setConnectionTest("testing");
+    const result = await worker.refetch();
+    const value = result.data;
+    setConnectionTest(
+      !result.error && value?.online && readyRuntimes(value).length > 0 ? "passed" : "failed",
+    );
+  };
 
   return (
     <div className="page detail-page">
-      <button className="back-button" onClick={onBack}><ArrowLeft size={16} /> All workers</button>
+	  <button className="back-button" onClick={onBack}><ArrowLeft size={16} /> All Runners</button>
       <div className="detail-heading worker-detail-heading">
         <div className="worker-detail-identity">
           <span className="worker-avatar worker-avatar-large"><Bot size={25} /></span>
@@ -212,23 +239,36 @@ export function WorkerDetail({
             </div>
             <h1>{data.name}</h1>
             <div className="worker-profile-meta">
-              <span className={`runtime-badge runtime-${data.runtime}`}>
-                <Play size={10} /> {runtimeLabel(data.runtime)}
-              </span>
+			{readyRuntimes(data).map((capability) => (
+				<span className={`runtime-badge runtime-${capability.name}`} key={capability.name}>
+					<Play size={10} /> {runtimeLabel(capability.name)}
+				</span>
+			))}
               <span>{data.active_count} / {data.capacity} sessions active</span>
               <span>Last seen {timeAgo(data.last_heartbeat)}</span>
             </div>
           </div>
         </div>
         <div className="detail-actions">
+			<button className="button button-secondary" onClick={() => void testConnection()} disabled={connectionTest === "testing"}>
+				{connectionTest === "testing" ? <LoaderCircle size={15} className="spin" /> : <Check size={15} />}
+				Test connection
+			</button>
           <button className="button button-primary" onClick={onDelegate}>
             <Plus size={15} /> Assign work
           </button>
         </div>
       </div>
+		{connectionTest && connectionTest !== "testing" && (
+			<div className={connectionTest === "passed" ? "success-banner" : "warning-banner"} role="status">
+				{connectionTest === "passed"
+					? "Runner is online with at least one ready coding agent."
+					: "Runner connection failed. Check its status and capability guidance below."}
+			</div>
+		)}
       {worker.error && <StaleBanner error={worker.error} />}
 
-      <div className="worker-tabs" role="tablist" aria-label="Worker profile">
+	  <div className="worker-tabs" role="tablist" aria-label="Runner profile">
         {workerTabs.map((tab, index) => (
           <button
             type="button"
@@ -248,7 +288,7 @@ export function WorkerDetail({
 
       {tabPanel("overview",
         <>
-          <section className="worker-summary-grid" aria-label="Worker summary">
+		  <section className="worker-summary-grid" aria-label="Runner summary">
             <div><span>Status</span><strong>{data.online ? "Online" : "Offline"}</strong><small>{stateLabel(data.health)}</small></div>
             <div><span>Sessions</span><strong>{data.active_count} / {data.capacity}</strong><small>active capacity</small></div>
             <div><span>Repositories</span><strong>{data.repositories.length}</strong><small>advertised</small></div>
@@ -258,10 +298,10 @@ export function WorkerDetail({
             <section className="panel">
               <PanelHeading title="Profile" />
               <dl className="metadata">
-                <div><dt>Runtime</dt><dd>{runtimeLabel(data.runtime)}</dd></div>
+                <div><dt>Runtimes</dt><dd>{readyRuntimes(data).map((capability) => runtimeLabel(capability.name)).join(", ") || "None ready"}</dd></div>
                 <div><dt>Last seen</dt><dd>{timeAgo(data.last_heartbeat)}</dd></div>
                 <div><dt>Registered</dt><dd>{new Date(data.registered_at).toLocaleString()}</dd></div>
-                <div><dt>Worker ID</dt><dd><span className="worker-id" title={data.id}>{data.id}</span></dd></div>
+				<div><dt>Runner ID</dt><dd><span className="worker-id" title={data.id}>{data.id}</span></dd></div>
               </dl>
             </section>
             <section className="panel">
@@ -271,7 +311,7 @@ export function WorkerDetail({
               ) : data.active_count > 0 ? (
                 <div className="quiet-empty">No active task title is currently reported.</div>
               ) : (
-                <div className="quiet-empty">This worker is ready for its next task.</div>
+				<div className="quiet-empty">This Runner is ready for its next task.</div>
               )}
             </section>
           </div>
@@ -287,7 +327,7 @@ export function WorkerDetail({
             ) : data.active_count > 0 ? (
               <div className="quiet-empty">No active task title is currently reported.</div>
             ) : (
-              <div className="quiet-empty">This worker is ready for its next task.</div>
+			  <div className="quiet-empty">This Runner is ready for its next task.</div>
             )}
           </section>
           <section className="panel">
@@ -327,19 +367,22 @@ export function WorkerDetail({
         <>
           <div className="worker-capabilities-layout">
             <section className="panel">
-              <PanelHeading title="Runtime capability" />
-              <dl className="metadata">
-                <div><dt>Runtime</dt><dd>{runtimeLabel(data.runtime)}</dd></div>
-                <div><dt>Runtime version</dt><dd>{data.runtime_version || "Unknown"}</dd></div>
-                <div><dt>Worker version</dt><dd>{data.worker_version || "Unknown"}</dd></div>
-                <div><dt>Managed repositories</dt><dd>{data.accepts_managed_repositories ? "Accepted" : "Not advertised"}</dd></div>
-                <div><dt>Repository cache</dt><dd>{data.repository_cache_count ?? 0} cached</dd></div>
-              </dl>
+              <PanelHeading title="Runner capabilities" aside={`${data.capabilities?.length ?? 0} checked`} />
+				<div className="capability-list">
+					{(data.capabilities ?? []).map((capability) => (
+						<div key={`${capability.kind}-${capability.name}`}>
+							<strong>{capabilityName(capability.kind, capability.name)}</strong>
+							<span className={capability.status === "ready" ? "healthy-text" : "danger-text"}>{stateLabel(capability.status)}</span>
+							{capability.version && <small>{capability.version}</small>}
+							{capability.message && <small>{capability.message}</small>}
+						</div>
+					))}
+				</div>
             </section>
             <section className="panel">
               <PanelHeading title="Source access" aside={`${data.source_access?.length ?? 0} advertised`} />
               {(data.source_access ?? []).length === 0 ? (
-                <div className="quiet-empty">No source providers are advertised by this worker.</div>
+				<div className="quiet-empty">No source providers are advertised by this Runner.</div>
               ) : (
                 <div className="capability-list">
                   {(data.source_access ?? []).map((source) => (
@@ -378,8 +421,8 @@ export function WorkerDetail({
             <div className="execution-settings-grid">
               <div className="execution-setting">
                 <span>Runtime</span>
-                <strong>{runtimeLabel(data.runtime)}</strong>
-                <small>One runtime type per worker identity.</small>
+				<strong>{readyRuntimes(data).map((capability) => runtimeLabel(capability.name)).join(", ") || "None ready"}</strong>
+				<small>One Runner may advertise several coding agents.</small>
               </div>
               <div className="execution-setting execution-concurrency">
                 <span>Concurrency</span>
@@ -389,24 +432,23 @@ export function WorkerDetail({
                   min={0}
                   max={data.capacity}
                   value={Math.min(data.active_count, data.capacity)}
-                  aria-label="Worker concurrency"
+				  aria-label="Runner concurrency"
                 />
               </div>
             </div>
             <div className="execution-owner-note">
-              <strong>Managed by worker configuration</strong>
+			  <strong>Managed by Runner configuration</strong>
               <p>
-                Factory reads <code>runtime</code> and <code>max_concurrent</code> from the worker TOML at startup.
-                Update the file and restart the worker to apply concurrency changes. Runtime is immutable for an
-                existing worker identity; use a separate config and data directory for another runtime.
+				Factory reads <code>runtimes</code> and <code>max_concurrent</code> from the Runner TOML at startup.
+				Update the file and restart the Runner to apply capability or concurrency changes.
               </p>
             </div>
           </section>
           <section className="panel">
             <PanelHeading title="Runtime ownership" />
             <p className="settings-copy">
-              Model, reasoning effort, speed, and custom runtime arguments stay with the installed Codex or Claude
-              Code configuration. Factory reports execution capability but does not edit provider-owned settings.
+			  Model, reasoning effort, speed, and custom runtime arguments stay with the installed coding agent.
+			  Factory reports execution capability but does not edit provider-owned settings.
             </p>
           </section>
         </>,

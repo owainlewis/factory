@@ -44,6 +44,10 @@ func newManagedAcquisitionFixture(t *testing.T, mode string) managedAcquisitionF
 	githubPath := filepath.Join(toolDirectory, "gh")
 	githubScript := `#!/bin/sh
 set -eu
+if [ "${1:-}" = "--version" ]; then
+  echo "gh version test"
+  exit 0
+fi
 if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then
   exit 0
 fi

@@ -1,9 +1,11 @@
 # Copy this file to ~/.factory/worker.toml.
 server = "http://127.0.0.1:7337"
 name = "local"
-# One worker identity runs exactly one runtime: "codex" or "claude-code".
-# It is a pool of independent agent sessions for that runtime.
+# The legacy runtime remains the default for clients that do not select one.
 runtime = "codex"
+# One Runner may advertise several installed coding agents. Missing or
+# unauthenticated runtimes remain visible without stopping ready runtimes.
+runtimes = ["pi", "codex", "claude-code"]
 # Optional. Defaults to 10 and accepts values from 1 through 100.
 # max_concurrent = 10
 # With no data_directory, this worker stores durable state in
