@@ -19,7 +19,6 @@ func healthRegistrationChanged(previous, next health) bool {
 func (manager *Manager) setHealth(value health) bool {
 	manager.stateMutex.Lock()
 	previous := manager.health
-	manager.healthCheckPending = false
 	if manager.fatalHealth != nil {
 		value = health{State: "unhealthy", Error: manager.fatalHealth}
 	}
@@ -33,6 +32,7 @@ func (manager *Manager) setHealth(value health) bool {
 	if value.State != "healthy" {
 		manager.cancelPendingClaimsLocked()
 	}
+	manager.finishHealthCheckLocked()
 	manager.stateMutex.Unlock()
 	if value.Error != nil && previous.State != value.State {
 		manager.logger.Warn("worker_unhealthy", "error_class", "runtime_health", "error", value.Error)
@@ -70,8 +70,17 @@ func (manager *Manager) beginHealthCheck() bool {
 		return false
 	}
 	manager.healthCheckPending = true
-	manager.cancelPendingClaimsLocked()
+	manager.healthCheckDone = make(chan struct{})
 	return true
+}
+
+func (manager *Manager) finishHealthCheckLocked() {
+	if !manager.healthCheckPending {
+		return
+	}
+	manager.healthCheckPending = false
+	close(manager.healthCheckDone)
+	manager.healthCheckDone = nil
 }
 
 func (manager *Manager) registration() protocol.WorkerRegistration {

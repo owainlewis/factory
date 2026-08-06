@@ -71,6 +71,7 @@ type Manager struct {
 	pending                       map[string]context.CancelFunc
 	claiming                      bool
 	healthCheckPending            bool
+	healthCheckDone               chan struct{}
 	fatalHealth                   error
 	registered                    bool
 	registrationGeneration        uint64

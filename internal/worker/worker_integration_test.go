@@ -2058,6 +2058,7 @@ func TestCommittedClaimBecomesFailedWhenHealthChangesBeforeResponse(t *testing.T
 		t.Fatal("health refresh did not start")
 	}
 	close(releaseResponse)
+	manager.setHealth(health{State: "unhealthy", Error: errors.New("runtime unavailable")})
 
 	detail := waitForTaskState(t, fixture.store, task.Task.ID, "failed")
 	if len(detail.Attempts) != 1 || detail.Attempts[0].State != "failed" ||
@@ -2066,6 +2067,76 @@ func TestCommittedClaimBecomesFailedWhenHealthChangesBeforeResponse(t *testing.T
 	}
 	if _, err := os.Stat(filepath.Join(manager.dataDirectory, "worktrees", detail.Attempts[0].ID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("ineligible claim created a worktree: %v", err)
+	}
+}
+
+func TestCommittedClaimWaitsForUnchangedHealthRefresh(t *testing.T) {
+	fixture := newServerFixture(t, nil)
+	repository := createRepository(t, "committed-claim-healthy")
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"health": repository}, 1)
+	manager.options.HealthInterval = time.Hour
+	manager.options.RegistrationInterval = 5 * time.Second
+
+	claimCommitted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	var blocked atomic.Bool
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	t.Cleanup(transport.CloseIdleConnections)
+	manager.client.http = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		response, err := transport.RoundTrip(request)
+		if err != nil || !strings.HasSuffix(request.URL.Path, "/claims") ||
+			response.StatusCode != http.StatusOK || !blocked.CompareAndSwap(false, true) {
+			return response, err
+		}
+		body, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		response.Body = io.NopCloser(bytes.NewReader(body))
+		response.ContentLength = int64(len(body))
+		close(claimCommitted)
+		<-releaseResponse
+		return response, nil
+	})}
+
+	startManager(t, manager)
+	worker := waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy"
+	})
+	task := createTask(t, fixture.store, worker, "health", "success", 60)
+	select {
+	case <-claimCommitted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not commit a claim")
+	}
+	manager.stateMutex.Lock()
+	unchanged := manager.health
+	unchanged.Capabilities = append([]protocol.Capability(nil), unchanged.Capabilities...)
+	unchanged.SourceAccess = append([]protocol.SourceAccess(nil), unchanged.SourceAccess...)
+	manager.stateMutex.Unlock()
+	if !manager.beginHealthCheck() {
+		t.Fatal("health refresh did not start")
+	}
+	close(releaseResponse)
+
+	time.Sleep(20 * time.Millisecond)
+	detail, err := fixture.store.Task(context.Background(), task.Task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Execution.State != "preparing" || len(detail.Attempts) != 1 {
+		t.Fatalf("committed claim did not wait for health evidence: state=%s attempts=%d",
+			detail.Execution.State, len(detail.Attempts))
+	}
+
+	manager.setHealth(unchanged)
+	detail = waitForTaskState(t, fixture.store, task.Task.ID, "succeeded")
+	if len(detail.Attempts) != 1 || detail.Attempts[0].State != "succeeded" {
+		t.Fatalf("claim did not resume after unchanged healthy evidence: %#v", detail.Attempts)
 	}
 }
 
