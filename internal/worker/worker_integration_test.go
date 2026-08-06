@@ -1501,6 +1501,7 @@ func TestIdleWorkerMakesOneClaimPerPollingInterval(t *testing.T) {
 	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
 		map[string]repositoryFixture{"idle-claim-pool": repository}, 10)
 	manager.options.PollInterval = 120 * time.Millisecond
+	manager.options.HealthInterval = time.Hour
 	cancel, done := startManager(t, manager)
 	waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
 		return worker.Health == "healthy" && worker.Capacity == 10
