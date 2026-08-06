@@ -3,6 +3,7 @@ import type {
   AttemptEventPage,
   CreateTaskInput,
   MetricsSummary,
+  MetricsFilters,
   MetricsWindow,
   ManagedRepository,
   ManagedRepositoryReadiness,
@@ -75,10 +76,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  metrics: (window: MetricsWindow) =>
-    request<MetricsSummary>(
-      `/api/v1/metrics/summary?${new URLSearchParams({ window })}`,
-    ),
+  metrics: (window: MetricsWindow, filters: MetricsFilters = {}) => {
+    const query = new URLSearchParams({ window });
+    if (filters.definition_id) query.set("definition_id", filters.definition_id);
+    if (filters.repository_id) query.set("repository_id", filters.repository_id);
+    if (filters.runner_id) query.set("runner_id", filters.runner_id);
+    return request<MetricsSummary>(`/api/v1/metrics/summary?${query}`);
+  },
   tasks: async (cursor = "") => {
     const query = new URLSearchParams({ limit: "50" });
     if (cursor) query.set("cursor", cursor);

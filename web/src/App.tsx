@@ -276,7 +276,7 @@ export function App() {
         </header>
 
         <main>
-          {route.page === "overview" && <Overview />}
+          {route.page === "overview" && <Overview onRun={(id) => navigate({ page: "run", id })} />}
           {route.page === "runs" && (
             <RunsView
               createOpen={Boolean(route.create)}

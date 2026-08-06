@@ -464,6 +464,50 @@ export interface MetricsSummary {
   workers_online: number;
   workers_total: number;
   weekly_limit?: WeeklyLimit;
+  run_health: RunHealthMetrics;
+}
+
+export interface MetricFilterOption {
+  id: string;
+  name: string;
+}
+
+export interface RunMetricJob {
+  job_id: string;
+  run_id: string;
+  definition_id: string;
+  definition_name: string;
+  repository_id: string;
+  repository_remote_identity: string;
+  runner_id?: string;
+  runner_name?: string;
+  state: JobState;
+  admitted_at: string;
+  started_at?: string;
+  terminal_at?: string;
+}
+
+export interface RunHealthMetrics {
+  total_jobs: number;
+  active: number;
+  blocked: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  success_rate: number | null;
+  average_queue_time_seconds: number | null;
+  average_cycle_time_seconds: number | null;
+  throughput: number;
+  jobs: RunMetricJob[];
+  definitions: MetricFilterOption[];
+  repositories: MetricFilterOption[];
+  runners: MetricFilterOption[];
+}
+
+export interface MetricsFilters {
+  definition_id?: string;
+  repository_id?: string;
+  runner_id?: string;
 }
 
 export interface AttemptEvent {

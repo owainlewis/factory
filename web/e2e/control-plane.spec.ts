@@ -351,16 +351,72 @@ test.beforeAll(async () => {
   await api.dispose();
 });
 
-test("shows retained Factory metrics and saves the overview", async ({ page }) => {
+test("filters Run health and drills from a failed Job into its Run", async ({ page }) => {
   const browser = observeBrowser(page);
   const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
+  const metricsWorker = "worker-metrics-e2e";
+  const registered = await registerWorker(api, metricsWorker, "Metrics Runner", [{
+    key: "metrics-dashboard",
+    remote_identity: "file:///tmp/factory-metrics-dashboard",
+    retained_count: 0,
+  }], 0, [], "claude-code", [{ provider: "github", hostname: "github.com" }]);
+  const repositoryID = registered.repositories[0].id;
+  const definition = await json<{ id: string }>(await api.post("/api/v1/definitions", { data: {
+    request_key: "e2e-metrics-definition",
+    name: "E2E metric review",
+    prompt: "Review the repository for dashboard evidence.",
+    runtime: "claude-code",
+    allowed_tools: [],
+    timeout_seconds: 600,
+    inputs: {},
+  } }));
+  const finishRun = async (key: string, state: "succeeded" | "failed") => {
+    const run = await json<{
+      run: { id: string };
+      jobs: Array<{ job: { assigned_worker_id?: string } }>;
+    }>(await api.post("/api/v1/runs", { data: {
+      request_key: `e2e-metrics-${key}`,
+      definition_id: definition.id,
+      repository_ids: [repositoryID],
+      concurrency_limit: 1,
+    } }));
+    expect(run.jobs[0]?.job.assigned_worker_id).toBe(metricsWorker);
+    const token = `metrics-${key}-lease-token-0123456789abcdef0123456789`;
+    const claim = await json<{ attempt: { id: string } }>(await api.post(`/api/v1/workers/${metricsWorker}/claims`, { data: {
+      request_id: `metrics-${key}-claim`,
+      lease_token: token,
+    } }));
+    await json(await api.post(`/api/v1/attempts/${claim.attempt.id}/start`, { data: {
+      lease_token: token,
+      process_identity: `metrics-${key}`,
+    } }));
+    await json(await api.post(`/api/v1/attempts/${claim.attempt.id}/complete`, { data: {
+      lease_token: token,
+      state,
+      ...(state === "succeeded" ? { result: "Metric success" } : { error: "Metric failure" }),
+    } }));
+    return run.run.id;
+  };
+  await finishRun("succeeded", "succeeded");
+  const failedRunID = await finishRun("failed", "failed");
+  await json(await api.post("/api/v1/runs", { data: {
+    request_key: "e2e-metrics-active",
+    definition_id: definition.id,
+    repository_ids: [repositoryID],
+    concurrency_limit: 1,
+  } }));
+  const blockedRepository = await json<{ id: string }>(await api.post("/api/v1/repositories", { data: {
+    remote_identity: "github.com/example/metrics-blocked",
+  } }));
+  await json(await api.post("/api/v1/runs", { data: {
+    request_key: "e2e-metrics-blocked",
+    definition_id: definition.id,
+    repository_ids: [blockedRepository.id],
+    concurrency_limit: 1,
+  } }));
   const summary = await json<{
-    executions_created: number;
-    executions_completed: number;
-    queued: number;
-    running: number;
+    run_health: { active: number; blocked: number; succeeded: number; failed: number };
   }>(await api.get("/api/v1/metrics/summary?window=7d"));
-  await api.dispose();
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Factory overview" })).toBeVisible();
@@ -368,17 +424,21 @@ test("shows retained Factory metrics and saves the overview", async ({ page }) =
     "aria-current",
     "page",
   );
-  await expect(
-    page.locator(".metric-card").filter({ hasText: "Executions created" }).locator("strong"),
-  ).toHaveText(String(summary.executions_created));
-  await expect(
-    page.locator(".metric-card").filter({ hasText: "Executions completed" }).locator("strong"),
-  ).toHaveText(String(summary.executions_completed));
-  await expect(page.locator(".health-metrics").getByText(String(summary.queued), { exact: true })).toBeVisible();
-  await expect(page.locator(".health-metrics").getByText(String(summary.running), { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Active Jobs/ }).locator("strong")).toHaveText(String(summary.run_health.active));
+  await expect(page.getByRole("button", { name: /Blocked Jobs/ }).locator("strong")).toHaveText(String(summary.run_health.blocked));
+  await expect(page.getByRole("button", { name: /Succeeded Jobs/ }).locator("strong")).toHaveText(String(summary.run_health.succeeded));
+  await expect(page.getByRole("button", { name: /Failed Jobs/ }).locator("strong")).toHaveText(String(summary.run_health.failed));
+  await page.getByLabel("Definition filter").selectOption(definition.id);
+  await expect(page.getByLabel("Definition filter")).toHaveValue(definition.id);
+  await page.getByRole("button", { name: /Failed Jobs/ }).click();
+  await page.getByRole("button", { name: /file:\/\/\/tmp\/factory-metrics-dashboard/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/runs/${failedRunID}$`));
+  await expect(page.getByText("Metric failure", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Overview", exact: true }).click();
   await page.getByRole("button", { name: "30 days" }).click();
   await expect(page.getByRole("button", { name: "30 days" })).toHaveAttribute("aria-pressed", "true");
   await page.screenshot({ path: "test-results/screenshots/overview-desktop.png", fullPage: true });
+  await api.dispose();
   browser.assertClean();
 });
 

@@ -210,6 +210,15 @@ func TestHTTPMetricsUseABoundedWindowContract(t *testing.T) {
 			t.Fatalf("%s error = %#v", path, body)
 		}
 	}
+	response = fixture.request(
+		http.MethodGet,
+		"/api/v1/metrics/summary?definition_id=one&definition_id=two",
+		"", "", nil,
+	)
+	requireStatus(t, response, http.StatusBadRequest)
+	if body := decodeResponse[protocol.ErrorBody](t, response); body.Error.Code != "invalid_metrics_filter" {
+		t.Fatalf("duplicate metrics filter error = %#v", body)
+	}
 }
 
 func TestHTTPWorkerRegistrationSupportsLegacyAndRuntimeAwareContracts(t *testing.T) {

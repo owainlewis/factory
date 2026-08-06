@@ -30,20 +30,19 @@ describe("App", () => {
     window.history.replaceState({}, "", "/work");
   });
 
-  it("renders truthful retained metrics on the default overview", async () => {
+  it("filters Run health metrics and drills from a failed Job into its Run", async () => {
     window.history.replaceState({}, "", "/");
     const fetch = mockControlPlane();
     const user = userEvent.setup();
     renderApp();
 
     expect(await screen.findByRole("heading", { name: "Factory overview" })).toBeVisible();
-    expect(screen.getByText("53")).toBeVisible();
-    expect(screen.getByText("41", { selector: ".metric-card strong" })).toBeVisible();
-    expect(screen.getByText("85%")).toBeVisible();
-    expect(screen.getByText("14m 0s")).toBeVisible();
-    expect(screen.getByText("86% left")).toBeVisible();
-    expect(screen.getByRole("meter", { name: "Weekly limit remaining" })).toHaveValue(86);
-    expect(screen.getByText("Rates exclude cancellations.", { exact: false })).toBeVisible();
+    expect(within(screen.getByRole("button", { name: /Active Jobs/ })).getByText("3")).toBeVisible();
+    expect(within(screen.getByRole("button", { name: /Blocked Jobs/ })).getByText("2")).toBeVisible();
+    expect(screen.getByText("71.4%")).toBeVisible();
+    expect(screen.getByText("1m 30s")).toBeVisible();
+    expect(within(screen.getByRole("button", { name: /Average cycle time/ })).getByText("14m 0s")).toBeVisible();
+    expect(screen.getByText("Every metric uses the same cohort", { exact: false })).not.toBeVisible();
     expect(screen.getByRole("button", { name: /^Overview$/ })).toHaveAttribute(
       "aria-current",
       "page",
@@ -56,6 +55,20 @@ describe("App", () => {
         return path === "/api/v1/metrics/summary?window=30d";
       })).toBe(true);
     });
+    await user.click(screen.getByRole("button", { name: /Failed Jobs/ }));
+    expect(screen.getByRole("heading", { name: "Failed Jobs" })).toBeVisible();
+    await user.selectOptions(screen.getByLabelText("Definition filter"), "definition-health");
+    await vi.waitFor(() => expect(fetch.mock.calls.some(([input]) =>
+      String(input).includes("definition_id=definition-health"))).toBe(true));
+    const callsBeforeClearing = fetch.mock.calls.length;
+    await user.selectOptions(screen.getByLabelText("Definition filter"), "");
+    await vi.waitFor(() => {
+      const paths = fetch.mock.calls.slice(callsBeforeClearing).map(([input]) => String(input));
+      expect(paths).toContain("/api/v1/metrics/summary?window=30d");
+      expect(paths.some((path) => path.includes("undefined"))).toBe(false);
+    });
+    await user.click(screen.getByRole("button", { name: /github.com\/example\/factory/ }));
+    expect(window.location.pathname).toBe("/runs/run-health-failed");
   });
 
   it("marks only exact navigation destinations as the current page", async () => {

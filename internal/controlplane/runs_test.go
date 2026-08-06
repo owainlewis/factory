@@ -83,7 +83,14 @@ func TestRunAdmissionSnapshotsOneDefinitionAndOneRepositoryAtomically(t *testing
 
 func TestRunOnceCanUseARepositoryConfiguredOnALocalRunner(t *testing.T) {
 	store := newTestStore(t)
-	definition := createTestDefinition(t, store, "local-run-definition", "Review Local Checkout")
+	definition, created, err := store.CreateDefinition(context.Background(), protocol.CreateDefinitionRequest{
+		RequestKey: "local-run-definition", Name: "Review Local Checkout",
+		Prompt: "Inspect the local repository.", Runtime: protocol.RuntimeCodex,
+		TimeoutSeconds: 600, Inputs: map[string]string{},
+	})
+	if err != nil || !created {
+		t.Fatalf("create tool-free Definition: created=%t err=%v", created, err)
+	}
 	worker := registerDefinitionWorker(
 		t, store, workerA,
 		protocol.RepositoryRegistration{Key: "local-checkout", RemoteIdentity: "file:///tmp/factory-local-checkout"},
@@ -106,6 +113,10 @@ func TestRunOnceCanUseARepositoryConfiguredOnALocalRunner(t *testing.T) {
 	if detail.Jobs[0].Job.AssignedWorkerID != worker.ID ||
 		detail.Jobs[0].Job.RepositoryRemoteIdentity != "file:///tmp/factory-local-checkout" {
 		t.Fatalf("local Run Job = %#v", detail.Jobs[0].Job)
+	}
+	claim := claimTestTask(t, store, worker.ID, "local-run-once-claim", tokenA)
+	if claim.Execution.ID != detail.Jobs[0].Job.ExecutionID {
+		t.Fatalf("local Run claim execution = %q, want %q", claim.Execution.ID, detail.Jobs[0].Job.ExecutionID)
 	}
 }
 

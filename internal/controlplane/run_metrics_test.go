@@ -1,0 +1,161 @@
+package controlplane
+
+import (
+	"context"
+	"math"
+	"testing"
+	"time"
+
+	"github.com/owainlewis/factory/internal/protocol"
+)
+
+func TestRunHealthMetricsUseOneFilteredJobCohort(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	repositoryA := createManagedTestRepository(t, store, "github.com/example/metrics-a")
+	repositoryB := createManagedTestRepository(t, store, "github.com/example/metrics-b")
+	repositoryBlocked := createManagedTestRepository(t, store, "github.com/example/metrics-blocked")
+	definitionA := createTestDefinition(t, store, "metrics-definition-a", "Metrics A")
+	definitionB := createTestDefinition(t, store, "metrics-definition-b", "Metrics B")
+	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: "Metrics Runner", WorkerVersion: "test", Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
+		Capabilities: []protocol.Capability{
+			{Kind: protocol.CapabilityKindTool, Name: "git", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindTool, Name: "gh", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
+		},
+		Capacity: 10, Health: "healthy",
+		Repositories: []protocol.RepositoryRegistration{
+			{Key: "metrics-a", RemoteIdentity: repositoryA.RemoteIdentity},
+			{Key: "metrics-b", RemoteIdentity: repositoryB.RemoteIdentity},
+		},
+		SourceAccess: []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store.now = func() time.Time { return now.Add(-2 * time.Hour) }
+	terminal, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "metrics-terminal", DefinitionID: definitionA.ID,
+		RepositoryIDs: []string{repositoryA.ID, repositoryB.ID}, ConcurrencyLimit: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range terminal.Jobs {
+		if job.Job.RepositoryID == repositoryA.ID {
+			seedRunMetricOutcome(t, store, job.Job.ExecutionID, worker.ID, "succeeded",
+				now.Add(-90*time.Minute), now.Add(-30*time.Minute))
+		} else {
+			seedRunMetricOutcome(t, store, job.Job.ExecutionID, worker.ID, "failed",
+				now.Add(-110*time.Minute), now.Add(-time.Hour))
+		}
+	}
+	store.now = func() time.Time { return now.Add(-time.Hour) }
+	if _, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "metrics-active-a", DefinitionID: definitionA.ID, RepositoryID: repositoryA.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return now.Add(-45 * time.Minute) }
+	if _, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "metrics-active-b", DefinitionID: definitionB.ID, RepositoryID: repositoryA.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return now.Add(-30 * time.Minute) }
+	if _, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "metrics-blocked", DefinitionID: definitionA.ID, RepositoryID: repositoryBlocked.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return now }
+
+	summary, err := store.Metrics(context.Background(), metricsWindow24Hours)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics := summary.RunHealth
+	if metrics.TotalJobs != 5 || metrics.Active != 2 || metrics.Blocked != 1 ||
+		metrics.Succeeded != 1 || metrics.Failed != 1 || metrics.Cancelled != 0 || metrics.Throughput != 2 {
+		t.Fatalf("Run health counts = %#v", metrics)
+	}
+	requireRunMetric(t, "success rate", metrics.SuccessRate, 0.5)
+	requireRunMetric(t, "average queue", metrics.AverageQueueTimeSeconds, 20*time.Minute.Seconds())
+	requireRunMetric(t, "average cycle", metrics.AverageCycleTimeSeconds, 75*time.Minute.Seconds())
+	if len(metrics.Jobs) != 5 || len(metrics.Definitions) != 2 || len(metrics.Repositories) != 3 ||
+		len(metrics.Runners) != 1 || metrics.Runners[0].Name != "Metrics Runner" {
+		t.Fatalf("Run health drill-down/options = %#v", metrics)
+	}
+
+	definitionFiltered, err := store.MetricsFiltered(context.Background(), metricsWindow24Hours, MetricsFilter{
+		DefinitionID: definitionA.ID,
+	})
+	if err != nil || definitionFiltered.RunHealth.TotalJobs != 4 ||
+		definitionFiltered.RunHealth.Active != 1 || definitionFiltered.RunHealth.Blocked != 1 {
+		t.Fatalf("Definition filter: err=%v metrics=%#v", err, definitionFiltered.RunHealth)
+	}
+	repositoryFiltered, err := store.MetricsFiltered(context.Background(), metricsWindow24Hours, MetricsFilter{
+		RepositoryID: repositoryB.ID,
+	})
+	if err != nil || repositoryFiltered.RunHealth.TotalJobs != 1 || repositoryFiltered.RunHealth.Failed != 1 {
+		t.Fatalf("repository filter: err=%v metrics=%#v", err, repositoryFiltered.RunHealth)
+	}
+	runnerFiltered, err := store.MetricsFiltered(context.Background(), metricsWindow24Hours, MetricsFilter{
+		RunnerID: worker.ID,
+	})
+	if err != nil || runnerFiltered.RunHealth.TotalJobs != 4 || runnerFiltered.RunHealth.Blocked != 0 {
+		t.Fatalf("Runner filter: err=%v metrics=%#v", err, runnerFiltered.RunHealth)
+	}
+	if len(runnerFiltered.RunHealth.Definitions) != 2 || len(runnerFiltered.RunHealth.Repositories) != 3 {
+		t.Fatalf("filter options changed with cohort filter: %#v", runnerFiltered.RunHealth)
+	}
+}
+
+func seedRunMetricOutcome(
+	t *testing.T,
+	store *Store,
+	executionID string,
+	workerID string,
+	state string,
+	startedAt time.Time,
+	completedAt time.Time,
+) {
+	t.Helper()
+	if _, err := store.db.Exec(
+		`UPDATE executions SET state = ?, updated_at = ? WHERE id = ?`,
+		state, completedAt.UnixMilli(), executionID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`
+		INSERT INTO attempts(
+			id, execution_id, worker_id, attempt_number, state, lease_digest,
+			lease_expires_at, started_at, completed_at, created_at
+		) VALUES (?, ?, ?, 1, ?, X'00', ?, ?, ?, ?)
+	`, "attempt-"+executionID, executionID, workerID, state, completedAt.UnixMilli(),
+		startedAt.UnixMilli(), completedAt.UnixMilli(),
+		startedAt.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func requireRunMetric(t *testing.T, name string, actual *float64, expected float64) {
+	t.Helper()
+	if actual == nil || math.Abs(*actual-expected) > 0.000001 {
+		t.Fatalf("%s = %v, want %f", name, actual, expected)
+	}
+}
+
+func TestRunMetricsIndexesExist(t *testing.T) {
+	store := newTestStore(t)
+	for _, name := range []string{"jobs_metrics_admitted", "runs_metrics_definition"} {
+		var count int
+		if err := store.db.QueryRow(`
+			SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?
+		`, name).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("Run metrics index %q: count=%d err=%v", name, count, err)
+		}
+	}
+}
