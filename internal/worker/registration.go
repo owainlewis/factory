@@ -106,6 +106,9 @@ func hasGitHubSourceAccess(values []protocol.SourceAccess) bool {
 func (manager *Manager) register(ctx context.Context) {
 	manager.registrationMutex.Lock()
 	defer manager.registrationMutex.Unlock()
+	if manager.capacityHandoffs != 0 {
+		return
+	}
 	manager.registerLocked(ctx)
 }
 

@@ -14,17 +14,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - uses: extractions/setup-just@v4
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
       - name: Install UI dependencies
         working-directory: web
         run: npm ci
@@ -48,6 +48,10 @@ jobs:
         run: just format-check
       - name: Run Go vet
         run: just vet
+      - name: Check reachable Go vulnerabilities
+        run: just vuln
+      - name: Run staticcheck correctness checks
+        run: just staticcheck
       - name: Check worker-control-plane boundary
         run: just boundary
       - name: Run Go server and worker tests
@@ -59,7 +63,7 @@ jobs:
         run: just test-browser
       - name: Upload browser evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: control-plane-browser-evidence
           path: |

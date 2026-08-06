@@ -40,6 +40,8 @@ const (
 	MaxAutomationOccurrences  = 100000
 	MaxAutomationContextBytes = 8 << 10
 	MaxAutomationMatches      = 100
+	MinWorkerCapacity         = 1
+	MaxWorkerCapacity         = 100
 )
 
 func SupportedRuntime(value string) bool {
