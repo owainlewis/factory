@@ -69,10 +69,11 @@ Job Definition
        +---------+---------+
                  |
                  v
- Runner on a local host, VM, or Kubernetes cluster
+ Runner on a local host or VM
        |
        v
- Codex or Claude Code using Git and GitHub CLI
+ Pi, Codex, Claude Code, or another coding agent
+ using Git and GitHub CLI
 ```
 
 The Job Definition is the saved procedure. Its instructions are not a separate
@@ -87,8 +88,8 @@ separate Occurrence concept.
 3. A Run freezes its complete definition, parameters, and target set.
 4. Saved definitions edit in place. Historical Runs retain their snapshots.
 5. Triggers admit work but never execute agents.
-6. Runners supply compute. Runtimes such as Codex and Claude Code supply agent
-   behavior.
+6. Runners supply compute. Runtimes such as Pi, Codex, and Claude Code supply
+   agent behavior.
 7. Provider payloads and repository content are untrusted inputs. Definition
    instructions are trusted operator configuration.
 8. Agents use the tools and credentials available on their Runner. Factory does
@@ -104,7 +105,7 @@ Factory focuses on software delivery execution:
 - Git repository fleets and work-item targets;
 - isolated worktrees, branches, commits, and pull requests;
 - reliable agent scheduling, leases, attempts, and recovery;
-- local, VM, and Kubernetes capacity;
+- local and VM capacity, with more Runner targets added when needed;
 - reusable engineering procedures;
 - manual, scheduled, event, and API admission;
 - throughput, reliability, cost, and outcome visibility.
@@ -118,15 +119,17 @@ requests, reviews, and repository state.
 
 V1 is a local software factory. An operator can:
 
-- configure a local Codex or Claude Code Runner;
+- configure a local agent Runner using Pi, Codex, or Claude Code;
 - add the team's Git repositories;
 - save a shared prompt as a Definition;
 - press **Run once** for one repository or a selected repository fleet;
 - see every Job, failure, cycle time, throughput, and Runner health;
 - attach a schedule to repeat the same Run automatically.
 
-Remote VM Runners, Kubernetes Runners, and GitHub webhook Triggers follow after
-this local manual and scheduled path works end to end.
+Remote VM Runners are the next scaling step after this local manual and
+scheduled path works end to end. GitHub webhook Triggers follow later.
+Kubernetes and other execution targets remain possible future Runner types,
+but they are not on the active roadmap.
 
 ## Measures of progress
 
@@ -135,8 +138,7 @@ The product is moving toward this vision when a team can:
 - connect a repository fleet without configuring each runner per repository;
 - run one procedure across at least hundreds of frozen targets;
 - react to a GitHub delivery without duplicate Jobs;
-- add or remove local, VM, and Kubernetes capacity without changing a Job
-  Definition;
+- add or remove local and VM capacity without changing a Job Definition;
 - identify the exact instructions, input, runtime, runner, and outcome for every
   Job;
 - recover or retry one failed target without replaying successful work;

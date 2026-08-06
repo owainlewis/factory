@@ -13,9 +13,11 @@ The current product has separate Workflow, revision, Automation, Occurrence,
 Task, Execution, Attempt, and worker concepts. The target product has five
 concepts: **Definition**, **Trigger**, **Run**, **Job**, and **Runner**.
 
-V1 is local-first. It supports manual and scheduled Runs on local Codex and
-Claude Code Runners, repository fan-out, and operational metrics. Remote VM
-Runners, Kubernetes Runners, and GitHub webhook Triggers follow after V1.
+V1 is local-first. It supports manual and scheduled Runs on local agent
+Runners, repository fan-out, and operational metrics. Pi, Codex, and Claude
+Code are initial runtime examples. Remote VM Runners are the next scaling step.
+GitHub webhook Triggers follow later. Kubernetes is a possible future Runner
+target, but it is not on the active roadmap.
 
 The main tradeoff is trust. The agent uses the tools and credentials available
 on its Runner, including authenticated `gh`. Factory does not intermediate
@@ -50,7 +52,7 @@ flowchart LR
     R --> J2["Job: repository B"]
     J1 --> RN["Runner"]
     J2 --> RN
-    RN --> A["Codex or Claude Code"]
+    RN --> A["Pi, Codex, Claude Code, or another coding agent"]
     A --> G["Git and GitHub CLI"]
     J1 --> M["Lifecycle and metrics"]
     J2 --> M
@@ -68,20 +70,21 @@ issues, pull requests, reviews, and repository state.
 
 #### Configure a local Runner
 
-As an operator, I want to connect a local Codex or Claude Code Runner so Factory
-can run agent work on my machine.
+As an operator, I want to connect a local agent Runner so Factory can run Pi,
+Codex, Claude Code, or another supported coding agent on my machine.
 
 One local launcher command starts the control plane and a local Runner process.
 On first start, the Runner creates a durable random identity at
 `~/.factory/runner/id`, then registers with the control plane. Restarting the
 launcher reuses that identity.
 
-The Runner performs bounded, non-interactive health checks for Git, Codex,
-Claude Code, and authenticated `gh`. The setup screen shows each capability as
-ready, missing, unauthenticated, or unhealthy. One host may advertise both Codex
-and Claude Code. A Definition selects the runtime and required tools; each Job
-still launches one isolated agent process. V1 configuration does not install or
-authenticate third-party CLIs for the user.
+The Runner performs bounded, non-interactive health checks for Git,
+authenticated `gh`, and installed agent runtimes such as Pi, Codex, and Claude
+Code. The setup screen shows each capability as ready, missing,
+unauthenticated, or unhealthy. One host may advertise several runtimes. A
+Definition selects the runtime and required tools; each Job still launches one
+isolated agent process. V1 configuration does not install or authenticate
+third-party CLIs for the user.
 
 #### Configure repositories
 
@@ -150,10 +153,13 @@ issues or pull requests as instructed.
 ### Later user journeys
 
 After V1, an operator can add a Runner on a remote VM without changing a
-Definition. A later Kubernetes Runner executes Jobs in bounded pods. A later
+Definition. This is the first scaling path beyond the local machine. A later
 GitHub webhook Trigger creates a Run when an issue or pull request event arrives,
 such as running a shared `Review pull request` Definition when a pull request is
 opened.
+
+Kubernetes and other execution targets may be added through the same Runner
+contract later. They are not active roadmap milestones.
 
 These paths must create the same Run and Job records. They are not different
 automation products.
@@ -166,7 +172,7 @@ or pull-request actions. It does not publish patches or reconcile provider
 side effects.
 
 For a trusted local or VM Runner, the agent uses the Runner user's authenticated
-`gh`. A later managed VM or Kubernetes profile may inject a short-lived,
+`gh`. A later managed Runner profile may inject a short-lived,
 repository-scoped `GH_TOKEN` for the Job. The token disappears when the agent
 process ends.
 
@@ -187,7 +193,8 @@ events, cancellation, and cleanup. It does not decide which repositories a Run
 targets.
 
 The agent runtime owns model interaction and engineering tool use. Factory does
-not reproduce tools already available to Codex or Claude Code.
+not reproduce tools already available to Pi, Codex, Claude Code, or another
+configured coding agent.
 
 The browser and future CLI use the same API. The primary navigation is
 Overview, Definitions, Runs, Repositories, and Runners. A Job is viewed inside
@@ -341,10 +348,11 @@ prompt as a security boundary.
 Factory instance. V1 has no user identity, remote browser access, or per-user
 authorization. Authenticated team access requires a later design.
 
-Remote VM and Kubernetes Runners require authenticated TLS and a separate
-accepted implementation design. Managed credentials must be short-lived and
-scoped to the Job repository where the provider supports it. Host-managed
-credentials remain an explicit trusted mode.
+Remote VM Runners require authenticated TLS and a separate accepted
+implementation design. Managed credentials must be short-lived and scoped to
+the Job repository where the provider supports it. Host-managed credentials
+remain an explicit trusted mode. Future Runner targets must preserve these
+boundaries.
 
 A later public webhook listener exposes only signed, bounded delivery routes.
 Webhook payloads and repository content are untrusted agent context and cannot
@@ -356,10 +364,10 @@ blocked or failed Job rather than silently dropping work.
 
 ## 9. Acceptance criteria
 
-- A new user can configure a local Codex or Claude Code Runner and run a prompt
-  against one repository.
+- A new user can configure a local Pi, Codex, or Claude Code Runner and run a
+  prompt against one repository.
 - One launcher command starts the local instance, reuses its Runner identity,
-  and reports Git, Codex, Claude Code, and `gh` health separately.
+  and reports Git, `gh`, and each configured agent runtime separately.
 - A team can save and reuse one Definition without selecting revisions.
 - One manual Run can execute the same Definition against five repositories and
   show independent Job outcomes.
@@ -375,8 +383,8 @@ blocked or failed Job rather than silently dropping work.
   Legacy history without synthetic Runs or Jobs.
 - Migration preserves every schedule Automation field and requires an explicit
   retirement decision for each unsupported GitHub polling Automation.
-- Definitions run unchanged when remote VM, Kubernetes, and webhook support is
-  added later.
+- Definitions run unchanged on local and remote VM Runners and when webhook
+  support is added later.
 
 ## 10. Test approach
 
@@ -386,8 +394,8 @@ pagination. State tests prove every Job transition, derived Run state, timestamp
 metric denominator, and 30-second Runner health boundary. Scheduler tests prove
 capacity, blocked routing, per-Run concurrency, and fair progress.
 
-Runner integration tests use fake Codex, Claude Code, and `gh` executables to
-prove first-run identity creation, restart reuse, discovery, authentication
+Runner integration tests use fake Pi, Codex, Claude Code, and `gh` executables
+to prove first-run identity creation, restart reuse, discovery, authentication
 health, process cleanup, result capture, and stable Factory environment IDs. No
 test uses live provider credentials.
 
@@ -415,9 +423,9 @@ and an Occurrence-linked Task through their preserved URLs and Legacy history.
 
 ## 12. Open questions
 
-No question blocks V1. Remote credentials, Kubernetes workspace recovery, and
-public webhook deployment require focused designs before those later milestones
-start.
+No question blocks V1. Remote credentials and public webhook deployment require
+focused designs before those later milestones start. Any future Runner target,
+including Kubernetes, requires its own accepted design before implementation.
 
 ## 13. Out of scope
 
