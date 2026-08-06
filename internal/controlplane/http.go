@@ -87,6 +87,11 @@ func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *Au
 	mux.HandleFunc("GET /api/v1/repositories/{repository_id}", api.getManagedRepository)
 	mux.HandleFunc("GET /api/v1/repositories/{repository_id}/readiness", api.getManagedRepositoryReadiness)
 	mux.HandleFunc("PUT /api/v1/repositories/{repository_id}/enabled", api.setManagedRepositoryEnabled)
+	mux.HandleFunc("GET /api/v1/definitions", api.listDefinitions)
+	mux.HandleFunc("POST /api/v1/definitions", api.createDefinition)
+	mux.HandleFunc("GET /api/v1/definitions/{definition_id}", api.getDefinition)
+	mux.HandleFunc("PUT /api/v1/definitions/{definition_id}", api.updateDefinition)
+	mux.HandleFunc("PUT /api/v1/definitions/{definition_id}/archived", api.setDefinitionArchived)
 	mux.HandleFunc("GET /api/v1/workflows", api.listWorkflows)
 	mux.HandleFunc("POST /api/v1/workflows", api.createWorkflow)
 	mux.HandleFunc("GET /api/v1/workflows/{workflow_id}", api.getWorkflow)
@@ -122,6 +127,126 @@ func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *Au
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/events", api.appendEvents)
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/complete", api.completeAttempt)
 	return api.requestLog(mux)
+}
+
+func (a *API) listDefinitions(w http.ResponseWriter, r *http.Request) {
+	if len(r.URL.Query()["cursor"]) > 1 || len(r.URL.Query()["limit"]) > 1 ||
+		len(r.URL.Query()["archived"]) > 1 {
+		writeError(w, invalid("invalid_query", "Definition query parameters may be provided once"))
+		return
+	}
+	for key := range r.URL.Query() {
+		if key != "cursor" && key != "limit" && key != "archived" {
+			writeError(w, invalid("invalid_query", "unsupported Definition query parameter"))
+			return
+		}
+	}
+	limit, err := pageLimit(r, protocol.DefaultDefinitionPageSize, protocol.MaxDefinitionPageSize)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var cursor *protocol.DefinitionCursor
+	if encoded := r.URL.Query().Get("cursor"); encoded != "" {
+		decoded, err := decodeDefinitionCursor(encoded)
+		if err != nil {
+			writeError(w, invalid("invalid_cursor", "cursor is invalid"))
+			return
+		}
+		cursor = &decoded
+	}
+	archived := false
+	if encoded := r.URL.Query().Get("archived"); encoded != "" {
+		archived, err = strconv.ParseBool(encoded)
+		if err != nil {
+			writeError(w, invalid("invalid_archived", "archived must be true or false"))
+			return
+		}
+	}
+	page, err := a.store.Definitions(r.Context(), protocol.DefinitionPageRequest{
+		Limit: limit, Cursor: cursor, Archived: archived,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var nextCursor *string
+	if page.NextCursor != nil {
+		value, err := encodeDefinitionCursor(*page.NextCursor)
+		if err != nil {
+			writeError(w, unavailable(err))
+			return
+		}
+		nextCursor = &value
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"definitions": page.Definitions, "next_cursor": nextCursor})
+}
+
+func (a *API) createDefinition(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input protocol.CreateDefinitionRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	definition, created, err := a.store.CreateDefinition(r.Context(), input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, definition)
+}
+
+func (a *API) getDefinition(w http.ResponseWriter, r *http.Request) {
+	definition, err := a.store.Definition(r.Context(), r.PathValue("definition_id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, definition)
+}
+
+func (a *API) updateDefinition(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input protocol.UpdateDefinitionRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	definition, _, err := a.store.UpdateDefinition(r.Context(), r.PathValue("definition_id"), input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, definition)
+}
+
+func (a *API) setDefinitionArchived(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input protocol.SetDefinitionArchivedRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if input.Archived == nil {
+		writeError(w, invalid("invalid_definition_archived", "archived is required"))
+		return
+	}
+	definition, err := a.store.SetDefinitionArchived(
+		r.Context(), r.PathValue("definition_id"), *input.Archived, input.ExpectedGeneration,
+	)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, definition)
 }
 
 func (a *API) listWorkflows(w http.ResponseWriter, r *http.Request) {
@@ -267,6 +392,29 @@ func decodeWorkflowCursor(encoded string) (protocol.WorkflowCursor, error) {
 	}
 	if cursor.UpdatedAtMillis <= 0 || strings.TrimSpace(cursor.ID) == "" {
 		return cursor, errors.New("invalid workflow cursor")
+	}
+	return cursor, nil
+}
+
+func encodeDefinitionCursor(cursor protocol.DefinitionCursor) (string, error) {
+	body, err := json.Marshal(cursor)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(body), nil
+}
+
+func decodeDefinitionCursor(encoded string) (protocol.DefinitionCursor, error) {
+	var cursor protocol.DefinitionCursor
+	body, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return cursor, err
+	}
+	if err := json.Unmarshal(body, &cursor); err != nil {
+		return cursor, err
+	}
+	if cursor.UpdatedAtMillis <= 0 || strings.TrimSpace(cursor.ID) == "" {
+		return cursor, errors.New("invalid Definition cursor")
 	}
 	return cursor, nil
 }

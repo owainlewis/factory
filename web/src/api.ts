@@ -14,6 +14,10 @@ import type {
   WorkflowPage,
   CreateWorkflowInput,
   CreateWorkflowRevisionInput,
+  Definition,
+  DefinitionPage,
+  CreateDefinitionInput,
+  UpdateDefinitionInput,
   AutomationDetail,
   AutomationOccurrence,
   AutomationOccurrencePage,
@@ -115,6 +119,32 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ enabled }),
     }),
+  definitions: async (cursor = "", archived = false) => {
+    const query = new URLSearchParams({ limit: "200", archived: String(archived) });
+    if (cursor) query.set("cursor", cursor);
+    const page = await request<{
+      definitions: DefinitionPage["definitions"] | null;
+      next_cursor: string | null;
+    }>(`/api/v1/definitions?${query}`);
+    return { definitions: page.definitions ?? [], next_cursor: page.next_cursor };
+  },
+  definition: (id: string) =>
+    request<Definition>(`/api/v1/definitions/${encodeURIComponent(id)}`),
+  createDefinition: (input: CreateDefinitionInput) =>
+    request<Definition>("/api/v1/definitions", { method: "POST", body: JSON.stringify(input) }),
+  updateDefinition: ({ id, input }: { id: string; input: UpdateDefinitionInput }) =>
+    request<Definition>(`/api/v1/definitions/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+  setDefinitionArchived: ({ id, archived, expectedGeneration }: {
+    id: string;
+    archived: boolean;
+    expectedGeneration: number;
+  }) => request<Definition>(`/api/v1/definitions/${encodeURIComponent(id)}/archived`, {
+    method: "PUT",
+    body: JSON.stringify({ archived, expected_generation: expectedGeneration }),
+  }),
   workflows: async (cursor = "", enabled?: boolean) => {
     const query = new URLSearchParams({ limit: "200" });
     if (cursor) query.set("cursor", cursor);

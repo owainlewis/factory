@@ -122,6 +122,18 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		        AND json_array_length(legacy_worker.capabilities_json) = 0
 		        AND legacy_worker.runtime = e.required_runtime
 		  )
+		  AND NOT EXISTS (
+		      SELECT 1
+		      FROM json_each(t.definition_snapshot, '$.allowed_tools') required_tool
+		      WHERE NOT EXISTS (
+		          SELECT 1
+		          FROM workers tool_worker, json_each(tool_worker.capabilities_json) capability
+		          WHERE tool_worker.id = ?
+		            AND json_extract(capability.value, '$.kind') = 'tool'
+		            AND json_extract(capability.value, '$.name') = required_tool.value
+		            AND json_extract(capability.value, '$.status') = 'ready'
+		      )
+		  )
 		  AND e.state = 'queued'
 		  AND wr.advertised = 1
 		  AND wr.retained_count + (
@@ -144,7 +156,7 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		  ) < ?
 		ORDER BY e.created_at, e.id
 		LIMIT 1
-	`, workerID, workerID, workerID, protocol.MaxRetainedPerRepo).Scan(&executionID)
+	`, workerID, workerID, workerID, workerID, protocol.MaxRetainedPerRepo).Scan(&executionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := insertEmptyClaim(ctx, tx, workerID, input.RequestID, digest, nowMillis); err != nil {
 			return nil, err
@@ -617,15 +629,18 @@ func (s *Store) RetryExecution(ctx context.Context, executionID string) (protoco
 	defer tx.Rollback()
 	var taskID, state, workerID, repositoryID, requiredRuntime, workerRuntime string
 	var encodedCapabilities []byte
+	var encodedDefinitionSnapshot sql.NullString
 	err = tx.QueryRowContext(ctx, `
 		SELECT execution.task_id, execution.state, execution.assigned_worker_id, task.repository_id,
-		       execution.required_runtime, worker.runtime, worker.capabilities_json
+		       execution.required_runtime, worker.runtime, worker.capabilities_json,
+		       task.definition_snapshot
 		FROM executions execution
 		JOIN tasks task ON task.id = execution.task_id
 		JOIN workers worker ON worker.id = execution.assigned_worker_id
 		WHERE execution.id = ?
 	`, executionID).Scan(
 		&taskID, &state, &workerID, &repositoryID, &requiredRuntime, &workerRuntime, &encodedCapabilities,
+		&encodedDefinitionSnapshot,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.TaskDetail{}, ErrNotFound
@@ -647,6 +662,19 @@ func (s *Store) RetryExecution(ctx context.Context, executionID string) (protoco
 	if !runtimeReady {
 		return protocol.TaskDetail{}, conflict(
 			"retry_runtime_unavailable", "the frozen runtime is no longer ready on the assigned worker")
+	}
+	var requiredTools []string
+	if encodedDefinitionSnapshot.Valid {
+		var snapshot protocol.DefinitionSnapshot
+		if err := json.Unmarshal([]byte(encodedDefinitionSnapshot.String), &snapshot); err != nil {
+			return protocol.TaskDetail{}, unavailable(errors.New("stored Definition snapshot is invalid"))
+		}
+		requiredTools = snapshot.AllowedTools
+	}
+	if !toolCapabilitiesReady(capabilities, requiredTools) {
+		return protocol.TaskDetail{}, conflict(
+			"retry_tools_unavailable", "a required tool is no longer ready on the assigned Runner",
+		)
 	}
 	var dynamic, advertised int
 	if err := tx.QueryRowContext(ctx, `

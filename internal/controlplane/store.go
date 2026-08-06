@@ -1931,6 +1931,23 @@ func runtimeCapabilityReady(capabilities []protocol.Capability, runtime string) 
 	return false
 }
 
+func toolCapabilitiesReady(capabilities []protocol.Capability, requiredTools []string) bool {
+	for _, required := range requiredTools {
+		ready := false
+		for _, capability := range capabilities {
+			if capability.Kind == protocol.CapabilityKindTool && capability.Name == required &&
+				capability.Status == protocol.CapabilityReady {
+				ready = true
+				break
+			}
+		}
+		if !ready {
+			return false
+		}
+	}
+	return true
+}
+
 func preferredReadyRuntime(primary string, capabilities []protocol.Capability) string {
 	if len(capabilities) == 0 {
 		return primary
@@ -1994,8 +2011,9 @@ func (s *Store) selectTaskRoute(
 	now int64,
 	workerID string,
 	requiredRuntime string,
+	requiredTools []string,
 ) (taskRouteCandidate, error) {
-	return s.selectTaskRouteWithSourceRequirement(ctx, tx, route, now, true, workerID, requiredRuntime)
+	return s.selectTaskRouteWithSourceRequirement(ctx, tx, route, now, true, workerID, requiredRuntime, requiredTools)
 }
 
 func (s *Store) selectTaskRouteWithSourceRequirement(
@@ -2006,6 +2024,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 	requireSourceAccess bool,
 	workerID string,
 	requiredRuntime string,
+	requiredTools []string,
 ) (taskRouteCandidate, error) {
 	repositoryPredicate := "r.remote_identity = ?"
 	if route.SourceAccess.Provider == "github" && route.SourceAccess.Hostname == "github.com" {
@@ -2134,6 +2153,9 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		if len(capabilities) != 0 && !runtimeCapabilityReady(capabilities, candidate.runtime) {
 			continue
 		}
+		if !toolCapabilitiesReady(capabilities, requiredTools) {
+			continue
+		}
 		if requireSourceAccess && !hasSourceAccess(access, route.SourceAccess) {
 			continue
 		}
@@ -2189,6 +2211,7 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	input.WorkerID = strings.TrimSpace(input.WorkerID)
 	input.RepositoryID = strings.TrimSpace(input.RepositoryID)
 	input.WorkflowRevisionID = strings.TrimSpace(input.WorkflowRevisionID)
+	input.DefinitionID = strings.TrimSpace(input.DefinitionID)
 	input.Runtime = strings.ToLower(strings.TrimSpace(input.Runtime))
 	if input.RequestKey == "" || len(input.RequestKey) > 200 {
 		return protocol.TaskDetail{}, false, invalid("invalid_request_key", "request_key is required")
@@ -2199,11 +2222,15 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	descriptionForm := input.DescriptionProvided || input.Description != ""
 	workflowPrompt := input.WorkflowRevisionIDProvided || input.ContextProvided ||
 		input.WorkflowRevisionID != "" || input.Context != ""
-	if descriptionForm && workflowPrompt {
+	definitionPrompt := input.DefinitionIDProvided || input.DefinitionID != ""
+	if (descriptionForm && workflowPrompt) || (definitionPrompt && (descriptionForm || workflowPrompt)) {
 		return protocol.TaskDetail{}, false, invalid(
 			"ambiguous_task_prompt",
-			"send description for a blank task or workflow_revision_id with context, not both",
+			"send one prompt source: description, workflow_revision_id with context, or definition_id",
 		)
+	}
+	if definitionPrompt && input.DefinitionID == "" {
+		return protocol.TaskDetail{}, false, invalid("definition_required", "definition_id cannot be blank")
 	}
 	if workflowPrompt && input.WorkflowRevisionID == "" {
 		return protocol.TaskDetail{}, false, invalid(
@@ -2215,7 +2242,7 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	if workflowPrompt {
 		taskContext = input.Context
 	}
-	if strings.TrimSpace(taskContext) == "" || len([]byte(taskContext)) > protocol.MaxDescriptionBytes {
+	if !definitionPrompt && (strings.TrimSpace(taskContext) == "" || len([]byte(taskContext)) > protocol.MaxDescriptionBytes) {
 		field := "description"
 		code := "invalid_description"
 		if workflowPrompt {
@@ -2224,10 +2251,16 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 		}
 		return protocol.TaskDetail{}, false, invalid(code, field+" is required and limited to 64 KiB")
 	}
-	if input.TimeoutSeconds == 0 {
+	if definitionPrompt && (input.Runtime != "" || input.TimeoutSeconds != 0) {
+		return protocol.TaskDetail{}, false, invalid(
+			"ambiguous_definition_execution",
+			"definition_id supplies runtime and timeout_seconds; do not send overrides",
+		)
+	}
+	if !definitionPrompt && input.TimeoutSeconds == 0 {
 		input.TimeoutSeconds = int(protocol.DefaultTimeout.Seconds())
 	}
-	if input.TimeoutSeconds < 1 || input.TimeoutSeconds > int(protocol.MaxTimeout/time.Second) {
+	if !definitionPrompt && (input.TimeoutSeconds < 1 || input.TimeoutSeconds > int(protocol.MaxTimeout/time.Second)) {
 		return protocol.TaskDetail{}, false, invalid("invalid_timeout", "timeout_seconds must be between 1 and 28800")
 	}
 	if input.Runtime != "" && !protocol.SupportedRuntime(input.Runtime) {
@@ -2280,6 +2313,31 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	resolvedPrompt := taskContext
 	var workflowID, workflowName string
 	var workflowRevisionNumber int
+	var definitionSnapshotJSON string
+	var requiredTools []string
+	if input.DefinitionID != "" {
+		definition, definitionErr := scanDefinition(tx.QueryRowContext(ctx,
+			definitionSelect+` WHERE id = ?`, input.DefinitionID))
+		if errors.Is(definitionErr, sql.ErrNoRows) {
+			return protocol.TaskDetail{}, false, invalid("definition_not_found", "Definition was not found")
+		}
+		if definitionErr != nil {
+			return protocol.TaskDetail{}, false, unavailable(definitionErr)
+		}
+		if definition.Archived {
+			return protocol.TaskDetail{}, false, conflict("definition_archived", "archived Definitions cannot start new work")
+		}
+		snapshot := definition.Snapshot()
+		encodedSnapshot, encodeErr := json.Marshal(snapshot)
+		if encodeErr != nil {
+			return protocol.TaskDetail{}, false, unavailable(encodeErr)
+		}
+		definitionSnapshotJSON = string(encodedSnapshot)
+		resolvedPrompt = snapshot.Prompt
+		input.Runtime = snapshot.Runtime
+		input.TimeoutSeconds = snapshot.TimeoutSeconds
+		requiredTools = snapshot.AllowedTools
+	}
 	if input.WorkflowRevisionID != "" {
 		var enabled int
 		var instructions string
@@ -2308,7 +2366,7 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	}
 	var runtime string
 	if input.Route != nil {
-		selection, routeErr := s.selectTaskRoute(ctx, tx, *input.Route, now, input.WorkerID, input.Runtime)
+		selection, routeErr := s.selectTaskRoute(ctx, tx, *input.Route, now, input.WorkerID, input.Runtime, requiredTools)
 		if routeErr != nil {
 			return protocol.TaskDetail{}, false, routeErr
 		}
@@ -2348,6 +2406,11 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 			}
 			runtime = input.Runtime
 		}
+		if !toolCapabilitiesReady(capabilities, requiredTools) {
+			return protocol.TaskDetail{}, false, conflict(
+				"tools_unavailable", "the selected Runner does not have every required tool ready",
+			)
+		}
 	}
 	var repositoryRemoteIdentity string
 	err = tx.QueryRowContext(ctx, `
@@ -2374,12 +2437,13 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 		INSERT INTO tasks(
 			id, request_key, title, description, repository_id, timeout_seconds, created_at,
 			workflow_id, workflow_revision_id, workflow_title, workflow_revision_number,
-			context
+			context, definition_id, definition_snapshot
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, taskID, input.RequestKey, input.Title, resolvedPrompt, input.RepositoryID,
 		input.TimeoutSeconds, now, nullableString(workflowID), nullableString(input.WorkflowRevisionID),
-		nullableString(workflowName), nullableInt(workflowRevisionNumber), taskContext)
+		nullableString(workflowName), nullableInt(workflowRevisionNumber), taskContext,
+		nullableString(input.DefinitionID), nullableString(definitionSnapshotJSON))
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO executions(id, task_id, assigned_worker_id, required_runtime, state, created_at, updated_at)
@@ -2487,14 +2551,14 @@ func (s *Store) Task(ctx context.Context, id string) (protocol.TaskDetail, error
 		return detail, unavailable(err)
 	}
 	detail.Task = task
-	var contextValue, workflowID, workflowRevisionID, workflowTitle sql.NullString
+	var contextValue, workflowID, workflowRevisionID, workflowTitle, definitionID, definitionSnapshotJSON sql.NullString
 	var workflowRevisionNumber sql.NullInt64
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT context, workflow_id, workflow_revision_id,
-		       workflow_title, workflow_revision_number
+		       workflow_title, workflow_revision_number, definition_id, definition_snapshot
 		FROM tasks WHERE id = ?
 	`, id).Scan(&contextValue, &workflowID, &workflowRevisionID,
-		&workflowTitle, &workflowRevisionNumber); err != nil {
+		&workflowTitle, &workflowRevisionNumber, &definitionID, &definitionSnapshotJSON); err != nil {
 		return detail, unavailable(err)
 	}
 	detail.ResolvedPrompt = detail.Task.Description
@@ -2506,6 +2570,14 @@ func (s *Store) Task(ctx context.Context, id string) (protocol.TaskDetail, error
 			ID: workflowID.String, RevisionID: workflowRevisionID.String,
 			Title: workflowTitle.String, RevisionNumber: int(workflowRevisionNumber.Int64),
 		}
+	}
+	if definitionID.Valid {
+		var snapshot protocol.DefinitionSnapshot
+		if !definitionSnapshotJSON.Valid || json.Unmarshal([]byte(definitionSnapshotJSON.String), &snapshot) != nil ||
+			snapshot.ID != definitionID.String {
+			return detail, unavailable(errors.New("stored Definition snapshot is invalid"))
+		}
+		detail.Definition = &snapshot
 	}
 	row = s.db.QueryRowContext(ctx, `
 		SELECT id, task_id, assigned_worker_id, required_runtime, state,

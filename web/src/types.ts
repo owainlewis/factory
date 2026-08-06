@@ -129,6 +129,7 @@ export interface TaskDetail {
   repository_available: boolean;
   attempts: Attempt[] | null;
   workflow?: TaskWorkflowSnapshot;
+  definition?: DefinitionSnapshot;
   resolved_prompt: string;
 }
 
@@ -164,6 +165,27 @@ export interface WorkflowDetail {
 
 export interface WorkflowPage {
   workflows: Workflow[];
+  next_cursor: string | null;
+}
+
+export interface Definition {
+  id: string;
+  name: string;
+  prompt: string;
+  runtime: Runtime;
+  allowed_tools: string[];
+  timeout_seconds: number;
+  inputs: Record<string, string>;
+  generation: number;
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type DefinitionSnapshot = Omit<Definition, "archived" | "created_at" | "updated_at">;
+
+export interface DefinitionPage {
+  definitions: Definition[];
   next_cursor: string | null;
 }
 
@@ -432,4 +454,18 @@ export interface CreateWorkflowInput {
 
 export interface CreateWorkflowRevisionInput extends CreateWorkflowInput {
   expected_revision_id: string;
+}
+
+export interface CreateDefinitionInput {
+  request_key: string;
+  name: string;
+  prompt: string;
+  runtime: Runtime;
+  allowed_tools: string[];
+  timeout_seconds: number;
+  inputs: Record<string, string>;
+}
+
+export interface UpdateDefinitionInput extends CreateDefinitionInput {
+  expected_generation: number;
 }

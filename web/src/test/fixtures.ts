@@ -1,4 +1,4 @@
-import type { AutomationDetail, AutomationOccurrence, LegacyPollerMigration, ManagedRepository, MetricsSummary, Task, Worker, Workflow, WorkflowDetail } from "../types";
+import type { AutomationDetail, AutomationOccurrence, Definition, LegacyPollerMigration, ManagedRepository, MetricsSummary, Task, Worker, Workflow, WorkflowDetail } from "../types";
 import { vi } from "vitest";
 
 export const worker: Worker = {
@@ -226,6 +226,7 @@ export function mockControlPlane(
     description: "Build and verify the real interface.",
   };
   let repositoryItems = managedRepositories.map((repository) => ({ ...repository }));
+  let definitionItems: Definition[] = [];
   let workflowDetail = structuredClone(initialWorkflowDetail);
   let automationDetail = structuredClone(initialAutomationDetail);
   if (options.automationTaskState) {
@@ -387,6 +388,59 @@ export function mockControlPlane(
         const body = JSON.parse(String(init.body)) as { enabled: boolean };
         const updated = { ...existing, enabled: body.enabled, updated_at: new Date().toISOString() };
         repositoryItems = repositoryItems.map((item) => item.id === updated.id ? updated : item);
+        return Response.json(updated);
+      }
+      return Response.json(existing);
+    }
+    if (path.startsWith("/api/v1/definitions?")) {
+      const archived = new URL(path, "http://factory.test").searchParams.get("archived") === "true";
+      return Response.json({
+        definitions: definitionItems.filter((definition) => definition.archived === archived),
+        next_cursor: null,
+      });
+    }
+    if (path === "/api/v1/definitions" && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as Omit<Definition, "id" | "generation" | "archived" | "created_at" | "updated_at">;
+      const now = new Date().toISOString();
+      const definition: Definition = {
+        ...body,
+        id: "definition-created",
+        generation: 1,
+        archived: false,
+        created_at: now,
+        updated_at: now,
+      };
+      definitionItems = [definition, ...definitionItems];
+      return Response.json(definition, { status: 201 });
+    }
+    if (path.startsWith("/api/v1/definitions/")) {
+      const parts = path.split("/");
+      const definitionID = parts[4];
+      const existing = definitionItems.find((definition) => definition.id === definitionID);
+      if (!existing) return Response.json({ error: { code: "not_found", message: "not found" } }, { status: 404 });
+      if (parts[5] === "archived" && init?.method === "PUT") {
+        const body = JSON.parse(String(init.body)) as { archived: boolean };
+        const updated = {
+          ...existing,
+          archived: body.archived,
+          generation: existing.generation + 1,
+          updated_at: new Date().toISOString(),
+        };
+        definitionItems = definitionItems.map((definition) => definition.id === updated.id ? updated : definition);
+        return Response.json(updated);
+      }
+      if (init?.method === "PUT") {
+        const body = JSON.parse(String(init.body)) as Definition;
+        const updated: Definition = {
+          ...existing,
+          ...body,
+          id: existing.id,
+          generation: existing.generation + 1,
+          archived: existing.archived,
+          created_at: existing.created_at,
+          updated_at: new Date().toISOString(),
+        };
+        definitionItems = definitionItems.map((definition) => definition.id === updated.id ? updated : definition);
         return Response.json(updated);
       }
       return Response.json(existing);

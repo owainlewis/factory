@@ -1355,7 +1355,7 @@ func (s *Store) dispatchOccurrence(ctx context.Context, occurrenceID string) err
 		requiresSourceAccess = true
 	}
 	now := s.now().UnixMilli()
-	selection, err := s.selectTaskRouteWithSourceRequirement(ctx, tx, route, now, requiresSourceAccess, "", "")
+	selection, err := s.selectTaskRouteWithSourceRequirement(ctx, tx, route, now, requiresSourceAccess, "", "", nil)
 	if err != nil {
 		var serviceErr *ServiceError
 		if errors.As(err, &serviceErr) && serviceErr.Code == "no_eligible_worker" {

@@ -380,6 +380,72 @@ test("shows retained Factory metrics and saves the overview", async ({ page }) =
   browser.assertClean();
 });
 
+test("creates, edits, and archives one shared Definition", async ({ page }) => {
+  const browser = observeBrowser(page);
+  const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
+  await page.goto("/definitions");
+  await expect(page.getByRole("heading", { name: "Definitions", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Create Definition" }).first().click();
+  const create = page.getByRole("dialog", { name: "Create Definition" });
+  await create.getByLabel("Name").fill("E2E find important bugs");
+  await create.getByLabel("Agent prompt").fill("Inspect the repository and report confirmed bugs with evidence.");
+  await create.getByLabel("Agent runtime").selectOption("pi");
+  await create.getByLabel("Required tools").fill("git, gh");
+  await create.getByLabel("Timeout in seconds").fill("1800");
+  await create.getByLabel("Optional inputs").fill("severity=high\nbase_branch=main");
+  await create.getByRole("button", { name: "Create Definition" }).click();
+
+  await expect(page.getByRole("heading", { name: "E2E find important bugs" })).toBeVisible();
+  await expect(page.getByText("Inspect the repository and report confirmed bugs with evidence.", { exact: true })).toBeVisible();
+  const definitionID = new URL(page.url()).pathname.split("/").at(-1)!;
+  const created = await json<{
+    id: string;
+    runtime: string;
+    allowed_tools: string[];
+    inputs: Record<string, string>;
+    generation: number;
+    archived: boolean;
+  }>(await api.get(`/api/v1/definitions/${definitionID}`));
+  expect(created).toMatchObject({
+    id: definitionID,
+    runtime: "pi",
+    allowed_tools: ["gh", "git"],
+    inputs: { severity: "high", base_branch: "main" },
+    generation: 1,
+    archived: false,
+  });
+
+  await page.getByRole("button", { name: "Edit Definition" }).click();
+  const edit = page.getByRole("dialog", { name: "Edit Definition" });
+  await edit.getByLabel("Agent prompt").fill("Inspect the repository and open issues only for confirmed bugs.");
+  await edit.getByLabel("Agent runtime").selectOption("codex");
+  await edit.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByText("Inspect the repository and open issues only for confirmed bugs.", { exact: true })).toBeVisible();
+  const updated = await json<{ prompt: string; runtime: string; generation: number }>(
+    await api.get(`/api/v1/definitions/${definitionID}`),
+  );
+  expect(updated).toMatchObject({
+    prompt: "Inspect the repository and open issues only for confirmed bugs.",
+    runtime: "codex",
+    generation: 2,
+  });
+
+  await page.getByRole("button", { name: "Archive" }).click();
+  await page.getByRole("button", { name: "Archive Definition" }).click();
+  await expect(page.getByRole("heading", { name: "Definitions", exact: true })).toBeVisible();
+  await expect(page.getByText("E2E find important bugs", { exact: true })).toHaveCount(0);
+  const archived = await json<{ archived: boolean; generation: number }>(
+    await api.get(`/api/v1/definitions/${definitionID}`),
+  );
+  expect(archived).toMatchObject({ archived: true, generation: 3 });
+  const active = await json<{ definitions: Array<{ id: string }> }>(
+    await api.get("/api/v1/definitions?limit=200&archived=false"),
+  );
+  expect(active.definitions.some((definition) => definition.id === definitionID)).toBe(false);
+  await api.dispose();
+  browser.assertClean();
+});
+
 test("creates, pins, revises, and disables a reusable Workflow", async ({ page }) => {
   const browser = observeBrowser(page);
   await page.goto("/workflows");

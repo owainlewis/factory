@@ -41,6 +41,12 @@ const (
 	MaxWorkflowPageSize       = 200
 	MaxWorkflows              = 500
 	MaxWorkflowRevisions      = 100
+	DefaultDefinitionPageSize = 50
+	MaxDefinitionPageSize     = 200
+	MaxDefinitions            = 500
+	MaxDefinitionPromptBytes  = 64 << 10
+	MaxDefinitionTools        = 32
+	MaxDefinitionInputs       = 32
 	DefaultAutomationPageSize = 50
 	MaxAutomationPageSize     = 200
 	MaxAutomations            = 500
@@ -190,9 +196,11 @@ type CreateTaskRequest struct {
 	Runtime                    string     `json:"runtime,omitempty"`
 	TimeoutSeconds             int        `json:"timeout_seconds"`
 	WorkflowRevisionID         string     `json:"workflow_revision_id,omitempty"`
+	DefinitionID               string     `json:"definition_id,omitempty"`
 	DescriptionProvided        bool       `json:"-"`
 	ContextProvided            bool       `json:"-"`
 	WorkflowRevisionIDProvided bool       `json:"-"`
+	DefinitionIDProvided       bool       `json:"-"`
 }
 
 func (request *CreateTaskRequest) UnmarshalJSON(data []byte) error {
@@ -211,6 +219,7 @@ func (request *CreateTaskRequest) UnmarshalJSON(data []byte) error {
 	_, request.DescriptionProvided = fields["description"]
 	_, request.ContextProvided = fields["context"]
 	_, request.WorkflowRevisionIDProvided = fields["workflow_revision_id"]
+	_, request.DefinitionIDProvided = fields["definition_id"]
 	return nil
 }
 
@@ -283,6 +292,7 @@ type TaskDetail struct {
 	RepositoryAvailable bool                  `json:"repository_available"`
 	Attempts            []Attempt             `json:"attempts"`
 	Workflow            *TaskWorkflowSnapshot `json:"workflow,omitempty"`
+	Definition          *DefinitionSnapshot   `json:"definition,omitempty"`
 	ResolvedPrompt      string                `json:"resolved_prompt"`
 }
 
@@ -350,6 +360,90 @@ type WorkflowPageRequest struct {
 type WorkflowPage struct {
 	Workflows  []Workflow
 	NextCursor *WorkflowCursor
+}
+
+type Definition struct {
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Prompt         string            `json:"prompt"`
+	Runtime        string            `json:"runtime"`
+	AllowedTools   []string          `json:"allowed_tools"`
+	TimeoutSeconds int               `json:"timeout_seconds"`
+	Inputs         map[string]string `json:"inputs"`
+	Generation     int               `json:"generation"`
+	Archived       bool              `json:"archived"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
+}
+
+type DefinitionSnapshot struct {
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Prompt         string            `json:"prompt"`
+	Runtime        string            `json:"runtime"`
+	AllowedTools   []string          `json:"allowed_tools"`
+	TimeoutSeconds int               `json:"timeout_seconds"`
+	Inputs         map[string]string `json:"inputs"`
+	Generation     int               `json:"generation"`
+}
+
+func (definition Definition) Snapshot() DefinitionSnapshot {
+	return DefinitionSnapshot{
+		ID: definition.ID, Name: definition.Name, Prompt: definition.Prompt,
+		Runtime: definition.Runtime, AllowedTools: append([]string(nil), definition.AllowedTools...),
+		TimeoutSeconds: definition.TimeoutSeconds, Inputs: cloneStringMap(definition.Inputs),
+		Generation: definition.Generation,
+	}
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	copy := make(map[string]string, len(values))
+	for key, value := range values {
+		copy[key] = value
+	}
+	return copy
+}
+
+type CreateDefinitionRequest struct {
+	RequestKey     string            `json:"request_key"`
+	Name           string            `json:"name"`
+	Prompt         string            `json:"prompt"`
+	Runtime        string            `json:"runtime"`
+	AllowedTools   []string          `json:"allowed_tools"`
+	TimeoutSeconds int               `json:"timeout_seconds"`
+	Inputs         map[string]string `json:"inputs"`
+}
+
+type UpdateDefinitionRequest struct {
+	RequestKey         string            `json:"request_key"`
+	ExpectedGeneration int               `json:"expected_generation"`
+	Name               string            `json:"name"`
+	Prompt             string            `json:"prompt"`
+	Runtime            string            `json:"runtime"`
+	AllowedTools       []string          `json:"allowed_tools"`
+	TimeoutSeconds     int               `json:"timeout_seconds"`
+	Inputs             map[string]string `json:"inputs"`
+}
+
+type SetDefinitionArchivedRequest struct {
+	Archived           *bool `json:"archived"`
+	ExpectedGeneration int   `json:"expected_generation"`
+}
+
+type DefinitionCursor struct {
+	UpdatedAtMillis int64
+	ID              string
+}
+
+type DefinitionPageRequest struct {
+	Limit    int
+	Cursor   *DefinitionCursor
+	Archived bool
+}
+
+type DefinitionPage struct {
+	Definitions []Definition
+	NextCursor  *DefinitionCursor
 }
 
 const (
