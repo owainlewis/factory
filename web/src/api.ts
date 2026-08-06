@@ -76,11 +76,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  metrics: (window: MetricsWindow, filters: MetricsFilters = {}) => {
+  metrics: (window: MetricsWindow, filters: MetricsFilters = {}, jobView = "all") => {
     const query = new URLSearchParams({ window });
     if (filters.definition_id) query.set("definition_id", filters.definition_id);
     if (filters.repository_id) query.set("repository_id", filters.repository_id);
     if (filters.runner_id) query.set("runner_id", filters.runner_id);
+    if (jobView !== "all") query.set("job_view", jobView);
     return request<MetricsSummary>(`/api/v1/metrics/summary?${query}`);
   },
   tasks: async (cursor = "") => {

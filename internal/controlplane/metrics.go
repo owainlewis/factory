@@ -26,6 +26,7 @@ type MetricsFilter struct {
 	DefinitionID string
 	RepositoryID string
 	RunnerID     string
+	JobView      string
 }
 
 func parseMetricsWindow(value string) (string, time.Duration, error) {
@@ -55,6 +56,9 @@ func (s *Store) MetricsFiltered(
 	window string,
 	filter MetricsFilter,
 ) (protocol.MetricsSummary, error) {
+	if _, err := runMetricJobViewWhere(filter.JobView); err != nil {
+		return protocol.MetricsSummary{}, err
+	}
 	window, duration, err := parseMetricsWindow(window)
 	if err != nil {
 		return protocol.MetricsSummary{}, err

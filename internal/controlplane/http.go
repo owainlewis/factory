@@ -430,7 +430,7 @@ func (a *API) getMetrics(w http.ResponseWriter, r *http.Request) {
 		writeError(w, invalid("invalid_window", "window may be provided once"))
 		return
 	}
-	for _, parameter := range []string{"definition_id", "repository_id", "runner_id"} {
+	for _, parameter := range []string{"definition_id", "repository_id", "runner_id", "job_view"} {
 		if len(r.URL.Query()[parameter]) > 1 {
 			writeError(w, invalid("invalid_metrics_filter", parameter+" may be provided once"))
 			return
@@ -443,6 +443,7 @@ func (a *API) getMetrics(w http.ResponseWriter, r *http.Request) {
 			DefinitionID: strings.TrimSpace(r.URL.Query().Get("definition_id")),
 			RepositoryID: strings.TrimSpace(r.URL.Query().Get("repository_id")),
 			RunnerID:     strings.TrimSpace(r.URL.Query().Get("runner_id")),
+			JobView:      strings.TrimSpace(r.URL.Query().Get("job_view")),
 		},
 	)
 	if err != nil {

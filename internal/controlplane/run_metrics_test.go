@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -124,8 +125,8 @@ func seedRunMetricOutcome(
 ) {
 	t.Helper()
 	if _, err := store.db.Exec(
-		`UPDATE executions SET state = ?, updated_at = ? WHERE id = ?`,
-		state, completedAt.UnixMilli(), executionID,
+		`UPDATE executions SET state = ?, assigned_worker_id = ?, updated_at = ? WHERE id = ?`,
+		state, workerID, completedAt.UnixMilli(), executionID,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +140,25 @@ func seedRunMetricOutcome(
 		startedAt.UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func registerRunMetricWorker(t *testing.T, store *Store, repository protocol.ManagedRepository) protocol.Worker {
+	t.Helper()
+	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: "Metrics Runner", WorkerVersion: "test", Runtime: protocol.RuntimeCodex,
+		RuntimeVersion: "codex-test", Capacity: 10, Health: "healthy",
+		Capabilities: []protocol.Capability{
+			{Kind: protocol.CapabilityKindTool, Name: "git", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindTool, Name: "gh", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
+		},
+		Repositories: []protocol.RepositoryRegistration{{Key: "metrics", RemoteIdentity: repository.RemoteIdentity}},
+		SourceAccess: []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return worker
 }
 
 func requireRunMetric(t *testing.T, name string, actual *float64, expected float64) {
@@ -157,5 +177,69 @@ func TestRunMetricsIndexesExist(t *testing.T) {
 		`, name).Scan(&count); err != nil || count != 1 {
 			t.Fatalf("Run metrics index %q: count=%d err=%v", name, count, err)
 		}
+	}
+}
+
+func TestRunMetricsUseFinalExecutionTransitionAsTerminalTime(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	repository := createManagedTestRepository(t, store, "github.com/example/terminal-time")
+	definition := createTestDefinition(t, store, "terminal-time-definition", "Terminal time")
+	worker := registerRunMetricWorker(t, store, repository)
+	store.now = func() time.Time { return now.Add(-2 * time.Hour) }
+	run, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "terminal-time-run", DefinitionID: definition.ID, RepositoryID: repository.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := run.Jobs[0].Job
+	seedRunMetricOutcome(t, store, job.ExecutionID, worker.ID, "failed", now.Add(-90*time.Minute), now.Add(-time.Hour))
+	if _, err := store.db.Exec(`UPDATE executions SET state = 'cancelled', updated_at = ? WHERE id = ?`, now.Add(-30*time.Minute).UnixMilli(), job.ExecutionID); err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return now }
+
+	metrics, err := store.Metrics(context.Background(), metricsWindow24Hours)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metrics.RunHealth.Jobs) != 1 || metrics.RunHealth.Jobs[0].TerminalAt == nil ||
+		!metrics.RunHealth.Jobs[0].TerminalAt.Equal(now.Add(-30*time.Minute)) {
+		t.Fatalf("terminal Job = %#v", metrics.RunHealth.Jobs)
+	}
+	requireRunMetric(t, "average cycle", metrics.RunHealth.AverageCycleTimeSeconds, 90*time.Minute.Seconds())
+}
+
+func TestRunMetricsApplyJobViewBeforeDrillDownLimit(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	repository := createManagedTestRepository(t, store, "github.com/example/drill-down")
+	definition := createTestDefinition(t, store, "drill-down-definition", "Drill down")
+	worker := registerRunMetricWorker(t, store, repository)
+	store.now = func() time.Time { return now.Add(-3 * time.Hour) }
+	failed, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "old-failed-run", DefinitionID: definition.ID, RepositoryID: repository.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRunMetricOutcome(t, store, failed.Jobs[0].Job.ExecutionID, worker.ID, "failed", now.Add(-170*time.Minute), now.Add(-160*time.Minute))
+	for index := 0; index < 101; index++ {
+		store.now = func() time.Time { return now.Add(time.Duration(index-101) * time.Minute) }
+		if _, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+			RequestKey: fmt.Sprintf("new-active-run-%03d", index), DefinitionID: definition.ID, RepositoryID: repository.ID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.now = func() time.Time { return now }
+
+	metrics, err := store.MetricsFiltered(context.Background(), metricsWindow24Hours, MetricsFilter{JobView: "failed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metrics.RunHealth.Failed != 1 || len(metrics.RunHealth.Jobs) != 1 || metrics.RunHealth.Jobs[0].State != "failed" {
+		t.Fatalf("failed drill-down = %#v", metrics.RunHealth)
 	}
 }

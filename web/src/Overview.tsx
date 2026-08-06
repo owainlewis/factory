@@ -22,8 +22,8 @@ export function Overview({ onRun }: { onRun: (id: string) => void }) {
   const [jobView, setJobView] = useState<JobView>("all");
   const interval = useVisibleInterval(10_000);
   const metrics = useQuery({
-    queryKey: ["metrics", window, filters],
-    queryFn: () => api.metrics(window, filters),
+    queryKey: ["metrics", window, filters, jobView],
+    queryFn: () => api.metrics(window, filters, jobView),
     refetchInterval: interval,
   });
 
