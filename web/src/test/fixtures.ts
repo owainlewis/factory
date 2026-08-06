@@ -196,6 +196,7 @@ export function mockControlPlane(
     workflowHistoryGate?: Promise<void>;
     workerDetailFailuresAfter?: number;
     workerFailure?: boolean;
+    workerOfflineAfterConnectionTest?: boolean;
     workerRuntimeRefresh?: boolean;
   } = {},
 ) {
@@ -1137,7 +1138,9 @@ export function mockControlPlane(
           { status: 503 },
         );
       }
-      return Response.json(worker);
+      return Response.json(options.workerOfflineAfterConnectionTest && workerConnectionTests > 0
+        ? { ...worker, online: false }
+        : worker);
     }
     if (path === `/api/v1/workers/${worker.id}/test` && init?.method === "POST") {
       workerConnectionTests += 1;

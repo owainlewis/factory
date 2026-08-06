@@ -11,7 +11,7 @@ import {
   Plus,
   Server,
 } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState, type KeyboardEvent, type ReactNode } from "react";
 import { api } from "./api";
 import { runtimeLabel, stateLabel, timeAgo } from "./format";
@@ -36,6 +36,15 @@ function runtimeCapabilities(worker: Worker) {
 
 function readyRuntimes(worker: Worker) {
 	return runtimeCapabilities(worker).filter((capability) => capability.status === "ready");
+}
+
+function connectionEvidence(worker: Worker) {
+	return JSON.stringify({
+		lastHeartbeat: worker.last_heartbeat,
+		online: worker.online,
+		health: worker.health,
+		capabilities: worker.capabilities ?? [],
+	});
 }
 
 function capabilityName(kind: string, name: string) {
@@ -161,6 +170,7 @@ export function WorkerDetail({
   onBack: () => void;
   onDelegate: () => void;
 }) {
+	const queryClient = useQueryClient();
   const interval = useVisibleInterval(10_000);
   const worker = useQuery({
     queryKey: ["worker", id],
@@ -169,13 +179,20 @@ export function WorkerDetail({
   });
   const [copied, setCopied] = useState<string>();
   const [activeTab, setActiveTab] = useState<WorkerTab>("overview");
-	const [connectionTest, setConnectionTest] = useState<"testing" | "passed" | "failed">();
+	const [connectionTest, setConnectionTest] = useState<{
+		status: "testing" | "passed" | "failed";
+		evidence?: string;
+	}>();
   const tabIDPrefix = useId();
 
   if (worker.isPending) return <LoadingState label="Loading Runner" />;
   if (!worker.data) return <ErrorState error={worker.error} onRetry={() => void worker.refetch()} />;
 
-  const data = worker.data;
+	const data = worker.data;
+	const connectionResult = connectionTest?.status !== "testing" &&
+		connectionTest?.evidence === connectionEvidence(data)
+		? connectionTest.status
+		: undefined;
   const tabID = (tab: WorkerTab) => `${tabIDPrefix}-tab-${tab}`;
   const tabPanelID = (tab: WorkerTab) => `${tabIDPrefix}-panel-${tab}`;
   const grouped = (data.retained_worktrees ?? []).reduce((groups, worktree) => {
@@ -216,13 +233,17 @@ export function WorkerDetail({
   const activeSessions = `${data.active_count} active session${data.active_count === 1 ? "" : "s"}`;
   const latestActiveTask = data.active_count > 1 ? `Latest of ${activeSessions}` : activeSessions;
   const testConnection = async () => {
-    setConnectionTest("testing");
+	const priorEvidence = connectionEvidence(data);
+	setConnectionTest({ status: "testing" });
     try {
       const value = await api.testWorker(id);
-      setConnectionTest(value.online && readyRuntimes(value).length > 0 ? "passed" : "failed");
-      await worker.refetch();
+	  queryClient.setQueryData(["worker", id], value);
+	  setConnectionTest({
+		  status: value.online && readyRuntimes(value).length > 0 ? "passed" : "failed",
+		  evidence: connectionEvidence(value),
+	  });
     } catch {
-      setConnectionTest("failed");
+	  setConnectionTest({ status: "failed", evidence: priorEvidence });
     }
   };
 
@@ -252,8 +273,8 @@ export function WorkerDetail({
           </div>
         </div>
         <div className="detail-actions">
-			<button className="button button-secondary" onClick={() => void testConnection()} disabled={connectionTest === "testing"}>
-				{connectionTest === "testing" ? <LoaderCircle size={15} className="spin" /> : <Check size={15} />}
+			<button className="button button-secondary" onClick={() => void testConnection()} disabled={connectionTest?.status === "testing"}>
+				{connectionTest?.status === "testing" ? <LoaderCircle size={15} className="spin" /> : <Check size={15} />}
 				Test connection
 			</button>
           <button className="button button-primary" onClick={onDelegate}>
@@ -261,9 +282,9 @@ export function WorkerDetail({
           </button>
         </div>
       </div>
-		{connectionTest && connectionTest !== "testing" && (
-			<div className={connectionTest === "passed" ? "success-banner" : "warning-banner"} role="status">
-				{connectionTest === "passed"
+		{connectionResult && (
+			<div className={connectionResult === "passed" ? "success-banner" : "warning-banner"} role="status">
+				{connectionResult === "passed"
 					? "Runner is online with at least one ready coding agent."
 					: "Runner connection failed. Check its status and capability guidance below."}
 			</div>

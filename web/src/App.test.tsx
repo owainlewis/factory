@@ -1116,6 +1116,21 @@ describe("App", () => {
     expect(await screen.findByText("Runner connection failed. Check its status and capability guidance below.")).toBeVisible();
   });
 
+  it("clears a connection result when newer Runner status is loaded", async () => {
+    window.history.replaceState({}, "", "/workers/worker-online");
+    mockControlPlane({ workerOfflineAfterConnectionTest: true });
+    const user = userEvent.setup();
+    const { client } = renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Test connection" }));
+    expect(await screen.findByText("Runner is online with at least one ready coding agent.")).toBeVisible();
+
+    await client.refetchQueries({ queryKey: ["worker", "worker-online"] });
+
+    expect(await screen.findByText("Offline", { selector: ".worker-state-line span" })).toBeVisible();
+    expect(screen.queryByText("Runner is online with at least one ready coding agent.")).not.toBeInTheDocument();
+  });
+
   it("keeps the active delegate field focused while worker data refreshes", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
