@@ -1046,13 +1046,15 @@ func TestClaudeCodeSupervisorAcceptsOversizedResult(t *testing.T) {
 
 func testOptions(codexPath string) Options {
 	return Options{
-		GitExecutable:        "git",
-		GitHubExecutable:     filepath.Join(filepath.Dir(codexPath), "unavailable-gh"),
-		RuntimeExecutable:    codexPath,
-		SupervisorCommand:    []string{os.Args[0], "-test.run=TestWorkerSupervisorHelperProcess", "--"},
-		WorkerVersion:        "test",
-		PollInterval:         20 * time.Millisecond,
-		HealthInterval:       50 * time.Millisecond,
+		GitExecutable:     "git",
+		GitHubExecutable:  filepath.Join(filepath.Dir(codexPath), "unavailable-gh"),
+		RuntimeExecutable: codexPath,
+		SupervisorCommand: []string{os.Args[0], "-test.run=TestWorkerSupervisorHelperProcess", "--"},
+		WorkerVersion:     "test",
+		PollInterval:      20 * time.Millisecond,
+		// Keep the production ratio between claim polling and health probes so
+		// tests that are not about health do not continuously cancel claims.
+		HealthInterval:       300 * time.Millisecond,
 		RegistrationInterval: 25 * time.Millisecond,
 		LeaseRenewInterval:   100 * time.Millisecond,
 		LeaseRetryInterval:   50 * time.Millisecond,
