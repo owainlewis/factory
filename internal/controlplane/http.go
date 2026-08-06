@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,8 @@ type API struct {
 	logger      *slog.Logger
 	automations *AutomationService
 }
+
+const workerConnectionTimeout = 12 * time.Second
 
 type workerRegistrationRequest struct {
 	protocol.WorkerRegistration
@@ -76,6 +79,7 @@ func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *Au
 	mux.HandleFunc("POST /api/v1/workers/{worker_id}/claims", api.claim)
 	mux.HandleFunc("GET /api/v1/workers", api.listWorkers)
 	mux.HandleFunc("GET /api/v1/workers/{worker_id}", api.getWorker)
+	mux.HandleFunc("POST /api/v1/workers/{worker_id}/test", api.testWorkerConnection)
 	mux.HandleFunc("GET /api/v1/workers/{worker_id}/repository-options", api.getWorkerRepositoryOptions)
 	mux.HandleFunc("GET /api/v1/repositories", api.listManagedRepositories)
 	mux.HandleFunc("POST /api/v1/repositories", api.createManagedRepository)
@@ -415,6 +419,64 @@ func (a *API) getWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, worker)
+}
+
+func (a *API) testWorkerConnection(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) || !decodeEmptyJSON(w, r) {
+		return
+	}
+	worker, err := a.store.Worker(r.Context(), r.PathValue("worker_id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	testContext, cancel := context.WithTimeout(r.Context(), workerConnectionTimeout)
+	defer cancel()
+	worker, err = waitForWorkerRegistration(
+		testContext, a.store, worker.ID, worker.LastHeartbeat, 100*time.Millisecond,
+	)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, worker)
+}
+
+func waitForWorkerRegistration(
+	ctx context.Context,
+	store *Store,
+	workerID string,
+	previousHeartbeat time.Time,
+	pollInterval time.Duration,
+) (protocol.Worker, error) {
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return protocol.Worker{}, workerConnectionError(ctx.Err())
+		case <-ticker.C:
+			worker, err := store.Worker(ctx, workerID)
+			if err != nil {
+				if ctx.Err() != nil {
+					return protocol.Worker{}, workerConnectionError(ctx.Err())
+				}
+				return protocol.Worker{}, err
+			}
+			if worker.LastHeartbeat.After(previousHeartbeat) {
+				return worker, nil
+			}
+		}
+	}
+}
+
+func workerConnectionError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &ServiceError{
+			Code: "worker_connection_timeout", Message: "Runner did not send a fresh registration", Status: http.StatusGatewayTimeout,
+		}
+	}
+	return unavailable(err)
 }
 
 func (a *API) getWorkerRepositoryOptions(w http.ResponseWriter, r *http.Request) {

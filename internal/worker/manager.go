@@ -72,6 +72,7 @@ type Manager struct {
 	claiming                      bool
 	fatalHealth                   error
 	registered                    bool
+	registrationGeneration        uint64
 	closed                        bool
 
 	randomMutex     sync.Mutex
@@ -284,9 +285,11 @@ func (manager *Manager) Run(ctx context.Context) error {
 			manager.stopAll("cancelled")
 			return manager.waitForShutdown()
 		case <-healthTicker.C:
-			manager.setHealth(checkHealth(ctx, manager.options.GitExecutable,
+			if manager.setHealth(checkHealth(ctx, manager.options.GitExecutable,
 				manager.options.GitHubExecutable, manager.config.Runtime,
-				manager.config.Runtimes, manager.options.RuntimeExecutables))
+				manager.config.Runtimes, manager.options.RuntimeExecutables)) {
+				manager.register(ctx)
+			}
 		case <-registrationTicker.C:
 			manager.register(ctx)
 		case <-claimTimer.C:

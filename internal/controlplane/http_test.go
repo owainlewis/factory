@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -303,6 +304,49 @@ func TestHTTPWorkerRegistrationSupportsLegacyAndRuntimeAwareContracts(t *testing
 	if runtimeAware.Runtime != protocol.RuntimeClaudeCode || runtimeAware.RuntimeVersion != "2.1.220" {
 		t.Fatalf("runtime-aware response = %q %q", runtimeAware.Runtime, runtimeAware.RuntimeVersion)
 	}
+}
+
+func TestWaitForWorkerRegistrationRequiresAFreshHeartbeat(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 1)
+
+	t.Run("fresh registration", func(t *testing.T) {
+		registrationError := make(chan error, 1)
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			_, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+				Name: workerA, WorkerVersion: "test", RuntimeVersion: "codex-test",
+				Capacity: 1, Health: "healthy",
+			})
+			registrationError <- err
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		connected, err := waitForWorkerRegistration(ctx, store, workerA, worker.LastHeartbeat, 5*time.Millisecond)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := <-registrationError; err != nil {
+			t.Fatal(err)
+		}
+		if !connected.LastHeartbeat.After(worker.LastHeartbeat) {
+			t.Fatalf("connection heartbeat = %s; want after %s", connected.LastHeartbeat, worker.LastHeartbeat)
+		}
+	})
+
+	t.Run("stale registration", func(t *testing.T) {
+		current, err := store.Worker(context.Background(), workerA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		_, err = waitForWorkerRegistration(ctx, store, workerA, current.LastHeartbeat, 5*time.Millisecond)
+		var serviceError *ServiceError
+		if !errors.As(err, &serviceError) || serviceError.Code != "worker_connection_timeout" {
+			t.Fatalf("stale registration error = %v", err)
+		}
+	})
 }
 
 func TestHTTPDeleteTaskHistory(t *testing.T) {

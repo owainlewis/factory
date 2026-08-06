@@ -217,11 +217,13 @@ export function WorkerDetail({
   const latestActiveTask = data.active_count > 1 ? `Latest of ${activeSessions}` : activeSessions;
   const testConnection = async () => {
     setConnectionTest("testing");
-    const result = await worker.refetch();
-    const value = result.data;
-    setConnectionTest(
-      !result.error && value?.online && readyRuntimes(value).length > 0 ? "passed" : "failed",
-    );
+    try {
+      const value = await api.testWorker(id);
+      setConnectionTest(value.online && readyRuntimes(value).length > 0 ? "passed" : "failed");
+      await worker.refetch();
+    } catch {
+      setConnectionTest("failed");
+    }
   };
 
   return (

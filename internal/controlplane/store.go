@@ -783,6 +783,7 @@ type managedRepositoryEligibility struct {
 	acceptsManaged     bool
 	cached             bool
 	advertised         bool
+	reserved           bool
 	displayKeyConflict bool
 	cacheUse           int
 	retentionUse       int
@@ -807,7 +808,7 @@ func evaluateManagedRepositoryEligibility(
 		return false, "Another advertised repository uses this routing identity."
 	case !state.advertised && !state.acceptsManaged:
 		return false, "Worker cannot acquire managed repositories and does not advertise this one."
-	case !state.advertised && !state.cached && state.cacheUse >= protocol.MaxRepositoryCacheEntries:
+	case !state.advertised && !state.cached && !state.reserved && state.cacheUse >= protocol.MaxRepositoryCacheEntries:
 		return false, "Managed repository cache and reservations are full."
 	case state.retentionUse >= protocol.MaxRetainedPerRepo:
 		return false, "Repository retained-worktree capacity is full."
@@ -815,6 +816,8 @@ func evaluateManagedRepositoryEligibility(
 		return true, "Online, healthy, with GitHub access and this repository cached."
 	case state.advertised:
 		return true, "Online, healthy, with GitHub access and this repository advertised."
+	case state.reserved:
+		return true, "Online, healthy, with GitHub access and this repository already reserved."
 	default:
 		return true, "Online, healthy, with GitHub access and managed cache headroom."
 	}
@@ -885,6 +888,10 @@ func (s *Store) WorkerRepositoryOptions(
 		           WHEN worker_repository.advertised = 1 AND worker_repository.dynamic = 0 THEN 1
 		           ELSE 0
 		       END,
+		       CASE
+		           WHEN worker_repository.advertised = 1 AND worker_repository.dynamic = 1 THEN 1
+		           ELSE 0
+		       END,
 		       EXISTS (
 		           SELECT 1 FROM worker_repositories conflict
 		           WHERE conflict.worker_id = ?
@@ -921,11 +928,11 @@ func (s *Store) WorkerRepositoryOptions(
 	options := make([]protocol.WorkerRepositoryOption, 0)
 	for rows.Next() {
 		var option protocol.WorkerRepositoryOption
-		var enabled, advertised, displayKeyConflict int
+		var enabled, advertised, reserved, displayKeyConflict int
 		var retentionUse int
 		if err := rows.Scan(
 			&option.ID, &option.Key, &option.RemoteIdentity, &enabled,
-			&advertised, &displayKeyConflict, &retentionUse,
+			&advertised, &reserved, &displayKeyConflict, &retentionUse,
 		); err != nil {
 			return nil, unavailable(err)
 		}
@@ -935,6 +942,7 @@ func (s *Store) WorkerRepositoryOptions(
 		state := baseState
 		state.cached = option.Cached
 		state.advertised = option.Advertised
+		state.reserved = reserved != 0
 		state.displayKeyConflict = displayKeyConflict != 0
 		state.retentionUse = retentionUse
 		option.Ready, option.Reason = evaluateManagedRepositoryEligibility(

@@ -1030,7 +1030,7 @@ describe("App", () => {
 
   it("presents worker facts in accessible profile tabs with read-only execution settings", async () => {
     window.history.replaceState({}, "", "/workers/worker-online");
-    mockControlPlane({ workerDetailFailuresAfter: 2 });
+    mockControlPlane();
     const user = userEvent.setup();
     renderApp();
 

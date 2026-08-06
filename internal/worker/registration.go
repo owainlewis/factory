@@ -3,34 +3,45 @@ package worker
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 	"strings"
 
 	"github.com/owainlewis/factory/internal/protocol"
 )
 
-func (manager *Manager) setHealth(value health) {
+func healthRegistrationChanged(previous, next health) bool {
+	return previous.State != next.State ||
+		!reflect.DeepEqual(previous.Capabilities, next.Capabilities) ||
+		!reflect.DeepEqual(previous.SourceAccess, next.SourceAccess)
+}
+
+func (manager *Manager) setHealth(value health) bool {
 	manager.stateMutex.Lock()
-	previous := manager.health.State
+	previous := manager.health
 	if manager.fatalHealth != nil {
 		value = health{State: "unhealthy", Error: manager.fatalHealth}
 	}
+	registrationChanged := healthRegistrationChanged(previous, value)
 	manager.health = value
-	if previous != value.State {
+	if registrationChanged {
+		manager.registrationGeneration++
 		manager.registered = false
+		manager.cancelPendingClaimsLocked()
 	}
 	if value.State != "healthy" {
 		manager.cancelPendingClaimsLocked()
 	}
 	manager.stateMutex.Unlock()
-	if value.Error != nil && previous != value.State {
+	if value.Error != nil && previous.State != value.State {
 		manager.logger.Warn("worker_unhealthy", "error_class", "runtime_health", "error", value.Error)
 	}
-	if value.State == "healthy" && previous != "healthy" {
+	if value.State == "healthy" && previous.State != "healthy" {
 		manager.logger.Info("worker_healthy",
 			"git_version", value.GitVersion,
 			"runtimes", manager.config.Runtimes)
 	}
+	return registrationChanged
 }
 
 func (manager *Manager) markUnhealthy(errorClass string, err error) {
@@ -38,6 +49,7 @@ func (manager *Manager) markUnhealthy(errorClass string, err error) {
 	manager.fatalHealth = err
 	manager.health.State = "unhealthy"
 	manager.health.Error = err
+	manager.registrationGeneration++
 	manager.registered = false
 	manager.cancelPendingClaimsLocked()
 	manager.stateMutex.Unlock()
@@ -53,6 +65,16 @@ func (manager *Manager) isHealthy() bool {
 func (manager *Manager) registration() protocol.WorkerRegistration {
 	manager.stateMutex.Lock()
 	defer manager.stateMutex.Unlock()
+	return manager.registrationLocked()
+}
+
+func (manager *Manager) registrationSnapshot() (protocol.WorkerRegistration, uint64) {
+	manager.stateMutex.Lock()
+	defer manager.stateMutex.Unlock()
+	return manager.registrationLocked(), manager.registrationGeneration
+}
+
+func (manager *Manager) registrationLocked() protocol.WorkerRegistration {
 	repositories := make([]protocol.RepositoryRegistration, 0, len(manager.repositories))
 	retained := make([]protocol.RetainedWorktree, 0, len(manager.retained))
 	disposedAttemptIDs := make([]string, 0, len(manager.disposed))
@@ -115,7 +137,7 @@ func (manager *Manager) register(ctx context.Context) {
 func (manager *Manager) registerLocked(ctx context.Context) {
 	requestContext, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	registration := manager.registration()
+	registration, generation := manager.registrationSnapshot()
 	if _, err := manager.client.register(requestContext, manager.id, registration); err != nil {
 		manager.stateMutex.Lock()
 		manager.registered = false
@@ -140,6 +162,13 @@ func (manager *Manager) registerLocked(ctx context.Context) {
 	for _, attemptID := range registration.DisposedAttemptIDs {
 		delete(manager.disposed, attemptID)
 	}
-	manager.registered = true
+	manager.completeRegistrationLocked(generation)
 	manager.stateMutex.Unlock()
+}
+
+func (manager *Manager) completeRegistrationLocked(generation uint64) {
+	manager.registered = generation == manager.registrationGeneration
+	if !manager.registered {
+		manager.cancelPendingClaimsLocked()
+	}
 }

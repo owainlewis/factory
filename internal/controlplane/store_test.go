@@ -1736,7 +1736,7 @@ func TestRoutedTaskCanTargetOneEligibleWorker(t *testing.T) {
 		t.Fatalf("selected worker repositories = %#v", worker.Repositories)
 	}
 	option := requireWorkerRepositoryOption(t, store, workerB, repository.ID)
-	if option.Advertised || !option.Ready || option.Reason != "Online, healthy, with GitHub access and managed cache headroom." {
+	if option.Advertised || !option.Ready || option.Reason != "Online, healthy, with GitHub access and this repository already reserved." {
 		t.Fatalf("reserved managed repository option = %#v", option)
 	}
 
@@ -1876,6 +1876,11 @@ func TestRoutedTaskReservesManagedRepositoryCacheHeadroom(t *testing.T) {
 	first, err := createRouted("cache-reservation-first", firstRepository)
 	if err != nil || first.Execution.AssignedWorkerID != workerA {
 		t.Fatalf("first cache reservation = %#v, err %v", first, err)
+	}
+	reservedOption := requireWorkerRepositoryOption(t, store, workerA, firstRepository.ID)
+	if reservedOption.Advertised || !reservedOption.Ready ||
+		reservedOption.Reason != "Online, healthy, with GitHub access and this repository already reserved." {
+		t.Fatalf("existing full-cache reservation option = %#v", reservedOption)
 	}
 	_, err = createRouted("cache-reservation-blocked", secondRepository)
 	assertErrorCode(t, err, "no_eligible_worker")

@@ -85,6 +85,11 @@ export const api = {
       .map(normalizeWorker),
   worker: async (id: string) =>
     normalizeWorker(await request<Worker>(`/api/v1/workers/${encodeURIComponent(id)}`)),
+  testWorker: async (id: string) =>
+    normalizeWorker(await request<Worker>(`/api/v1/workers/${encodeURIComponent(id)}/test`, {
+      method: "POST",
+      body: "{}",
+    })),
   workerRepositoryOptions: async (id: string) =>
     (await request<{ repositories: WorkerRepositoryOption[] | null }>(
       `/api/v1/workers/${encodeURIComponent(id)}/repository-options`,

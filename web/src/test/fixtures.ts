@@ -206,6 +206,7 @@ export function mockControlPlane(
   let terminalEventFailures = options.terminalEventFailures ?? 0;
   let taskDetailRequests = 0;
   let workerDetailRequests = 0;
+  let workerConnectionTests = 0;
   const deletedTaskIDs = new Set<string>();
   let resolveStaleHistory: (() => void) | undefined;
   let createdTask: {
@@ -1122,6 +1123,16 @@ export function mockControlPlane(
         return Response.json(
           { error: { code: "worker_unavailable", message: "Runner connection failed" } },
           { status: 503 },
+        );
+      }
+      return Response.json(worker);
+    }
+    if (path === `/api/v1/workers/${worker.id}/test` && init?.method === "POST") {
+      workerConnectionTests += 1;
+      if (workerConnectionTests > 1) {
+        return Response.json(
+          { error: { code: "worker_connection_timeout", message: "Runner did not send a fresh registration" } },
+          { status: 504 },
         );
       }
       return Response.json(worker);
