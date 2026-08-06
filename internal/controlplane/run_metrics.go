@@ -51,9 +51,9 @@ func runMetricFactsQuery(where string, suffix string) string {
 			        WHERE attempt.execution_id = execution.id AND attempt.started_at IS NOT NULL) AS first_started_at,
 			       CASE WHEN COALESCE(execution.state, job.state) IN ('succeeded', 'failed', 'cancelled')
 			            THEN COALESCE(
+			                execution.updated_at,
 			                (SELECT MAX(attempt.completed_at) FROM attempts attempt
 			                 WHERE attempt.execution_id = execution.id AND attempt.completed_at IS NOT NULL),
-			                execution.updated_at,
 			                job.updated_at
 			            )
 			       END AS terminal_at
@@ -110,11 +110,16 @@ func (s *Store) loadRunHealthMetrics(
 	}
 	metrics.Throughput = metrics.Succeeded + metrics.Failed + metrics.Cancelled
 
+	jobViewWhere, err := runMetricJobViewWhere(filter.JobView)
+	if err != nil {
+		return err
+	}
 	rows, err := query.QueryContext(ctx, runMetricFactsQuery(where, `
 		SELECT job_id, run_id, definition_id, definition_name,
 		       repository_id, repository_identity, runner_id, runner_name,
 		       effective_state, admitted_at, first_started_at, terminal_at
 		FROM facts
+		`+jobViewWhere+`
 		ORDER BY admitted_at DESC, job_id DESC
 		LIMIT 100
 	`), args...)
@@ -149,6 +154,25 @@ func (s *Store) loadRunHealthMetrics(
 		return err
 	}
 	return loadRunMetricOptions(ctx, query, metrics)
+}
+
+func runMetricJobViewWhere(view string) (string, error) {
+	switch view {
+	case "", "all":
+		return "", nil
+	case "active":
+		return "WHERE effective_state IN ('queued', 'preparing', 'running')", nil
+	case "blocked", "succeeded", "failed":
+		return "WHERE effective_state = '" + view + "'", nil
+	case "finished":
+		return "WHERE effective_state IN ('succeeded', 'failed')", nil
+	case "started":
+		return "WHERE first_started_at IS NOT NULL", nil
+	case "terminal":
+		return "WHERE terminal_at IS NOT NULL", nil
+	default:
+		return "", invalid("invalid_metrics_filter", "job_view is invalid")
+	}
 }
 
 func loadRunMetricOptions(

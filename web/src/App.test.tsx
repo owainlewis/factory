@@ -64,7 +64,7 @@ describe("App", () => {
     await user.selectOptions(screen.getByLabelText("Definition filter"), "");
     await vi.waitFor(() => {
       const paths = fetch.mock.calls.slice(callsBeforeClearing).map(([input]) => String(input));
-      expect(paths).toContain("/api/v1/metrics/summary?window=30d");
+      expect(paths).toContain("/api/v1/metrics/summary?window=30d&job_view=failed");
       expect(paths.some((path) => path.includes("undefined"))).toBe(false);
     });
     await user.click(screen.getByRole("button", { name: /github.com\/example\/factory/ }));
