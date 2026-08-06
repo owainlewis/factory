@@ -524,15 +524,17 @@ export function mockControlPlane(
       const body = JSON.parse(String(init.body)) as {
         request_key: string;
         definition_id: string;
-        repository_id: string;
+        repository_ids: string[];
+        concurrency_limit: number;
       };
       const replay = runDetails.find((detail) => detail.run.request_key === body.request_key);
       if (replay) return Response.json(replay);
       const definition = definitionItems.find((item) => item.id === body.definition_id);
-      const repository = repositoryItems.find((item) => item.id === body.repository_id);
-      if (!definition || !repository) {
+      const repositories = body.repository_ids.map((id) => repositoryItems.find((item) => item.id === id));
+      if (!definition || repositories.length === 0 || repositories.some((repository) => !repository)) {
         return Response.json({ error: { code: "not_found", message: "Run input was not found" } }, { status: 404 });
       }
+      const selectedRepositories = repositories as ManagedRepository[];
       const now = new Date().toISOString();
       const detail: RunDetail = {
         run: {
@@ -550,20 +552,21 @@ export function mockControlPlane(
             generation: definition.generation,
           },
           state: "queued",
-          job_count: 1,
-          repository_remote_identities: [repository.remote_identity],
+          job_count: selectedRepositories.length,
+          concurrency_limit: body.concurrency_limit,
+          repository_remote_identities: selectedRepositories.map((repository) => repository.remote_identity),
           admitted_at: now,
           updated_at: now,
         },
         parameters: definition.inputs,
-        jobs: [{
+        jobs: selectedRepositories.map((repository, index) => ({
           job: {
-            id: "job-created",
+            id: `job-created-${index + 1}`,
             run_id: "run-created",
             repository_id: repository.id,
             repository_remote_identity: repository.remote_identity,
-            task_id: "run-task-created",
-            execution_id: "run-execution-created",
+            task_id: `run-task-created-${index + 1}`,
+            execution_id: `run-execution-created-${index + 1}`,
             assigned_worker_id: worker.id,
             required_runtime: definition.runtime,
             state: "queued",
@@ -572,7 +575,7 @@ export function mockControlPlane(
           },
           attempts: null,
           resolved_prompt: definition.prompt,
-        }],
+        })),
       };
       runDetails = [detail, ...runDetails];
       return Response.json(detail, { status: 201 });
@@ -596,6 +599,7 @@ export function mockControlPlane(
           },
           state: "succeeded",
           job_count: 1,
+          concurrency_limit: 1,
           repository_remote_identities: ["github.com/example/factory"],
           admitted_at: admittedAt,
           updated_at: admittedAt,

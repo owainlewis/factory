@@ -56,7 +56,7 @@ export function RunsView({
       <ViewHeader title="Runs" fetching={runs.isFetching} updatedAt={runs.dataUpdatedAt} onRefresh={() => void runs.refetch()} />
       {runs.error && <StaleBanner error={runs.error} />}
       <div className="view-toolbar">
-        <p>Run one shared Definition against a configured repository.</p>
+        <p>Run one shared Definition across one or more configured repositories.</p>
         <button className="button button-primary" onClick={() => onCreateOpenChange(true)}>
           <Play size={15} /> Run once
         </button>
@@ -65,7 +65,7 @@ export function RunsView({
         <EmptyState
           icon={<Play size={22} />}
           title="No Runs yet"
-          description="Choose a Definition and repository to start the first agent Job."
+          description="Choose a Definition and repositories to start independently tracked agent Jobs."
           action={<button className="button button-primary" onClick={() => onCreateOpenChange(true)}>Run once</button>}
         />
       ) : (
@@ -100,30 +100,35 @@ function RunOnceDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
   const titleID = useId();
   const definitionID = useId();
   const repositoryID = useId();
+  const concurrencyID = useId();
   const firstField = useRef<HTMLSelectElement>(null);
   const definitions = useQuery({ queryKey: ["definitions", "active", "run-once"], queryFn: loadActiveDefinitions });
   const repositories = useQuery({ queryKey: ["run-repositories"], queryFn: api.runRepositories });
   const [definition, setDefinition] = useState("");
-  const [repository, setRepository] = useState("");
+  const [selectedRepositories, setSelectedRepositories] = useState<string[]>([]);
+  const [concurrencyLimit, setConcurrencyLimit] = useState(3);
   useEffect(() => firstField.current?.focus(), []);
   const create = useMutation({
     mutationFn: () => api.createRun({
       request_key: crypto.randomUUID(),
       definition_id: definition,
-      repository_id: repository,
+      repository_ids: selectedRepositories,
+      concurrency_limit: concurrencyLimit,
     }),
     onSuccess: onCreated,
   });
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (definition && repository) create.mutate();
+    if (definition && selectedRepositories.length > 0) create.mutate();
   };
   const availableRepositories = repositories.data ?? [];
+  const selectedDefinition = definitions.data?.definitions.find((item) => item.id === definition);
+  const selectedRepositoryItems = availableRepositories.filter((item) => selectedRepositories.includes(item.id));
   return (
     <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div className="modal" role="dialog" aria-modal="true" aria-labelledby={titleID}>
         <div className="modal-header">
-          <div><h2 id={titleID}>Run once</h2><p>Start one agent Job against one repository.</p></div>
+          <div><h2 id={titleID}>Run once</h2><p>Start one independently tracked agent Job per repository.</p></div>
           <button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} /></button>
         </div>
         <form onSubmit={submit}>
@@ -136,19 +141,46 @@ function RunOnceDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
               </select>
             </div>
             <div className="field">
-              <label htmlFor={repositoryID}>Repository</label>
-              <select id={repositoryID} value={repository} onChange={(event) => setRepository(event.target.value)} required>
-                <option value="">Choose a repository</option>
+              <label htmlFor={repositoryID}>Repositories</label>
+              <select
+                id={repositoryID}
+                multiple
+                size={Math.min(7, Math.max(3, availableRepositories.length))}
+                value={selectedRepositories}
+                onChange={(event) => setSelectedRepositories(Array.from(event.target.selectedOptions, (option) => option.value))}
+                required
+              >
                 {availableRepositories.map((item) => <option key={item.id} value={item.id}>{item.remote_identity}</option>)}
               </select>
+              <small className="form-help">Select one or more repositories. Each becomes a separate Job.</small>
+            </div>
+            <div className="field">
+              <label htmlFor={concurrencyID}>Run concurrency</label>
+              <input
+                id={concurrencyID}
+                type="number"
+                min={1}
+                max={100}
+                value={concurrencyLimit}
+                onChange={(event) => setConcurrencyLimit(Number(event.target.value))}
+                required
+              />
+              <small className="form-help">Maximum Jobs from this Run that Factory can keep active.</small>
             </div>
           </div>
+          {(selectedDefinition || selectedRepositoryItems.length > 0) && <section className="run-preview" aria-label="Run preview">
+            <strong>Preview</strong>
+            <p>{selectedDefinition ? selectedDefinition.name : "Choose a Definition"}</p>
+            {selectedDefinition && <small>{selectedDefinition.prompt}</small>}
+            <ul>{selectedRepositoryItems.map((item) => <li key={item.id} className="mono">{item.remote_identity}</li>)}</ul>
+            <small>{selectedRepositoryItems.length} {selectedRepositoryItems.length === 1 ? "Job" : "Jobs"} · concurrency {concurrencyLimit || 0}</small>
+          </section>}
           {(definitions.error || repositories.error || create.error) && <InlineError error={definitions.error ?? repositories.error ?? create.error} />}
           {!definitions.isPending && definitions.data?.definitions.length === 0 && <p className="form-help">Create an active Definition before starting a Run.</p>}
           {!repositories.isPending && availableRepositories.length === 0 && <p className="form-help">Configure a repository on a Runner or enable managed acquisition before starting a Run.</p>}
           <div className="modal-actions">
             <button type="button" className="button button-secondary" onClick={onClose}>Cancel</button>
-            <button className="button button-primary" disabled={create.isPending || !definition || !repository}>
+            <button className="button button-primary" disabled={create.isPending || !definition || selectedRepositories.length === 0 || concurrencyLimit < 1 || concurrencyLimit > 100}>
               {create.isPending ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}
               {create.isPending ? "Starting…" : "Start Run"}
             </button>
@@ -162,6 +194,7 @@ function RunOnceDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
 export function RunDetail({ id, onBack }: { id: string; onBack: () => void }) {
   const interval = useVisibleInterval(2_000);
   const queryClient = useQueryClient();
+  const [selectedJobID, setSelectedJobID] = useState("");
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmRetry, setConfirmRetry] = useState(false);
   const [terminalCatchupAttemptID, setTerminalCatchupAttemptID] = useState<string | null>(null);
@@ -170,7 +203,7 @@ export function RunDetail({ id, onBack }: { id: string; onBack: () => void }) {
     queryFn: () => api.run(id),
     refetchInterval: (query) => ["blocked", "queued", "running"].includes(query.state.data?.run.state ?? "") ? interval : false,
   });
-  const job = detail.data?.jobs[0];
+  const job = detail.data?.jobs.find((item) => item.job.id === selectedJobID) ?? detail.data?.jobs[0];
   const latestAttempt = job?.attempts?.at(-1);
   const jobIsActive = Boolean(job && ["preparing", "running"].includes(job.job.state));
   const eventKey = ["events", latestAttempt?.id] as const;
@@ -239,6 +272,7 @@ export function RunDetail({ id, onBack }: { id: string; onBack: () => void }) {
   if (detail.isPending) return <LoadingState label="Loading Run" />;
   if (!detail.data || !job) return <ErrorState error={detail.error} onRetry={() => void detail.refetch()} />;
   const data = detail.data;
+  const terminalJobs = data.jobs.filter((item) => ["succeeded", "failed", "cancelled"].includes(item.job.state)).length;
   const active = ["blocked", "queued", "preparing", "running"].includes(job.job.state);
   const progress = (events.data ?? []).flatMap((event) => {
     const summary = eventSummary(event);
@@ -248,7 +282,7 @@ export function RunDetail({ id, onBack }: { id: string; onBack: () => void }) {
     <div className="page detail-page">
       <button className="back-button" onClick={onBack}><ArrowLeft size={16} /> All Runs</button>
       <div className="detail-heading">
-        <div><StatusBadge state={data.run.state} /><h1>{data.run.definition.name}</h1><p>Admitted {new Date(data.run.admitted_at).toLocaleString()}</p></div>
+        <div><StatusBadge state={data.run.state} /><h1>{data.run.definition.name}</h1><p>{terminalJobs} of {data.run.job_count} Jobs complete · concurrency {data.run.concurrency_limit} · admitted {new Date(data.run.admitted_at).toLocaleString()}</p></div>
         <div className="detail-actions">
           {active && !confirmCancel && <button className="button button-danger-secondary" onClick={() => setConfirmCancel(true)}><Square size={14} /> Cancel Job</button>}
           {job.job.state === "failed" && !confirmRetry && <button className="button button-primary" onClick={() => setConfirmRetry(true)}><RefreshCw size={14} /> Retry Job</button>}
@@ -258,6 +292,22 @@ export function RunDetail({ id, onBack }: { id: string; onBack: () => void }) {
       {confirmRetry && <div className="warning-banner" role="alert"><AlertCircle size={17} /><span>{job.job.retry_may_repeat_effects ? "The first agent process started and may already have changed GitHub. Retrying can repeat external effects." : "Retry this failed Job?"}</span><button className="button button-primary" onClick={() => retry.mutate()} disabled={retry.isPending}>{retry.isPending ? "Retrying…" : "Confirm retry"}</button><button className="button button-secondary" onClick={() => setConfirmRetry(false)}>Cancel</button></div>}
       {(detail.error || cancel.error || retry.error) && <InlineError error={detail.error ?? cancel.error ?? retry.error} />}
       {job.job.blocked_reason && <div className="warning-banner"><Clock3 size={17} /> {job.job.blocked_reason}</div>}
+      <section className="panel run-jobs-panel">
+        <PanelHeading title="Repositories" aside={`${terminalJobs}/${data.run.job_count} complete`} />
+        <div className="run-job-list">
+          {data.jobs.map((item) => <button
+            type="button"
+            key={item.job.id}
+            className={item.job.id === job.job.id ? "run-job-card selected" : "run-job-card"}
+            aria-label={`View ${item.job.repository_remote_identity} Job`}
+            aria-pressed={item.job.id === job.job.id}
+            onClick={() => { setSelectedJobID(item.job.id); setConfirmCancel(false); setConfirmRetry(false); }}
+          >
+            <span><strong>{item.job.repository_remote_identity}</strong><small className="mono">{item.job.id}</small></span>
+            <StatusBadge state={item.job.state} />
+          </button>)}
+        </div>
+      </section>
       <div className="detail-grid">
         <section className="panel detail-main"><PanelHeading title="Definition prompt" /><div className="long-copy">{job.resolved_prompt}</div></section>
         <section className="panel"><PanelHeading title="Job" /><dl className="metadata">

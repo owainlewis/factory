@@ -2,11 +2,14 @@ package controlplane
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/owainlewis/factory/internal/protocol"
+	"github.com/owainlewis/factory/migrations"
 )
 
 func setupRunTest(
@@ -106,37 +109,256 @@ func TestRunOnceCanUseARepositoryConfiguredOnALocalRunner(t *testing.T) {
 	}
 }
 
-func TestRunOnceRoutesAStaticRepositoryOnlyToItsAdvertisingRunner(t *testing.T) {
+func TestMultiRepositoryRunFansOutAtomicallyWithFrozenTargetsAndBoundedConcurrency(t *testing.T) {
 	store := newTestStore(t)
-	definition := createTestDefinition(t, store, "static-route-definition", "Review Static Checkout")
-	staticWorker := registerDefinitionWorker(
-		t, store, workerB,
-		protocol.RepositoryRegistration{Key: "local-checkout", RemoteIdentity: "file:///tmp/factory-static-route"},
-		protocol.CapabilityReady,
-		nil,
-	)
-	repository := staticWorker.Repositories[0]
-	_, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+	definition := createTestDefinition(t, store, "fleet-definition", "Review Fleet")
+	repositories := make([]protocol.ManagedRepository, 0, 4)
+	registrations := make([]protocol.RepositoryRegistration, 0, 4)
+	for _, name := range []string{"alpha", "bravo", "charlie", "delta"} {
+		repository := createManagedTestRepository(t, store, "github.com/example/"+name)
+		repositories = append(repositories, repository)
+		registrations = append(registrations, protocol.RepositoryRegistration{
+			Key: name, RemoteIdentity: repository.RemoteIdentity,
+		})
+	}
+	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
 		Name: workerA, WorkerVersion: "test", Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
 		Capabilities: []protocol.Capability{
 			{Kind: protocol.CapabilityKindTool, Name: "git", Status: protocol.CapabilityReady},
 			{Kind: protocol.CapabilityKindTool, Name: "gh", Status: protocol.CapabilityReady},
 			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
 		},
-		Capacity: 1, Health: "healthy", AcceptsManagedRepositories: true,
+		Capacity: 4, Health: "healthy", Repositories: registrations,
+		SourceAccess: []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-
+	repositoryIDs := []string{repositories[3].ID, repositories[1].ID, repositories[0].ID, repositories[2].ID}
 	detail, created, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
-		RequestKey: "static-route-run", DefinitionID: definition.ID, RepositoryID: repository.ID,
+		RequestKey: "fleet-run", DefinitionID: definition.ID,
+		RepositoryIDs: repositoryIDs, ConcurrencyLimit: 2,
 	})
 	if err != nil || !created {
-		t.Fatalf("create static Run: created=%t err=%v", created, err)
+		t.Fatalf("create fleet Run: created=%t err=%v", created, err)
 	}
-	if got := detail.Jobs[0].Job.AssignedWorkerID; got != staticWorker.ID {
-		t.Fatalf("assigned worker = %q; want advertising worker %q", got, staticWorker.ID)
+	if detail.Run.JobCount != 4 || detail.Run.ConcurrencyLimit != 2 || len(detail.Jobs) != 4 {
+		t.Fatalf("fleet Run summary = %#v", detail.Run)
+	}
+	states := map[string]int{}
+	identities := map[string]bool{}
+	for _, job := range detail.Jobs {
+		states[job.Job.State]++
+		identities[job.Job.RepositoryRemoteIdentity] = true
+	}
+	if states["queued"] != 2 || states["blocked"] != 2 || len(identities) != 4 {
+		t.Fatalf("fleet Jobs states=%#v identities=%#v", states, identities)
+	}
+
+	replayed, replayCreated, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "fleet-run", DefinitionID: definition.ID,
+		RepositoryIDs:    []string{repositories[2].ID, repositories[0].ID, repositories[1].ID, repositories[3].ID},
+		ConcurrencyLimit: 2,
+	})
+	if err != nil || replayCreated || replayed.Run.ID != detail.Run.ID {
+		t.Fatalf("order-independent replay: created=%t err=%v detail=%#v", replayCreated, err, replayed.Run)
+	}
+
+	if _, err := store.db.Exec(`UPDATE repositories SET remote_identity = 'github.com/example/renamed' WHERE id = ?`, repositories[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	frozen, err := store.Run(context.Background(), detail.Run.ID)
+	if err != nil || !containsString(frozen.Run.RepositoryRemoteIdentities, repositories[0].RemoteIdentity) ||
+		containsString(frozen.Run.RepositoryRemoteIdentities, "github.com/example/renamed") {
+		t.Fatalf("frozen repository targets: err=%v identities=%#v", err, frozen.Run.RepositoryRemoteIdentities)
+	}
+
+	first := claimTestTask(t, store, worker.ID, "fleet-first", tokenA)
+	if _, err := store.StartAttempt(context.Background(), first.Attempt.ID, protocol.StartAttemptRequest{
+		LeaseToken: tokenA, ProcessIdentity: "fake-agent",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteAttempt(context.Background(), first.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Error: "confirmed failure",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	third := claimTestTask(t, store, worker.ID, "fleet-third", tokenB)
+	progress, err := store.Run(context.Background(), detail.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states = map[string]int{}
+	for _, job := range progress.Jobs {
+		states[job.Job.State]++
+	}
+	if third.Task.ID == first.Task.ID || progress.Run.State != "running" ||
+		states["failed"] != 1 || states["preparing"] != 1 || states["queued"] != 1 || states["blocked"] != 1 {
+		t.Fatalf("partial failure progress: third=%#v Run=%#v states=%#v", third.Task, progress.Run, states)
+	}
+	var failedJobID string
+	for _, job := range progress.Jobs {
+		if job.Job.TaskID == first.Task.ID {
+			failedJobID = job.Job.ID
+			break
+		}
+	}
+	_, err = store.RetryJob(context.Background(), failedJobID)
+	assertErrorCode(t, err, "run_concurrency_full")
+	if _, err := store.StartAttempt(context.Background(), third.Attempt.ID, protocol.StartAttemptRequest{
+		LeaseToken: tokenB, ProcessIdentity: "fake-agent",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteAttempt(context.Background(), third.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenB, State: "succeeded", Result: "review complete",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := store.RetryJob(context.Background(), failedJobID)
+	if err != nil || retried.Run.State != "queued" {
+		t.Fatalf("retry after Run slot opens: err=%v Run=%#v", err, retried.Run)
+	}
+}
+
+func TestMultiRepositoryRunRejectsAnyUnavailableTargetWithoutPartialAdmission(t *testing.T) {
+	store, definition, repository, _ := setupRunTest(t, true)
+	_, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "atomic-invalid-fleet", DefinitionID: definition.ID,
+		RepositoryIDs: []string{repository.ID, "missing-repository"}, ConcurrencyLimit: 2,
+	})
+	assertErrorCode(t, err, "repository_not_available")
+	var runs, jobs int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM runs`).Scan(&runs); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM jobs`).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 0 || jobs != 0 {
+		t.Fatalf("partial admission created runs=%d jobs=%d", runs, jobs)
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func TestMultiRepositoryMigrationPreservesLegacySingleRepositoryReplay(t *testing.T) {
+	ctx := context.Background()
+	path := t.TempDir() + "/legacy-run.sqlite3"
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
+		CREATE TABLE schema_migrations (
+			version INTEGER PRIMARY KEY,
+			applied_at INTEGER NOT NULL
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	legacy := &Store{db: database, now: time.Now}
+	names := []string{
+		"001_controlplane.sql", "002_attempt_capacity_handoff.sql", "003_task_list_pagination.sql",
+		"004_worker_runtime.sql", "005_metrics_indexes.sql", "006_execution_retries.sql",
+		"007_worker_source_access.sql", "008_managed_repositories.sql", "009_workflows.sql",
+		"010_github_issue_automations.sql", "011_github_pull_request_automations.sql",
+		"012_schedule_automations.sql", "013_legacy_poller_migration.sql",
+		"014_workflow_automation_titles.sql", "015_codex_weekly_limit.sql",
+		"016_worker_capacity.sql", "017_runner_capabilities.sql", "018_definitions.sql", "019_runs.sql",
+	}
+	for index, name := range names {
+		body, readErr := migrations.Files.ReadFile(name)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		version := index + 1
+		if version == 13 || version == 16 || version == 17 {
+			if err := legacy.applyForeignKeyRebuildMigration(ctx, name, version, body); err != nil {
+				t.Fatalf("apply %s: %v", name, err)
+			}
+			continue
+		}
+		tx, beginErr := database.BeginTx(ctx, nil)
+		if beginErr != nil {
+			t.Fatal(beginErr)
+		}
+		if _, err = tx.ExecContext(ctx, string(body)); err == nil {
+			_, err = tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?, 0)`, version)
+		}
+		if err != nil {
+			_ = tx.Rollback()
+			t.Fatalf("apply %s: %v", name, err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot := protocol.DefinitionSnapshot{
+		ID: "definition", Name: "Legacy review", Prompt: "Review the repository.",
+		Runtime: protocol.RuntimeCodex, AllowedTools: []string{"git"}, TimeoutSeconds: 600,
+		Inputs: map[string]string{"severity": "high"}, Generation: 1,
+	}
+	snapshotJSON, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, _, err := normalizeRunRequest(protocol.CreateRunRequest{
+		RequestKey: "legacy-replay", DefinitionID: snapshot.ID, RepositoryID: "repository",
+		Parameters: map[string]string{"severity": "high"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyDigest, err := legacyRunRequestDigest(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO repositories(id, remote_identity, created_at, enabled, updated_at, centrally_managed)
+		VALUES ('repository', 'github.com/example/legacy', 1, 1, 1, 1);
+		INSERT INTO definitions(
+			id, name, name_key, prompt, runtime, allowed_tools, timeout_seconds,
+			inputs, generation, archived, created_at, updated_at
+		) VALUES ('definition', 'Legacy review', 'legacy review', 'Review the repository.',
+			'codex', '["git"]', 600, '{"severity":"high"}', 1, 0, 1, 1);
+		INSERT INTO runs(
+			id, request_key, request_digest, source_kind, definition_id,
+			definition_snapshot, parameters, admitted_at, updated_at
+		) VALUES ('run', 'legacy-replay', ?, 'manual', 'definition', ?,
+			'{"severity":"high"}', 1, 1);
+		INSERT INTO jobs(
+			id, run_id, repository_id, state, blocked_reason, admitted_at, updated_at
+		) VALUES ('job', 'run', 'repository', 'blocked', 'Waiting for a Runner.', 1, 1)
+	`, legacyDigest, snapshotJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := createDatabaseMarker(path + ".v2-control-plane"); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("upgrade v19 database: %v", err)
+	}
+	defer upgraded.Close()
+	replayed, created, err := upgraded.CreateRun(ctx, protocol.CreateRunRequest{
+		RequestKey: "legacy-replay", DefinitionID: snapshot.ID, RepositoryID: "repository",
+		Parameters: map[string]string{"severity": "high"},
+	})
+	if err != nil || created || replayed.Run.ID != "run" || replayed.Run.ConcurrencyLimit != defaultRunConcurrency ||
+		len(replayed.Jobs) != 1 || replayed.Jobs[0].Job.RepositoryRemoteIdentity != "github.com/example/legacy" {
+		t.Fatalf("legacy Run replay after upgrade: created=%t err=%v detail=%#v", created, err, replayed)
 	}
 }
 

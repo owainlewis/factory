@@ -436,7 +436,7 @@ describe("App", () => {
     });
   });
 
-  it("runs one shared Definition against one repository and tracks the Job", async () => {
+  it("previews and runs one shared Definition across independently tracked repositories", async () => {
     mockControlPlane();
     await globalThis.fetch("/api/v1/definitions", {
       method: "POST",
@@ -456,14 +456,24 @@ describe("App", () => {
 
     const dialog = await screen.findByRole("dialog", { name: "Run once" });
     await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-created");
-    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-managed");
+    await user.selectOptions(within(dialog).getByLabelText("Repositories"), ["repo-factory", "repo-managed"]);
+    expect(within(dialog).getByRole("region", { name: "Run preview" })).toHaveTextContent("2 Jobs · concurrency 3");
     await user.click(within(dialog).getByRole("button", { name: "Start Run" }));
 
     expect(await screen.findByRole("heading", { name: "Review repository" })).toBeVisible();
-    expect(screen.getByText("github.com/example/managed")).toBeVisible();
+    expect(screen.getByText("0 of 2 Jobs complete · concurrency 3", { exact: false })).toBeVisible();
+    expect(screen.getByRole("button", { name: "View github.com/example/factory Job" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "View github.com/example/managed Job" }));
+    expect(screen.getByRole("button", { name: "View github.com/example/managed Job" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getAllByText("Queued").length).toBeGreaterThan(0);
     expect(screen.getByText("Review this repository and report confirmed bugs.", { selector: ".long-copy" })).toBeVisible();
 
+    const createCall = vi.mocked(globalThis.fetch).mock.calls.find(([input, init]) =>
+      String(input) === "/api/v1/runs" && init?.method === "POST");
+    expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({
+      repository_ids: ["repo-factory", "repo-managed"],
+      concurrency_limit: 3,
+    });
     await user.click(screen.getByRole("button", { name: "Cancel Job" }));
     await user.click(screen.getByRole("button", { name: "Confirm cancel" }));
     expect((await screen.findAllByText("Cancelled", { selector: ".status-badge" })).length).toBeGreaterThan(0);
