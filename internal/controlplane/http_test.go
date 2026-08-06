@@ -147,6 +147,17 @@ func TestHTTPManagedRepositoryCatalog(t *testing.T) {
 	}
 
 	response = fixture.request(
+		http.MethodGet, "/api/v1/workers/managed-worker/repository-options", "", "", nil,
+	)
+	requireStatus(t, response, http.StatusOK)
+	options := decodeResponse[struct {
+		Repositories []protocol.WorkerRepositoryOption `json:"repositories"`
+	}](t, response)
+	if len(options.Repositories) != 1 || options.Repositories[0].ID != repository.ID || !options.Repositories[0].Ready {
+		t.Fatalf("worker repository options = %#v", options.Repositories)
+	}
+
+	response = fixture.request(
 		http.MethodPut,
 		"/api/v1/repositories/"+repository.ID+"/enabled",
 		"application/json",

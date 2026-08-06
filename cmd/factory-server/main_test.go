@@ -1,11 +1,28 @@
 package main
 
 import (
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestBackupModeRejectsMissingSourceWithoutCreatingState(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "missing", "factory.sqlite3")
+	destination := filepath.Join(root, "backup", "factory.sqlite3")
+	handled, err := runRecoveryMode(context.Background(), source, destination, "", io.Discard)
+	if !handled || err == nil {
+		t.Fatalf("missing-source backup = handled %v, error %v", handled, err)
+	}
+	for _, path := range []string{source, source + ".v2-control-plane", destination} {
+		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("missing-source CLI backup created %s: %v", path, statErr)
+		}
+	}
+}
 
 func TestDefaultDatabasePathUsesFactoryHome(t *testing.T) {
 	home := t.TempDir()

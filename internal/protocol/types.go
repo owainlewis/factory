@@ -40,6 +40,8 @@ const (
 	MaxAutomationOccurrences  = 100000
 	MaxAutomationContextBytes = 8 << 10
 	MaxAutomationMatches      = 100
+	MinWorkerCapacity         = 1
+	MaxWorkerCapacity         = 100
 )
 
 func SupportedRuntime(value string) bool {
@@ -115,6 +117,17 @@ type ManagedRepositoryWorkerReadiness struct {
 	Advertised bool   `json:"advertised"`
 	Ready      bool   `json:"ready"`
 	Reason     string `json:"reason"`
+}
+
+type WorkerRepositoryOption struct {
+	ID             string `json:"id"`
+	Key            string `json:"key,omitempty"`
+	RemoteIdentity string `json:"remote_identity"`
+	Enabled        bool   `json:"enabled"`
+	Cached         bool   `json:"cached"`
+	Advertised     bool   `json:"advertised"`
+	Ready          bool   `json:"ready"`
+	Reason         string `json:"reason"`
 }
 
 type CreateManagedRepositoryRequest struct {
@@ -469,6 +482,7 @@ type Automation struct {
 	SkippedCount       int64                  `json:"skipped_count"`
 	DispatchedCount    int64                  `json:"dispatched_count"`
 	LatestTask         *AutomationTaskSummary `json:"latest_task,omitempty"`
+	LatestRun          *AutomationOccurrence  `json:"latest_run,omitempty"`
 	CreatedAt          time.Time              `json:"created_at"`
 	UpdatedAt          time.Time              `json:"updated_at"`
 }

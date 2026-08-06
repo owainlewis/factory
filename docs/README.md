@@ -9,11 +9,16 @@ Start with the root [README](../README.md) to run Factory.
 - [Local guide](local.md): build, configure, start, delegate, and troubleshoot.
 - [Worker contract](worker.md): identity, runtimes, claiming, process safety,
   and worktree cleanup.
+- [Release guide](release.md): install, verify, upgrade, roll back, reproduce,
+  and publish tagged releases.
+- [Changelog](../CHANGELOG.md): user-visible changes and compatibility notes.
 - [Security policy](../SECURITY.md): reporting and the current trust model.
 - [Contributing](../CONTRIBUTING.md): setup, checks, and pull request standards.
 
 ## Active design work
 
+- [Coding automation experience](automation-experience/design.md): current
+  Runbook-first UX and proposed multi-repository Run model.
 - [Software Factory vision](software-factory/vision.md): product thesis, scope,
   principles, and measures of progress.
 - [Software Factory target architecture](software-factory/design.md): proposed

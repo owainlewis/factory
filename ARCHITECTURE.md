@@ -18,9 +18,10 @@ coordination from agent execution:
 - `factory-server` stores work, assigns it, evaluates typed GitHub issue and
   pull-request Automations through `gh`, admits schedule Automations from its
   clock, exposes the HTTP API, and serves the embedded browser UI.
-- `factory-worker` has one stable identity and one agent runtime. It advertises
-  runtime capacity and provider access, acquires centrally managed repositories
-  on demand, and runs attempts in isolated Git worktrees.
+- `factory-worker` has one stable identity and a configurable pool for one agent
+  runtime. It advertises runtime capacity and provider access, acquires centrally
+  managed repositories on demand, and runs concurrent attempts in isolated Git
+  worktrees.
 - Codex or Claude Code performs the repository work as a child process of the
   worker.
 
@@ -28,9 +29,9 @@ The current task contract is a title, either a legacy free-text description or
 a pinned Workflow revision plus free-text context, assigned worker, repository,
 and timeout. The control plane snapshots one resolved prompt in the existing
 task description field before creating the task. Callers may name the
-assignment directly or ask the control-plane scheduler to choose from cattle
-workers. The deployment is limited to a trusted user and loopback HTTP on one
-host.
+assignment directly, constrain a routed assignment to one cattle worker, or
+ask the control-plane scheduler to choose from all eligible cattle workers. The
+deployment is limited to a trusted user and loopback HTTP on one host.
 
 Workflow, Workflow Revision, Automation, Occurrence, Task, Execution, Attempt,
 and worker are the implemented model. They are not all target product concepts.
@@ -51,7 +52,7 @@ factory-server
            ^
            | registration, polling, leases, events, completion
            |
-factory-worker (one identity and one runtime)
+factory-worker (one identity, one runtime, N agent slots)
    |-- bounded on-demand repository cache
    |-- optional legacy static checkouts
    |-- attempt manifests and owned Git worktrees
@@ -65,7 +66,7 @@ the system does not use WebSockets.
 ## 3. Architectural invariants
 
 1. One worker identity has one immutable runtime, either `codex` or
-   `claude-code`.
+   `claude-code`, and runs independent sessions up to its configured capacity.
 2. Every task freezes one worker and one control-plane repository. Routed work
    may select a cattle worker before that repository exists in its local cache.
 3. Only a healthy, recently registered worker with free capacity can claim its
@@ -119,6 +120,15 @@ SQLite runs with foreign keys, WAL journaling, a five-second busy timeout, and
 at most eight open connections. The default database is
 `~/.factory/server/factory.sqlite3`.
 
+`factory-server -backup` opens only an existing source in read-only mode and
+uses SQLite `VACUUM INTO` to create a standalone, mode-`0600` online snapshot
+that includes committed WAL state. `factory-server -restore` opens a marked
+snapshot in immutable mode and rejects sibling WAL or shared-memory files. Both
+paths validate integrity, migration ledgers, and the complete expected schema.
+They build in an owner-only staging directory and publish the database and
+marker without replacement. Restore applies supported migrations before that
+publication, so startup never sees a partial or structurally invalid target.
+
 ### Legacy poller migration
 
 The retired standalone poller has no binary, startup path, command, or current
@@ -163,7 +173,8 @@ manual cleanup, or starts the internal attempt supervisor. The manager:
 - registers every ten seconds and polls for claims every two seconds with
   jitter;
 - renews active leases every ten seconds;
-- runs up to the configured capacity, from one to four attempts;
+- runs up to the configured capacity, from one to 100 attempts, defaulting to
+  ten;
 - reconciles manifests, worktrees, and process groups after restart.
 
 The supervisor is a subprocess of `factory-worker`. It owns the runtime process
@@ -184,7 +195,11 @@ event and completion contract.
 ### Browser UI
 
 `web/src` is a React and TypeScript application with Overview, Work, Workers,
-managed Repositories, Workflows, Task detail, and Delegate task views.
+managed Repositories, Runbooks, Automations, Task detail, and Delegate task
+views. Runbook is the browser term for the versioned Workflow resource.
+Automation detail projects each durable Occurrence as a Run and, after task
+creation, derives its visible state from the linked Task instead of persisting a
+second run lifecycle.
 Repository detail combines the central catalog with the control plane's current
 routing and acquisition readiness facts. It polls the same-origin API.
 
@@ -570,6 +585,8 @@ and a reviewed tenant model.
   terminal state when the server remains available.
 - Server shutdown drains HTTP requests, stops the lease sweeper, checkpoints
   the SQLite WAL, and closes the database.
+- Online backups need no downtime. Restore requires a stopped server and
+  workers, a fresh data home, and post-start health and retained-state checks.
 - A worker data directory is locked to one running worker identity.
 - Worktree reconciliation and cleanup prefer retention over destructive action.
 - Repository capacity counts active work, retained work, and completed attempts

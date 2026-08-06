@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -56,18 +57,45 @@ type Store struct {
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
+	return openStore(ctx, path, false)
+}
+
+func openExistingStore(ctx context.Context, path string) (*Store, error) {
+	return openStore(ctx, path, true)
+}
+
+func openStore(ctx context.Context, path string, existingOnly bool) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("database path is required")
 	}
+	if existingOnly && path == ":memory:" {
+		return nil, errors.New("existing database path is required")
+	}
 	if path != ":memory:" {
-		if err := prepareDatabasePath(path); err != nil {
+		if existingOnly {
+			info, err := os.Lstat(path)
+			if err != nil {
+				return nil, fmt.Errorf("inspect existing database: %w", err)
+			}
+			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+				return nil, fmt.Errorf("database must be a regular non-symlink file: %s", path)
+			}
+		}
+		preparedPath, err := prepareDatabasePath(path)
+		if err != nil {
 			return nil, err
 		}
+		path = preparedPath
 	}
 
 	dsn := "file::memory:?cache=shared"
 	if path != ":memory:" {
 		u := &url.URL{Scheme: "file", Path: path}
+		if existingOnly {
+			query := u.Query()
+			query.Set("mode", "rw")
+			u.RawQuery = query.Encode()
+		}
 		dsn = u.String()
 		if strings.Contains(dsn, "?") {
 			dsn += "&"
@@ -93,30 +121,215 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if path != ":memory:" {
+		if err := restrictDatabaseFilePermissions(path); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	return store, nil
 }
 
-func prepareDatabasePath(path string) error {
+func prepareDatabasePath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve database path: %w", err)
+	}
+	directory := filepath.Dir(absolute)
+	existingDirectory, err := deepestExistingDirectory(directory)
+	if err != nil {
+		return "", err
+	}
+	effectiveUID := uint32(os.Geteuid())
+	if err := validateConfiguredDatabaseDirectoryChain(
+		existingDirectory,
+		effectiveUID,
+		existingDirectory == directory,
+	); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return "", fmt.Errorf("create database directory: %w", err)
+	}
+	if err := validateConfiguredDatabaseDirectoryChain(directory, effectiveUID, true); err != nil {
+		return "", err
+	}
+	directory, err = filepath.EvalSymlinks(directory)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize database directory: %w", err)
+	}
+	if err := validateDatabaseDirectory(directory, effectiveUID); err != nil {
+		return "", err
+	}
+	path = filepath.Join(directory, filepath.Base(absolute))
 	info, err := os.Lstat(path)
 	exists := err == nil
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect database: %w", err)
+		return "", fmt.Errorf("inspect database: %w", err)
 	}
 	if exists && !info.Mode().IsRegular() {
-		return fmt.Errorf("database must be a regular non-symlink file: %s", path)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create database directory: %w", err)
+		return "", fmt.Errorf("database must be a regular non-symlink file: %s", path)
 	}
 	marker := path + ".v2-control-plane"
 	if exists {
-		return validateDatabaseMarker(marker)
+		if err := validateDatabaseMarker(marker); err != nil {
+			return "", err
+		}
+		if err := restrictDatabaseFilePermissions(path); err != nil {
+			return "", err
+		}
+		return path, nil
 	}
 	err = createDatabaseMarker(marker)
 	if errors.Is(err, os.ErrExist) {
-		return validateDatabaseMarker(marker)
+		if err := validateDatabaseMarker(marker); err != nil {
+			return "", err
+		}
+	} else if err != nil {
+		return "", err
 	}
-	return err
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("create Factory database with owner-only permissions: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("close new Factory database: %w", err)
+	}
+	if err := restrictDatabaseFilePermissions(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func deepestExistingDirectory(path string) (string, error) {
+	for {
+		_, err := os.Lstat(path)
+		if err == nil {
+			return path, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("inspect database path directory %s: %w", path, err)
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return "", fmt.Errorf("database path has no existing ancestor: %s", path)
+		}
+		path = parent
+	}
+}
+
+func validateDatabaseDirectory(path string, effectiveUID uint32) error {
+	return validateDatabaseDirectoryChain(path, effectiveUID, true)
+}
+
+func validateConfiguredDatabaseDirectoryChain(path string, effectiveUID uint32, firstIsDatabaseDirectory bool) error {
+	configuredDirectory := path
+	for {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("inspect configured database path directory %s: %w", path, err)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("inspect configured database path owner: unsupported file metadata for %s", path)
+		}
+		if stat.Uid != effectiveUID && stat.Uid != 0 {
+			return fmt.Errorf("configured database path must be owned by effective user %d or root: %s", effectiveUID, path)
+		}
+		isSymlink := info.Mode()&os.ModeSymlink != 0
+		if !isSymlink && !info.IsDir() {
+			return fmt.Errorf("configured database path component must be a directory or trusted symlink: %s", path)
+		}
+		if !isSymlink && (!firstIsDatabaseDirectory || path != configuredDirectory) &&
+			info.Mode().Perm()&0o022 != 0 && info.Mode()&os.ModeSticky == 0 {
+			return fmt.Errorf(
+				"configured database path ancestor must not be group or world writable unless protected by the sticky bit: %s has mode %#o",
+				path,
+				info.Mode().Perm(),
+			)
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return nil
+		}
+		path = parent
+	}
+}
+
+func validateDatabaseDirectoryChain(path string, effectiveUID uint32, requireDatabaseDirectory bool) error {
+	databaseDirectory := path
+	for {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("inspect database path directory %s: %w", path, err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("database path must use real non-symlink directories: %s", path)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("inspect database path directory owner: unsupported file metadata for %s", path)
+		}
+		if requireDatabaseDirectory && path == databaseDirectory {
+			if stat.Uid != effectiveUID {
+				return fmt.Errorf("database directory must be owned by effective user %d: %s", effectiveUID, path)
+			}
+			if info.Mode().Perm()&0o022 != 0 {
+				return fmt.Errorf(
+					"database directory must not be writable by group or other users: %s has mode %#o; run chmod go-w %q",
+					path,
+					info.Mode().Perm(),
+					path,
+				)
+			}
+		} else {
+			if stat.Uid != effectiveUID && stat.Uid != 0 {
+				return fmt.Errorf("database path ancestor must be owned by effective user %d or root: %s", effectiveUID, path)
+			}
+			if info.Mode().Perm()&0o022 != 0 && info.Mode()&os.ModeSticky == 0 {
+				return fmt.Errorf(
+					"database path ancestor must not be group or world writable unless protected by the sticky bit: %s has mode %#o",
+					path,
+					info.Mode().Perm(),
+				)
+			}
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return nil
+		}
+		path = parent
+	}
+}
+
+func restrictDatabaseFilePermissions(path string) error {
+	for _, file := range []struct {
+		path     string
+		name     string
+		required bool
+	}{
+		{path: path, name: "database", required: true},
+		{path: path + "-wal", name: "database WAL", required: false},
+		{path: path + "-shm", name: "database shared-memory file", required: false},
+	} {
+		info, err := os.Lstat(file.path)
+		if errors.Is(err, os.ErrNotExist) && !file.required {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect %s permissions: %w", file.name, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s must be a regular non-symlink file: %s", file.name, file.path)
+		}
+		if info.Mode().Perm() == 0o600 {
+			continue
+		}
+		if err := os.Chmod(file.path, 0o600); err != nil {
+			return fmt.Errorf("restrict %s permissions to owner-only access: %w", file.name, err)
+		}
+	}
+	return nil
 }
 
 type databaseMarkerFile interface {
@@ -172,10 +385,22 @@ func cleanFailedDatabaseMarker(file databaseMarkerFile, marker string, cause err
 }
 
 func validateDatabaseMarker(marker string) error {
-	body, err := os.ReadFile(marker)
+	info, err := os.Lstat(marker)
 	if errors.Is(err, os.ErrNotExist) {
 		return errors.New("refusing an existing database without the Factory control-plane marker")
 	}
+	if err != nil {
+		return fmt.Errorf("inspect Factory database marker: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("refusing an existing database with a non-regular Factory control-plane marker")
+	}
+	if info.Mode().Perm() != 0o600 {
+		if err := os.Chmod(marker, 0o600); err != nil {
+			return fmt.Errorf("restrict Factory database marker permissions to owner-only access: %w", err)
+		}
+	}
+	body, err := os.ReadFile(marker)
 	if err != nil {
 		return fmt.Errorf("read Factory database marker: %w", err)
 	}
@@ -551,6 +776,176 @@ func (s *Store) ManagedRepository(ctx context.Context, repositoryID string) (pro
 	return repository, nil
 }
 
+type managedRepositoryEligibility struct {
+	online             bool
+	health             string
+	githubAccess       bool
+	acceptsManaged     bool
+	cached             bool
+	advertised         bool
+	displayKeyConflict bool
+	cacheUse           int
+	retentionUse       int
+}
+
+func evaluateManagedRepositoryEligibility(
+	repository protocol.ManagedRepository,
+	state managedRepositoryEligibility,
+) (bool, string) {
+	switch {
+	case !repository.Enabled:
+		return false, "Repository routing is disabled."
+	case !state.advertised && !isManagedGitHubRemote(repository.RemoteIdentity):
+		return false, "Repository source is not supported for managed acquisition."
+	case !state.online:
+		return false, "Worker is offline."
+	case state.health != "healthy":
+		return false, "Worker is unhealthy."
+	case !state.githubAccess:
+		return false, "Worker does not currently report GitHub access."
+	case !state.advertised && state.displayKeyConflict:
+		return false, "Another advertised repository uses this routing identity."
+	case !state.advertised && !state.acceptsManaged:
+		return false, "Worker cannot acquire managed repositories and does not advertise this one."
+	case !state.advertised && !state.cached && state.cacheUse >= protocol.MaxRepositoryCacheEntries:
+		return false, "Managed repository cache and reservations are full."
+	case state.retentionUse >= protocol.MaxRetainedPerRepo:
+		return false, "Repository retained-worktree capacity is full."
+	case state.cached:
+		return true, "Online, healthy, with GitHub access and this repository cached."
+	case state.advertised:
+		return true, "Online, healthy, with GitHub access and this repository advertised."
+	default:
+		return true, "Online, healthy, with GitHub access and managed cache headroom."
+	}
+}
+
+func isManagedGitHubRemote(remoteIdentity string) bool {
+	_, err := normalizeManagedGitHubRemote(remoteIdentity)
+	return err == nil
+}
+
+func (s *Store) WorkerRepositoryOptions(
+	ctx context.Context,
+	workerID string,
+) ([]protocol.WorkerRepositoryOption, error) {
+	workerID = strings.TrimSpace(workerID)
+	var health string
+	var heartbeat int64
+	var encodedSourceAccess, encodedManagedRepositoryIDs []byte
+	var acceptsManaged, cacheUse int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT health, last_heartbeat, source_access_json, managed_repository_ids_json,
+		       accepts_managed_repositories,
+		       json_array_length(managed_repository_ids_json) + (
+		           SELECT COUNT(*)
+		           FROM worker_repositories reserved
+		           WHERE reserved.worker_id = workers.id
+		             AND reserved.dynamic = 1
+		             AND reserved.advertised = 1
+		             AND NOT EXISTS (
+		                 SELECT 1 FROM json_each(workers.managed_repository_ids_json) cached
+		                 WHERE cached.value = reserved.repository_id
+		             )
+		       )
+		FROM workers WHERE id = ?
+	`, workerID).Scan(
+		&health, &heartbeat, &encodedSourceAccess, &encodedManagedRepositoryIDs,
+		&acceptsManaged, &cacheUse,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	var sourceAccess []protocol.SourceAccess
+	if err := json.Unmarshal(encodedSourceAccess, &sourceAccess); err != nil {
+		return nil, unavailable(err)
+	}
+	var managedRepositoryIDs []string
+	if err := json.Unmarshal(encodedManagedRepositoryIDs, &managedRepositoryIDs); err != nil {
+		return nil, unavailable(err)
+	}
+	cachedRepositoryIDs := make(map[string]struct{}, len(managedRepositoryIDs))
+	for _, repositoryID := range managedRepositoryIDs {
+		cachedRepositoryIDs[repositoryID] = struct{}{}
+	}
+	baseState := managedRepositoryEligibility{
+		online:         s.now().Sub(fromMillis(heartbeat)) <= protocol.WorkerOnlineWindow,
+		health:         health,
+		githubAccess:   hasSourceAccess(sourceAccess, protocol.SourceAccess{Provider: "github", Hostname: "github.com"}),
+		acceptsManaged: acceptsManaged != 0,
+		cacheUse:       cacheUse,
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT repository.id, COALESCE(worker_repository.display_key, ''),
+		       repository.remote_identity, repository.enabled,
+		       COALESCE(worker_repository.advertised, 0),
+		       EXISTS (
+		           SELECT 1 FROM worker_repositories conflict
+		           WHERE conflict.worker_id = ?
+		             AND conflict.display_key = repository.remote_identity
+		             AND conflict.repository_id != repository.id
+		       ),
+		       COALESCE(worker_repository.retained_count, 0) + (
+		           SELECT COUNT(*)
+		           FROM attempts active_attempt
+		           JOIN executions active_execution ON active_execution.id = active_attempt.execution_id
+		           JOIN tasks active_task ON active_task.id = active_execution.task_id
+		           WHERE active_attempt.worker_id = ?
+		             AND active_task.repository_id = repository.id
+		             AND active_attempt.state IN ('preparing', 'running')
+		       ) + (
+		           SELECT COUNT(*)
+		           FROM attempts terminal_attempt
+		           JOIN executions terminal_execution ON terminal_execution.id = terminal_attempt.execution_id
+		           JOIN tasks terminal_task ON terminal_task.id = terminal_execution.task_id
+		           WHERE terminal_attempt.worker_id = ?
+		             AND terminal_task.repository_id = repository.id
+		             AND terminal_attempt.state IN ('succeeded', 'failed', 'cancelled', 'lost')
+		             AND terminal_attempt.capacity_acknowledged = 0
+		       )
+		FROM repositories repository
+		LEFT JOIN worker_repositories worker_repository
+		  ON worker_repository.worker_id = ? AND worker_repository.repository_id = repository.id
+		ORDER BY repository.remote_identity
+	`, workerID, workerID, workerID, workerID)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	defer rows.Close()
+	options := make([]protocol.WorkerRepositoryOption, 0)
+	for rows.Next() {
+		var option protocol.WorkerRepositoryOption
+		var enabled, advertised, displayKeyConflict int
+		var retentionUse int
+		if err := rows.Scan(
+			&option.ID, &option.Key, &option.RemoteIdentity, &enabled,
+			&advertised, &displayKeyConflict, &retentionUse,
+		); err != nil {
+			return nil, unavailable(err)
+		}
+		_, option.Cached = cachedRepositoryIDs[option.ID]
+		option.Enabled = enabled != 0
+		option.Advertised = advertised != 0
+		state := baseState
+		state.cached = option.Cached
+		state.advertised = option.Advertised
+		state.displayKeyConflict = displayKeyConflict != 0
+		state.retentionUse = retentionUse
+		option.Ready, option.Reason = evaluateManagedRepositoryEligibility(
+			protocol.ManagedRepository{ID: option.ID, RemoteIdentity: option.RemoteIdentity, Enabled: option.Enabled},
+			state,
+		)
+		options = append(options, option)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, unavailable(err)
+	}
+	return options, nil
+}
+
 func (s *Store) ManagedRepositoryReadiness(
 	ctx context.Context,
 	repositoryID string,
@@ -637,38 +1032,22 @@ func (s *Store) ManagedRepositoryReadiness(
 		}
 		worker.Cached = cached != 0
 		worker.Advertised = advertised != 0
-		online := now.Sub(fromMillis(heartbeat)) <= protocol.WorkerOnlineWindow
-		githubAccess := hasSourceAccess(sourceAccess, protocol.SourceAccess{
-			Provider: "github", Hostname: "github.com",
-		})
-		switch {
-		case !repository.Enabled:
-			worker.Reason = "Repository routing is disabled."
-		case !online:
-			worker.Reason = "Worker is offline."
-		case health != "healthy":
-			worker.Reason = "Worker is unhealthy."
-		case !githubAccess:
-			worker.Reason = "Worker does not currently report GitHub access."
-		case !worker.Advertised && displayKeyConflict != 0:
-			worker.Reason = "Another advertised repository uses this routing identity."
-		case !worker.Advertised && acceptsManaged == 0:
-			worker.Reason = "Worker cannot acquire managed repositories and does not advertise this one."
-		case !worker.Advertised && !worker.Cached && cacheUse >= protocol.MaxRepositoryCacheEntries:
-			worker.Reason = "Managed repository cache and reservations are full."
-		case retentionUse >= protocol.MaxRetainedPerRepo:
-			worker.Reason = "Repository retained-worktree capacity is full."
-		default:
-			worker.Ready = true
+		worker.Ready, worker.Reason = evaluateManagedRepositoryEligibility(
+			repository,
+			managedRepositoryEligibility{
+				online:             now.Sub(fromMillis(heartbeat)) <= protocol.WorkerOnlineWindow,
+				health:             health,
+				githubAccess:       hasSourceAccess(sourceAccess, protocol.SourceAccess{Provider: "github", Hostname: "github.com"}),
+				acceptsManaged:     acceptsManaged != 0,
+				cached:             worker.Cached,
+				advertised:         worker.Advertised,
+				displayKeyConflict: displayKeyConflict != 0,
+				cacheUse:           cacheUse,
+				retentionUse:       retentionUse,
+			},
+		)
+		if worker.Ready {
 			readiness.RoutingReady = true
-			switch {
-			case worker.Cached:
-				worker.Reason = "Online, healthy, with GitHub access and this repository cached."
-			case worker.Advertised:
-				worker.Reason = "Online, healthy, with GitHub access and this repository advertised."
-			default:
-				worker.Reason = "Online, healthy, with GitHub access and managed cache headroom."
-			}
 		}
 		readiness.Workers = append(readiness.Workers, worker)
 	}
@@ -879,8 +1258,11 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	if len(input.RuntimeVersion) > 1024 {
 		return protocol.Worker{}, invalid("invalid_runtime_version", "runtime_version must be at most 1024 bytes")
 	}
-	if input.Capacity < 1 || input.Capacity > 4 || input.ActiveCount < 0 || input.ActiveCount > input.Capacity {
-		return protocol.Worker{}, invalid("invalid_capacity", "capacity must be 1 through 4 and active_count cannot exceed it")
+	if input.Capacity < protocol.MinWorkerCapacity || input.Capacity > protocol.MaxWorkerCapacity ||
+		input.ActiveCount < 0 || input.ActiveCount > input.Capacity {
+		return protocol.Worker{}, invalid("invalid_capacity", fmt.Sprintf(
+			"capacity must be %d through %d and active_count cannot exceed it",
+			protocol.MinWorkerCapacity, protocol.MaxWorkerCapacity))
 	}
 	if input.Health != "healthy" && input.Health != "unhealthy" {
 		return protocol.Worker{}, invalid("invalid_health", "health must be healthy or unhealthy")
@@ -1485,8 +1867,9 @@ func (s *Store) selectTaskRoute(
 	tx *sql.Tx,
 	route protocol.TaskRoute,
 	now int64,
+	workerID string,
 ) (taskRouteCandidate, error) {
-	return s.selectTaskRouteWithSourceRequirement(ctx, tx, route, now, true)
+	return s.selectTaskRouteWithSourceRequirement(ctx, tx, route, now, true, workerID)
 }
 
 func (s *Store) selectTaskRouteWithSourceRequirement(
@@ -1495,6 +1878,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 	route protocol.TaskRoute,
 	now int64,
 	requireSourceAccess bool,
+	workerID string,
 ) (taskRouteCandidate, error) {
 	repositoryPredicate := "r.remote_identity = ?"
 	if route.SourceAccess.Provider == "github" && route.SourceAccess.Hostname == "github.com" {
@@ -1528,6 +1912,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		  ON wr.worker_id = w.id AND wr.repository_id = ?
 		WHERE w.health = 'healthy'
 		  AND w.last_heartbeat >= ?
+		  AND (? = '' OR w.id = ?)
 		  AND (
 		      COALESCE(wr.advertised, 0) = 1
 		      OR NOT EXISTS (
@@ -1582,7 +1967,8 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		        AND terminal_attempt.capacity_acknowledged = 0
 		  ) < ?
 		ORDER BY w.id
-	`, repositoryID, now-protocol.WorkerOnlineWindow.Milliseconds(), repositoryIdentity, repositoryID,
+	`, repositoryID, now-protocol.WorkerOnlineWindow.Milliseconds(), workerID, workerID,
+		repositoryIdentity, repositoryID,
 		repositoryID, protocol.MaxRepositoryCacheEntries,
 		repositoryID, repositoryID, protocol.MaxRetainedPerRepo)
 	if err != nil {
@@ -1712,10 +2098,10 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 			)
 		}
 	} else {
-		if input.WorkerID != "" || input.RepositoryID != "" {
+		if input.RepositoryID != "" {
 			return protocol.TaskDetail{}, false, invalid(
 				"invalid_assignment",
-				"route cannot be combined with worker_id or repository_id",
+				"route cannot be combined with repository_id",
 			)
 		}
 		if err := normalizeTaskRoute(input.Route); err != nil {
@@ -1777,7 +2163,7 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	}
 	var runtime string
 	if input.Route != nil {
-		selection, routeErr := s.selectTaskRoute(ctx, tx, *input.Route, now)
+		selection, routeErr := s.selectTaskRoute(ctx, tx, *input.Route, now, input.WorkerID)
 		if routeErr != nil {
 			return protocol.TaskDetail{}, false, routeErr
 		}

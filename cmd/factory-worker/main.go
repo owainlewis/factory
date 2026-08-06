@@ -9,12 +9,15 @@ import (
 	"os/signal"
 	"strings"
 
+	"github.com/owainlewis/factory/internal/buildinfo"
 	"github.com/owainlewis/factory/internal/worker"
 )
 
-var version = "dev"
-
 func main() {
+	if buildinfo.Requested(os.Args[1:]) {
+		fmt.Fprintln(os.Stdout, buildinfo.String("factory-worker"))
+		return
+	}
 	if worker.IsSupervisorCommand(os.Args[1:]) {
 		control := os.NewFile(3, "factory-worker-control")
 		if err := worker.RunSupervisor(control, os.Stdin, os.Stdout, os.Stderr); err != nil {
@@ -88,7 +91,7 @@ func run() error {
 		return err
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	manager, err := worker.New(config, worker.Options{WorkerVersion: version}, logger)
+	manager, err := worker.New(config, worker.Options{WorkerVersion: buildinfo.Version}, logger)
 	if err != nil {
 		return err
 	}

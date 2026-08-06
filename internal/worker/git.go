@@ -41,6 +41,7 @@ func resolveRepositories(config Config, gitExecutable string) ([]Repository, err
 		if err != nil {
 			return nil, fmt.Errorf("repository %q: %w", key, err)
 		}
+		repository.coordinationKey = legacyRepositoryCoordinationKey(repository)
 		repository.BaseBranch = config.Repositories[key].BaseBranch
 		if repository.BaseBranch != "" {
 			ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)

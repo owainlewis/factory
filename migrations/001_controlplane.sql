@@ -8,7 +8,7 @@ CREATE TABLE workers (
     name TEXT NOT NULL,
     worker_version TEXT NOT NULL,
     codex_version TEXT NOT NULL,
-    capacity INTEGER NOT NULL CHECK (capacity BETWEEN 1 AND 4),
+    capacity INTEGER NOT NULL CHECK (capacity BETWEEN 1 AND 100),
     active_count INTEGER NOT NULL CHECK (active_count >= 0),
     health TEXT NOT NULL CHECK (health IN ('healthy', 'unhealthy')),
     retained_worktrees_json TEXT NOT NULL DEFAULT '[]',
