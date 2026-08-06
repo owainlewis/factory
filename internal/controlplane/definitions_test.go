@@ -109,6 +109,10 @@ func TestDefinitionLifecycleIsSharedIdempotentAndConflictSafe(t *testing.T) {
 	if err != nil || !archived.Archived || archived.Generation != 3 {
 		t.Fatalf("archive Definition: err=%v Definition=%#v", err, archived)
 	}
+	replayedArchive, err := store.SetDefinitionArchived(context.Background(), created.ID, true, updated.Generation)
+	if err != nil || replayedArchive.Generation != archived.Generation || !replayedArchive.Archived {
+		t.Fatalf("archive replay after lost response: err=%v Definition=%#v", err, replayedArchive)
+	}
 	_, _, err = store.UpdateDefinition(context.Background(), created.ID, protocol.UpdateDefinitionRequest{
 		RequestKey: "archived-definition-update", ExpectedGeneration: archived.Generation,
 		Name: "Archived edit", Prompt: "Do not edit archived content.", Runtime: protocol.RuntimeCodex, TimeoutSeconds: 60,

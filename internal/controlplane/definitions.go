@@ -348,15 +348,19 @@ func (s *Store) SetDefinitionArchived(
 	if err != nil {
 		return protocol.Definition{}, unavailable(err)
 	}
+	if currentArchived == archived {
+		if err := tx.Commit(); err != nil {
+			return protocol.Definition{}, unavailable(err)
+		}
+		return s.Definition(ctx, definitionID)
+	}
 	if currentGeneration != expectedGeneration {
 		return protocol.Definition{}, conflict("definition_generation_conflict", "the Definition was edited by another request")
 	}
-	if currentArchived != archived {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE definitions SET archived = ?, generation = generation + 1, updated_at = ? WHERE id = ?
-		`, archived, s.now().UnixMilli(), definitionID); err != nil {
-			return protocol.Definition{}, unavailable(err)
-		}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE definitions SET archived = ?, generation = generation + 1, updated_at = ? WHERE id = ?
+	`, archived, s.now().UnixMilli(), definitionID); err != nil {
+		return protocol.Definition{}, unavailable(err)
 	}
 	if err := tx.Commit(); err != nil {
 		return protocol.Definition{}, unavailable(err)
