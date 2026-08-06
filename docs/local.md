@@ -338,7 +338,8 @@ pending Resume or Skip decisions and an already completed archive.
 
 ## UI development
 
-Only contributors changing the UI need Node.js:
+Only contributors changing the UI need Node.js. Use Node.js 22.22.2 or newer
+on the 22 release line, Node.js 24.15.0 or newer, or Node.js 26 or newer:
 
 ```sh
 just ui-install

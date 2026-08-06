@@ -14,7 +14,8 @@ Install:
 - Go 1.25.12 or newer on the 1.25 release line, or Go 1.26.5 or newer
 - Git
 - just
-- Node.js 22 and npm when changing the UI
+- Node.js 22.22.2 or newer on the 22 release line, Node.js 24.15.0 or newer,
+  or Node.js 26 or newer, plus npm, when changing the UI
 - Codex CLI or Claude Code CLI for real worker tests
 
 Build the Go binaries from the committed UI:
