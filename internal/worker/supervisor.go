@@ -23,6 +23,7 @@ const (
 	supervisorCommand       = "__factory_worker_supervisor"
 	supervisorReadyTimeout  = 10 * time.Second
 	terminationGrace        = 5 * time.Second
+	supervisorCleanupWait   = 5 * time.Second
 	maxSupervisorLineBytes  = 1 << 20
 	maxSupervisorErrorBytes = 64 << 10
 )
@@ -122,7 +123,7 @@ func RunSupervisor(control *os.File, input io.Reader, output, errorOutput io.Wri
 	}
 	supervisorIdentity, err := processIdentity(os.Getpid())
 	if err != nil {
-		_ = stopOwnedProcessGroup(anchorPID, anchorIdentity, 0)
+		_ = stopStartedSupervisorGroup(anchor, anchorIdentity, 0)
 		_ = anchor.Wait()
 		return fmt.Errorf("establish supervisor process identity: %w", err)
 	}
@@ -135,7 +136,7 @@ func RunSupervisor(control *os.File, input io.Reader, output, errorOutput io.Wri
 		ProcessGroupID:  int64(groupID),
 		GroupIdentity:   anchorIdentity,
 	}); err != nil {
-		_ = stopOwnedProcessGroup(anchorPID, anchorIdentity, 0)
+		_ = stopStartedSupervisorGroup(anchor, anchorIdentity, 0)
 		_ = anchor.Wait()
 		return fmt.Errorf("report supervisor readiness: %w", err)
 	}
@@ -151,7 +152,7 @@ func RunSupervisor(control *os.File, input io.Reader, output, errorOutput io.Wri
 		case command := <-commands:
 			action, duration, parseErr := parseControlCommand(command)
 			if parseErr != nil {
-				_ = stopOwnedProcessGroup(anchorPID, anchorIdentity, 0)
+				_ = stopStartedSupervisorGroup(anchor, anchorIdentity, 0)
 				_ = anchor.Wait()
 				return parseErr
 			}
@@ -159,33 +160,33 @@ func RunSupervisor(control *os.File, input io.Reader, output, errorOutput io.Wri
 			case "renew":
 				resetTimer(leaseTimer, leaseStopDelay(duration))
 			case "cancel":
-				_ = stopOwnedProcessGroup(anchorPID, anchorIdentity, terminationGrace)
+				_ = stopStartedSupervisorGroup(anchor, anchorIdentity, terminationGrace)
 				_ = anchor.Wait()
 				return writer.send(supervisorMessage{Type: "exit", Reason: "cancelled", Error: "attempt cancelled"})
 			case "lease_lost":
-				_ = stopOwnedProcessGroup(anchorPID, anchorIdentity, terminationGrace)
+				_ = stopStartedSupervisorGroup(anchor, anchorIdentity, terminationGrace)
 				_ = anchor.Wait()
 				return writer.send(supervisorMessage{Type: "exit", Reason: "lease_lost", Error: "control-plane lease was lost"})
 			case "fail":
-				_ = stopOwnedProcessGroup(anchorPID, anchorIdentity, terminationGrace)
+				_ = stopStartedSupervisorGroup(anchor, anchorIdentity, terminationGrace)
 				_ = anchor.Wait()
 				return writer.send(supervisorMessage{Type: "exit", Reason: "supervisor_error", Error: "attempt preparation failed"})
 			case "timeout":
-				_ = stopOwnedProcessGroup(anchorPID, anchorIdentity, terminationGrace)
+				_ = stopStartedSupervisorGroup(anchor, anchorIdentity, terminationGrace)
 				_ = anchor.Wait()
 				return writer.send(supervisorMessage{Type: "exit", Reason: "timeout", Error: "task timeout reached"})
 			case "start":
 				return superviseRuntime(init, anchor, anchorIdentity, groupID, commands, controlErrors, leaseTimer, writer)
 			}
 		case err := <-controlErrors:
-			_ = stopOwnedProcessGroup(anchorPID, anchorIdentity, terminationGrace)
+			_ = stopStartedSupervisorGroup(anchor, anchorIdentity, terminationGrace)
 			_ = anchor.Wait()
 			if err != nil && !errors.Is(err, io.EOF) {
 				return fmt.Errorf("read supervisor control pipe: %w", err)
 			}
 			return nil
 		case <-leaseTimer.C:
-			_ = stopOwnedProcessGroup(anchorPID, anchorIdentity, terminationGrace)
+			_ = stopStartedSupervisorGroup(anchor, anchorIdentity, terminationGrace)
 			_ = anchor.Wait()
 			return writer.send(supervisorMessage{Type: "exit", Reason: "lease_lost", Error: "control-plane lease renewal deadline passed"})
 		}
@@ -324,13 +325,15 @@ func superviseRuntime(
 		}
 	}
 
+	grace := terminationGrace
 	if reason == "exited" {
-		_ = stopOwnedProcessGroup(groupID, anchorIdentity, 0)
-	} else {
-		stopErr := stopOwnedProcessGroup(groupID, anchorIdentity, terminationGrace)
-		if stopErr != nil && waitErr == nil {
-			waitErr = stopErr
-		}
+		grace = 0
+	}
+	stopErr := stopStartedSupervisorGroup(anchor, anchorIdentity, grace)
+	if stopErr != nil && waitErr == nil {
+		waitErr = stopErr
+	}
+	if reason != "exited" {
 		select {
 		case childErr := <-wait:
 			if waitErr == nil {
@@ -342,8 +345,12 @@ func superviseRuntime(
 			}
 		}
 	}
-	_ = anchor.Wait()
-	readers.Wait()
+	if anchorErr := waitForSupervisorCommand(anchor, supervisorCleanupWait); anchorErr != nil && waitErr == nil {
+		waitErr = fmt.Errorf("reap process-group anchor: %w", anchorErr)
+	}
+	if readersErr := waitForSupervisorReaders(&readers, stdout, stderr, supervisorCleanupWait); readersErr != nil && waitErr == nil {
+		waitErr = readersErr
+	}
 	select {
 	case promptErr := <-promptErrors:
 		if promptErr != nil && !errors.Is(promptErr, os.ErrClosed) && reason == "exited" && waitErr == nil {
@@ -400,11 +407,72 @@ func superviseRuntime(
 }
 
 func finishSupervisorStartFailure(anchor *exec.Cmd, identity string, writer *synchronizedEncoder, cause error) error {
-	_ = stopOwnedProcessGroup(anchor.Process.Pid, identity, 0)
+	_ = stopStartedSupervisorGroup(anchor, identity, 0)
 	_ = anchor.Wait()
 	return writer.send(supervisorMessage{
 		Type: "exit", ExitCode: -1, Reason: "supervisor_error", Error: boundedText(cause.Error(), protocol.MaxErrorBytes),
 	})
+}
+
+func stopStartedSupervisorGroup(anchor *exec.Cmd, identity string, grace time.Duration) error {
+	if anchor == nil || anchor.Process == nil {
+		return errors.New("process-group anchor was not started")
+	}
+	groupID := anchor.Process.Pid
+	ownedErr := stopOwnedProcessGroup(groupID, identity, grace)
+	if ownedErr == nil {
+		return nil
+	}
+	actualGroupID, groupErr := processGroupID(groupID)
+	if groupErr != nil {
+		return errors.Join(ownedErr, fmt.Errorf("verify started process group %d: %w", groupID, groupErr))
+	}
+	if actualGroupID != groupID {
+		return errors.Join(ownedErr, fmt.Errorf("started process %d moved to group %d", groupID, actualGroupID))
+	}
+	if forceErr := forceStopStartedProcessGroup(groupID); forceErr != nil {
+		return errors.Join(ownedErr, fmt.Errorf("force-stop started process group %d: %w", groupID, forceErr))
+	}
+	return nil
+}
+
+func waitForSupervisorCommand(command *exec.Cmd, timeout time.Duration) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- command.Wait()
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		killErr := command.Process.Kill()
+		select {
+		case waitErr := <-done:
+			return errors.Join(fmt.Errorf("process did not exit within %s", timeout), killErr, waitErr)
+		case <-time.After(timeout):
+			return errors.Join(fmt.Errorf("process did not reap after forced termination"), killErr)
+		}
+	}
+}
+
+func waitForSupervisorReaders(readers *sync.WaitGroup, stdout, stderr *os.File, timeout time.Duration) error {
+	done := make(chan struct{})
+	go func() {
+		readers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		closeErr := errors.Join(stdout.Close(), stderr.Close())
+		select {
+		case <-done:
+			return errors.Join(fmt.Errorf("runtime output pipes remained open after process-group termination"), closeErr)
+		case <-time.After(timeout):
+			return errors.Join(fmt.Errorf("runtime output readers did not stop after their pipes were closed"), closeErr)
+		}
+	}
 }
 
 type synchronizedEncoder struct {

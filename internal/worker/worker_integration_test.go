@@ -2661,6 +2661,29 @@ func TestProcessIdentityRefusesWrongOwner(t *testing.T) {
 	}
 }
 
+func TestStartedSupervisorGroupFallsBackWhenIdentityInspectionFails(t *testing.T) {
+	command := exec.Command("/bin/sh", "-c", "trap '' TERM; while :; do sleep 1; done")
+	configureNewProcessGroup(command)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	cleaned := false
+	defer func() {
+		if !cleaned {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	}()
+
+	groupID := command.Process.Pid
+	if err := stopStartedSupervisorGroup(command, "wrong identity", 0); err != nil {
+		t.Fatalf("fallback cleanup failed: %v", err)
+	}
+	_ = command.Wait()
+	cleaned = true
+	waitFor(t, 2*time.Second, func() bool { return !processGroupAlive(groupID) })
+}
+
 func TestEventPayloadIsAlwaysBoundedJSON(t *testing.T) {
 	cases := map[string]string{
 		"unicode":       strings.Repeat("é", protocol.MaxEventBytes),
