@@ -44,6 +44,22 @@ func TestLoadConfigAcceptsSeveralCodingAgentRuntimes(t *testing.T) {
 	}
 }
 
+func TestLoadConfigPreservesCodexPrimaryWhenAddingRuntimes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runner.toml")
+	body := "name = \"local\"\nruntimes = [\"pi\", \"codex\", \"claude-code\"]\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{protocol.RuntimePi, protocol.RuntimeCodex, protocol.RuntimeClaudeCode}
+	if config.Runtime != protocol.RuntimeCodex || !reflect.DeepEqual(config.Runtimes, want) {
+		t.Fatalf("upgraded multi-runtime config = %q %#v, want codex %#v", config.Runtime, config.Runtimes, want)
+	}
+}
+
 func TestWorkerCapacityUsesSharedRange(t *testing.T) {
 	for _, capacity := range []int{protocol.MinWorkerCapacity, protocol.MaxWorkerCapacity} {
 		config := Config{
