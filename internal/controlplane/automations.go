@@ -345,6 +345,29 @@ const automationSelect = `
 	LEFT JOIN automation_schedule_triggers schedule_trigger ON schedule_trigger.automation_id = automation.id
 `
 
+const automationOccurrenceSelect = `
+	SELECT occurrence.id, occurrence.automation_id, occurrence.automation_version,
+	       occurrence.state, automation.trigger_type,
+	       issue.issue_number, issue.issue_url, issue.issue_title,
+	       issue.observed_state, issue.observed_labels_json,
+	       pull_request.pull_request_number, pull_request.pull_request_url,
+	       pull_request.pull_request_title, pull_request.observed_state,
+	       pull_request.observed_draft, pull_request.observed_base_branch,
+	       pull_request.observed_head_commit, pull_request.observed_labels_json,
+	       schedule.kind, schedule.scheduled_at, schedule.run_request_key,
+	       schedule.cron, schedule.timezone,
+	       occurrence.task_request_key, occurrence.task_id_snapshot,
+	       occurrence.diagnostic, occurrence.created_at, occurrence.updated_at,
+	       task.id, task.title, execution.state
+	FROM automation_occurrences occurrence
+	JOIN automations automation ON automation.id = occurrence.automation_id
+	LEFT JOIN automation_github_issue_occurrences issue ON issue.occurrence_id = occurrence.id
+	LEFT JOIN automation_github_pull_request_occurrences pull_request ON pull_request.occurrence_id = occurrence.id
+	LEFT JOIN automation_schedule_occurrences schedule ON schedule.occurrence_id = occurrence.id
+	LEFT JOIN tasks task ON task.id = occurrence.task_id
+	LEFT JOIN executions execution ON execution.task_id = task.id
+`
+
 func scanAutomation(row scanner) (protocol.Automation, error) {
 	var automation protocol.Automation
 	var enabled, issueTriggerCount, pullRequestTriggerCount, scheduleTriggerCount int
@@ -455,6 +478,9 @@ func (s *Store) AutomationsPage(
 			return protocol.AutomationPage{}, err
 		}
 	}
+	if err := s.loadLatestAutomationRuns(ctx, page.Automations); err != nil {
+		return protocol.AutomationPage{}, err
+	}
 	return page, nil
 }
 
@@ -474,7 +500,48 @@ func (s *Store) Automation(ctx context.Context, automationID string) (protocol.A
 	if err != nil {
 		return protocol.AutomationDetail{}, err
 	}
+	if len(occurrences) > 0 {
+		automation.LatestRun = &occurrences[0]
+	}
 	return protocol.AutomationDetail{Automation: automation, Occurrences: occurrences}, nil
+}
+
+func (s *Store) loadLatestAutomationRuns(ctx context.Context, automations []protocol.Automation) error {
+	if len(automations) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(automations))
+	args := make([]any, len(automations))
+	for index := range automations {
+		placeholders[index] = "?"
+		args[index] = automations[index].ID
+	}
+	query := automationOccurrenceSelect + `
+		WHERE occurrence.automation_id IN (` + strings.Join(placeholders, ",") + `)
+		  AND NOT EXISTS (
+			SELECT 1 FROM automation_occurrences newer
+			WHERE newer.automation_id = occurrence.automation_id
+			  AND (newer.created_at > occurrence.created_at OR
+			       (newer.created_at = occurrence.created_at AND newer.id > occurrence.id))
+		  )
+		ORDER BY occurrence.created_at DESC, occurrence.id DESC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return unavailable(err)
+	}
+	defer rows.Close()
+	occurrences, err := scanAutomationOccurrences(rows, len(automations))
+	if err != nil {
+		return err
+	}
+	byAutomation := make(map[string]*protocol.AutomationOccurrence, len(occurrences))
+	for index := range occurrences {
+		byAutomation[occurrences[index].AutomationID] = &occurrences[index]
+	}
+	for index := range automations {
+		automations[index].LatestRun = byAutomation[automations[index].ID]
+	}
+	return nil
 }
 
 func (s *Store) loadLatestAutomationTask(ctx context.Context, automation *protocol.Automation) error {
@@ -837,28 +904,7 @@ func (s *Store) automationOccurrencesPage(
 	if limit < 1 || limit > protocol.MaxAutomationPageSize {
 		return protocol.AutomationOccurrencePage{}, invalid("invalid_limit", "limit must be between 1 and 200")
 	}
-	query := `
-		SELECT occurrence.id, occurrence.automation_id, occurrence.automation_version,
-		       occurrence.state, automation.trigger_type,
-		       issue.issue_number, issue.issue_url, issue.issue_title,
-		       issue.observed_state, issue.observed_labels_json,
-		       pull_request.pull_request_number, pull_request.pull_request_url,
-		       pull_request.pull_request_title, pull_request.observed_state,
-		       pull_request.observed_draft, pull_request.observed_base_branch,
-		       pull_request.observed_head_commit, pull_request.observed_labels_json,
-		       schedule.kind, schedule.scheduled_at, schedule.run_request_key,
-		       schedule.cron, schedule.timezone,
-		       occurrence.task_request_key, occurrence.task_id_snapshot,
-		       occurrence.diagnostic, occurrence.created_at, occurrence.updated_at,
-		       task.id, task.title, execution.state
-		FROM automation_occurrences occurrence
-		JOIN automations automation ON automation.id = occurrence.automation_id
-		LEFT JOIN automation_github_issue_occurrences issue ON issue.occurrence_id = occurrence.id
-		LEFT JOIN automation_github_pull_request_occurrences pull_request ON pull_request.occurrence_id = occurrence.id
-		LEFT JOIN automation_schedule_occurrences schedule ON schedule.occurrence_id = occurrence.id
-		LEFT JOIN tasks task ON task.id = occurrence.task_id
-		LEFT JOIN executions execution ON execution.task_id = task.id
-	WHERE occurrence.automation_id = ?`
+	query := automationOccurrenceSelect + ` WHERE occurrence.automation_id = ?`
 	args := []any{strings.TrimSpace(automationID)}
 	if occurrenceID != "" {
 		query += ` AND occurrence.id = ?`
@@ -875,7 +921,21 @@ func (s *Store) automationOccurrencesPage(
 		return protocol.AutomationOccurrencePage{}, unavailable(err)
 	}
 	defer rows.Close()
-	occurrences := make([]protocol.AutomationOccurrence, 0, limit+1)
+	occurrences, err := scanAutomationOccurrences(rows, limit+1)
+	if err != nil {
+		return protocol.AutomationOccurrencePage{}, err
+	}
+	page := protocol.AutomationOccurrencePage{Occurrences: occurrences}
+	if len(occurrences) > limit {
+		page.Occurrences = occurrences[:limit]
+		last := page.Occurrences[len(page.Occurrences)-1]
+		page.NextCursor = &protocol.AutomationOccurrenceCursor{CreatedAtMillis: last.CreatedAt.UnixMilli(), ID: last.ID}
+	}
+	return page, nil
+}
+
+func scanAutomationOccurrences(rows *sql.Rows, capacity int) ([]protocol.AutomationOccurrence, error) {
+	occurrences := make([]protocol.AutomationOccurrence, 0, capacity)
 	for rows.Next() {
 		var occurrence protocol.AutomationOccurrence
 		var triggerType string
@@ -898,22 +958,22 @@ func (s *Store) automationOccurrencesPage(
 			&occurrence.Diagnostic, &createdAt, &updatedAt,
 			&taskID, &taskTitle, &taskState,
 		); err != nil {
-			return protocol.AutomationOccurrencePage{}, unavailable(err)
+			return nil, unavailable(err)
 		}
 		switch triggerType {
 		case protocol.AutomationTriggerGitHubIssue:
 			if !issueNumber.Valid || !issueURL.Valid || !issueTitle.Valid || !issueState.Valid || issueLabels == nil || pullRequestNumber.Valid {
-				return protocol.AutomationOccurrencePage{}, unavailable(errors.New("GitHub issue Occurrence is missing typed metadata"))
+				return nil, unavailable(errors.New("GitHub issue Occurrence is missing typed metadata"))
 			}
 			occurrence.IssueNumber, occurrence.IssueURL = int(issueNumber.Int64), issueURL.String
 			occurrence.IssueTitle, occurrence.ObservedState = issueTitle.String, issueState.String
 			if err := json.Unmarshal(issueLabels, &occurrence.ObservedLabels); err != nil {
-				return protocol.AutomationOccurrencePage{}, unavailable(err)
+				return nil, unavailable(err)
 			}
 		case protocol.AutomationTriggerGitHubPullRequest:
 			if !pullRequestNumber.Valid || !pullRequestURL.Valid || !pullRequestTitle.Valid ||
 				!pullRequestState.Valid || !observedDraft.Valid || !baseBranch.Valid || !headCommit.Valid || pullRequestLabels == nil || issueNumber.Valid {
-				return protocol.AutomationOccurrencePage{}, unavailable(errors.New("GitHub pull request Occurrence is missing typed metadata"))
+				return nil, unavailable(errors.New("GitHub pull request Occurrence is missing typed metadata"))
 			}
 			occurrence.PullRequestNumber = int(pullRequestNumber.Int64)
 			occurrence.PullRequestURL, occurrence.PullRequestTitle = pullRequestURL.String, pullRequestTitle.String
@@ -922,29 +982,29 @@ func (s *Store) automationOccurrencesPage(
 			occurrence.ObservedDraft = &draft
 			occurrence.ObservedBaseBranch, occurrence.ObservedHeadCommit = baseBranch.String, headCommit.String
 			if err := json.Unmarshal(pullRequestLabels, &occurrence.ObservedLabels); err != nil {
-				return protocol.AutomationOccurrencePage{}, unavailable(err)
+				return nil, unavailable(err)
 			}
 		case protocol.AutomationTriggerSchedule:
 			if !scheduleKind.Valid || !scheduleCron.Valid || !scheduleTimezone.Valid || issueNumber.Valid || pullRequestNumber.Valid {
-				return protocol.AutomationOccurrencePage{}, unavailable(errors.New("schedule Occurrence is missing typed metadata"))
+				return nil, unavailable(errors.New("schedule Occurrence is missing typed metadata"))
 			}
 			occurrence.Kind, occurrence.Cron, occurrence.Timezone = scheduleKind.String, scheduleCron.String, scheduleTimezone.String
 			if occurrence.Kind == "scheduled" {
 				if !scheduledAt.Valid || runRequestKey.Valid {
-					return protocol.AutomationOccurrencePage{}, unavailable(errors.New("scheduled Occurrence has invalid identity"))
+					return nil, unavailable(errors.New("scheduled Occurrence has invalid identity"))
 				}
 				value := fromMillis(scheduledAt.Int64)
 				occurrence.ScheduledAt = &value
 			} else if occurrence.Kind == "run_now" {
 				if scheduledAt.Valid || !runRequestKey.Valid {
-					return protocol.AutomationOccurrencePage{}, unavailable(errors.New("Run now Occurrence has invalid identity"))
+					return nil, unavailable(errors.New("Run now Occurrence has invalid identity"))
 				}
 				occurrence.RunRequestKey = runRequestKey.String
 			} else {
-				return protocol.AutomationOccurrencePage{}, unavailable(errors.New("schedule Occurrence has invalid kind"))
+				return nil, unavailable(errors.New("schedule Occurrence has invalid kind"))
 			}
 		default:
-			return protocol.AutomationOccurrencePage{}, unavailable(errors.New("Occurrence has an invalid trigger type"))
+			return nil, unavailable(errors.New("Occurrence has an invalid trigger type"))
 		}
 		if taskID.Valid {
 			occurrence.Task = &protocol.AutomationTaskSummary{ID: taskID.String, Title: taskTitle.String, State: taskState.String}
@@ -954,13 +1014,7 @@ func (s *Store) automationOccurrencesPage(
 		occurrences = append(occurrences, occurrence)
 	}
 	if err := rows.Err(); err != nil {
-		return protocol.AutomationOccurrencePage{}, unavailable(err)
+		return nil, unavailable(err)
 	}
-	page := protocol.AutomationOccurrencePage{Occurrences: occurrences}
-	if len(occurrences) > limit {
-		page.Occurrences = occurrences[:limit]
-		last := page.Occurrences[len(page.Occurrences)-1]
-		page.NextCursor = &protocol.AutomationOccurrenceCursor{CreatedAtMillis: last.CreatedAt.UnixMilli(), ID: last.ID}
-	}
-	return page, nil
+	return occurrences, nil
 }

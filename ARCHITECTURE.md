@@ -24,9 +24,9 @@ The current task contract is a title, either a legacy free-text description or
 a pinned Workflow revision plus free-text context, assigned worker, repository,
 and timeout. The control plane snapshots one resolved prompt in the existing
 task description field before creating the task. Callers may name the
-assignment directly or ask the control-plane scheduler to choose from cattle
-workers. The deployment is limited to a trusted user and loopback HTTP on one
-host.
+assignment directly, constrain a routed assignment to one cattle worker, or
+ask the control-plane scheduler to choose from all eligible cattle workers. The
+deployment is limited to a trusted user and loopback HTTP on one host.
 
 ## 2. System context
 
@@ -185,7 +185,11 @@ event and completion contract.
 ### Browser UI
 
 `web/src` is a React and TypeScript application with Overview, Work, Workers,
-managed Repositories, Workflows, Task detail, and Delegate task views.
+managed Repositories, Runbooks, Automations, Task detail, and Delegate task
+views. Runbook is the browser term for the versioned Workflow resource.
+Automation detail projects each durable Occurrence as a Run and, after task
+creation, derives its visible state from the linked Task instead of persisting a
+second run lifecycle.
 Repository detail combines the central catalog with the control plane's current
 routing and acquisition readiness facts. It polls the same-origin API.
 

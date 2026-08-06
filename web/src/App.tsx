@@ -167,7 +167,7 @@ export function App() {
             aria-current={route.page === "workflows" ? "page" : undefined}
             onClick={() => navigate({ page: "workflows" })}
           >
-            <BookOpenText size={17} /> Workflows
+            <BookOpenText size={17} /> Runbooks
           </button>
           <button
             className={`nav-item ${route.page === "automations" || route.page === "automation" ? "active" : ""}`}
@@ -215,8 +215,8 @@ export function App() {
             {route.page === "worker" && "Worker detail"}
             {route.page === "repositories" && "Repositories"}
             {route.page === "repository" && "Repository detail"}
-            {route.page === "workflows" && "Workflows"}
-            {route.page === "workflow" && "Workflow detail"}
+            {route.page === "workflows" && "Runbooks"}
+            {route.page === "workflow" && "Runbook detail"}
             {route.page === "automations" && "Automations"}
             {route.page === "automation" && "Automation detail"}
           </div>

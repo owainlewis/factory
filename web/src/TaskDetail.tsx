@@ -241,7 +241,7 @@ export function TaskDetail({
             <div><dt>Remote</dt><dd className="break-anywhere">{data.repository.remote_identity}</dd></div>
             <div><dt>Timeout</dt><dd>{formatTimeout(data.task.timeout_seconds)}</dd></div>
             <div><dt>Elapsed</dt><dd>{taskElapsed(data)}</dd></div>
-            <div><dt>Workflow</dt><dd>{data.workflow ? `${data.workflow.title} · revision ${data.workflow.revision_number}` : "Blank task"}</dd></div>
+            <div><dt>Runbook</dt><dd>{data.workflow ? `${data.workflow.title} · revision ${data.workflow.revision_number}` : "Blank task"}</dd></div>
           </dl>
         </section>
       </div>

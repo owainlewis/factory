@@ -26,7 +26,7 @@ const identifiers: Record<string, string> = {};
 interface TaskDetail {
   task: { id: string; title: string; description?: string; state?: string };
   context?: string;
-  execution: { id: string };
+  execution: { id: string; assigned_worker_id: string };
   repository: { id: string };
   attempts: Array<{ id: string; state?: string; result?: string; error?: string }>;
   workflow?: { id: string; revision_id: string; name: string; revision_number: number };
@@ -383,19 +383,25 @@ test("shows retained Factory metrics and saves the overview", async ({ page }) =
 test("creates, pins, revises, and disables a reusable Workflow", async ({ page }) => {
   const browser = observeBrowser(page);
   await page.goto("/workflows");
-  await expect(page.getByRole("heading", { name: "Workflows", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Create workflow" }).first().click();
-  const create = page.getByRole("dialog", { name: "Create workflow" });
+  await expect(page.getByRole("heading", { name: "Runbooks", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Create runbook" }).first().click();
+  const create = page.getByRole("dialog", { name: "Create runbook" });
   await create.getByLabel("Title").fill("E2E pinned review");
   await create.getByLabel("Summary").fill("Prove immutable prompt snapshots.");
-  await create.getByLabel("Markdown instructions").fill("Use revision one instructions exactly.");
-  await create.getByRole("button", { name: "Create workflow" }).click();
+  const instructions = create.getByLabel("Markdown instructions");
+  await instructions.fill("Use revision one instructions exactly.");
+  await Promise.all([
+    page.waitForResponse((response) => response.url().includes("/api/v1/workflows?") && response.ok()),
+    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))"),
+  ]);
+  await expect(instructions).toBeFocused();
+  await create.getByRole("button", { name: "Create runbook" }).click();
   await expect(page.getByRole("heading", { name: "E2E pinned review" })).toBeVisible();
   const workflowURL = page.url();
 
   await page.getByRole("button", { name: "Delegate task" }).click();
   const delegate = page.getByRole("dialog", { name: "Delegate task" });
-  await delegate.getByLabel("Workflow").selectOption({ label: "E2E pinned review · revision 1" });
+  await delegate.getByLabel("Runbook").selectOption({ label: "E2E pinned review · revision 1" });
   await delegate.getByLabel("Title").fill("Pinned Workflow browser task");
   await delegate.getByLabel("Context").fill("JIRA-183 stays free text.");
   await delegate.getByLabel("Worker").selectOption(workerOffline);
@@ -426,7 +432,7 @@ test("creates, pins, revises, and disables a reusable Workflow", async ({ page }
   await page.getByRole("button", { name: "Confirm disable" }).click();
   await expect(page.getByRole("button", { name: "Enable" })).toBeVisible();
   await page.getByRole("button", { name: "Delegate task" }).click();
-  await expect(page.getByRole("dialog").getByLabel("Workflow").getByRole("option", { name: /E2E pinned review/ })).toHaveCount(0);
+  await expect(page.getByRole("dialog").getByLabel("Runbook").getByRole("option", { name: /E2E pinned review/ })).toHaveCount(0);
   await page.keyboard.press("Escape");
   browser.assertClean();
 });
@@ -598,7 +604,7 @@ test("delegates with worker-specific repositories and preserves the task on refr
   await expect(dialog.getByText(/task will queue until it returns/i)).toBeVisible();
   await expect(dialog.getByText("This becomes the Claude Code prompt.")).toBeVisible();
   await expect(dialog.getByLabel("Repository").getByRole("option", { name: /archive/ })).toHaveCount(1);
-  await expect(dialog.getByLabel("Repository").getByRole("option", { name: /factory/ })).toHaveCount(0);
+  await expect(dialog.getByLabel("Repository").locator(`option[value="${identifiers.factoryRepository}"]`)).toBeDisabled();
   await dialog.getByLabel("Title").fill("Durable delegated browser task");
   await dialog.getByLabel("Context").fill("Created in the real UI and stored by the real Go server.");
   await dialog.getByLabel("Repository").selectOption(identifiers.offlineRepository);
@@ -791,6 +797,22 @@ test("manages repository routing end to end and preserves add input while pollin
   expect(enabledRoute.status()).toBe(201);
   const enabledTask = await enabledRoute.json() as { execution: { assigned_worker_id: string } };
   expect([managedWorker, realWorker]).toContain(enabledTask.execution.assigned_worker_id);
+
+  await page.getByRole("button", { name: "Delegate task" }).click();
+  const delegate = page.getByRole("dialog", { name: "Delegate task" });
+  await delegate.getByLabel("Title").fill("Delegate configured managed repository");
+  await delegate.getByLabel("Context").fill("Acquire this repository on the selected worker.");
+  await delegate.getByLabel("Worker").selectOption(managedWorker);
+  const repositoryPicker = delegate.getByLabel("Repository");
+  const managedOption = repositoryPicker.locator("option").filter({ hasText: "github.com/example/browser-managed" });
+  await expect(managedOption).toBeEnabled();
+  await expect(managedOption).toContainText("acquired on demand");
+  await repositoryPicker.selectOption((await managedOption.getAttribute("value"))!);
+  await delegate.getByRole("button", { name: "Delegate task" }).click();
+  await expect(page.getByRole("heading", { name: "Delegate configured managed repository" })).toBeVisible();
+  const delegatedTaskID = new URL(page.url()).pathname.split("/").at(-1)!;
+  const delegatedTask = await json<TaskDetail>(await api.get(`/api/v1/tasks/${delegatedTaskID}`));
+  expect(delegatedTask.execution.assigned_worker_id).toBe(managedWorker);
   await api.dispose();
   browser.assertClean();
 });
@@ -815,28 +837,28 @@ test("previews and dispatches one typed GitHub issue Automation without duplicat
     [{ provider: "github", hostname: "github.com" }],
   );
   await page.goto("/workflows");
-  await page.getByRole("button", { name: "Create workflow" }).first().click();
-  const workflow = page.getByRole("dialog", { name: "Create workflow" });
+  await page.getByRole("button", { name: "Create runbook" }).first().click();
+  const workflow = page.getByRole("dialog", { name: "Create runbook" });
   await workflow.getByLabel("Title").fill("E2E issue Automation");
   await workflow.getByLabel("Summary").fill("Dispatch the safe issue fixture.");
   await workflow.getByLabel("Markdown instructions").fill("Fetch the live issue, implement it, and verify the result.");
-  await workflow.getByRole("button", { name: "Create workflow" }).click();
+  await workflow.getByRole("button", { name: "Create runbook" }).click();
   await expect(page.getByRole("heading", { name: "E2E issue Automation" })).toBeVisible();
 
   await page.getByRole("button", { name: "Automations", exact: true }).click();
   await page.getByRole("button", { name: "Create Automation" }).first().click();
   const automation = page.getByRole("dialog", { name: "Create Automation" });
   await automation.getByLabel("Title").fill("E2E ready issues");
-  await automation.getByLabel("Workflow").selectOption({ label: "E2E issue Automation" });
-  await automation.getByLabel("Managed repository").selectOption(identifiers.automationRepository);
-  await automation.getByLabel("Trusted Automation context").fill("Use only the safe browser fixture repository.");
+  await automation.getByLabel("Runbook").selectOption({ label: "E2E issue Automation" });
+  await automation.getByLabel("Repository").selectOption(identifiers.automationRepository);
+  await automation.getByLabel("Context for this Automation").fill("Use only the safe browser fixture repository.");
   await automation.getByRole("button", { name: "Create Automation" }).click();
   await expect(page.getByRole("heading", { name: "E2E ready issues" })).toBeVisible();
 
   await page.getByRole("button", { name: "Test trigger" }).click();
   await expect(page.getByText("#184 Typed Automation browser fixture")).toBeVisible();
-  await expect(page.getByText("Testing creates no task or durable occurrence.")).toBeVisible();
-  await expect(page.getByText("No durable occurrences yet.")).toBeVisible();
+  await expect(page.getByText("Testing creates no task or durable run.")).toBeVisible();
+  await expect(page.getByText("No runs yet.")).toBeVisible();
 
   await page.getByRole("button", { name: "Enable" }).click();
   await expect(page.getByRole("checkbox", { name: /factory-poller is stopped/ })).toHaveCount(0);
@@ -876,31 +898,31 @@ test("previews and dispatches one typed GitHub pull-request Automation without d
     [{ provider: "github", hostname: "github.com" }],
   );
   await page.goto("/workflows");
-  await page.getByRole("button", { name: "Create workflow" }).first().click();
-  const workflow = page.getByRole("dialog", { name: "Create workflow" });
+  await page.getByRole("button", { name: "Create runbook" }).first().click();
+  const workflow = page.getByRole("dialog", { name: "Create runbook" });
   await workflow.getByLabel("Title").fill("E2E pull-request review");
   await workflow.getByLabel("Summary").fill("Review the safe pull-request fixture.");
   await workflow.getByLabel("Markdown instructions").fill("Fetch and revalidate the live pull request, review it, and do not merge it.");
-  await workflow.getByRole("button", { name: "Create workflow" }).click();
+  await workflow.getByRole("button", { name: "Create runbook" }).click();
   await expect(page.getByRole("heading", { name: "E2E pull-request review" })).toBeVisible();
 
   await page.getByRole("button", { name: "Automations", exact: true }).click();
   await page.getByRole("button", { name: "Create Automation" }).first().click();
   const automation = page.getByRole("dialog", { name: "Create Automation" });
   await automation.getByLabel("Title").fill("E2E pull-request Automation");
-  await automation.getByLabel("Workflow").selectOption({ label: "E2E pull-request review" });
-  await automation.getByLabel("Managed repository").selectOption(identifiers.automationRepository);
-  await automation.getByLabel("Trigger type").selectOption("github_pull_request");
+  await automation.getByLabel("Runbook").selectOption({ label: "E2E pull-request review" });
+  await automation.getByLabel("Repository").selectOption(identifiers.automationRepository);
+  await automation.getByLabel("Trigger").selectOption("github_pull_request");
   await automation.getByLabel("Required labels").fill("factory:review");
   await automation.getByLabel("Base branches").fill("main");
-  await automation.getByLabel("Trusted Automation context").fill("Review only the safe synthetic pull request and never merge it.");
+  await automation.getByLabel("Context for this Automation").fill("Review only the safe synthetic pull request and never merge it.");
   await automation.getByRole("button", { name: "Create Automation" }).click();
   await expect(page.getByRole("heading", { name: "E2E pull-request Automation" })).toBeVisible();
 
   await page.getByRole("button", { name: "Test trigger" }).click();
   await expect(page.getByText("#185 Typed pull-request Automation browser fixture")).toBeVisible();
-  await expect(page.getByText("Testing creates no task or durable occurrence.")).toBeVisible();
-  await expect(page.getByText("No durable occurrences yet.")).toBeVisible();
+  await expect(page.getByText("Testing creates no task or durable run.")).toBeVisible();
+  await expect(page.getByText("No runs yet.")).toBeVisible();
 
   await page.getByRole("button", { name: "Enable" }).click();
   await expect(page.getByRole("checkbox", { name: /factory-poller is stopped/ })).toHaveCount(0);
@@ -938,30 +960,32 @@ test("previews, enables, and runs a schedule Automation through the ordinary tas
     [],
   );
   await page.goto("/workflows");
-  await page.getByRole("button", { name: "Create workflow" }).first().click();
-  const workflow = page.getByRole("dialog", { name: "Create workflow" });
+  await page.getByRole("button", { name: "Create runbook" }).first().click();
+  const workflow = page.getByRole("dialog", { name: "Create runbook" });
   await workflow.getByLabel("Title").fill("E2E scheduled maintenance");
   await workflow.getByLabel("Summary").fill("Run safe scheduled maintenance.");
   await workflow.getByLabel("Markdown instructions").fill("Inspect the fixture repository and report the scheduled maintenance result.");
-  await workflow.getByRole("button", { name: "Create workflow" }).click();
+  await workflow.getByRole("button", { name: "Create runbook" }).click();
   await expect(page.getByRole("heading", { name: "E2E scheduled maintenance" })).toBeVisible();
 
   await page.getByRole("button", { name: "Automations", exact: true }).click();
   await page.getByRole("button", { name: "Create Automation" }).first().click();
   const automation = page.getByRole("dialog", { name: "Create Automation" });
   await automation.getByLabel("Title").fill("E2E schedule Automation");
-  await automation.getByLabel("Workflow").selectOption({ label: "E2E scheduled maintenance" });
-  await automation.getByLabel("Managed repository").selectOption(identifiers.automationRepository);
-  await automation.getByLabel("Trigger type").selectOption("schedule");
+  await automation.getByLabel("Runbook").selectOption({ label: "E2E scheduled maintenance" });
+  await automation.getByLabel("Repository").selectOption(identifiers.automationRepository);
+  await automation.getByLabel("Trigger").selectOption("schedule");
+  await automation.getByLabel("Frequency").selectOption("custom");
+  await automation.getByText("Expert settings").click();
   await automation.getByLabel("Cron (five fields)").fill("0 0 1 JAN *");
-  await automation.getByLabel("IANA timezone").fill("Europe/London");
-  await automation.getByLabel("Trusted Automation context").fill("Use only the safe synthetic repository.");
+  await automation.getByLabel("Timezone").fill("Europe/London");
+  await automation.getByLabel("Context for this Automation").fill("Use only the safe synthetic repository.");
   await automation.getByRole("button", { name: "Create Automation" }).click();
   await expect(page.getByRole("heading", { name: "E2E schedule Automation" })).toBeVisible();
 
   await page.getByRole("button", { name: "Test trigger" }).click();
   await expect(page.getByText(/next matching UTC instant/i)).toBeVisible();
-  await expect(page.getByText("No durable occurrences yet.")).toBeVisible();
+  await expect(page.getByText("No runs yet.")).toBeVisible();
   await page.getByRole("button", { name: "Enable" }).click();
   await expect(page.getByRole("checkbox", { name: /factory-poller is stopped/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Confirm enable" }).click();
@@ -974,6 +998,12 @@ test("previews, enables, and runs a schedule Automation through the ordinary tas
   await page.getByRole("button", { name: "Run now" }).click();
   await expect(page.locator(".occurrence-list").getByText("Run now", { exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("button", { name: "Open task" })).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".automation-latest-task").getByText("Run now", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await page.screenshot({ path: "test-results/screenshots/automation-detail-desktop.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator(".sidebar")).not.toBeInViewport();
+  await page.screenshot({ path: "test-results/screenshots/automation-detail-narrow.png", fullPage: true });
+  expect(await page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")).toBe(true);
   const tasks = await json<{ tasks: Array<{ request_key: string }> }>(await api.get("/api/v1/tasks?limit=200"));
   expect(tasks.tasks.filter((task) => task.request_key.includes(":schedule:run:"))).toHaveLength(1);
   await api.dispose();
@@ -1002,7 +1032,7 @@ test("migrates a locked legacy snapshot through Resume and Finalize", async ({ p
   await expect(migration.getByText("0 submitted · 1 pending", { exact: true })).toBeVisible();
   await expect(migration.getByText(`${legacyRoot}/poller/poller.sqlite3`, { exact: true })).toBeVisible();
   await expect(migration.getByText(/Repository mapping:/)).toContainText("github.com/example/automation-fixture");
-  await migration.getByLabel("Workflow title").fill("E2E imported legacy workflow");
+  await migration.getByLabel("Runbook title").fill("E2E imported legacy workflow");
   await migration.getByLabel("Automation title").fill("E2E imported legacy issues");
   const importedResponse = page.waitForResponse((response) =>
     response.url().endsWith("/api/v1/migrations/legacy-poller/import") && response.request().method() === "POST",

@@ -225,10 +225,10 @@ describe("App", () => {
     const user = userEvent.setup();
     renderApp();
 
-    await user.click(await screen.findByRole("button", { name: /^Workflows$/ }));
-    expect(await screen.findByRole("heading", { name: "Workflows" })).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Create workflow" }));
-    const createDialog = screen.getByRole("dialog", { name: "Create workflow" });
+    await user.click(await screen.findByRole("button", { name: /^Runbooks$/ }));
+    expect(await screen.findByRole("heading", { name: "Runbooks" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Create runbook" }));
+    const createDialog = screen.getByRole("dialog", { name: "Create runbook" });
     const workflowTitle = within(createDialog).getByLabelText("Title");
     expect(workflowTitle).toHaveAttribute("name", "title");
     expect(workflowTitle).toHaveAttribute("autocomplete", "off");
@@ -236,7 +236,7 @@ describe("App", () => {
     await user.type(workflowTitle, "Security review");
     await user.type(within(createDialog).getByLabelText("Summary"), "Review trust boundaries.");
     await user.type(within(createDialog).getByLabelText("Markdown instructions"), "Inspect inputs and permissions.");
-    await user.click(within(createDialog).getByRole("button", { name: "Create workflow" }));
+    await user.click(within(createDialog).getByRole("button", { name: "Create runbook" }));
 
     expect(await screen.findByRole("heading", { name: "Security review" })).toBeVisible();
     expect(screen.getByText("Inspect inputs and permissions.", { selector: ".long-copy" })).toBeVisible();
@@ -257,6 +257,31 @@ describe("App", () => {
     })).toBe(true);
   });
 
+  it("keeps runbook editor focus during background polling", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      window.history.replaceState({}, "", "/workflows");
+      mockControlPlane();
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderApp();
+
+      await user.click(await screen.findByRole("button", { name: "Create runbook" }));
+      const dialog = screen.getByRole("dialog", { name: "Create runbook" });
+      const instructions = within(dialog).getByLabelText("Markdown instructions");
+      await user.type(instructions, "Keep this cursor here.");
+      expect(instructions).toHaveFocus();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+
+      expect(instructions).toHaveValue("Keep this cursor here.");
+      expect(instructions).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("creates, tests, enables, runs, and disables a typed GitHub issue Automation", async () => {
     window.history.replaceState({}, "", "/automations");
     const fetch = mockControlPlane();
@@ -267,8 +292,8 @@ describe("App", () => {
     const existingRow = screen.getByRole("button", { name: /Ready issues/ });
     expect(existingRow).toHaveTextContent("Automation is disabled.");
     expect(existingRow).toHaveTextContent("0 matched");
-    expect(existingRow).toHaveTextContent("Next check Never");
-    expect(existingRow).toHaveTextContent("No task yet");
+    expect(existingRow).toHaveTextContent("Next check");
+    expect(existingRow).toHaveTextContent("No run yet");
     await user.click(screen.getByRole("button", { name: "Create Automation" }));
     const dialog = screen.getByRole("dialog", { name: "Create Automation" });
     const automationTitle = within(dialog).getByLabelText("Title");
@@ -276,14 +301,14 @@ describe("App", () => {
     expect(automationTitle).toHaveAttribute("autocomplete", "off");
     expect(dialog.querySelector('[name="name"]')).not.toBeInTheDocument();
     await user.type(automationTitle, "Factory ready issues");
-    await user.selectOptions(within(dialog).getByLabelText("Workflow"), "workflow-implement");
-    await user.selectOptions(within(dialog).getByLabelText("Managed repository"), "repo-factory");
-    await user.type(within(dialog).getByLabelText("Trusted Automation context"), "Fetch and revalidate live state.");
+    await user.selectOptions(within(dialog).getByLabelText("Runbook"), "workflow-implement");
+    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
+    await user.type(within(dialog).getByLabelText("Context for this Automation"), "Fetch and revalidate live state.");
     await user.click(within(dialog).getByRole("button", { name: "Create Automation" }));
 
     expect(await screen.findByRole("heading", { name: "Factory ready issues" })).toBeVisible();
     expect(screen.getByText("Automation is disabled.")).toBeVisible();
-    expect(screen.getByText("No task has been dispatched.")).toBeVisible();
+    expect(screen.getByText("No durable run yet.")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Edit" }));
     const editDialog = screen.getByRole("dialog", { name: "Edit Automation" });
     const editName = within(editDialog).getByLabelText("Title");
@@ -293,7 +318,7 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Edited ready issues" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Test trigger" }));
     expect(await screen.findByText("#184 Typed Automations")).toBeVisible();
-    expect(screen.getByText("Testing creates no task or durable occurrence.")).toBeVisible();
+    expect(screen.getByText("Testing creates no task or durable run.")).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Enable" }));
     expect(screen.queryByRole("checkbox", { name: /factory-poller is stopped/ })).not.toBeInTheDocument();
@@ -305,6 +330,57 @@ describe("App", () => {
       const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       return path.endsWith("/check") && init?.method === "POST";
     })).toBe(true);
+  });
+
+  it("filters a multi-repository Automation workspace by repository and status", async () => {
+    window.history.replaceState({}, "", "/automations");
+    mockControlPlane({ multiRepositoryAutomations: true });
+    const user = userEvent.setup();
+    renderApp();
+
+    expect(await screen.findByText("Docs review")).toBeVisible();
+    await user.selectOptions(screen.getByLabelText("Repository"), "github.com/example/disabled");
+    expect(screen.getByText("Docs review")).toBeVisible();
+    expect(screen.queryByText("Ready issues")).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Status"), "disabled");
+    expect(await screen.findByRole("heading", { name: "No Automations match" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(await screen.findByText("Ready issues")).toBeVisible();
+    expect(screen.getByText("Docs review")).toBeVisible();
+  });
+
+  it("shows the newest durable Run instead of an older dispatched task", async () => {
+    window.history.replaceState({}, "", "/automations");
+    mockControlPlane({ automationRunWithoutTaskState: "failed" });
+    renderApp();
+
+    const row = await screen.findByRole("button", { name: /Ready issues/ });
+    expect(row).toHaveTextContent("#185 Newest run without task");
+    expect(row).toHaveTextContent("Failed");
+    expect(row).not.toHaveTextContent("Older dispatched task");
+  });
+
+  it.each([
+    ["queued", "Queued"],
+    ["running", "Running"],
+    ["succeeded", "Succeeded"],
+    ["failed", "Failed"],
+    ["cancelled", "Cancelled"],
+  ] as const)("shows a linked %s task as the Automation Run state", async (taskState, label) => {
+    window.history.replaceState({}, "", "/automations/automation-ready");
+    mockControlPlane({ automationTaskState: taskState });
+    renderApp();
+
+    const identity = await screen.findByText("#184 Typed Automation run state", { selector: ".occurrence-identity strong" });
+    const row = identity.closest(".occurrence-row");
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getByText(label, { selector: ".status-badge" })).toBeVisible();
+    expect(within(row as HTMLElement).getByRole("link", { name: "GitHub source" })).toHaveAttribute(
+      "href",
+      "https://github.com/example/factory/issues/184",
+    );
+    expect(await screen.findByText("Implement the change and run the required checks.", { selector: ".runbook-copy" })).toBeVisible();
   });
 
   it("previews, imports, resolves, and finalizes a legacy poller migration", async () => {
@@ -326,7 +402,7 @@ describe("App", () => {
     expect(within(dialog).getByText(/Repository mapping:/)).toHaveTextContent("github.com/example/factory");
     expect(within(dialog).getByText(/Repository mapping:/)).toHaveTextContent("repo-factory");
     expect(within(dialog).getByText(/0 submitted · 1 pending · every 30s/)).toBeVisible();
-    const workflowTitle = within(dialog).getByLabelText("Workflow title");
+    const workflowTitle = within(dialog).getByLabelText("Runbook title");
     const automationTitle = within(dialog).getByLabelText("Automation title");
     await user.clear(workflowTitle);
     await user.type(workflowTitle, "Imported implementation workflow");
@@ -437,13 +513,14 @@ describe("App", () => {
     await user.click(await screen.findByRole("button", { name: "Create Automation" }));
     const dialog = screen.getByRole("dialog", { name: "Create Automation" });
     await user.type(within(dialog).getByLabelText("Title"), "Daily Factory maintenance");
-    await user.selectOptions(within(dialog).getByLabelText("Workflow"), "workflow-implement");
-    await user.selectOptions(within(dialog).getByLabelText("Managed repository"), "repo-factory");
-    await user.selectOptions(within(dialog).getByLabelText("Trigger type"), "schedule");
+    await user.selectOptions(within(dialog).getByLabelText("Runbook"), "workflow-implement");
+    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
+    await user.selectOptions(within(dialog).getByLabelText("Trigger"), "schedule");
+    await user.selectOptions(within(dialog).getByLabelText("Frequency"), "custom");
     await user.clear(within(dialog).getByLabelText("Cron (five fields)"));
     await user.type(within(dialog).getByLabelText("Cron (five fields)"), "0 9 * * 1");
-    await user.clear(within(dialog).getByLabelText("IANA timezone"));
-    await user.type(within(dialog).getByLabelText("IANA timezone"), "Europe/London");
+    await user.clear(within(dialog).getByLabelText("Timezone"));
+    await user.type(within(dialog).getByLabelText("Timezone"), "Europe/London");
     await user.click(within(dialog).getByRole("button", { name: "Create Automation" }));
 
     expect(await screen.findByRole("heading", { name: "Daily Factory maintenance" })).toBeVisible();
@@ -479,7 +556,7 @@ describe("App", () => {
       renderApp();
 
       await user.click(await screen.findByRole("button", { name: "Create Automation" }));
-      const input = screen.getByLabelText("Trusted Automation context");
+      const input = screen.getByLabelText("Context for this Automation");
       await user.type(input, "In progress Automation context");
       expect(input).toHaveFocus();
 
@@ -503,9 +580,9 @@ describe("App", () => {
     await user.click(await screen.findByRole("button", { name: "Create Automation" }));
     const dialog = screen.getByRole("dialog", { name: "Create Automation" });
     await user.type(within(dialog).getByLabelText("Title"), "Factory pull request reviews");
-    await user.selectOptions(within(dialog).getByLabelText("Workflow"), "workflow-implement");
-    await user.selectOptions(within(dialog).getByLabelText("Managed repository"), "repo-factory");
-    await user.selectOptions(within(dialog).getByLabelText("Trigger type"), "github_pull_request");
+    await user.selectOptions(within(dialog).getByLabelText("Runbook"), "workflow-implement");
+    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
+    await user.selectOptions(within(dialog).getByLabelText("Trigger"), "github_pull_request");
     await user.selectOptions(within(dialog).getByLabelText("Pull request state"), "open");
     await user.click(within(dialog).getByLabelText("Include drafts"));
     await user.clear(within(dialog).getByLabelText("Required labels"));
@@ -528,7 +605,7 @@ describe("App", () => {
     renderApp();
 
     await user.click(await screen.findByRole("button", { name: "Create Automation" }));
-    const workflow = screen.getByLabelText("Workflow");
+    const workflow = screen.getByLabelText("Runbook");
     expect(await within(workflow).findByRole("option", { name: "Historical workflow" })).toHaveValue("workflow-history");
   });
 
@@ -540,8 +617,8 @@ describe("App", () => {
 
     await user.click(await screen.findByRole("button", { name: "Edit" }));
     const dialog = screen.getByRole("dialog", { name: "Edit Automation" });
-    expect(within(dialog).getByLabelText("Workflow")).toHaveValue("workflow-implement");
-    expect(within(dialog).getByLabelText("Managed repository")).toHaveValue("repo-factory");
+    expect(within(dialog).getByLabelText("Runbook")).toHaveValue("workflow-implement");
+    expect(within(dialog).getByLabelText("Repository")).toHaveValue("repo-factory");
     await user.type(within(dialog).getByLabelText("Title"), " updated");
     await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
     expect(fetch.mock.calls.some(([input, init]) => {
@@ -562,9 +639,9 @@ describe("App", () => {
     expect(await screen.findByText("Historical Automation")).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: /Ready issues/ }));
-    expect(await screen.findByText("#184 Paged issue 184")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Load more occurrences" }));
-    expect(await screen.findByText("#183 Paged issue 183")).toBeVisible();
+    expect(await screen.findByText("#184 Paged issue 184", { selector: ".occurrence-identity strong" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Load more runs" }));
+    expect(await screen.findByText("#183 Paged issue 183", { selector: ".occurrence-identity strong" })).toBeVisible();
   });
 
   it("keeps a refreshed Workflow head entry over its stale loaded history copy", async () => {
@@ -573,7 +650,7 @@ describe("App", () => {
     const user = userEvent.setup();
     const { client } = renderApp();
 
-    await user.click(await screen.findByRole("button", { name: "Load more workflows" }));
+    await user.click(await screen.findByRole("button", { name: "Load more runbooks" }));
     expect(await screen.findByText("Historical workflow")).toBeVisible();
 
     await client.refetchQueries({ queryKey: ["workflows", "head"] });
@@ -596,7 +673,7 @@ describe("App", () => {
     const user = userEvent.setup();
     const { client } = renderApp();
 
-    await user.click(await screen.findByRole("button", { name: "Load more workflows" }));
+    await user.click(await screen.findByRole("button", { name: "Load more runbooks" }));
     await vi.waitFor(() => expect(workflowRequestPaths(fetch)).toContain(
       "/api/v1/workflows?limit=200&cursor=old-workflow-boundary",
     ));
@@ -604,7 +681,7 @@ describe("App", () => {
     await client.refetchQueries({ queryKey: ["workflows", "head"] });
     releaseWorkflowHistory();
     expect(await screen.findByText("Historical workflow")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Load more workflows" }));
+    await user.click(screen.getByRole("button", { name: "Load more runbooks" }));
 
     expect(await screen.findByText("Shifted boundary workflow")).toBeVisible();
     expect(workflowRequestPaths(fetch)).toEqual([
@@ -623,7 +700,7 @@ describe("App", () => {
     await user.click(await screen.findByRole("button", { name: "Delegate task" }));
     const dialog = screen.getByRole("dialog", { name: "Delegate task" });
     await user.type(within(dialog).getByLabelText("Title"), "Implement #183");
-    await user.selectOptions(within(dialog).getByLabelText("Workflow"), "workflow-revision-1");
+    await user.selectOptions(within(dialog).getByLabelText("Runbook"), "workflow-revision-1");
     await user.type(within(dialog).getByLabelText("Context"), "Issue #183 remains ordinary text.");
     await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
     await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
@@ -786,12 +863,15 @@ describe("App", () => {
     await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
     const repository = within(dialog).getByLabelText("Repository");
     expect(within(repository).getByRole("option", { name: /factory/ })).toBeInTheDocument();
+    expect(within(repository).getByRole("option", { name: /github.com\/example\/managed/ })).toBeEnabled();
+    expect(within(repository).getByRole("option", { name: /github.com\/example\/disabled/ })).toBeDisabled();
     expect(within(repository).queryByRole("option", { name: /archive/ })).not.toBeInTheDocument();
 
     await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-offline");
     expect(within(dialog).getByText(/task will queue until it returns/i)).toBeVisible();
     expect(within(repository).getByRole("option", { name: /archive/ })).toBeInTheDocument();
-    expect(within(repository).queryByRole("option", { name: /factory/ })).not.toBeInTheDocument();
+    expect(within(repository).getByRole("option", { name: /github.com\/example\/managed/ })).toBeDisabled();
+    expect(within(repository).getByRole("option", { name: /github.com\/example\/factory/ })).toBeDisabled();
   });
 
   it("confirms permanent deletion only for terminal task history", async () => {
@@ -881,6 +961,38 @@ describe("App", () => {
       repository_id: "repo-factory",
       timeout_seconds: 7200,
     });
+  });
+
+  it("delegates a configured managed repository to the selected worker", async () => {
+    const fetch = mockControlPlane();
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Delegate task" }));
+    const dialog = screen.getByRole("dialog", { name: "Delegate task" });
+    await user.type(within(dialog).getByLabelText("Title"), "Work in managed repository");
+    await user.type(within(dialog).getByLabelText("Context"), "Acquire the configured repository on demand.");
+    await user.selectOptions(within(dialog).getByLabelText("Worker"), "worker-online");
+    const repositoryPicker = within(dialog).getByLabelText("Repository");
+    expect(await within(repositoryPicker).findByRole("option", { name: /github\.com\/example\/managed · acquired on demand/ })).toBeEnabled();
+    expect(within(repositoryPicker).getByRole("option", { name: /github\.com\/example\/disabled · Repository routing is disabled\./ })).toBeDisabled();
+    expect(within(repositoryPicker).getByRole("option", { name: /docs · github\.com\/example\/docs/ })).toBeEnabled();
+    await user.selectOptions(repositoryPicker, "repo-managed");
+    await user.click(within(dialog).getByRole("button", { name: "Delegate task" }));
+
+    expect(await screen.findByRole("heading", { name: "Work in managed repository" })).toBeVisible();
+    const createCall = fetch.mock.calls.find(([input, init]) => input === "/api/v1/tasks" && init?.method === "POST");
+    expect(createCall).toBeDefined();
+    const createBody = JSON.parse(String(createCall?.[1]?.body));
+    expect(createBody).toMatchObject({
+      title: "Work in managed repository",
+      worker_id: "worker-online",
+      route: {
+        repository_remote_identity: "github.com/example/managed",
+        source_access: { provider: "github", hostname: "github.com" },
+      },
+    });
+    expect(createBody).not.toHaveProperty("repository_id");
   });
 
   it("closes the keyboard-accessible drawer with Escape", async () => {

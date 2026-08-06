@@ -1119,6 +1119,26 @@ func createManagedTestRepository(t *testing.T, store *Store, remoteIdentity stri
 	return repository
 }
 
+func requireWorkerRepositoryOption(
+	t *testing.T,
+	store *Store,
+	workerID string,
+	repositoryID string,
+) protocol.WorkerRepositoryOption {
+	t.Helper()
+	options, err := store.WorkerRepositoryOptions(context.Background(), workerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, option := range options {
+		if option.ID == repositoryID {
+			return option
+		}
+	}
+	t.Fatalf("worker %q repository options do not contain %q: %#v", workerID, repositoryID, options)
+	return protocol.WorkerRepositoryOption{}
+}
+
 func TestWorkerRuntimeDeterminesExecutionAndCannotChange(t *testing.T) {
 	store := newTestStore(t)
 	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
@@ -1606,6 +1626,65 @@ func TestRoutedTaskCanFreezeAZeroRepositoryCattleWorker(t *testing.T) {
 	assertErrorCode(t, err, "repository_not_managed")
 }
 
+func TestRoutedTaskCanTargetOneEligibleWorker(t *testing.T) {
+	store := newTestStore(t)
+	repository := createManagedTestRepository(t, store, "github.com/example/selected")
+	registration := protocol.WorkerRegistration{
+		WorkerVersion: "test", RuntimeVersion: "test", Capacity: 1, Health: "healthy",
+		SourceAccess:               []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+		AcceptsManagedRepositories: true,
+	}
+	registration.Name = workerA
+	if _, err := store.RegisterWorker(context.Background(), workerA, registration); err != nil {
+		t.Fatal(err)
+	}
+	registration.Name = workerB
+	if _, err := store.RegisterWorker(context.Background(), workerB, registration); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, created, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+		RequestKey: "selected-worker-route", Title: "Selected worker route",
+		Description: "Acquire the configured repository on the selected worker.",
+		WorkerID:    workerB,
+		Route: &protocol.TaskRoute{
+			RepositoryRemoteIdentity: repository.RemoteIdentity,
+			SourceAccess:             protocol.SourceAccess{Provider: "github", Hostname: "github.com"},
+		},
+		TimeoutSeconds: 60,
+	})
+	if err != nil || !created {
+		t.Fatalf("create selected worker route: created %t, err %v", created, err)
+	}
+	if detail.Execution.AssignedWorkerID != workerB || detail.Repository.ID != repository.ID {
+		t.Fatalf("selected worker route detail = %#v", detail)
+	}
+	worker, err := store.Worker(context.Background(), workerB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(worker.Repositories) != 1 || worker.Repositories[0].ID != repository.ID {
+		t.Fatalf("selected worker repositories = %#v", worker.Repositories)
+	}
+
+	registration.Name = workerA
+	registration.Health = "unhealthy"
+	if _, err := store.RegisterWorker(context.Background(), workerA, registration); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+		RequestKey: "ineligible-selected-worker-route", Title: "Do not fall back",
+		Description: "The selected worker constraint must remain authoritative.",
+		WorkerID:    workerA,
+		Route: &protocol.TaskRoute{
+			RepositoryRemoteIdentity: repository.RemoteIdentity,
+			SourceAccess:             protocol.SourceAccess{Provider: "github", Hostname: "github.com"},
+		},
+		TimeoutSeconds: 60,
+	})
+	assertErrorCode(t, err, "no_eligible_worker")
+}
+
 func TestRoutedTaskSkipsWorkerWithConflictingDynamicDisplayKey(t *testing.T) {
 	store := newTestStore(t)
 	target := createManagedTestRepository(t, store, "github.com/example/target")
@@ -1627,6 +1706,10 @@ func TestRoutedTaskSkipsWorkerWithConflictingDynamicDisplayKey(t *testing.T) {
 	if _, err := store.RegisterWorker(context.Background(), workerB, workerBRegistration); err != nil {
 		t.Fatal(err)
 	}
+	option := requireWorkerRepositoryOption(t, store, workerA, target.ID)
+	if option.Ready || option.Reason != "Another advertised repository uses this routing identity." {
+		t.Fatalf("conflicting repository option = %#v", option)
+	}
 	detail, created, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
 		RequestKey: "display-key-collision", Title: "Display key collision",
 		Description: "Route around the collision.",
@@ -1641,6 +1724,48 @@ func TestRoutedTaskSkipsWorkerWithConflictingDynamicDisplayKey(t *testing.T) {
 	}
 	if detail.Execution.AssignedWorkerID != workerB {
 		t.Fatalf("collision route assigned worker %q; want %q", detail.Execution.AssignedWorkerID, workerB)
+	}
+}
+
+func TestWorkerRepositoryOptionsRejectUnsupportedManagedSourceButKeepDirectCheckout(t *testing.T) {
+	store := newTestStore(t)
+	legacyRemote := "gitlab.com/example/legacy"
+	registration := protocol.WorkerRegistration{
+		Name: workerA, WorkerVersion: "test", RuntimeVersion: "test",
+		Capacity: 1, Health: "healthy",
+		Repositories:               []protocol.RepositoryRegistration{{Key: "legacy", RemoteIdentity: legacyRemote}},
+		SourceAccess:               []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+		AcceptsManagedRepositories: true,
+	}
+	advertisingWorker, err := store.RegisterWorker(context.Background(), workerA, registration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRepositoryID := advertisingWorker.Repositories[0].ID
+	if _, err := store.db.Exec(`UPDATE repositories SET enabled = 1 WHERE id = ?`, legacyRepositoryID); err != nil {
+		t.Fatal(err)
+	}
+
+	advertised := requireWorkerRepositoryOption(t, store, workerA, legacyRepositoryID)
+	if !advertised.Advertised || !advertised.Ready {
+		t.Fatalf("advertised legacy repository option = %#v", advertised)
+	}
+	if _, _, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+		RequestKey: "legacy-direct-checkout", Title: "Use direct checkout",
+		Description: "Keep advertised legacy checkouts assignable.",
+		WorkerID:    workerA, RepositoryID: legacyRepositoryID, TimeoutSeconds: 60,
+	}); err != nil {
+		t.Fatalf("direct legacy checkout assignment: %v", err)
+	}
+
+	registration.Name = workerB
+	registration.Repositories = nil
+	if _, err := store.RegisterWorker(context.Background(), workerB, registration); err != nil {
+		t.Fatal(err)
+	}
+	managed := requireWorkerRepositoryOption(t, store, workerB, legacyRepositoryID)
+	if managed.Advertised || managed.Ready || managed.Reason != "Repository source is not supported for managed acquisition." {
+		t.Fatalf("unsupported managed repository option = %#v", managed)
 	}
 }
 
@@ -1688,6 +1813,10 @@ func TestRoutedTaskReservesManagedRepositoryCacheHeadroom(t *testing.T) {
 	if readiness.RoutingReady || len(readiness.Workers) != 1 || readiness.Workers[0].Ready ||
 		readiness.Workers[0].Reason != "Managed repository cache and reservations are full." {
 		t.Fatalf("reserved cache readiness = %#v", readiness)
+	}
+	option := requireWorkerRepositoryOption(t, store, workerA, secondRepository.ID)
+	if option.Ready || option.Reason != readiness.Workers[0].Reason {
+		t.Fatalf("reserved cache repository option = %#v, readiness = %#v", option, readiness.Workers[0])
 	}
 
 	registration.ManagedRepositoryIDs = append(registration.ManagedRepositoryIDs, firstRepository.ID)

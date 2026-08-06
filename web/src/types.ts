@@ -58,6 +58,17 @@ export interface ManagedRepositoryReadiness {
   workers: ManagedRepositoryWorkerReadiness[];
 }
 
+export interface WorkerRepositoryOption {
+  id: string;
+  key?: string;
+  remote_identity: string;
+  enabled: boolean;
+  cached: boolean;
+  advertised: boolean;
+  ready: boolean;
+  reason: string;
+}
+
 export interface Task {
   id: string;
   request_key: string;
@@ -203,6 +214,7 @@ export interface Automation {
 	skipped_count: number;
 	dispatched_count: number;
 	latest_task?: AutomationTaskSummary;
+	latest_run?: AutomationOccurrence;
 	created_at: string;
 	updated_at: string;
 }
@@ -377,12 +389,25 @@ export interface APIErrorBody {
 interface CreateTaskBaseInput {
   request_key: string;
   title: string;
-  worker_id: string;
-  repository_id: string;
   timeout_seconds: number;
 }
 
-export type CreateTaskInput = CreateTaskBaseInput & (
+type CreateTaskAssignment =
+  | {
+      worker_id: string;
+      repository_id: string;
+      route?: never;
+    }
+  | {
+      worker_id?: string;
+      repository_id?: never;
+      route: {
+        repository_remote_identity: string;
+        source_access: { provider: string; hostname: string };
+      };
+    };
+
+export type CreateTaskInput = CreateTaskBaseInput & CreateTaskAssignment & (
   | { description: string; context?: never; workflow_revision_id?: never }
   | { description?: never; context: string; workflow_revision_id: string }
 );

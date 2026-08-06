@@ -776,6 +776,176 @@ func (s *Store) ManagedRepository(ctx context.Context, repositoryID string) (pro
 	return repository, nil
 }
 
+type managedRepositoryEligibility struct {
+	online             bool
+	health             string
+	githubAccess       bool
+	acceptsManaged     bool
+	cached             bool
+	advertised         bool
+	displayKeyConflict bool
+	cacheUse           int
+	retentionUse       int
+}
+
+func evaluateManagedRepositoryEligibility(
+	repository protocol.ManagedRepository,
+	state managedRepositoryEligibility,
+) (bool, string) {
+	switch {
+	case !repository.Enabled:
+		return false, "Repository routing is disabled."
+	case !state.advertised && !isManagedGitHubRemote(repository.RemoteIdentity):
+		return false, "Repository source is not supported for managed acquisition."
+	case !state.online:
+		return false, "Worker is offline."
+	case state.health != "healthy":
+		return false, "Worker is unhealthy."
+	case !state.githubAccess:
+		return false, "Worker does not currently report GitHub access."
+	case !state.advertised && state.displayKeyConflict:
+		return false, "Another advertised repository uses this routing identity."
+	case !state.advertised && !state.acceptsManaged:
+		return false, "Worker cannot acquire managed repositories and does not advertise this one."
+	case !state.advertised && !state.cached && state.cacheUse >= protocol.MaxRepositoryCacheEntries:
+		return false, "Managed repository cache and reservations are full."
+	case state.retentionUse >= protocol.MaxRetainedPerRepo:
+		return false, "Repository retained-worktree capacity is full."
+	case state.cached:
+		return true, "Online, healthy, with GitHub access and this repository cached."
+	case state.advertised:
+		return true, "Online, healthy, with GitHub access and this repository advertised."
+	default:
+		return true, "Online, healthy, with GitHub access and managed cache headroom."
+	}
+}
+
+func isManagedGitHubRemote(remoteIdentity string) bool {
+	_, err := normalizeManagedGitHubRemote(remoteIdentity)
+	return err == nil
+}
+
+func (s *Store) WorkerRepositoryOptions(
+	ctx context.Context,
+	workerID string,
+) ([]protocol.WorkerRepositoryOption, error) {
+	workerID = strings.TrimSpace(workerID)
+	var health string
+	var heartbeat int64
+	var encodedSourceAccess, encodedManagedRepositoryIDs []byte
+	var acceptsManaged, cacheUse int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT health, last_heartbeat, source_access_json, managed_repository_ids_json,
+		       accepts_managed_repositories,
+		       json_array_length(managed_repository_ids_json) + (
+		           SELECT COUNT(*)
+		           FROM worker_repositories reserved
+		           WHERE reserved.worker_id = workers.id
+		             AND reserved.dynamic = 1
+		             AND reserved.advertised = 1
+		             AND NOT EXISTS (
+		                 SELECT 1 FROM json_each(workers.managed_repository_ids_json) cached
+		                 WHERE cached.value = reserved.repository_id
+		             )
+		       )
+		FROM workers WHERE id = ?
+	`, workerID).Scan(
+		&health, &heartbeat, &encodedSourceAccess, &encodedManagedRepositoryIDs,
+		&acceptsManaged, &cacheUse,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	var sourceAccess []protocol.SourceAccess
+	if err := json.Unmarshal(encodedSourceAccess, &sourceAccess); err != nil {
+		return nil, unavailable(err)
+	}
+	var managedRepositoryIDs []string
+	if err := json.Unmarshal(encodedManagedRepositoryIDs, &managedRepositoryIDs); err != nil {
+		return nil, unavailable(err)
+	}
+	cachedRepositoryIDs := make(map[string]struct{}, len(managedRepositoryIDs))
+	for _, repositoryID := range managedRepositoryIDs {
+		cachedRepositoryIDs[repositoryID] = struct{}{}
+	}
+	baseState := managedRepositoryEligibility{
+		online:         s.now().Sub(fromMillis(heartbeat)) <= protocol.WorkerOnlineWindow,
+		health:         health,
+		githubAccess:   hasSourceAccess(sourceAccess, protocol.SourceAccess{Provider: "github", Hostname: "github.com"}),
+		acceptsManaged: acceptsManaged != 0,
+		cacheUse:       cacheUse,
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT repository.id, COALESCE(worker_repository.display_key, ''),
+		       repository.remote_identity, repository.enabled,
+		       COALESCE(worker_repository.advertised, 0),
+		       EXISTS (
+		           SELECT 1 FROM worker_repositories conflict
+		           WHERE conflict.worker_id = ?
+		             AND conflict.display_key = repository.remote_identity
+		             AND conflict.repository_id != repository.id
+		       ),
+		       COALESCE(worker_repository.retained_count, 0) + (
+		           SELECT COUNT(*)
+		           FROM attempts active_attempt
+		           JOIN executions active_execution ON active_execution.id = active_attempt.execution_id
+		           JOIN tasks active_task ON active_task.id = active_execution.task_id
+		           WHERE active_attempt.worker_id = ?
+		             AND active_task.repository_id = repository.id
+		             AND active_attempt.state IN ('preparing', 'running')
+		       ) + (
+		           SELECT COUNT(*)
+		           FROM attempts terminal_attempt
+		           JOIN executions terminal_execution ON terminal_execution.id = terminal_attempt.execution_id
+		           JOIN tasks terminal_task ON terminal_task.id = terminal_execution.task_id
+		           WHERE terminal_attempt.worker_id = ?
+		             AND terminal_task.repository_id = repository.id
+		             AND terminal_attempt.state IN ('succeeded', 'failed', 'cancelled', 'lost')
+		             AND terminal_attempt.capacity_acknowledged = 0
+		       )
+		FROM repositories repository
+		LEFT JOIN worker_repositories worker_repository
+		  ON worker_repository.worker_id = ? AND worker_repository.repository_id = repository.id
+		ORDER BY repository.remote_identity
+	`, workerID, workerID, workerID, workerID)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	defer rows.Close()
+	options := make([]protocol.WorkerRepositoryOption, 0)
+	for rows.Next() {
+		var option protocol.WorkerRepositoryOption
+		var enabled, advertised, displayKeyConflict int
+		var retentionUse int
+		if err := rows.Scan(
+			&option.ID, &option.Key, &option.RemoteIdentity, &enabled,
+			&advertised, &displayKeyConflict, &retentionUse,
+		); err != nil {
+			return nil, unavailable(err)
+		}
+		_, option.Cached = cachedRepositoryIDs[option.ID]
+		option.Enabled = enabled != 0
+		option.Advertised = advertised != 0
+		state := baseState
+		state.cached = option.Cached
+		state.advertised = option.Advertised
+		state.displayKeyConflict = displayKeyConflict != 0
+		state.retentionUse = retentionUse
+		option.Ready, option.Reason = evaluateManagedRepositoryEligibility(
+			protocol.ManagedRepository{ID: option.ID, RemoteIdentity: option.RemoteIdentity, Enabled: option.Enabled},
+			state,
+		)
+		options = append(options, option)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, unavailable(err)
+	}
+	return options, nil
+}
+
 func (s *Store) ManagedRepositoryReadiness(
 	ctx context.Context,
 	repositoryID string,
@@ -862,38 +1032,22 @@ func (s *Store) ManagedRepositoryReadiness(
 		}
 		worker.Cached = cached != 0
 		worker.Advertised = advertised != 0
-		online := now.Sub(fromMillis(heartbeat)) <= protocol.WorkerOnlineWindow
-		githubAccess := hasSourceAccess(sourceAccess, protocol.SourceAccess{
-			Provider: "github", Hostname: "github.com",
-		})
-		switch {
-		case !repository.Enabled:
-			worker.Reason = "Repository routing is disabled."
-		case !online:
-			worker.Reason = "Worker is offline."
-		case health != "healthy":
-			worker.Reason = "Worker is unhealthy."
-		case !githubAccess:
-			worker.Reason = "Worker does not currently report GitHub access."
-		case !worker.Advertised && displayKeyConflict != 0:
-			worker.Reason = "Another advertised repository uses this routing identity."
-		case !worker.Advertised && acceptsManaged == 0:
-			worker.Reason = "Worker cannot acquire managed repositories and does not advertise this one."
-		case !worker.Advertised && !worker.Cached && cacheUse >= protocol.MaxRepositoryCacheEntries:
-			worker.Reason = "Managed repository cache and reservations are full."
-		case retentionUse >= protocol.MaxRetainedPerRepo:
-			worker.Reason = "Repository retained-worktree capacity is full."
-		default:
-			worker.Ready = true
+		worker.Ready, worker.Reason = evaluateManagedRepositoryEligibility(
+			repository,
+			managedRepositoryEligibility{
+				online:             now.Sub(fromMillis(heartbeat)) <= protocol.WorkerOnlineWindow,
+				health:             health,
+				githubAccess:       hasSourceAccess(sourceAccess, protocol.SourceAccess{Provider: "github", Hostname: "github.com"}),
+				acceptsManaged:     acceptsManaged != 0,
+				cached:             worker.Cached,
+				advertised:         worker.Advertised,
+				displayKeyConflict: displayKeyConflict != 0,
+				cacheUse:           cacheUse,
+				retentionUse:       retentionUse,
+			},
+		)
+		if worker.Ready {
 			readiness.RoutingReady = true
-			switch {
-			case worker.Cached:
-				worker.Reason = "Online, healthy, with GitHub access and this repository cached."
-			case worker.Advertised:
-				worker.Reason = "Online, healthy, with GitHub access and this repository advertised."
-			default:
-				worker.Reason = "Online, healthy, with GitHub access and managed cache headroom."
-			}
 		}
 		readiness.Workers = append(readiness.Workers, worker)
 	}
@@ -1713,8 +1867,9 @@ func (s *Store) selectTaskRoute(
 	tx *sql.Tx,
 	route protocol.TaskRoute,
 	now int64,
+	workerID string,
 ) (taskRouteCandidate, error) {
-	return s.selectTaskRouteWithSourceRequirement(ctx, tx, route, now, true)
+	return s.selectTaskRouteWithSourceRequirement(ctx, tx, route, now, true, workerID)
 }
 
 func (s *Store) selectTaskRouteWithSourceRequirement(
@@ -1723,6 +1878,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 	route protocol.TaskRoute,
 	now int64,
 	requireSourceAccess bool,
+	workerID string,
 ) (taskRouteCandidate, error) {
 	repositoryPredicate := "r.remote_identity = ?"
 	if route.SourceAccess.Provider == "github" && route.SourceAccess.Hostname == "github.com" {
@@ -1756,6 +1912,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		  ON wr.worker_id = w.id AND wr.repository_id = ?
 		WHERE w.health = 'healthy'
 		  AND w.last_heartbeat >= ?
+		  AND (? = '' OR w.id = ?)
 		  AND (
 		      COALESCE(wr.advertised, 0) = 1
 		      OR NOT EXISTS (
@@ -1810,7 +1967,8 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		        AND terminal_attempt.capacity_acknowledged = 0
 		  ) < ?
 		ORDER BY w.id
-	`, repositoryID, now-protocol.WorkerOnlineWindow.Milliseconds(), repositoryIdentity, repositoryID,
+	`, repositoryID, now-protocol.WorkerOnlineWindow.Milliseconds(), workerID, workerID,
+		repositoryIdentity, repositoryID,
 		repositoryID, protocol.MaxRepositoryCacheEntries,
 		repositoryID, repositoryID, protocol.MaxRetainedPerRepo)
 	if err != nil {
@@ -1940,10 +2098,10 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 			)
 		}
 	} else {
-		if input.WorkerID != "" || input.RepositoryID != "" {
+		if input.RepositoryID != "" {
 			return protocol.TaskDetail{}, false, invalid(
 				"invalid_assignment",
-				"route cannot be combined with worker_id or repository_id",
+				"route cannot be combined with repository_id",
 			)
 		}
 		if err := normalizeTaskRoute(input.Route); err != nil {
@@ -2005,7 +2163,7 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 	}
 	var runtime string
 	if input.Route != nil {
-		selection, routeErr := s.selectTaskRoute(ctx, tx, *input.Route, now)
+		selection, routeErr := s.selectTaskRoute(ctx, tx, *input.Route, now, input.WorkerID)
 		if routeErr != nil {
 			return protocol.TaskDetail{}, false, routeErr
 		}
