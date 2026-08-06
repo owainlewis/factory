@@ -78,11 +78,13 @@ post a pull-request review comment. The definition has a GitHub pull-request
 webhook Trigger filtered to opened and synchronized events.
 
 GitHub sends a delivery. Factory verifies the signature, bounds the body, and
-stores it under its delivery ID. Receipt admission freezes every matching
-Trigger ID and generation before the request is acknowledged. The delivery
-processor creates one Run with a frozen definition snapshot, bounded event
-context, repository, pull-request identity, and head commit. The target set
-contains one item, so Factory creates one Job.
+stores it under its delivery ID. Before acknowledging the request, receipt
+admission freezes every matching Trigger and its complete behavior-bearing
+Definition snapshot in the same transaction. The delivery processor creates
+one Run from that frozen match, with bounded event context, repository,
+pull-request identity, and head commit. A later edit, disable, or archive does
+not change or suppress accepted work. The target set contains one item, so
+Factory creates one Job.
 
 The scheduler selects a healthy Runner that advertises the required runtime,
 source access, labels, and free capacity. The Runner prepares the repository
@@ -246,14 +248,20 @@ cannot expose operator routes through the webhook listener.
   Attempts for infrastructure failures. Agent-reported failure is not retried
   automatically by default.
 - The Run aggregate reports pending, blocked, queued, running, publishing,
-  succeeded, failed, cancelled, and skipped counts without hiding individual
-  outcomes.
-- Cancelling a Run cancels undispatched Jobs and requests cancellation of
-  active Attempts without rewriting terminal Jobs.
-- Retrying one Job preserves previous Attempt and Provider Action history and
-  never replays its successful siblings.
+  cancelling, succeeded, failed, cancelled, and skipped counts without hiding
+  individual outcomes.
+- Cancelling a Run cancels undispatched Jobs, requests cancellation of active
+  Attempts, admits no new Provider Action proposals, and does not rewrite
+  terminal Jobs. An action proven unsent is cancelled. An action whose send has
+  begun is reconciled to `succeeded` or `uncertain` before the Job becomes
+  terminal, even if the provider write completes after cancellation.
+- Retrying publication reuses the original Provider Action and stable marker.
+  Rerunning an agent creates a new Attempt and new Actions, preserves all prior
+  history, and never replays its successful siblings. After any earlier Action
+  was sent or became uncertain, rerun requires explicit operator confirmation
+  that the same external effect may be produced again.
 - Webhook requests are bounded to 1 MiB and acknowledged only after a verified
-  delivery receipt and its matching Trigger generations are durable.
+  delivery receipt and its frozen Trigger and Definition matches are durable.
 - A Job waiting for compatible capacity stays visible and diagnosable rather
   than failing because a Runner is temporarily offline.
 - A Job with required external writes enters `publishing` after its Attempt
@@ -272,7 +280,7 @@ cannot expose operator routes through the webhook listener.
 | Provider Connection | App identity, installation identity, enabled state, repository and permission grants |
 | Job Definition | title, instructions, runtime requirement, defaults, result contract, action policy, generation |
 | Trigger | Definition identity, kind, enabled state, event or schedule rule, target selector, parameter mapping |
-| Provider Delivery | App and Connection identity, delivery key, verified payload, matched Trigger generations, processing state, diagnostics |
+| Provider Delivery | App and Connection identity, delivery key, verified payload, frozen Trigger and Definition matches, processing state, diagnostics |
 | Run | source, idempotency key, Definition snapshot, parameters, trigger payload, target snapshot, aggregate state |
 | Job | Run identity, repository, ref, optional work item, prompt and permission snapshot, result state |
 | Attempt | Job identity, lease, Runner, runtime, timestamps, events, outcome, recovery state |
@@ -307,11 +315,14 @@ hostname or pod UID.
 Webhook delivery identity is `(Provider App, delivery ID)`. The public route
 selects one App, so Factory can verify the raw body before parsing it. The
 verified installation ID must then map to exactly one enabled Connection. At
-receipt, Factory stores the App, Connection, raw verified body, and exact
-matching `(Trigger ID, generation)` set in one transaction. A matched Run uses
-`(trigger ID, provider delivery ID)` as its unique admission key. A scheduled
-Run uses `(trigger ID, scheduled UTC instant)`. An API or manual Run uses
-`(caller scope, request key)`.
+receipt, Factory stores the App, Connection, raw verified body, and one frozen
+match per eligible Trigger in one transaction. Each match contains the Trigger
+ID and generation plus every behavior-bearing Trigger and Definition field
+needed to resolve targets, parameters, runtime requirements, attempt policy,
+and action permissions. Display-only metadata may remain by reference. A
+matched Run uses `(trigger ID, provider delivery ID)` as its unique admission
+key. A scheduled Run uses `(trigger ID, scheduled UTC instant)`. An API or
+manual Run uses `(caller scope, request key)`.
 
 A Job target identity is `(Run ID, repository ID, work-item kind, work-item
 identity, ref)`. The exact target list is stored at admission and never follows
@@ -321,8 +332,11 @@ A Provider Action has a stable marker derived from its immutable Action ID. The
 adapter uses that marker in a comment, branch, issue, or pull-request artifact
 and checks for it before retrying an ambiguous request. Retrying publication
 reuses the same Action. Rerunning a Job creates a new Attempt and new Action IDs
-while retaining earlier history. Provider operations that cannot be reconciled
-safely stop as `uncertain` for operator resolution.
+while retaining earlier history. If any earlier Action was sent or is
+uncertain, the operator API and UI distinguish `retry publication` from
+`rerun agent`; the latter requires confirmation that it may repeat an external
+effect. Provider operations that cannot be reconciled safely stop as
+`uncertain` for operator resolution.
 
 ### Current-model mapping
 
@@ -343,18 +357,19 @@ repository selectors, context parameters, timeout overrides, enabled state,
 and due cursors. Existing Tasks, Executions, and Attempts remain historical
 truth.
 
-Cutover first stops old Automation evaluation. An Occurrence without a linked
-Task is transactionally translated into one staged single-target Run and Job
-using the Occurrence ID as the source idempotency key, then linked to the new
-Run ID. The scheduler cannot dispatch staged Jobs. An Occurrence with a Task
-and every queued or active legacy Execution stays on the compatibility
-scheduler until terminal. New target-model admission is enabled only after
-every pending Occurrence has translated or reached a visible terminal
-configuration error. One cutover transaction writes the forward-only marker
-that makes staged Jobs dispatchable and enables new admission. Before that
-transaction, rollback deletes only staged records and restores their Occurrence
-links. Old and new admission can therefore never both own the same source
-event.
+Cutover first stops old Automation evaluation. Only an Occurrence in `pending`
+state without a linked Task is transactionally translated into one staged
+single-target Run and Job using the Occurrence ID as the source idempotency key,
+then linked to the new Run ID. `failed` and `task_deleted` Occurrences remain
+terminal legacy history and are never translated or dispatched. The scheduler
+cannot dispatch staged Jobs. An Occurrence with a Task and every queued or
+active legacy Execution stays on the compatibility scheduler until terminal.
+New target-model admission is enabled only after every eligible pending
+Occurrence has translated or reached a visible terminal configuration error.
+One cutover transaction writes the forward-only marker that makes staged Jobs
+dispatchable and enables new admission. Before that transaction, rollback
+deletes only staged records and restores their Occurrence links. Old and new
+admission can therefore never both own the same source event.
 
 Old mutation APIs then become read-only for one compatibility window and are
 removed before a stable v1 contract. Compatibility views keep every legacy
@@ -365,11 +380,12 @@ record readable through the new vocabulary where the identity is unambiguous.
 A new Run is accepted only when its Definition snapshot, source identity, and
 complete target set can be stored in one transaction. A selector failure stores
 no partial Run. A provider delivery is different: its verified receipt and
-matching Trigger generations are stored first and acknowledged, then processing
-retries with exponential backoff up to 30 minutes until every frozen match has
-either admitted its Run or recorded a terminal configuration error. Editing or
-disabling a Trigger after receipt does not change that delivery. Disabling it
-before receipt prevents a match.
+frozen Trigger and Definition matches are stored first and acknowledged, then
+processing retries with exponential backoff up to 30 minutes until every
+frozen match has either admitted its Run or recorded a terminal configuration
+error. Editing, disabling, or archiving a Trigger or Definition after receipt
+does not change or suppress that delivery. Disabling it before receipt prevents
+a match.
 
 A Job remains queued or blocked when no compatible Runner is online. Runner
 loss expires the active Attempt lease. Automatic retry occurs only when the
@@ -391,6 +407,17 @@ Before retrying an ambiguous response, the adapter queries for the stable
 marker. It records `uncertain` and stops if the provider cannot prove whether
 the action happened. The Job then fails with a publication-specific result and
 keeps the agent result available for inspection.
+
+Cancellation during publication stops Actions that the adapter can prove were
+not sent and prevents new proposals. An Action whose send began still runs its
+normal reconciliation to `succeeded` or `uncertain`; the Job remains visibly
+`cancelling` with publication detail until that finishes, then becomes
+`cancelled` without hiding the Action outcome. This avoids both a blind retry
+and a false claim that cancellation prevented an external write.
+`Retry publication` resumes the same Action and marker. `Rerun agent` is a
+separate operation and, after any Action was sent or became uncertain, requires
+an explicit duplicate-effect warning and confirmation before creating new
+Action IDs.
 
 A Run becomes terminal only when every Job is terminal. Mixed outcomes produce
 a partial-failure aggregate, not success or total rollback.
@@ -470,6 +497,8 @@ dropping work.
   duplicate Run or Job.
 - Editing a Definition after admission cannot change any field shown on an
   existing Run or Job.
+- Editing, disabling, or archiving a Definition after webhook receipt cannot
+  change or suppress the Run created from that receipt.
 - A local host can advertise both Codex and Claude Code under one Runner.
 - A remote VM Runner can enroll, authenticate, execute, disconnect, and return
   without changing Job identity.
@@ -487,6 +516,11 @@ dropping work.
 - Existing Workflow, Automation, Occurrence, Task, Execution, and Attempt
   history remains readable through migration, and a cutover test proves no
   pending or active legacy work is lost or duplicated.
+- Migration never dispatches `failed` or `task_deleted` Occurrences, and a
+  preview reports the count and disposition of every current Occurrence state.
+- Cancelling during publication cannot suppress reconciliation of an in-flight
+  write, and rerunning after a sent or uncertain Action requires explicit
+  duplicate-effect confirmation.
 
 ## 10. Test approach
 
@@ -498,10 +532,12 @@ capacity limits, blocked routing, and Runner return.
 Provider tests use signed GitHub fixtures to prove raw-body verification,
 delivery deduplication, receipt-time Trigger matching, repository validation,
 App secret rotation, multi-installation routing, Connection suspension and grant
-loss, asynchronous processing recovery, payload expiry, and least-privilege
-token requests. Provider Action tests prove schema and capability rejection,
-durable publication, stable-marker reconciliation across publication retry and
-full Job rerun, ambiguous outcomes, and that write tokens never enter an
+loss, receipt-time Definition snapshotting across edit and disable races,
+asynchronous processing recovery, payload expiry, and least-privilege token
+requests. Provider Action tests prove schema and capability rejection, durable
+publication, stable-marker reconciliation across publication retry,
+cancellation races for unsent, in-flight, and ambiguous writes, duplicate-risk
+confirmation before full Job rerun, and that write tokens never enter an
 Attempt. No test uses live provider credentials.
 
 Runner integration tests prove multi-runtime discovery, authenticated remote
@@ -516,10 +552,12 @@ delivery admission publicly.
 
 Browser tests cover creating and editing a Definition, attaching Triggers,
 previewing a frozen target set, running 100 targets, mixed outcomes, individual
-retry, Provider Action status, Connection suspension, and Runner capability
-status. Migration tests stop old admission, translate pending Occurrences,
-prove staged Jobs cannot dispatch, drain queued and active Executions, enable
-new admission, and prove rollback deletes staged records and restores links only
+retry publication, confirmed agent rerun, Provider Action status, Connection
+suspension, and Runner capability status. Migration tests preview every current
+Occurrence state, stop old admission, translate only eligible pending
+Occurrences, prove `failed` and `task_deleted` history cannot dispatch, inject a
+failure after each staging write, drain queued and active Executions, enable new
+admission, and prove rollback deletes staged records and restores links only
 before the forward-only cutover marker.
 
 ## 11. Risks and tradeoffs
