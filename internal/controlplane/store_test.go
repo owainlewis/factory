@@ -1208,6 +1208,84 @@ func TestRunnerCapabilitiesSelectAndClaimPiRuntime(t *testing.T) {
 	}
 }
 
+func TestRetryRejectsFrozenRuntimeThatRunnerNoLongerAdvertises(t *testing.T) {
+	store := newTestStore(t)
+	repository := protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/example/factory",
+	}
+	registration := protocol.WorkerRegistration{
+		Name: "multi-runtime-runner", WorkerVersion: "test",
+		Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
+		Capabilities: []protocol.Capability{
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimePi, Status: protocol.CapabilityReady},
+		},
+		Capacity: 1, Health: "healthy", Repositories: []protocol.RepositoryRegistration{repository},
+	}
+	worker, err := store.RegisterWorker(context.Background(), workerA, registration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, created, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+		RequestKey: "pi-retry", Title: "Run with Pi", Description: "Exercise retry readiness.",
+		WorkerID: worker.ID, RepositoryID: worker.Repositories[0].ID,
+		Runtime: protocol.RuntimePi, TimeoutSeconds: 60,
+	})
+	if err != nil || !created {
+		t.Fatalf("create Pi task: created %t, err %v", created, err)
+	}
+	claim := claimTestTask(t, store, worker.ID, "pi-retry-claim", tokenA)
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Error: "expected failure",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registration.Capabilities = registration.Capabilities[:1]
+	if _, err := store.RegisterWorker(context.Background(), workerA, registration); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.RetryExecution(context.Background(), task.Execution.ID)
+	assertErrorCode(t, err, "retry_runtime_unavailable")
+	unchanged, err := store.Task(context.Background(), task.Task.ID)
+	if err != nil || unchanged.Execution.State != "failed" {
+		t.Fatalf("blocked retry changed execution = %#v, err %v", unchanged.Execution, err)
+	}
+}
+
+func TestStaleMultiRuntimeRegistrationCannotRouteFrozenRuntime(t *testing.T) {
+	store := newTestStore(t)
+	clock := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return clock }
+	access := protocol.SourceAccess{Provider: "github", Hostname: "github.com"}
+	repository := protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/example/factory",
+	}
+	createManagedTestRepository(t, store, repository.RemoteIdentity)
+	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: "multi-runtime-runner", WorkerVersion: "test",
+		Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
+		Capabilities: []protocol.Capability{
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimePi, Status: protocol.CapabilityReady},
+		},
+		SourceAccess: []protocol.SourceAccess{access},
+		Capacity:     1, Health: "healthy", Repositories: []protocol.RepositoryRegistration{repository},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(protocol.WorkerOnlineWindow + time.Millisecond)
+	_, _, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
+		RequestKey: "stale-pi-route", Title: "Do not route stale Pi work",
+		Description: "The Runner has not refreshed its capability evidence.",
+		Route: &protocol.TaskRoute{
+			RepositoryRemoteIdentity: repository.RemoteIdentity,
+			SourceAccess:             access,
+		},
+		Runtime: protocol.RuntimePi, TimeoutSeconds: 60,
+	})
+	assertErrorCode(t, err, "no_eligible_worker")
+}
+
 func TestDirectTaskDefaultsToAReadyRunnerCapability(t *testing.T) {
 	store := newTestStore(t)
 	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
@@ -2132,6 +2210,9 @@ func TestTasksPagesEqualTimestampsByIDWithoutDuplicates(t *testing.T) {
 			t.Fatalf("page returned %d tasks with limit %d", len(page.Tasks), request.Limit)
 		}
 		for _, task := range page.Tasks {
+			if task.RequiredRuntime != protocol.RuntimeCodex {
+				t.Fatalf("paged task runtime = %q", task.RequiredRuntime)
+			}
 			actual = append(actual, task.ID)
 		}
 		if page.NextCursor == nil {

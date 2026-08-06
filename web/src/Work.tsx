@@ -113,12 +113,8 @@ function TaskCard({ task, worker, onClick }: { task: Task; worker?: Worker; onCl
       <div className="task-meta">
         <span className="task-worker">{worker?.name ?? "Unknown worker"}</span>
         <span aria-hidden="true">·</span>
-        {worker && (
-          <>
-            <span>{runtimeLabel(worker.runtime)}</span>
-            <span aria-hidden="true">·</span>
-          </>
-        )}
+        <span>{runtimeLabel(task.required_runtime)}</span>
+        <span aria-hidden="true">·</span>
         <span>{timeAgo(task.created_at)}</span>
       </div>
     </button>

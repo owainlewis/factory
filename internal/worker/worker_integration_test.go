@@ -650,6 +650,140 @@ printf 'provider model\nopenai-codex gpt-5.3-codex\n'
 	}
 }
 
+func TestCapacityHandoffSendsWorkerLivenessHeartbeat(t *testing.T) {
+	fixture := newServerFixture(t, nil)
+	repository := createRepository(t, "handoff-heartbeat")
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"factory": repository}, 1)
+	t.Cleanup(func() { _ = manager.Close() })
+	manager.setHealth(checkHealth(context.Background(), manager.options.GitExecutable,
+		manager.options.GitHubExecutable, manager.config.Runtime,
+		manager.config.Runtimes, manager.options.RuntimeExecutables))
+	manager.register(context.Background())
+	before, err := fixture.store.Worker(context.Background(), manager.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	manager.beginCapacityHandoff()
+	manager.register(context.Background())
+	manager.registrationMutex.Lock()
+	manager.capacityHandoffs--
+	manager.registrationMutex.Unlock()
+	after, err := fixture.store.Worker(context.Background(), manager.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.LastHeartbeat.After(before.LastHeartbeat) || after.Runtime != before.Runtime ||
+		!reflect.DeepEqual(after.Capabilities, before.Capabilities) {
+		t.Fatalf("capacity handoff heartbeat changed registration = %#v; before %#v", after, before)
+	}
+}
+
+func TestCapacityHandoffHeartbeatRecoversAfterTransientFailure(t *testing.T) {
+	var failNext atomic.Bool
+	failNext.Store(true)
+	fixture := newServerFixture(t, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			if request.Method == http.MethodPut && strings.HasSuffix(request.URL.Path, "/heartbeat") &&
+				failNext.CompareAndSwap(true, false) {
+				http.Error(writer, "transient heartbeat failure", http.StatusServiceUnavailable)
+				return
+			}
+			next.ServeHTTP(writer, request)
+		})
+	})
+	repository := createRepository(t, "handoff-heartbeat-recovery")
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"factory": repository}, 1)
+	t.Cleanup(func() { _ = manager.Close() })
+	manager.setHealth(checkHealth(context.Background(), manager.options.GitExecutable,
+		manager.options.GitHubExecutable, manager.config.Runtime,
+		manager.config.Runtimes, manager.options.RuntimeExecutables))
+	manager.register(context.Background())
+	before, err := fixture.store.Worker(context.Background(), manager.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.beginCapacityHandoff()
+	defer func() {
+		manager.registrationMutex.Lock()
+		manager.capacityHandoffs--
+		manager.registrationMutex.Unlock()
+	}()
+	manager.register(context.Background())
+	manager.stateMutex.Lock()
+	registeredAfterFailure := manager.registered
+	manager.stateMutex.Unlock()
+	if registeredAfterFailure {
+		t.Fatal("failed heartbeat left Runner claimable")
+	}
+	time.Sleep(2 * time.Millisecond)
+	manager.register(context.Background())
+	after, err := fixture.store.Worker(context.Background(), manager.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.stateMutex.Lock()
+	registeredAfterRecovery := manager.registered
+	manager.stateMutex.Unlock()
+	if !registeredAfterRecovery || !after.LastHeartbeat.After(before.LastHeartbeat) {
+		t.Fatalf("heartbeat did not recover current registration: registered=%t worker=%#v",
+			registeredAfterRecovery, after)
+	}
+}
+
+func TestCapacityHandoffDoesNotHeartbeatInvalidatedCapabilities(t *testing.T) {
+	fixture := newServerFixture(t, nil)
+	repository := createRepository(t, "invalidated-handoff")
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager := newTestManager(t, fixture, codexPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"factory": repository}, 1)
+	t.Cleanup(func() { _ = manager.Close() })
+	access := protocol.SourceAccess{Provider: "git", Hostname: "local.test"}
+	manager.setHealth(health{
+		State: "healthy", RuntimeVersion: "codex-test",
+		Capabilities: []protocol.Capability{
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimePi, Status: protocol.CapabilityReady},
+		},
+		SourceAccess: []protocol.SourceAccess{access},
+	})
+	manager.register(context.Background())
+	registered, err := fixture.store.Worker(context.Background(), manager.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.beginCapacityHandoff()
+	defer func() {
+		manager.registrationMutex.Lock()
+		manager.capacityHandoffs--
+		manager.registrationMutex.Unlock()
+	}()
+	manager.setHealth(health{
+		State: "healthy", RuntimeVersion: "codex-test",
+		Capabilities: []protocol.Capability{
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
+		},
+		SourceAccess: []protocol.SourceAccess{access},
+	})
+	time.Sleep(2 * time.Millisecond)
+	manager.register(context.Background())
+
+	stale, err := fixture.store.Worker(context.Background(), manager.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale.LastHeartbeat.After(registered.LastHeartbeat) {
+		t.Fatalf("invalidated registration sent a handoff heartbeat: %#v", stale)
+	}
+}
+
 func TestClaudeCodeHealthAndSupervisorContract(t *testing.T) {
 	claudePath := filepath.Join(t.TempDir(), "claude")
 	writeFakeClaude(t, claudePath)

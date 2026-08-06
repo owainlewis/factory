@@ -141,9 +141,36 @@ func (manager *Manager) register(ctx context.Context) {
 	manager.registrationMutex.Lock()
 	defer manager.registrationMutex.Unlock()
 	if manager.capacityHandoffs != 0 {
+		manager.heartbeatWorkerLocked(ctx)
 		return
 	}
 	manager.registerLocked(ctx)
+}
+
+func (manager *Manager) heartbeatWorkerLocked(ctx context.Context) {
+	manager.stateMutex.Lock()
+	generation := manager.registrationGeneration
+	registrationCurrent := manager.hasAdvertisedRegistration && manager.advertisedGeneration == generation
+	manager.stateMutex.Unlock()
+	if !registrationCurrent {
+		return
+	}
+	requestContext, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	if _, err := manager.client.heartbeatWorker(requestContext, manager.id); err != nil {
+		manager.stateMutex.Lock()
+		manager.registered = false
+		manager.cancelPendingClaimsLocked()
+		manager.stateMutex.Unlock()
+		manager.logger.Warn("worker_heartbeat_failed", "error_class", apiErrorClass(err))
+		return
+	}
+	manager.stateMutex.Lock()
+	if manager.hasAdvertisedRegistration && manager.registrationGeneration == generation &&
+		manager.advertisedGeneration == generation {
+		manager.registered = true
+	}
+	manager.stateMutex.Unlock()
 }
 
 func (manager *Manager) registerLocked(ctx context.Context) {
@@ -180,6 +207,10 @@ func (manager *Manager) registerLocked(ctx context.Context) {
 
 func (manager *Manager) completeRegistrationLocked(generation uint64) {
 	manager.registered = generation == manager.registrationGeneration
+	if manager.registered {
+		manager.advertisedGeneration = generation
+		manager.hasAdvertisedRegistration = true
+	}
 	if !manager.registered {
 		manager.cancelPendingClaimsLocked()
 	}

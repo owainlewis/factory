@@ -74,6 +74,8 @@ type Manager struct {
 	fatalHealth                   error
 	registered                    bool
 	registrationGeneration        uint64
+	advertisedGeneration          uint64
+	hasAdvertisedRegistration     bool
 	closed                        bool
 
 	randomMutex     sync.Mutex

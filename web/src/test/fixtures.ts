@@ -74,6 +74,7 @@ export const tasks: Task[] = ["queued", "running", "succeeded", "failed", "cance
     title: `${state} task`,
     worker_id: worker.id,
     repository_id: worker.repositories[0].id,
+    required_runtime: index === 0 ? "pi" : "codex",
     timeout_seconds: 7200,
     state: state as Task["state"],
     created_at: new Date(Date.now() - index * 60_000).toISOString(),

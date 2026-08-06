@@ -85,6 +85,7 @@ export interface Task {
   description?: string;
   worker_id: string;
   repository_id: string;
+  required_runtime: Runtime;
   timeout_seconds: number;
   state: TaskState;
   created_at: string;

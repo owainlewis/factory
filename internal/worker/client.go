@@ -45,6 +45,13 @@ func (client *client) register(ctx context.Context, workerID string, input proto
 	return worker, err
 }
 
+func (client *client) heartbeatWorker(ctx context.Context, workerID string) (protocol.Worker, error) {
+	var worker protocol.Worker
+	_, err := client.request(ctx, http.MethodPut,
+		"/api/v1/workers/"+url.PathEscape(workerID)+"/heartbeat", struct{}{}, &worker)
+	return worker, err
+}
+
 func (client *client) claim(ctx context.Context, workerID string, input protocol.ClaimRequest, minimumBackoff, maximumBackoff time.Duration) (*protocol.Claim, error) {
 	var claim protocol.Claim
 	status, err := client.retry(ctx, http.MethodPost,

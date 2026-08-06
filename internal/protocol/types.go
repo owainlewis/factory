@@ -220,15 +220,16 @@ type TaskRoute struct {
 }
 
 type Task struct {
-	ID             string    `json:"id"`
-	RequestKey     string    `json:"request_key"`
-	Title          string    `json:"title"`
-	Description    string    `json:"description,omitempty"`
-	WorkerID       string    `json:"worker_id"`
-	RepositoryID   string    `json:"repository_id"`
-	TimeoutSeconds int       `json:"timeout_seconds"`
-	State          string    `json:"state"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID              string    `json:"id"`
+	RequestKey      string    `json:"request_key"`
+	Title           string    `json:"title"`
+	Description     string    `json:"description,omitempty"`
+	WorkerID        string    `json:"worker_id"`
+	RepositoryID    string    `json:"repository_id"`
+	RequiredRuntime string    `json:"required_runtime"`
+	TimeoutSeconds  int       `json:"timeout_seconds"`
+	State           string    `json:"state"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 type TaskCursor struct {

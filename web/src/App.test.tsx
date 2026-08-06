@@ -726,6 +726,9 @@ describe("App", () => {
       expect(within(column).getByText(`${state.toLowerCase()} task`)).toBeVisible();
       expect(within(column).getByText(state, { selector: ".status-badge" })).toBeVisible();
     }
+    const queuedCard = screen.getByText("queued task").closest(".task-card");
+    expect(queuedCard).not.toBeNull();
+    expect(within(queuedCard as HTMLElement).getByText("Pi")).toBeVisible();
   });
 
   it("counts available capacity only from online healthy workers", async () => {

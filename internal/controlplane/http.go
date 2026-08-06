@@ -76,6 +76,7 @@ func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *Au
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", api.health)
 	mux.HandleFunc("PUT /api/v1/workers/{worker_id}", api.registerWorker)
+	mux.HandleFunc("PUT /api/v1/workers/{worker_id}/heartbeat", api.heartbeatWorker)
 	mux.HandleFunc("POST /api/v1/workers/{worker_id}/claims", api.claim)
 	mux.HandleFunc("GET /api/v1/workers", api.listWorkers)
 	mux.HandleFunc("GET /api/v1/workers/{worker_id}", api.getWorker)
@@ -377,6 +378,18 @@ func (a *API) registerWorker(w http.ResponseWriter, r *http.Request) {
 			CurrentTaskTitle: worker.CurrentTaskTitle, RegisteredAt: worker.RegisteredAt,
 			LastHeartbeat: worker.LastHeartbeat,
 		})
+		return
+	}
+	writeJSON(w, http.StatusOK, worker)
+}
+
+func (a *API) heartbeatWorker(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) || !decodeEmptyJSON(w, r) {
+		return
+	}
+	worker, err := a.store.HeartbeatWorker(r.Context(), r.PathValue("worker_id"))
+	if err != nil {
+		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, worker)

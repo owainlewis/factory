@@ -1249,6 +1249,21 @@ func (s *Store) resolveRepositoryAlias(ctx context.Context, repositoryID string)
 	return canonicalID, nil
 }
 
+func (s *Store) HeartbeatWorker(ctx context.Context, workerID string) (protocol.Worker, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE workers SET last_heartbeat = ? WHERE id = ?`, s.now().UnixMilli(), workerID)
+	if err != nil {
+		return protocol.Worker{}, unavailable(err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return protocol.Worker{}, unavailable(err)
+	}
+	if updated == 0 {
+		return protocol.Worker{}, ErrNotFound
+	}
+	return s.Worker(ctx, workerID)
+}
+
 func (s *Store) RegisterWorker(ctx context.Context, workerID string, input protocol.WorkerRegistration) (protocol.Worker, error) {
 	workerID = strings.TrimSpace(workerID)
 	if workerID == "" || len(workerID) > 200 {
@@ -2387,7 +2402,7 @@ func (s *Store) Tasks(ctx context.Context, request protocol.TaskPageRequest) (pr
 	}
 	query := `
 		SELECT t.id, t.request_key, t.title, t.repository_id, t.timeout_seconds,
-		       e.assigned_worker_id, e.state, t.created_at
+		       e.assigned_worker_id, e.required_runtime, e.state, t.created_at
 		FROM tasks t JOIN executions e ON e.task_id = t.id
 	`
 	args := make([]any, 0, 3)
@@ -2431,10 +2446,10 @@ func scanTask(row scanner, detail bool) (protocol.Task, error) {
 	var err error
 	if detail {
 		err = row.Scan(&task.ID, &task.RequestKey, &task.Title, &task.Description, &task.RepositoryID,
-			&task.TimeoutSeconds, &task.WorkerID, &task.State, &created)
+			&task.TimeoutSeconds, &task.WorkerID, &task.RequiredRuntime, &task.State, &created)
 	} else {
 		err = row.Scan(&task.ID, &task.RequestKey, &task.Title, &task.RepositoryID,
-			&task.TimeoutSeconds, &task.WorkerID, &task.State, &created)
+			&task.TimeoutSeconds, &task.WorkerID, &task.RequiredRuntime, &task.State, &created)
 	}
 	task.CreatedAt = fromMillis(created)
 	if task.State == "preparing" {
@@ -2461,7 +2476,7 @@ func (s *Store) Task(ctx context.Context, id string) (protocol.TaskDetail, error
 	var detail protocol.TaskDetail
 	row := s.db.QueryRowContext(ctx, `
 		SELECT t.id, t.request_key, t.title, t.description, t.repository_id, t.timeout_seconds,
-		       e.assigned_worker_id, e.state, t.created_at
+		       e.assigned_worker_id, e.required_runtime, e.state, t.created_at
 		FROM tasks t JOIN executions e ON e.task_id = t.id WHERE t.id = ?
 	`, id)
 	task, err := scanTask(row, true)
