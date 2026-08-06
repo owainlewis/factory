@@ -921,6 +921,74 @@ describe("App", () => {
     expect(runBodies[0].request_key).toBe(runBodies[1].request_key);
   });
 
+  it("resets shared parameter fields when the selected schedule Definition changes", async () => {
+    mockControlPlane({ scheduleDefinition: true });
+    await globalThis.fetch("/api/v1/definitions", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "second-schedule-definition",
+        name: "Second maintenance Definition",
+        prompt: "Inspect another scope.",
+        runtime: "codex",
+        allowed_tools: ["git"],
+        timeout_seconds: 600,
+        inputs: { scope: "different default" },
+      }),
+    });
+    window.history.replaceState({}, "", "/automations");
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Create Automation" }));
+    const dialog = screen.getByRole("dialog", { name: "Create Automation" });
+    await user.selectOptions(within(dialog).getByLabelText("Trigger"), "schedule");
+    await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-maintenance");
+    const scope = within(dialog).getByLabelText("scope");
+    await user.type(scope, "temporary override");
+    await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-created");
+
+    expect(within(dialog).getByLabelText("scope")).toHaveValue("");
+  });
+
+  it("does not carry saved parameters when an edited schedule changes Definition", async () => {
+    mockControlPlane({ scheduleDefinition: true });
+    await globalThis.fetch("/api/v1/definitions", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "edit-second-schedule-definition",
+        name: "Edited maintenance Definition",
+        prompt: "Inspect another scope.",
+        runtime: "codex",
+        allowed_tools: ["git"],
+        timeout_seconds: 600,
+        inputs: { scope: "different default" },
+      }),
+    });
+    await globalThis.fetch("/api/v1/automations", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "editable-schedule",
+        title: "Editable maintenance schedule",
+        definition_id: "definition-maintenance",
+        repository_ids: ["repo-factory"],
+        parameters: { scope: "saved override" },
+        concurrency_limit: 1,
+        trigger: { type: "schedule", cron: "0 9 * * 1", timezone: "UTC" },
+      }),
+    });
+    window.history.replaceState({}, "", "/automations");
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: /Editable maintenance schedule/ }));
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Automation" });
+    expect(within(dialog).getByLabelText("scope")).toHaveValue("saved override");
+    await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-created");
+
+    expect(within(dialog).getByLabelText("scope")).toHaveValue("");
+  });
+
   it("preserves Automation form focus and typed input during background refresh", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

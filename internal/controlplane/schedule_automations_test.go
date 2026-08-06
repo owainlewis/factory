@@ -762,3 +762,24 @@ func TestHTTPSchedulePreviewEnableAndRunNowAreStrictAndIdempotent(t *testing.T) 
 	requireStatus(t, response, http.StatusBadRequest)
 	response.Body.Close()
 }
+
+func TestDefinitionScheduleIgnoresOutOfRangeLegacyTimeout(t *testing.T) {
+	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
+	store, detail := createScheduleAutomationFixture(t, &now, false)
+	updated, err := store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
+		ExpectedVersion:  detail.Automation.Version,
+		Title:            detail.Automation.Title,
+		DefinitionID:     detail.Automation.DefinitionID,
+		RepositoryIDs:    []string{detail.Automation.RepositoryID},
+		Parameters:       detail.Automation.Parameters,
+		ConcurrencyLimit: detail.Automation.ConcurrencyLimit,
+		TimeoutSeconds:   int(protocol.MaxTimeout/time.Second) + 1,
+		Trigger:          detail.Automation.Trigger,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Automation.TimeoutSeconds != 1 {
+		t.Fatalf("schedule timeout = %d, want ignored sentinel 1", updated.Automation.TimeoutSeconds)
+	}
+}

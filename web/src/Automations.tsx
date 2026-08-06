@@ -999,8 +999,12 @@ function AutomationForm({
               {isSchedule && selectedDefinition && Object.keys(selectedDefinition.inputs).length > 0 && (
                 <div className="automation-form-grid">
                   {Object.entries(selectedDefinition.inputs).map(([key, defaultValue]) => (
-                    <Field key={key} label={key} htmlFor={`automation-parameter-${key}`} hint={`Default: ${defaultValue || "empty"}`}>
-                      <input id={`automation-parameter-${key}`} name={`parameter:${key}`} defaultValue={current?.parameters?.[key] ?? ""} />
+                    <Field key={`${selectedDefinition.id}:${key}`} label={key} htmlFor={`automation-parameter-${key}`} hint={`Default: ${defaultValue || "empty"}`}>
+                      <input
+                        id={`automation-parameter-${key}`}
+                        name={`parameter:${key}`}
+                        defaultValue={selectedDefinition.id === current?.definition_id ? current.parameters?.[key] ?? "" : ""}
+                      />
                     </Field>
                   ))}
                 </div>
