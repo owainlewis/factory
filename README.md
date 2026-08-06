@@ -1,8 +1,9 @@
 # Factory
 
-Factory is infrastructure for running coding agents across Git repositories.
-Its Go control plane stores work, shows the worker fleet, and delegates tasks.
-Each Go worker owns one agent runtime, currently Codex or Claude Code.
+Factory is infrastructure for building a software factory. It runs repeatable
+software-engineering agent jobs across Git repositories and compute. Its Go
+control plane stores work, shows the worker fleet, and delegates tasks. Each Go
+worker currently owns one agent runtime, Codex or Claude Code.
 
 The browser UI provides:
 
@@ -14,6 +15,11 @@ The browser UI provides:
 
 Factory is local-first today. The server only accepts loopback connections and
 does not include user authentication.
+
+Read the [product vision](docs/software-factory/vision.md), the
+[target architecture](docs/software-factory/design.md), and the
+[current implementation architecture](ARCHITECTURE.md). The target design is a
+direction, not a claim about current behavior.
 
 ## Quick start
 

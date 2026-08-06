@@ -5,6 +5,9 @@
 > deduplication belong to the control plane in the
 > [Workflow and Automation design](../workflows/design.md). The retired
 > standalone MVP is preserved only as migration history.
+>
+> GitHub App identity, webhook admission, and scheduled GitHub queries now
+> belong to the [Software Factory target architecture](../software-factory/design.md).
 
 The material below is retained as historical context for the rejected
 `factory ingest github` process and must not be used for implementation.
