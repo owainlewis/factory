@@ -1043,6 +1043,22 @@ describe("App", () => {
     expect(screen.getByLabelText("Repository")).toBeEnabled();
   });
 
+  it("replaces a selected coding agent that becomes unavailable", async () => {
+    const fetch = mockControlPlane({ workerRuntimeRefresh: true });
+    const user = userEvent.setup();
+    const { client } = renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Delegate task" }));
+    const dialog = screen.getByRole("dialog", { name: "Delegate task" });
+    await user.selectOptions(within(dialog).getByLabelText("Runner"), "worker-online");
+    expect(within(dialog).getByLabelText("Coding agent")).toHaveValue("codex");
+
+    await client.refetchQueries({ queryKey: ["workers"] });
+
+    await vi.waitFor(() => expect(within(dialog).getByLabelText("Coding agent")).toHaveValue("pi"));
+    expect(fetch.mock.calls.filter(([input]) => input === "/api/v1/workers")).toHaveLength(2);
+  });
+
   it("presents worker facts in accessible profile tabs with read-only execution settings", async () => {
     window.history.replaceState({}, "", "/workers/worker-online");
     mockControlPlane();

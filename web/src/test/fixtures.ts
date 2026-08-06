@@ -196,6 +196,7 @@ export function mockControlPlane(
     workflowHistoryGate?: Promise<void>;
     workerDetailFailuresAfter?: number;
     workerFailure?: boolean;
+    workerRuntimeRefresh?: boolean;
   } = {},
 ) {
   let createFailures = options.createFailures ?? 0;
@@ -207,6 +208,7 @@ export function mockControlPlane(
   let taskDetailRequests = 0;
   let workerDetailRequests = 0;
   let workerConnectionTests = 0;
+  let workerListRequests = 0;
   const deletedTaskIDs = new Set<string>();
   let resolveStaleHistory: (() => void) | undefined;
   let createdTask: {
@@ -1069,7 +1071,17 @@ export function mockControlPlane(
           { status: 503 },
         );
       }
-      return Response.json({ workers: [worker, offlineWorker] });
+      workerListRequests += 1;
+      const onlineWorker = options.workerRuntimeRefresh && workerListRequests > 1
+        ? {
+            ...worker,
+            runtime: "pi",
+            capabilities: (worker.capabilities ?? []).map((capability) => capability.kind === "runtime" && capability.name === "codex"
+              ? { ...capability, status: "unauthenticated", message: "Authenticate Codex before running Jobs." }
+              : capability),
+          }
+        : worker;
+      return Response.json({ workers: [onlineWorker, offlineWorker] });
     }
     const workerRepositoryOptions = path.match(/^\/api\/v1\/workers\/([^/]+)\/repository-options$/);
     if (workerRepositoryOptions) {

@@ -569,6 +569,87 @@ func TestMultiRuntimeHealthAndPiSupervisorContract(t *testing.T) {
 	}
 }
 
+func TestRegistrationContinuesWhileHealthProbeIsRunning(t *testing.T) {
+	toolDirectory := t.TempDir()
+	piPath := filepath.Join(toolDirectory, "pi")
+	probeCountPath := filepath.Join(toolDirectory, "probe-count")
+	probeBlockedPath := filepath.Join(toolDirectory, "probe-blocked")
+	probeReleasePath := filepath.Join(toolDirectory, "probe-release")
+	t.Setenv("FACTORY_TEST_PI_PROBE_COUNT", probeCountPath)
+	t.Setenv("FACTORY_TEST_PI_PROBE_BLOCKED", probeBlockedPath)
+	t.Setenv("FACTORY_TEST_PI_PROBE_RELEASE", probeReleasePath)
+	script := `#!/bin/sh
+set -eu
+if [ "$1" = "--version" ]; then
+  echo "0.80.10"
+  exit 0
+fi
+if [ "$1" != "--list-models" ]; then
+  exit 91
+fi
+if [ ! -f "$FACTORY_TEST_PI_PROBE_COUNT" ]; then
+  echo 1 > "$FACTORY_TEST_PI_PROBE_COUNT"
+else
+  touch "$FACTORY_TEST_PI_PROBE_BLOCKED"
+  while [ ! -f "$FACTORY_TEST_PI_PROBE_RELEASE" ]; do
+    sleep 0.01
+  done
+fi
+printf 'provider model\nopenai-codex gpt-5.3-codex\n'
+`
+	if err := os.WriteFile(piPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	defer os.WriteFile(probeReleasePath, []byte("released\n"), 0o600) //nolint:errcheck
+
+	fixture := newServerFixture(t, nil)
+	repository := createRepository(t, "health-registration")
+	manager := newTestRuntimeManager(
+		t, fixture, protocol.RuntimePi, piPath, filepath.Join(t.TempDir(), "worker"),
+		map[string]repositoryFixture{"health-registration": repository}, 1,
+	)
+	manager.options.HealthInterval = 20 * time.Millisecond
+	manager.options.RegistrationInterval = 50 * time.Millisecond
+	manager.options.PollInterval = 10 * time.Millisecond
+	_, cancel, done := startManagerWithContext(t, manager)
+	waitForWorker(t, fixture.store, manager.ID(), func(worker protocol.Worker) bool {
+		return worker.Health == "healthy"
+	})
+	waitFor(t, 2*time.Second, func() bool {
+		_, err := os.Stat(probeBlockedPath)
+		return err == nil
+	})
+	before, err := fixture.store.Worker(context.Background(), manager.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		worker, err := fixture.store.Worker(context.Background(), manager.ID())
+		return err == nil && worker.LastHeartbeat.After(before.LastHeartbeat)
+	})
+	task := createTask(t, fixture.store, before, "health-registration", "success", 60)
+	time.Sleep(150 * time.Millisecond)
+	detail, err := fixture.store.Task(context.Background(), task.Task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Execution.State != "queued" || len(detail.Attempts) != 0 {
+		t.Fatalf("Runner claimed while health probe was pending: state=%s attempts=%d",
+			detail.Execution.State, len(detail.Attempts))
+	}
+	if err := os.WriteFile(probeReleasePath, []byte("released\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		detail, err := fixture.store.Task(context.Background(), task.Task.ID)
+		return err == nil && len(detail.Attempts) > 0
+	})
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClaudeCodeHealthAndSupervisorContract(t *testing.T) {
 	claudePath := filepath.Join(t.TempDir(), "claude")
 	writeFakeClaude(t, claudePath)

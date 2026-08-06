@@ -56,6 +56,9 @@ export function DelegateModal({
   const availableRuntimes = (selectedWorker?.capabilities ?? [])
     .filter((capability) => capability.kind === "runtime" && capability.status === "ready")
     .map((capability) => capability.name as Runtime);
+  const selectedRuntime = availableRuntimes.includes(runtime as Runtime)
+    ? runtime
+    : preferredRuntime(selectedWorker);
   const repositoryOptions = useQuery({
     queryKey: ["workers", workerID, "repository-options"],
     queryFn: () => api.workerRepositoryOptions(workerID),
@@ -111,7 +114,7 @@ export function DelegateModal({
     else if (Array.from(title).length > 200) nextErrors.title = "Keep the title to 200 characters.";
     if (!context.trim()) nextErrors.description = "Enter task context.";
     if (!workerID) nextErrors.worker = "Choose a Runner.";
-    if (!runtime) nextErrors.runtime = "Choose a ready coding agent.";
+    if (!selectedRuntime) nextErrors.runtime = "Choose a ready coding agent.";
     if (!repositoryID) nextErrors.repository = "Choose a repository.";
     else if (!repository) nextErrors.repository = "Choose an available repository.";
     else if (!repository.advertised && !repository.ready) nextErrors.repository = `This repository is unavailable: ${repository.reason}`;
@@ -134,7 +137,7 @@ export function DelegateModal({
     if (!assignment) return;
     const payload = {
       title,
-      runtime,
+      runtime: selectedRuntime,
       timeout_seconds: timeoutSeconds,
       ...assignment,
       ...(workflowRevisionID
@@ -193,8 +196,8 @@ export function DelegateModal({
               error={errors.description}
               hint={selectedWorker
                 ? workflowRevisionID
-                  ? `Factory combines this with the selected runbook for ${runtime ? runtimeLabel(runtime) : "the selected coding agent"}.`
-                  : `This becomes the ${runtime ? runtimeLabel(runtime) : "selected coding agent"} prompt.`
+                  ? `Factory combines this with the selected runbook for ${selectedRuntime ? runtimeLabel(selectedRuntime) : "the selected coding agent"}.`
+                  : `This becomes the ${selectedRuntime ? runtimeLabel(selectedRuntime) : "selected coding agent"} prompt.`
                 : workflowRevisionID
                   ? "Factory combines this with the selected runbook."
                   : "This becomes the selected Runner prompt."}
@@ -226,7 +229,7 @@ export function DelegateModal({
             <Field label="Coding agent" htmlFor={runtimeID} error={errors.runtime}>
               <select
                 id={runtimeID}
-                value={runtime}
+                value={selectedRuntime}
                 onChange={(event) => setRuntime(event.target.value as Runtime)}
                 disabled={!selectedWorker || availableRuntimes.length === 0}
               >

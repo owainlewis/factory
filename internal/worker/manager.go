@@ -278,6 +278,25 @@ func (manager *Manager) Run(ctx context.Context) error {
 	defer registrationTicker.Stop()
 	claimTimer := time.NewTimer(0)
 	defer claimTimer.Stop()
+	healthResults := make(chan health, 1)
+	healthCheckRunning := false
+	startHealthCheck := func() {
+		if healthCheckRunning {
+			return
+		}
+		healthCheckRunning = true
+		manager.waitGroup.Add(1)
+		go func() {
+			defer manager.waitGroup.Done()
+			result := checkHealth(ctx, manager.options.GitExecutable,
+				manager.options.GitHubExecutable, manager.config.Runtime,
+				manager.config.Runtimes, manager.options.RuntimeExecutables)
+			select {
+			case healthResults <- result:
+			case <-ctx.Done():
+			}
+		}()
+	}
 
 	for {
 		select {
@@ -285,15 +304,16 @@ func (manager *Manager) Run(ctx context.Context) error {
 			manager.stopAll("cancelled")
 			return manager.waitForShutdown()
 		case <-healthTicker.C:
-			if manager.setHealth(checkHealth(ctx, manager.options.GitExecutable,
-				manager.options.GitHubExecutable, manager.config.Runtime,
-				manager.config.Runtimes, manager.options.RuntimeExecutables)) {
+			startHealthCheck()
+		case result := <-healthResults:
+			healthCheckRunning = false
+			if manager.setHealth(result) {
 				manager.register(ctx)
 			}
 		case <-registrationTicker.C:
 			manager.register(ctx)
 		case <-claimTimer.C:
-			if manager.isHealthy() {
+			if !healthCheckRunning && manager.isHealthy() {
 				manager.reserveAndClaim(ctx)
 			}
 			claimTimer.Reset(manager.jitteredPollInterval())

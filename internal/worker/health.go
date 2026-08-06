@@ -123,11 +123,13 @@ func configuredRuntime(runtimes []string, target string) bool {
 }
 
 func githubHealthCapability(ctx context.Context, executable string) protocol.Capability {
-	capability := versionCapability(ctx, protocol.CapabilityKindTool, "gh", executable)
+	probeContext, probeCancel := context.WithTimeout(ctx, healthCheckTimeout)
+	defer probeCancel()
+	capability := versionCapability(probeContext, protocol.CapabilityKindTool, "gh", executable)
 	if capability.Status != protocol.CapabilityReady {
 		return capability
 	}
-	githubContext, githubCancel := context.WithTimeout(ctx, healthCheckTimeout)
+	githubContext, githubCancel := context.WithTimeout(probeContext, healthCheckTimeout)
 	defer githubCancel()
 	_, _, err := runCommand(
 		githubContext, executable, "", 64<<10,
@@ -175,11 +177,22 @@ func versionCapability(
 }
 
 func runtimeCapability(ctx context.Context, runtime, executable string) protocol.Capability {
-	capability := versionCapability(ctx, protocol.CapabilityKindRuntime, runtime, executable)
+	return runtimeCapabilityWithin(ctx, runtime, executable, healthCheckTimeout)
+}
+
+func runtimeCapabilityWithin(
+	ctx context.Context,
+	runtime string,
+	executable string,
+	timeout time.Duration,
+) protocol.Capability {
+	probeContext, probeCancel := context.WithTimeout(ctx, timeout)
+	defer probeCancel()
+	capability := versionCapability(probeContext, protocol.CapabilityKindRuntime, runtime, executable)
 	if capability.Status != protocol.CapabilityReady {
 		return capability
 	}
-	commandContext, cancel := context.WithTimeout(ctx, healthCheckTimeout)
+	commandContext, cancel := context.WithTimeout(probeContext, timeout)
 	defer cancel()
 	var stdout, stderr []byte
 	var err error
