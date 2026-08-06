@@ -295,6 +295,65 @@ describe("App", () => {
       const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       return path.endsWith("/archived") && init?.method === "PUT";
     })).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "View archive" }));
+    await user.click(await screen.findByRole("button", { name: /Find important bugs/ }));
+    expect(await screen.findByText("Archived", { selector: ".status-badge" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Restore Definition" }));
+    expect(await screen.findByRole("heading", { name: "Definitions" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: /Find important bugs/ })).toBeVisible();
+  });
+
+  it("keeps the edit generation frozen across a background refetch", async () => {
+    const fetch = mockControlPlane();
+    await globalThis.fetch("/api/v1/definitions", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "create-concurrency-definition",
+        name: "Concurrent Definition",
+        prompt: "Original prompt.",
+        runtime: "codex",
+        allowed_tools: ["git"],
+        timeout_seconds: 600,
+        inputs: {},
+      }),
+    });
+    window.history.replaceState({}, "", "/definitions/definition-created");
+    const { client } = renderApp();
+    const user = userEvent.setup();
+    expect(await screen.findByRole("heading", { name: "Concurrent Definition" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Edit Definition" }));
+    const edit = screen.getByRole("dialog", { name: "Edit Definition" });
+    const prompt = within(edit).getByLabelText("Agent prompt");
+    await user.clear(prompt);
+    await user.type(prompt, "Stale local prompt.");
+
+    await globalThis.fetch("/api/v1/definitions/definition-created", {
+      method: "PUT",
+      body: JSON.stringify({
+        request_key: "external-definition-edit",
+        expected_generation: 1,
+        name: "Concurrent Definition",
+        prompt: "Newer external prompt.",
+        runtime: "codex",
+        allowed_tools: ["git"],
+        timeout_seconds: 600,
+        inputs: {},
+      }),
+    });
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["definition", "definition-created"] });
+    });
+    await user.click(within(edit).getByRole("button", { name: "Save changes" }));
+    expect(await within(edit).findByText(/the Definition was edited by another request/)).toBeVisible();
+
+    const updates = fetch.mock.calls.filter(([input, init]) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return path === "/api/v1/definitions/definition-created" && init?.method === "PUT";
+    });
+    const submitted = JSON.parse(String(updates.at(-1)?.[1]?.body)) as { expected_generation: number };
+    expect(submitted.expected_generation).toBe(1);
   });
 
   it("keeps runbook editor focus during background polling", async () => {

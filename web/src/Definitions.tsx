@@ -6,6 +6,7 @@ import {
   LoaderCircle,
   Pencil,
   Plus,
+  RotateCcw,
   X,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -25,16 +26,22 @@ import {
 
 export function DefinitionsView({ onDefinition }: { onDefinition: (id: string) => void }) {
   const [createOpen, setCreateOpen] = useState(false);
+  const [archived, setArchived] = useState(false);
   const [history, setHistory] = useState<Definition[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>();
   const previousHeadCursor = useRef<string | null | undefined>(undefined);
   const definitions = useQuery({
-    queryKey: ["definitions", "head"],
-    queryFn: () => api.definitions(),
+    queryKey: ["definitions", archived ? "archived" : "active", "head"],
+    queryFn: () => api.definitions("", archived),
   });
   const loadMore = useMutation({
-    mutationFn: ({ cursor }: { cursor: string; headCursor: string | null }) => api.definitions(cursor),
+    mutationFn: ({ cursor, archived: archivedPage }: {
+      cursor: string;
+      headCursor: string | null;
+      archived: boolean;
+    }) => api.definitions(cursor, archivedPage),
     onSuccess: (page, request) => {
+      if (request.archived !== archived) return;
       setHistory((current) => mergeDefinitions(current, page.definitions));
       if (previousHeadCursor.current === request.headCursor) setNextCursor(page.next_cursor);
     },
@@ -65,17 +72,29 @@ export function DefinitionsView({ onDefinition }: { onDefinition: (id: string) =
       />
       {definitions.error && <StaleBanner error={definitions.error} />}
       <div className="view-toolbar">
-        <p>Shared agent prompts for repeatable software engineering jobs.</p>
-        <button className="button button-primary" onClick={() => setCreateOpen(true)}>
-          <Plus size={15} /> Create Definition
-        </button>
+        <p>{archived ? "Archived Definitions remain available for inspection and restore." : "Shared agent prompts for repeatable software engineering jobs."}</p>
+        <div className="detail-actions">
+          <button className="button button-secondary" onClick={() => {
+            setArchived((current) => !current);
+            setHistory([]);
+            setNextCursor(undefined);
+            previousHeadCursor.current = undefined;
+          }}>
+            {archived ? <><ArrowLeft size={15} /> View active</> : <><Archive size={15} /> View archive</>}
+          </button>
+          {!archived && <button className="button button-primary" onClick={() => setCreateOpen(true)}>
+            <Plus size={15} /> Create Definition
+          </button>}
+        </div>
       </div>
       {items.length === 0 ? (
         <EmptyState
           icon={<BookOpenText size={22} />}
-          title="No Definitions yet"
-          description="Save a prompt once, then run the same engineering job across your repositories."
-          action={<button className="button button-primary" onClick={() => setCreateOpen(true)}>Create Definition</button>}
+          title={archived ? "No archived Definitions" : "No Definitions yet"}
+          description={archived
+            ? "Archived Definitions will appear here."
+            : "Save a prompt once, then run the same engineering job across your repositories."}
+          action={archived ? undefined : <button className="button button-primary" onClick={() => setCreateOpen(true)}>Create Definition</button>}
         />
       ) : (
         <div className="workflow-list">
@@ -103,6 +122,7 @@ export function DefinitionsView({ onDefinition }: { onDefinition: (id: string) =
             onClick={() => loadMore.mutate({
               cursor: activeCursor,
               headCursor: previousHeadCursor.current ?? null,
+              archived,
             })}
           >
             {loadMore.isPending ? "Loading…" : "Load more Definitions"}
@@ -124,12 +144,13 @@ export function DefinitionDetail({ id, onBack }: { id: string; onBack: () => voi
   const [confirmArchive, setConfirmArchive] = useState(false);
   const detail = useQuery({ queryKey: ["definition", id], queryFn: () => api.definition(id) });
   const archive = useMutation({
-    mutationFn: (definition: Definition) => api.setDefinitionArchived({
+    mutationFn: ({ definition, archived }: { definition: Definition; archived: boolean }) => api.setDefinitionArchived({
       id: definition.id,
-      archived: true,
+      archived,
       expectedGeneration: definition.generation,
     }),
-    onSuccess: async () => {
+    onSuccess: async (next) => {
+      queryClient.setQueryData(["definition", next.id], next);
       await invalidateControlPlane(queryClient);
       onBack();
     },
@@ -150,7 +171,17 @@ export function DefinitionDetail({ id, onBack }: { id: string; onBack: () => voi
           <h1>{definition.name}</h1>
           <p>Updated {new Date(definition.updated_at).toLocaleString()}</p>
         </div>
-        {!definition.archived && (
+        {definition.archived ? (
+          <div className="detail-actions">
+            <button
+              className="button button-secondary"
+              disabled={archive.isPending}
+              onClick={() => archive.mutate({ definition, archived: false })}
+            >
+              <RotateCcw size={14} /> {archive.isPending ? "Restoring…" : "Restore Definition"}
+            </button>
+          </div>
+        ) : (
           <div className="detail-actions">
             <button className="button button-secondary" onClick={() => setEditing(true)}>
               <Pencil size={14} /> Edit Definition
@@ -169,7 +200,7 @@ export function DefinitionDetail({ id, onBack }: { id: string; onBack: () => voi
           <button
             className="button button-danger"
             disabled={archive.isPending}
-            onClick={() => archive.mutate(definition)}
+            onClick={() => archive.mutate({ definition, archived: true })}
           >
             {archive.isPending ? "Archiving…" : "Archive Definition"}
           </button>
@@ -222,6 +253,7 @@ function DefinitionForm({
   onSaved: (definition: Definition) => void;
 }) {
   const queryClient = useQueryClient();
+  const [initialDefinition] = useState(definition);
   const nameID = useId();
   const promptID = useId();
   const runtimeID = useId();
@@ -242,10 +274,10 @@ function DefinitionForm({
     return () => window.removeEventListener("keydown", close);
   }, []);
   const save = useMutation({
-    mutationFn: (input: CreateDefinitionInput) => definition
+    mutationFn: (input: CreateDefinitionInput) => initialDefinition
       ? api.updateDefinition({
-          id: definition.id,
-          input: { ...input, expected_generation: definition.generation },
+          id: initialDefinition.id,
+          input: { ...input, expected_generation: initialDefinition.generation },
         })
       : api.createDefinition(input),
     onSuccess: async (next) => {
@@ -286,7 +318,7 @@ function DefinitionForm({
       timeout_seconds: timeoutSeconds,
       inputs: parsedInputs.values,
     };
-    const fingerprint = JSON.stringify({ ...payload, expected_generation: definition?.generation });
+    const fingerprint = JSON.stringify({ ...payload, expected_generation: initialDefinition?.generation });
     if (requestRef.current?.fingerprint !== fingerprint) {
       requestRef.current = { fingerprint, key: crypto.randomUUID() };
     }
@@ -298,34 +330,34 @@ function DefinitionForm({
       <button className="modal-scrim" aria-label="Close Definition form" onClick={onClose} />
       <div className="modal definition-modal" role="dialog" aria-modal="true" aria-labelledby="definition-form-heading">
         <div className="modal-header">
-          <h2 id="definition-form-heading">{definition ? "Edit Definition" : "Create Definition"}</h2>
+          <h2 id="definition-form-heading">{initialDefinition ? "Edit Definition" : "Create Definition"}</h2>
           <button className="icon-button" aria-label="Close" onClick={onClose}><X size={19} /></button>
         </div>
         <form onSubmit={submit} noValidate>
           <div className="modal-body">
             <DefinitionField label="Name" htmlFor={nameID} error={errors.name}>
-              <input ref={nameRef} id={nameID} name="name" autoComplete="off" defaultValue={definition?.name ?? ""} aria-invalid={Boolean(errors.name)} />
+              <input ref={nameRef} id={nameID} name="name" autoComplete="off" defaultValue={initialDefinition?.name ?? ""} aria-invalid={Boolean(errors.name)} />
             </DefinitionField>
             <DefinitionField label="Agent prompt" htmlFor={promptID} error={errors.prompt} hint="Required · 64 KiB">
-              <textarea id={promptID} name="prompt" rows={10} defaultValue={definition?.prompt ?? ""} aria-invalid={Boolean(errors.prompt)} />
+              <textarea id={promptID} name="prompt" rows={10} defaultValue={initialDefinition?.prompt ?? ""} aria-invalid={Boolean(errors.prompt)} />
             </DefinitionField>
             <div className="definition-form-grid">
               <DefinitionField label="Agent runtime" htmlFor={runtimeID} error={errors.runtime}>
-                <select id={runtimeID} name="runtime" defaultValue={definition?.runtime ?? "codex"} aria-invalid={Boolean(errors.runtime)}>
+                <select id={runtimeID} name="runtime" defaultValue={initialDefinition?.runtime ?? "codex"} aria-invalid={Boolean(errors.runtime)}>
                   <option value="codex">Codex</option>
                   <option value="claude-code">Claude Code</option>
                   <option value="pi">Pi</option>
                 </select>
               </DefinitionField>
               <DefinitionField label="Timeout in seconds" htmlFor={timeoutID} error={errors.timeout_seconds}>
-                <input id={timeoutID} name="timeout_seconds" type="number" min={1} max={28_800} defaultValue={definition?.timeout_seconds ?? 3600} aria-invalid={Boolean(errors.timeout_seconds)} />
+                <input id={timeoutID} name="timeout_seconds" type="number" min={1} max={28_800} defaultValue={initialDefinition?.timeout_seconds ?? 3600} aria-invalid={Boolean(errors.timeout_seconds)} />
               </DefinitionField>
             </div>
             <DefinitionField label="Required tools" htmlFor={toolsID} error={errors.allowed_tools} hint="Optional · comma-separated: git, gh">
-              <input id={toolsID} name="allowed_tools" autoComplete="off" defaultValue={definition?.allowed_tools.join(", ") ?? "git, gh"} aria-invalid={Boolean(errors.allowed_tools)} />
+              <input id={toolsID} name="allowed_tools" autoComplete="off" defaultValue={initialDefinition?.allowed_tools.join(", ") ?? "git, gh"} aria-invalid={Boolean(errors.allowed_tools)} />
             </DefinitionField>
             <DefinitionField label="Optional inputs" htmlFor={inputsID} error={errors.inputs} hint="One NAME=value default per line">
-              <textarea id={inputsID} name="inputs" rows={4} defaultValue={formatInputs(definition?.inputs ?? {})} aria-invalid={Boolean(errors.inputs)} placeholder="severity=high" />
+              <textarea id={inputsID} name="inputs" rows={4} defaultValue={formatInputs(initialDefinition?.inputs ?? {})} aria-invalid={Boolean(errors.inputs)} placeholder="severity=high" />
             </DefinitionField>
             {save.error && <InlineError error={save.error} />}
           </div>
@@ -334,7 +366,7 @@ function DefinitionForm({
             <button type="submit" className="button button-primary" disabled={save.isPending}>
               {save.isPending
                 ? <><LoaderCircle size={16} className="spin" /> Saving…</>
-                : definition
+                : initialDefinition
                   ? <><Pencil size={15} /> Save changes</>
                   : <><Plus size={15} /> Create Definition</>}
             </button>

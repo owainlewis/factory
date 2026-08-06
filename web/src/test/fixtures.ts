@@ -419,7 +419,14 @@ export function mockControlPlane(
       const existing = definitionItems.find((definition) => definition.id === definitionID);
       if (!existing) return Response.json({ error: { code: "not_found", message: "not found" } }, { status: 404 });
       if (parts[5] === "archived" && init?.method === "PUT") {
-        const body = JSON.parse(String(init.body)) as { archived: boolean };
+        const body = JSON.parse(String(init.body)) as { archived: boolean; expected_generation: number };
+        if (body.archived === existing.archived) return Response.json(existing);
+        if (body.expected_generation !== existing.generation) {
+          return Response.json(
+            { error: { code: "definition_generation_conflict", message: "the Definition was edited by another request" } },
+            { status: 409 },
+          );
+        }
         const updated = {
           ...existing,
           archived: body.archived,
@@ -430,7 +437,13 @@ export function mockControlPlane(
         return Response.json(updated);
       }
       if (init?.method === "PUT") {
-        const body = JSON.parse(String(init.body)) as Definition;
+        const body = JSON.parse(String(init.body)) as Definition & { expected_generation: number };
+        if (body.expected_generation !== existing.generation) {
+          return Response.json(
+            { error: { code: "definition_generation_conflict", message: "the Definition was edited by another request" } },
+            { status: 409 },
+          );
+        }
         const updated: Definition = {
           ...existing,
           ...body,

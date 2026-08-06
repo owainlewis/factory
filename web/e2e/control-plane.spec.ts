@@ -442,6 +442,17 @@ test("creates, edits, and archives one shared Definition", async ({ page }) => {
     await api.get("/api/v1/definitions?limit=200&archived=false"),
   );
   expect(active.definitions.some((definition) => definition.id === definitionID)).toBe(false);
+
+  await page.getByRole("button", { name: "View archive" }).click();
+  await page.getByRole("button", { name: /E2E find important bugs/ }).click();
+  await expect(page.getByText("Archived", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Restore Definition" }).click();
+  await expect(page.getByRole("heading", { name: "Definitions", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /E2E find important bugs/ })).toBeVisible();
+  const restored = await json<{ archived: boolean; generation: number }>(
+    await api.get(`/api/v1/definitions/${definitionID}`),
+  );
+  expect(restored).toMatchObject({ archived: false, generation: 4 });
   await api.dispose();
   browser.assertClean();
 });
