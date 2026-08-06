@@ -111,9 +111,7 @@ func normalizeAutomation(
 		value.Parameters = normalizedParameters
 		value.WorkflowID = ""
 		value.Context = ""
-		if value.TimeoutSeconds == 0 {
-			value.TimeoutSeconds = 1
-		}
+		value.TimeoutSeconds = 1
 		_, cron, timezone, parseErr := parseCronSchedule(value.Trigger.Cron, value.Trigger.Timezone)
 		if parseErr != nil {
 			if strings.Contains(parseErr.Error(), "timezone") {
