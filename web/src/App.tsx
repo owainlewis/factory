@@ -134,11 +134,16 @@ export function App() {
     : taskHistory.length > 0
       ? taskHistory
       : undefined;
-  const detailWorker = delegateRequest?.workerID
-    ? queryClient.getQueryData<Worker>(["worker", delegateRequest.workerID])
+  const detailWorkerState = delegateRequest?.workerID
+    ? queryClient.getQueryState<Worker>(["worker", delegateRequest.workerID])
     : undefined;
-  const delegateWorkers = detailWorker && !(workers.data ?? []).some((worker) => worker.id === detailWorker.id)
-    ? [detailWorker, ...(workers.data ?? [])]
+  const detailWorker = detailWorkerState?.data;
+  const fleetWorker = detailWorker
+    ? (workers.data ?? []).find((worker) => worker.id === detailWorker.id)
+    : undefined;
+  const detailWorkerIsFresh = detailWorker && (!fleetWorker || (detailWorkerState?.dataUpdatedAt ?? 0) >= workers.dataUpdatedAt);
+  const delegateWorkers = detailWorkerIsFresh
+    ? [detailWorker, ...(workers.data ?? []).filter((worker) => worker.id !== detailWorker.id)]
     : workers.data ?? [];
 
   return (

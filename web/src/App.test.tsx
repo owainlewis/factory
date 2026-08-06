@@ -1043,6 +1043,39 @@ describe("App", () => {
     expect(screen.getByLabelText("Repository")).toBeEnabled();
   });
 
+  it("uses newer Runner detail instead of stale fleet capabilities", async () => {
+    window.history.replaceState({}, "", "/workers/worker-online");
+    mockControlPlane({ workerDetailRuntimeRefresh: true });
+    const user = userEvent.setup();
+    const { client } = renderApp();
+
+    await screen.findByRole("heading", { name: "Build Mac" });
+    await client.refetchQueries({ queryKey: ["worker", "worker-online"] });
+
+    await user.click(screen.getByRole("button", { name: "Assign work" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Delegate task" });
+    expect(within(dialog).getByLabelText("Runner")).toHaveValue("worker-online");
+    expect(within(dialog).getByLabelText("Coding agent")).toHaveValue("pi");
+    expect(within(dialog).queryByRole("option", { name: "Codex" })).not.toBeInTheDocument();
+  });
+
+  it("uses newer fleet capabilities instead of stale Runner detail", async () => {
+    window.history.replaceState({}, "", "/workers/worker-online");
+    mockControlPlane({ workerRuntimeRefresh: true });
+    const user = userEvent.setup();
+    const { client } = renderApp();
+
+    await screen.findByRole("heading", { name: "Build Mac" });
+    await client.refetchQueries({ queryKey: ["workers"] });
+    await user.click(screen.getByRole("button", { name: "Assign work" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Delegate task" });
+    expect(within(dialog).getByLabelText("Runner")).toHaveValue("worker-online");
+    expect(within(dialog).getByLabelText("Coding agent")).toHaveValue("pi");
+    expect(within(dialog).queryByRole("option", { name: "Codex" })).not.toBeInTheDocument();
+  });
+
   it("replaces a selected coding agent that becomes unavailable", async () => {
     const fetch = mockControlPlane({ workerRuntimeRefresh: true });
     const user = userEvent.setup();

@@ -19,6 +19,7 @@ func healthRegistrationChanged(previous, next health) bool {
 func (manager *Manager) setHealth(value health) bool {
 	manager.stateMutex.Lock()
 	previous := manager.health
+	manager.healthCheckPending = false
 	if manager.fatalHealth != nil {
 		value = health{State: "unhealthy", Error: manager.fatalHealth}
 	}
@@ -59,7 +60,18 @@ func (manager *Manager) markUnhealthy(errorClass string, err error) {
 func (manager *Manager) isHealthy() bool {
 	manager.stateMutex.Lock()
 	defer manager.stateMutex.Unlock()
-	return manager.health.State == "healthy" && manager.registered
+	return manager.health.State == "healthy" && manager.registered && !manager.healthCheckPending
+}
+
+func (manager *Manager) beginHealthCheck() bool {
+	manager.stateMutex.Lock()
+	defer manager.stateMutex.Unlock()
+	if manager.healthCheckPending {
+		return false
+	}
+	manager.healthCheckPending = true
+	manager.cancelPendingClaimsLocked()
+	return true
 }
 
 func (manager *Manager) registration() protocol.WorkerRegistration {

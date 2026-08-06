@@ -70,6 +70,7 @@ type Manager struct {
 	disposed                      map[string]bool
 	pending                       map[string]context.CancelFunc
 	claiming                      bool
+	healthCheckPending            bool
 	fatalHealth                   error
 	registered                    bool
 	registrationGeneration        uint64
@@ -279,12 +280,10 @@ func (manager *Manager) Run(ctx context.Context) error {
 	claimTimer := time.NewTimer(0)
 	defer claimTimer.Stop()
 	healthResults := make(chan health, 1)
-	healthCheckRunning := false
 	startHealthCheck := func() {
-		if healthCheckRunning {
+		if !manager.beginHealthCheck() {
 			return
 		}
-		healthCheckRunning = true
 		manager.waitGroup.Add(1)
 		go func() {
 			defer manager.waitGroup.Done()
@@ -306,14 +305,13 @@ func (manager *Manager) Run(ctx context.Context) error {
 		case <-healthTicker.C:
 			startHealthCheck()
 		case result := <-healthResults:
-			healthCheckRunning = false
 			if manager.setHealth(result) {
 				manager.register(ctx)
 			}
 		case <-registrationTicker.C:
 			manager.register(ctx)
 		case <-claimTimer.C:
-			if !healthCheckRunning && manager.isHealthy() {
+			if manager.isHealthy() {
 				manager.reserveAndClaim(ctx)
 			}
 			claimTimer.Reset(manager.jitteredPollInterval())

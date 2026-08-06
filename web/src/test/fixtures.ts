@@ -196,6 +196,7 @@ export function mockControlPlane(
     workflowHistoryGate?: Promise<void>;
     workerDetailFailuresAfter?: number;
     workerFailure?: boolean;
+    workerDetailRuntimeRefresh?: boolean;
     workerOfflineAfterConnectionTest?: boolean;
     workerRuntimeRefresh?: boolean;
   } = {},
@@ -1138,9 +1139,18 @@ export function mockControlPlane(
           { status: 503 },
         );
       }
+      const detailWorker = options.workerDetailRuntimeRefresh
+        ? {
+            ...worker,
+            runtime: "pi",
+            capabilities: (worker.capabilities ?? []).map((capability) => capability.kind === "runtime" && capability.name === "codex"
+              ? { ...capability, status: "unauthenticated", message: "Authenticate Codex before running Jobs." }
+              : capability),
+          }
+        : worker;
       return Response.json(options.workerOfflineAfterConnectionTest && workerConnectionTests > 0
-        ? { ...worker, online: false }
-        : worker);
+        ? { ...detailWorker, online: false }
+        : detailWorker);
     }
     if (path === `/api/v1/workers/${worker.id}/test` && init?.method === "POST") {
       workerConnectionTests += 1;

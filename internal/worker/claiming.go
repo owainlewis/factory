@@ -10,7 +10,7 @@ import (
 func (manager *Manager) reserveAndClaim(ctx context.Context) {
 	manager.stateMutex.Lock()
 	defer manager.stateMutex.Unlock()
-	if manager.claiming || manager.health.State != "healthy" || !manager.registered {
+	if manager.claiming || manager.health.State != "healthy" || !manager.registered || manager.healthCheckPending {
 		return
 	}
 	select {
@@ -105,7 +105,7 @@ func (manager *Manager) beginClaim(
 	ctx, cancel := context.WithCancel(parent)
 	manager.stateMutex.Lock()
 	defer manager.stateMutex.Unlock()
-	if manager.health.State != "healthy" || !manager.registered {
+	if manager.health.State != "healthy" || !manager.registered || manager.healthCheckPending {
 		return ctx, cancel, false
 	}
 	manager.pending[requestID] = cancel
@@ -115,8 +115,9 @@ func (manager *Manager) beginClaim(
 func (manager *Manager) endClaim(requestID string) bool {
 	manager.stateMutex.Lock()
 	defer manager.stateMutex.Unlock()
+	_, pending := manager.pending[requestID]
 	delete(manager.pending, requestID)
-	return manager.health.State == "healthy" && manager.registered
+	return pending && manager.health.State == "healthy" && manager.registered && !manager.healthCheckPending
 }
 
 func (manager *Manager) cancelPendingClaimsLocked() {

@@ -1,7 +1,9 @@
 package worker
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/owainlewis/factory/internal/protocol"
 )
@@ -63,5 +65,32 @@ func TestStaleRegistrationCannotReenableClaimingAfterCapabilityChange(t *testing
 	manager.stateMutex.Unlock()
 	if registered {
 		t.Fatal("stale registration re-enabled claiming after runtime readiness changed")
+	}
+}
+
+func TestHealthCheckCancelsAndInvalidatesPendingClaim(t *testing.T) {
+	manager := &Manager{
+		health:     health{State: "healthy"},
+		registered: true,
+		pending:    make(map[string]context.CancelFunc),
+	}
+	claimContext, cancel, eligible := manager.beginClaim(context.Background(), "claim-1")
+	defer cancel()
+	if !eligible {
+		t.Fatal("healthy registered Runner did not begin claim")
+	}
+	if !manager.beginHealthCheck() {
+		t.Fatal("health check did not start")
+	}
+	select {
+	case <-claimContext.Done():
+	case <-time.After(time.Second):
+		t.Fatal("health check did not cancel the pending claim")
+	}
+	if manager.endClaim("claim-1") {
+		t.Fatal("claim cancelled by a health check became eligible again")
+	}
+	if manager.isHealthy() {
+		t.Fatal("Runner remained claimable while health evidence was pending")
 	}
 }
