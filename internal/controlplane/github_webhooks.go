@@ -175,7 +175,9 @@ func (s *Store) dispatchGitHubWebhookOccurrences(ctx context.Context, deliveryID
 		       webhook.definition_snapshot, webhook.parameters_json
 		FROM automation_occurrences occurrence
 		JOIN automation_github_webhook_occurrences webhook ON webhook.occurrence_id = occurrence.id
+		JOIN automations automation ON automation.id = occurrence.automation_id
 		WHERE webhook.delivery_id = ? AND occurrence.state IN ('pending', 'failed')
+		  AND automation.enabled = 1
 		ORDER BY occurrence.id
 	`, deliveryID)
 	if err != nil {

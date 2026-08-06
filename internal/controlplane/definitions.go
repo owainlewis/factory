@@ -401,9 +401,21 @@ func (s *Store) SetDefinitionArchived(
 	} else {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE automations
-			SET health_status = CASE WHEN enabled = 1 THEN 'healthy' ELSE health_status END,
-			    health_code = CASE WHEN enabled = 1 THEN '' ELSE health_code END,
-			    health_message = CASE WHEN enabled = 1 THEN 'Waiting for a signed GitHub webhook.' ELSE health_message END,
+			SET health_status = CASE
+			        WHEN enabled = 1 AND EXISTS (SELECT 1 FROM repositories WHERE id = automations.repository_id AND enabled = 1) THEN 'healthy'
+			        WHEN enabled = 1 THEN 'blocked'
+			        ELSE health_status
+			    END,
+			    health_code = CASE
+			        WHEN enabled = 1 AND EXISTS (SELECT 1 FROM repositories WHERE id = automations.repository_id AND enabled = 1) THEN ''
+			        WHEN enabled = 1 THEN 'repository_disabled'
+			        ELSE health_code
+			    END,
+			    health_message = CASE
+			        WHEN enabled = 1 AND EXISTS (SELECT 1 FROM repositories WHERE id = automations.repository_id AND enabled = 1) THEN 'Waiting for a signed GitHub webhook.'
+			        WHEN enabled = 1 THEN 'Enable the selected repository before webhook deliveries can run.'
+			        ELSE health_message
+			    END,
 			    updated_at = ?
 			WHERE trigger_type = 'github_webhook' AND id IN (
 				SELECT automation_id FROM automation_github_webhook_triggers WHERE definition_id = ?

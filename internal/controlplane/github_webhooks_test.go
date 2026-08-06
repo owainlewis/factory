@@ -218,6 +218,50 @@ func TestGitHubWebhookDispatchContinuesAfterOneAutomationFails(t *testing.T) {
 	if runCount != 1 {
 		t.Fatalf("fanout successful Run count = %d", runCount)
 	}
+	if _, err := store.SetAutomationEnabled(context.Background(), failedAutomationID, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if admitted, err := store.AcceptGitHubPullRequestWebhook(context.Background(), delivery, []byte("fanout")); err != nil || admitted != 0 {
+		t.Fatalf("disabled redelivery admitted=%d err=%v", admitted, err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM runs WHERE source_kind = 'webhook'`).Scan(&runCount); err != nil || runCount != 1 {
+		t.Fatalf("disabled redelivery Run count=%d err=%v", runCount, err)
+	}
+}
+
+func TestRestoringWebhookDefinitionPreservesDisabledRepositoryBlock(t *testing.T) {
+	store := newTestStore(t)
+	definition := createTestDefinition(t, store, "restore-webhook-definition", "Restore webhook")
+	repository := createManagedTestRepository(t, store, "github.com/owainlewis/restore-webhook")
+	detail, _, err := store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
+		RequestKey: "restore-webhook-automation", Title: "Restore webhook review",
+		DefinitionID: definition.ID, RepositoryIDs: []string{repository.ID},
+		Trigger: protocol.AutomationTrigger{Type: protocol.AutomationTriggerGitHubWebhook, Actions: []string{"opened"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetAutomationEnabled(context.Background(), detail.Automation.ID, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetManagedRepositoryEnabled(context.Background(), repository.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	archived, err := store.SetDefinitionArchived(context.Background(), definition.ID, true, definition.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetDefinitionArchived(context.Background(), definition.ID, false, archived.Generation); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Automation.Health.Status != "blocked" || current.Automation.Health.Code != "repository_disabled" ||
+		!strings.Contains(current.Automation.Health.Message, "Enable the selected repository") {
+		t.Fatalf("restored webhook Automation health = %#v", current.Automation)
+	}
 }
 
 func TestGitHubWebhookDeliveryIDRejectsDifferentPayload(t *testing.T) {
