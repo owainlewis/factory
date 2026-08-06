@@ -363,6 +363,79 @@ describe("App", () => {
     expect(submitted.expected_generation).toBe(1);
   });
 
+  it("drops loaded history when a head refresh changes archive membership", async () => {
+    window.history.replaceState({}, "", "/definitions");
+    mockControlPlane({ paginatedDefinitions: true });
+    const user = userEvent.setup();
+    const { client } = renderApp();
+
+    expect(await screen.findByText("Head Definition")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Load more Definitions" }));
+    expect(await screen.findByText("Historical Definition")).toBeVisible();
+
+    await globalThis.fetch("/api/v1/definitions/definition-history/archived", {
+      method: "PUT",
+      body: JSON.stringify({ archived: true, expected_generation: 1 }),
+    });
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["definitions", "active", "head"] });
+    });
+
+    await vi.waitFor(() => {
+      expect(screen.queryByText("Historical Definition")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Load more Definitions" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("rejects a stale page response after a cached Definitions remount", async () => {
+    window.history.replaceState({}, "", "/definitions");
+    let releaseHeadRefresh!: () => void;
+    let releaseHistory!: () => void;
+    const definitionHeadRefreshGate = new Promise<void>((resolve) => {
+      releaseHeadRefresh = resolve;
+    });
+    const definitionHistoryGate = new Promise<void>((resolve) => {
+      releaseHistory = resolve;
+    });
+    const fetch = mockControlPlane({
+      paginatedDefinitions: true,
+      definitionHeadRefreshGate,
+      definitionHistoryGate,
+    });
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: /Head Definition/ }));
+    await user.click(await screen.findByRole("button", { name: "All Definitions" }));
+    await vi.waitFor(() => {
+      const heads = fetch.mock.calls.filter(([input]) => {
+        const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        return path === "/api/v1/definitions?limit=200&archived=false";
+      });
+      expect(heads).toHaveLength(2);
+    });
+    await user.click(screen.getByRole("button", { name: "Load more Definitions" }));
+    await vi.waitFor(() => expect(fetch.mock.calls.some(([input]) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return path.includes("cursor=definition-history");
+    })).toBe(true));
+
+    await globalThis.fetch("/api/v1/definitions/definition-history/archived", {
+      method: "PUT",
+      body: JSON.stringify({ archived: true, expected_generation: 1 }),
+    });
+    releaseHeadRefresh();
+    await vi.waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Load more Definitions" })).not.toBeInTheDocument();
+    });
+    releaseHistory();
+
+    await vi.waitFor(() => {
+      expect(screen.queryByText("Historical Definition")).not.toBeInTheDocument();
+      expect(screen.getByText("Head Definition")).toBeVisible();
+    });
+  });
+
   it("keeps runbook editor focus during background polling", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

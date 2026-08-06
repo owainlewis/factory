@@ -34,36 +34,45 @@ export function DefinitionsView({
   onDefinition: (id: string) => void;
 }) {
   const [createOpen, setCreateOpen] = useState(false);
-  const [history, setHistory] = useState<Definition[]>([]);
-  const [nextCursor, setNextCursor] = useState<string | null>();
-  const previousHeadCursor = useRef<string | null | undefined>(undefined);
+  const [history, setHistory] = useState<{
+    headRequestID: string;
+    definitions: Definition[];
+    nextCursor: string | null;
+  }>({ headRequestID: "", definitions: [], nextCursor: null });
   const definitions = useQuery({
     queryKey: ["definitions", archived ? "archived" : "active", "head"],
-    queryFn: () => api.definitions("", archived),
+    queryFn: async () => ({
+      page: await api.definitions("", archived),
+      requestID: crypto.randomUUID(),
+    }),
   });
   const loadMore = useMutation({
     mutationFn: ({ cursor, archived: archivedPage }: {
       cursor: string;
-      headCursor: string | null;
+      headRequestID: string;
       archived: boolean;
     }) => api.definitions(cursor, archivedPage),
     onSuccess: (page, request) => {
       if (request.archived !== archived) return;
-      setHistory((current) => mergeDefinitions(current, page.definitions));
-      if (previousHeadCursor.current === request.headCursor) setNextCursor(page.next_cursor);
+      setHistory((current) => ({
+        headRequestID: request.headRequestID,
+        definitions: mergeDefinitions(
+          current.headRequestID === request.headRequestID ? current.definitions : [],
+          page.definitions,
+        ),
+        nextCursor: page.next_cursor,
+      }));
     },
   });
-  useEffect(() => {
-    if (!definitions.data) return;
-    const boundaryChanged = previousHeadCursor.current !== definitions.data.next_cursor;
-    setNextCursor((current) => boundaryChanged ? definitions.data.next_cursor : current);
-    previousHeadCursor.current = definitions.data.next_cursor;
-  }, [definitions.data]);
 
   if (definitions.isPending) return <LoadingState label="Loading Definitions" />;
   if (!definitions.data) return <ErrorState error={definitions.error} onRetry={() => void definitions.refetch()} />;
-  const activeCursor = nextCursor === undefined ? definitions.data.next_cursor : nextCursor;
-  const items = mergeDefinitions(definitions.data.definitions, history);
+  const historyIsCurrent = history.headRequestID === definitions.data.requestID;
+  const activeCursor = historyIsCurrent ? history.nextCursor : definitions.data.page.next_cursor;
+  const items = mergeDefinitions(
+    definitions.data.page.definitions,
+    historyIsCurrent ? history.definitions : [],
+  );
 
   return (
     <div className="page">
@@ -72,8 +81,7 @@ export function DefinitionsView({
         fetching={definitions.isFetching}
         updatedAt={definitions.dataUpdatedAt}
         onRefresh={() => {
-          setHistory([]);
-          setNextCursor(undefined);
+          setHistory({ headRequestID: "", definitions: [], nextCursor: null });
           void definitions.refetch();
         }}
       />
@@ -123,7 +131,7 @@ export function DefinitionsView({
             disabled={loadMore.isPending}
             onClick={() => loadMore.mutate({
               cursor: activeCursor,
-              headCursor: previousHeadCursor.current ?? null,
+              headRequestID: definitions.data.requestID,
               archived,
             })}
           >
