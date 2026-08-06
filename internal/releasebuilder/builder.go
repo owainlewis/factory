@@ -127,6 +127,10 @@ func Build(ctx context.Context, options Options) error {
 	if err != nil {
 		return err
 	}
+	goLicense, err := readGoLicense(ctx, root)
+	if err != nil {
+		return err
+	}
 	modules, err := listModules(ctx, root)
 	if err != nil {
 		return err
@@ -135,7 +139,7 @@ func Build(ctx context.Context, options Options) error {
 	if err != nil {
 		return err
 	}
-	notices, err := renderNotices(modules, npmPackages, root)
+	notices, err := renderNotices(strings.TrimSpace(goVersion), goLicense, modules, npmPackages, root)
 	if err != nil {
 		return err
 	}
@@ -447,10 +451,36 @@ func listNPMPackages(root string) ([]npmPackage, error) {
 	return packages, nil
 }
 
-func renderNotices(modules []module, npmPackages []npmPackage, root string) ([]byte, error) {
+func readGoLicense(ctx context.Context, root string) ([]byte, error) {
+	goRoot, err := commandOutput(ctx, root, releaseGoEnvironment(), "go", "env", "GOROOT")
+	if err != nil {
+		return nil, err
+	}
+	licensePath := filepath.Join(strings.TrimSpace(goRoot), "LICENSE")
+	info, err := os.Lstat(licensePath)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("Go toolchain license is missing or not regular: %s", licensePath)
+	}
+	body, err := os.ReadFile(licensePath)
+	if err != nil {
+		return nil, fmt.Errorf("read Go toolchain license: %w", err)
+	}
+	if len(body) == 0 || len(body) > 2<<20 {
+		return nil, fmt.Errorf("Go toolchain license has invalid size %d", len(body))
+	}
+	return body, nil
+}
+
+func renderNotices(goVersion string, goLicense []byte, modules []module, npmPackages []npmPackage, root string) ([]byte, error) {
 	var output strings.Builder
 	output.WriteString("Factory third-party notices\n\n")
-	output.WriteString("This file is generated from the complete Go module graph. License texts follow.\n")
+	output.WriteString("This file is generated from the Go toolchain, complete Go module graph, and shipped npm packages. License texts follow.\n")
+	fmt.Fprintf(&output, "\n================================================================================\nGo toolchain %s runtime and standard library\n\n--- LICENSE ---\n", goVersion)
+	goLicenseText := bytesToText(goLicense)
+	output.WriteString(goLicenseText)
+	if !strings.HasSuffix(goLicenseText, "\n") {
+		output.WriteByte('\n')
+	}
 	for _, item := range modules {
 		effective := item
 		if item.Replace != nil {
@@ -784,6 +814,9 @@ func releaseGoEnvironment(overrides ...string) []string {
 	if moduleCache := os.Getenv("FACTORY_RELEASE_GOMODCACHE"); moduleCache != "" {
 		environment = append(environment, "GOMODCACHE="+moduleCache)
 	}
+	if buildCache := os.Getenv("FACTORY_RELEASE_GOCACHE"); buildCache != "" {
+		environment = append(environment, "GOCACHE="+buildCache)
+	}
 	return append(environment, overrides...)
 }
 
@@ -848,7 +881,11 @@ func Verify(ctx context.Context, repositoryRoot, directory, version, commit stri
 	if err != nil {
 		return err
 	}
-	expectedNotices, err := renderNotices(modules, npmPackages, repositoryRoot)
+	goLicense, err := readGoLicense(ctx, repositoryRoot)
+	if err != nil {
+		return err
+	}
+	expectedNotices, err := renderNotices(strings.TrimSpace(goVersion), goLicense, modules, npmPackages, repositoryRoot)
 	if err != nil {
 		return err
 	}

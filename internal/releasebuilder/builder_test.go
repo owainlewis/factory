@@ -82,6 +82,19 @@ func TestArchiveIsDeterministicAndOrdered(t *testing.T) {
 	}
 }
 
+func TestNoticesIncludeGoRuntimeAndStandardLibraryLicense(t *testing.T) {
+	const license = "Copyright 2009 The Go Authors. All rights reserved.\n"
+	body, err := renderNotices("go1.25.12", []byte(license), nil, nil, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Go toolchain go1.25.12 runtime and standard library", license} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("third-party notices do not contain %q", want)
+		}
+	}
+}
+
 func TestSPDXIncludesArtifactAndDependency(t *testing.T) {
 	body, err := renderSPDX(
 		"v1.2.3", strings.Repeat("a", 40), time.Unix(1_700_000_000, 0).UTC(),

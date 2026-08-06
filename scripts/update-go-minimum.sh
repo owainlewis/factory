@@ -15,6 +15,11 @@ if [[ ! "$current" =~ ^1\.25\.[0-9]+$ ]]; then
   printf 'go.mod declares unsupported minimum %s; expected Go 1.25.x\n' "$current" >&2
   exit 1
 fi
+release_pin="$(tr -d '[:space:]' < .release/go-version)"
+if [[ "$release_pin" != "$current" ]]; then
+  printf '.release/go-version contains %s; expected %s from go.mod\n' "$release_pin" "$current" >&2
+  exit 1
+fi
 if [[ "$current" == "$next" ]]; then
   printf 'Go minimum is already %s\n' "$current"
   exit 0
@@ -27,6 +32,7 @@ if ((10#$next_patch < 10#$current_patch)); then
 fi
 
 go mod edit -go="$next"
+printf '%s\n' "$next" > .release/go-version
 documents=(
   README.md
   CONTRIBUTING.md

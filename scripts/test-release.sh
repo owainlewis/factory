@@ -13,11 +13,13 @@ version=v0.0.0-test.local
 commit=$(git -C "$root" rev-parse HEAD)
 
 FACTORY_RELEASE_GOMODCACHE="$temporary/module-cache-first" \
+  FACTORY_RELEASE_GOCACHE="$temporary/build-cache-first" \
   "$root/scripts/release.sh" "$version" "$commit" "$temporary/first"
 GOOS=linux GOARCH=amd64 GOAMD64=v3 GOARM64=v9.5 \
   GODEBUG=installgoroot=all GOENV=/missing/go.env GOEXPERIMENT=none \
   GOFIPS140=latest GOFLAGS=-tags=ambient_release_tag GOWORK=/missing/go.work \
   FACTORY_RELEASE_GOMODCACHE="$temporary/module-cache-second" \
+  FACTORY_RELEASE_GOCACHE="$temporary/build-cache-second" \
   "$root/scripts/release.sh" "$version" "$commit" "$temporary/second"
 diff -r "$temporary/first" "$temporary/second"
 

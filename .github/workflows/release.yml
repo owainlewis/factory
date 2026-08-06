@@ -33,6 +33,19 @@ jobs:
         with:
           go-version-file: .release/go-version
           cache: true
+      - name: Verify release tag provenance
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="refs/tags/$RELEASE_VERSION"
+          test "$(git cat-file -t "$tag")" = tag
+          test "$(git rev-parse "$tag^{}")" = "$GITHUB_SHA"
+          remote_commit=$(git ls-remote --tags origin "$tag^{}" | awk '{print $1}')
+          test -n "$remote_commit"
+          test "$remote_commit" = "$GITHUB_SHA"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD
       - name: Build release set
         run: ./scripts/release.sh "$RELEASE_VERSION" "$(git rev-parse HEAD)" dist
       - name: Verify every cross-compiled artifact
@@ -103,6 +116,11 @@ jobs:
       - name: Create GitHub release
         shell: bash
         run: |
+          set -euo pipefail
+          remote_commit=$(git ls-remote --tags "https://github.com/$GH_REPO.git" "refs/tags/$RELEASE_VERSION^{}" | awk '{print $1}')
+          test -n "$remote_commit"
+          test "$remote_commit" = "$GITHUB_SHA"
+          test "$(jq -r .commit dist/release-manifest.json)" = "$GITHUB_SHA"
           flags=(--verify-tag --generate-notes)
           if [[ "$RELEASE_VERSION" == *-* ]]; then
             flags+=(--prerelease)

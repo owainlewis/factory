@@ -121,7 +121,9 @@ compatibility notes. After it merges:
 
 1. Create an annotated `vMAJOR.MINOR.PATCH` tag on the reviewed main-branch
    commit.
-2. Push the tag. The release workflow builds all four archives once.
+2. Push the tag. The release workflow verifies that the remote annotated tag
+   still points to the workflow commit and that the commit belongs to `main`,
+   then builds all four archives once with isolated module and compiler caches.
 3. Native Linux and macOS runners verify checksums, SPDX documents, archive
    contents, binary target metadata, and the embedded version and commit.
 4. Only after every verification job succeeds does the workflow publish the
