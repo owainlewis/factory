@@ -24,8 +24,8 @@ Examples include:
 - review a ticket, implementation plan, patch, or pull request;
 - inspect a codebase for bugs, security concerns, or policy drift;
 - apply dependency, configuration, or CI changes across a repository fleet;
-- create issues, comments, branches, and pull requests under an explicit action
-  policy;
+- let agents create issues, comments, branches, and pull requests with the tools
+  available on their Runner;
 - run scheduled maintenance and react to GitHub events.
 
 Every use case becomes the same execution primitive. A **Job** runs one agent
@@ -35,8 +35,8 @@ against one repository and optional work item. A **Run** invokes one saved
 ## Core experience
 
 An operator starts with a Job Definition such as `Review pull request`, `Triage
-issue`, or `Find dependency risks`. The definition contains the trusted
-instructions, runtime needs, execution defaults, and allowed external actions.
+issue`, or `Find dependency risks`. The definition contains the shared prompt,
+runtime needs, and execution defaults.
 
 The operator can run it manually, call it through the API, attach a schedule,
 or attach a GitHub event trigger. The invocation freezes the definition,
@@ -55,7 +55,7 @@ Job Definition
         |
         +-- manual invocation
         +-- schedule trigger
-        +-- GitHub webhook or query trigger
+        +-- GitHub webhook trigger
         `-- API invocation
                  |
                  v
@@ -66,12 +66,13 @@ Job Definition
        v         v         v
       Job       Job       Job
    repo/item  repo/item  repo/item
-       |
-       v
-    Attempt
-       |
-       v
+       +---------+---------+
+                 |
+                 v
  Runner on a local host, VM, or Kubernetes cluster
+       |
+       v
+ Codex or Claude Code using Git and GitHub CLI
 ```
 
 The Job Definition is the saved procedure. Its instructions are not a separate
@@ -88,10 +89,10 @@ separate Occurrence concept.
 5. Triggers admit work but never execute agents.
 6. Runners supply compute. Runtimes such as Codex and Claude Code supply agent
    behavior.
-7. Provider payloads and repository content are untrusted inputs. Job
-   instructions and action policy are trusted operator configuration.
-8. External writes require explicit capabilities. Read and report is the
-   default.
+7. Provider payloads and repository content are untrusted inputs. Definition
+   instructions are trusted operator configuration.
+8. Agents use the tools and credentials available on their Runner. Factory does
+   not intermediate GitHub comments, branches, issues, or pull requests.
 9. Fleet-wide work is bounded, fair, observable, and retryable per target.
 10. Product concepts must earn their place through operator behavior, not
     speculative reuse.
@@ -113,6 +114,20 @@ personas, squads, a generic workflow builder, or business-process automation.
 GitHub and other engineering systems remain the source of issues, pull
 requests, reviews, and repository state.
 
+## V1 experience
+
+V1 is a local software factory. An operator can:
+
+- configure a local Codex or Claude Code Runner;
+- add the team's Git repositories;
+- save a shared prompt as a Definition;
+- press **Run once** for one repository or a selected repository fleet;
+- see every Job, failure, cycle time, throughput, and Runner health;
+- attach a schedule to repeat the same Run automatically.
+
+Remote VM Runners, Kubernetes Runners, and GitHub webhook Triggers follow after
+this local manual and scheduled path works end to end.
+
 ## Measures of progress
 
 The product is moving toward this vision when a team can:
@@ -122,8 +137,8 @@ The product is moving toward this vision when a team can:
 - react to a GitHub delivery without duplicate Jobs;
 - add or remove local, VM, and Kubernetes capacity without changing a Job
   Definition;
-- identify the exact instructions, input, permissions, runtime, runner, and
-  outcome for every Job;
+- identify the exact instructions, input, runtime, runner, and outcome for every
+  Job;
 - recover or retry one failed target without replaying successful work;
 - measure useful engineering outcomes rather than only process completion.
 
@@ -135,3 +150,5 @@ The product is moving toward this vision when a team can:
 - One agent process changing several repositories atomically.
 - Autonomous merge, approval, or unbounded recursive Job creation in the first
   target architecture.
+- A deterministic gateway for agent GitHub actions or exactly-once external
+  side effects.

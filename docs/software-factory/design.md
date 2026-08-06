@@ -1,596 +1,429 @@
 # Software Factory target architecture
 
-> **Status:** Proposed for review
+> **Status:** Proposed revision
 
 ## 1. Executive summary
 
-Factory currently runs reliable single-repository agent tasks, but its saved
-instructions, Automations, Occurrences, Tasks, Executions, and one-runtime
-workers expose more concepts than the product needs while still preventing one
-Run from targeting a repository fleet. The target architecture makes the agent
-Job the centre of the system.
+Factory is an orchestration system for software-engineering agents. A user
+configures a Runner, adds Git repositories, saves a prompt as a Definition, and
+runs that Definition against one or many repositories. Factory starts the
+agents, tracks their lifecycle, and reports the outcome.
 
-A Job Definition stores one reusable software-engineering procedure. A manual,
-scheduled, GitHub, or API invocation creates one durable Run that freezes the
-definition and target set. Each target becomes one independent Job, and each
-execution try remains an Attempt. Authenticated Runners provide local, VM, or
-Kubernetes capacity and advertise the runtimes they can execute.
+The current product has separate Workflow, revision, Automation, Occurrence,
+Task, Execution, Attempt, and worker concepts. The target product has five
+concepts: **Definition**, **Trigger**, **Run**, **Job**, and **Runner**.
 
-The main downside is migration. Existing Workflow, Automation, Occurrence,
-Task, Execution, and worker data must remain understandable while new writes
-move to the smaller model.
+V1 is local-first. It supports manual and scheduled Runs on local Codex and
+Claude Code Runners, repository fan-out, and operational metrics. Remote VM
+Runners, Kubernetes Runners, and GitHub webhook Triggers follow after V1.
+
+The main tradeoff is trust. The agent uses the tools and credentials available
+on its Runner, including authenticated `gh`. Factory does not intermediate
+comments, branches, issues, or pull requests and cannot promise exactly-once
+external side effects.
 
 ## 2. Context and scope
 
-The current [architecture](../../ARCHITECTURE.md) is local-first. One Task
-freezes one repository and worker, one Execution owns its queue state, and one
-worker process owns one runtime. Versioned Workflows supply reusable Markdown
-instructions. Typed Automations bind one Workflow to one repository and one
-issue, pull-request, or schedule Trigger. One durable Occurrence creates at
-most one Task.
+The current [architecture](../../ARCHITECTURE.md) already has useful execution
+machinery: durable tasks, isolated worktrees, leases, events, cancellation,
+cleanup, runtime supervision, and a repository catalog. It also already lets an
+agent use authenticated `gh` from the Runner host.
 
-Those boundaries proved durable task and attempt execution, typed provider
-admission, prompt snapshots, and crash-safe deduplication. They do not match the
-product direction in the [vision](vision.md): fleet-wide Runs are central,
-triggers are only ways to admit the same work, and local, VM, and Kubernetes
-capacity must be interchangeable.
+The problem is the product model. A user who wants to run one prompt must
+understand Workflows, revisions, Tasks, and workers. Scheduled work adds
+Automations and Occurrences. Running the same prompt across five repositories
+is not one visible operation.
 
-This design defines the target product model, component boundaries, data
-ownership, migration direction, failure behavior, and security requirements.
-It does not prescribe a single large rewrite. Existing attempt, lease,
-worktree, event, and cleanup contracts remain useful and should be reused.
+This revision keeps the reliable execution machinery and simplifies the
+operator experience. It covers the V1 journey and the boundaries later Runner
+and Trigger types must preserve. It does not design a generic automation
+platform or a deterministic GitHub action gateway.
 
 ## 3. System context
 
 ```mermaid
 flowchart LR
-    O["Operator or API client"] --> CP["Factory control plane"]
-    GH["GitHub App and webhooks"] --> CP
-    CLK["Factory clock"] --> CP
-    CP --> DB["Durable coordination store"]
-    CP --> RUN["Run with frozen targets"]
-    RUN --> J1["Job: repository or work item"]
-    RUN --> J2["Job: repository or work item"]
-    J1 --> R["Authenticated Runner fleet"]
-    J2 --> R
-    R --> L["Local or VM process"]
-    R --> K["Kubernetes Job pod"]
-    L --> A["Codex, Claude Code, or another supported runtime"]
-    K --> A
-    CP -->|"validated Provider Actions"| GH
+    U["Operator"] --> D["Definition: saved prompt"]
+    T["Manual or schedule Trigger"] --> R["Run: one invocation"]
+    D --> R
+    R --> J1["Job: repository A"]
+    R --> J2["Job: repository B"]
+    J1 --> RN["Runner"]
+    J2 --> RN
+    RN --> A["Codex or Claude Code"]
+    A --> G["Git and GitHub CLI"]
+    J1 --> M["Lifecycle and metrics"]
+    J2 --> M
 ```
 
-GitHub owns repository, issue, pull-request, review, and installation state.
-Factory owns provider app and installation connection records, definitions,
-triggers, provider delivery admission, Runs, Jobs, Attempts, Provider Actions,
-routing, snapshots, and results. Runners own execution isolation, repository
-materialization, process supervision, and local recovery. Agent runtimes own
-their model interaction and native output.
+Factory owns Definitions, Triggers, Runs, Jobs, Runner coordination, repository
+targets, lifecycle events, results, and metrics. The Runner owns the execution
+environment, worktree, agent process, and available tools. The agent owns the
+engineering work it performs with those tools. GitHub remains the source of
+issues, pull requests, reviews, and repository state.
 
 ## 4. Proposed design
 
-### How it works
+### V1 user journey
 
-An operator creates a Job Definition named `Review pull request`. It contains
-trusted review instructions, a required agent runtime family, a timeout,
-attempt policy, structured result expectation, and permission to read code and
-post a pull-request review comment. The definition has a GitHub pull-request
-webhook Trigger filtered to opened and synchronized events.
+#### Configure a local Runner
 
-GitHub sends a delivery. Factory verifies the signature, bounds the body, and
-stores it under its delivery ID. Before acknowledging the request, receipt
-admission freezes every matching Trigger and its complete behavior-bearing
-Definition snapshot in the same transaction. The delivery processor creates
-one Run from that frozen match, with bounded event context, repository,
-pull-request identity, and head commit. A later edit, disable, or archive does
-not change or suppress accepted work. The target set contains one item, so
-Factory creates one Job.
+As an operator, I want to connect a local Codex or Claude Code Runner so Factory
+can run agent work on my machine.
 
-The scheduler selects a healthy Runner that advertises the required runtime,
-source access, labels, and free capacity. The Runner prepares the repository
-and exact ref, creates an isolated worktree or pod workspace, and launches an
-Attempt. The Attempt streams events and renews its lease. On completion,
-Factory stores the result and any schema-valid proposed actions. The control
-plane validates each proposal against the frozen policy and writes a durable
-Provider Action before a trusted adapter publishes it. The agent process never
-receives provider write credentials in this strongly enforced path.
+One local launcher command starts the control plane and a local Runner process.
+On first start, the Runner creates a durable random identity at
+`~/.factory/runner/id`, then registers with the control plane. Restarting the
+launcher reuses that identity.
 
-A scheduled codebase review follows the same path. Its Trigger resolves a
-bounded repository selector into a frozen list. One Run creates one Job per
-repository. Jobs progress independently under a per-Run concurrency cap and
-fair scheduling across unrelated Runs.
+The Runner performs bounded, non-interactive health checks for Git, Codex,
+Claude Code, and authenticated `gh`. The setup screen shows each capability as
+ready, missing, unauthenticated, or unhealthy. One host may advertise both Codex
+and Claude Code. A Definition selects the runtime and required tools; each Job
+still launches one isolated agent process. V1 configuration does not install or
+authenticate third-party CLIs for the user.
 
-### Components and responsibilities
+#### Configure repositories
 
-#### Control plane
+As an operator, I want to add the GitHub repositories my team works on so I can
+choose where a Definition runs.
 
-The control plane owns Provider Apps, Provider Connections, Job Definitions,
-Triggers, provider delivery admission, target resolution, Run and Job creation,
-routing, leases, results, action policy, the Provider Action outbox, and
-aggregate state. It depends on the durable store, provider adapters, and Runner
-protocol. It does not run agent processes or hold Kubernetes administrator
-credentials.
+Factory stores canonical repository identities and enabled state. Runners
+acquire a configured repository on demand and never clone a URL supplied by a
+prompt or webhook payload.
 
-#### Provider adapters
+#### Save a shared Definition
 
-A provider adapter verifies and stores external deliveries, normalizes
-repository and work-item identity, resolves provider-backed selectors, brokers
-read-only materialization credentials, and publishes durable allowed actions.
-The first adapter is a GitHub App. It does not compose agent instructions or
-interpret free-form agent output as authority.
+As an operator, I want to save a prompt such as `Find bugs`, `Triage issues`, or
+`Review pull request` so everyone using the same trusted Factory instance runs
+the same instructions.
 
-Polling remains available as a scheduled query for bulk selection, backfill,
-and reconciliation. It is not a separate Automation type.
+A Definition stores a name, prompt, required runtime, timeout, and execution
+defaults. Definitions edit in place. Each Run stores the complete Definition
+snapshot it used, so historical Runs remain understandable without exposing a
+revision library.
 
-#### Runner
+#### Run once on one repository
 
-A Runner is a stable authenticated execution environment. A local or VM Runner
-detects installed and authenticated runtime CLIs and supervises local child
-executors. A Kubernetes Runner advertises configured image profiles and creates
-bounded Job pods. A Runner owns capacity, repository materialization, Attempt
-supervision, and local cleanup. It does not choose business targets or provider
-actions.
+As an operator, I want to select a Definition and repository and press **Run
+once** so an agent completes the work end to end.
 
-#### Agent runtime
+Factory creates one Run containing one Job. The Job moves through pending,
+blocked, queued, preparing, running, and then succeeded, failed, cancelled, or
+skipped. Attempt history, events, and cleanup remain implementation details
+shown inside the Job when useful.
 
-An agent runtime executes the frozen prompt and input in the prepared
-repository workspace. It emits bounded events, a result, and optional
-schema-valid action proposals through the Runner. It does not receive
-control-plane, Kubernetes, or provider write credentials in the strongly
-enforced path.
+#### Run once across repositories
 
-#### Browser and CLI
+As an operator, I want to select five repositories and press **Run once** so the
+same Definition runs independently against all five.
 
-The operator surfaces centre on Definitions, Runs, Jobs, Runners,
-Repositories, and Overview. Triggers are edited on a Definition. Attempts are
-shown inside a Job. The browser and future CLI use the same API and never open
-the database directly.
+Factory freezes the complete target list and creates one Job per repository.
+Jobs can run concurrently, fail independently, and be retried individually.
+The Run shows aggregate progress without hiding per-repository outcomes.
+
+#### Track the software factory
+
+As an operator, I want a dashboard showing what is running, what failed, and
+how long work takes so I can understand the factory rather than inspect process
+logs.
+
+V1 reports queued and running Jobs, success and failure counts, queue time,
+cycle time, throughput, and Runner health. Metrics can be filtered by
+Definition, repository, Runner, and time window.
+
+Queue time runs from `admitted_at` to `started_at`. Cycle time runs from
+`admitted_at` to `terminal_at`. Throughput is the number of Jobs with a
+`terminal_at` in a time window. Success rate is succeeded Jobs divided by
+succeeded plus failed Jobs; cancelled and skipped Jobs are excluded.
+
+#### Run on a schedule
+
+As an operator, I want to schedule a Definition across selected repositories so
+routine engineering work runs without manual action.
+
+A schedule is a Trigger attached to a Definition. At each due instant it creates
+the same Run and Jobs as **Run once**. For example, a Monday `Find bugs`
+Definition can inspect five repositories. The agents may use `gh` to create
+issues or pull requests as instructed.
+
+### Later user journeys
+
+After V1, an operator can add a Runner on a remote VM without changing a
+Definition. A later Kubernetes Runner executes Jobs in bounded pods. A later
+GitHub webhook Trigger creates a Run when an issue or pull request event arrives,
+such as running a shared `Review pull request` Definition when a pull request is
+opened.
+
+These paths must create the same Run and Job records. They are not different
+automation products.
+
+### Agent-owned GitHub work
+
+The agent reads and changes GitHub through `gh`, just as it does when run
+directly by a developer. Factory does not define typed comment, branch, issue,
+or pull-request actions. It does not publish patches or reconcile provider
+side effects.
+
+For a trusted local or VM Runner, the agent uses the Runner user's authenticated
+`gh`. A later managed VM or Kubernetes profile may inject a short-lived,
+repository-scoped `GH_TOKEN` for the Job. The token disappears when the agent
+process ends.
+
+Factory supplies stable `FACTORY_RUN_ID` and `FACTORY_JOB_ID` environment
+values. Definitions can use those values in branch names, comments, or other
+markers when retry-safe behavior matters. The Job result may report issue or
+pull-request URLs, but Factory treats them as agent output rather than provider
+state it owns.
+
+### Component boundaries
+
+The control plane owns saved configuration, admission, target snapshots,
+scheduling, leases, results, and metrics. It never runs an agent process and
+does not interpret prompt output as commands.
+
+The Runner owns runtime discovery, repository preparation, process supervision,
+events, cancellation, and cleanup. It does not decide which repositories a Run
+targets.
+
+The agent runtime owns model interaction and engineering tool use. Factory does
+not reproduce tools already available to Codex or Claude Code.
+
+The browser and future CLI use the same API. The primary navigation is
+Overview, Definitions, Runs, Repositories, and Runners. A Job is viewed inside
+its Run. Triggers are configured on a Definition.
 
 ### Decisions
 
-#### One definition, several admission paths
+#### Five product concepts
 
-A Job Definition is the only saved unit of agent instructions. It may have
-zero or more Triggers and can always be invoked manually or through the API.
-We reject separate Runbook and Automation product resources because they make
-operators coordinate two lifecycles for one procedure.
+Definition, Trigger, Run, Job, and Runner are sufficient. Attempt remains Job
+history, Repository remains configured infrastructure, and GitHub connection
+details remain settings. We reject separate Runbook, Workflow revision,
+Automation, Occurrence, and Provider Action product resources.
 
-#### Runs snapshot definitions instead of exposing revision history
+#### One Job per repository
 
-Definitions edit in place with an optimistic concurrency generation. Every Run
-stores the complete definition snapshot it used. Historical Runs therefore
-remain reproducible without a user-managed immutable revision library. We
-reject revision selection and a separate revision screen until governed SOP
-publishing is a demonstrated requirement.
+A Run may fan out, but each Job owns one repository and optional work item.
+This keeps worktrees, retries, credentials, cost, and results independent.
 
-#### One Job owns one repository target
+#### One execution path
 
-A Run may contain hundreds of Jobs, but one Job operates on one repository and
-optional issue, pull request, commit, or ref. This keeps worktrees, credentials,
-retries, cost, and outcomes isolated. Cross-repository atomic agent sessions
-remain out of scope.
+Manual, API, schedule, and later webhook admission create the same Run and Job
+records. A Trigger decides when to admit work. It does not execute an agent.
 
-#### Triggers admit Runs
+#### Agents use their tools
 
-Manual, API, schedule, GitHub webhook, and scheduled GitHub query paths all
-create the same Run record. The Run owns idempotency and target snapshots, so a
-separate Occurrence resource is unnecessary. A Definition can have multiple
-Triggers because several events may invoke the same procedure.
-
-#### Runner and runtime are separate
-
-A Runner represents compute and may advertise several runtime capabilities.
-The scheduler chooses a Runner per Job. One runtime process still belongs to
-one Attempt. This preserves process isolation without modelling one host with
-several CLIs as several unrelated machines.
-
-#### External writes are capabilities
-
-A Definition declares its allowed provider and repository actions. Read and
-report is the default. Provider comments, labels, issues, branches, and pull
-requests require explicit capabilities. The agent proposes a typed action; the
-control plane validates the target and payload, stores it in an outbox, and the
-trusted provider adapter performs it with a short-lived write token. Branch
-publication uses a retained patch or Git bundle rather than giving the agent a
-write token. Merge, approval, and unbounded child Job creation are excluded
-initially. Prompt text is not treated as a security boundary.
-
-#### GitHub App is the remote provider identity
-
-Remote and webhook deployments use a GitHub App for installation-scoped
-repository access, webhook verification, and short-lived tokens. The current
-authenticated `gh` path remains a local compatibility mode during migration.
-It must be labelled as host-trusted because its broad credentials cannot
-strongly enforce per-Job action policy.
-
-#### Public ingress is separated from operator access
-
-The first remote deployment keeps the browser and operator API on loopback or a
-private Unix socket. A dedicated public webhook listener exposes only provider
-delivery routes, and a separate TLS Runner listener exposes only authenticated
-Runner routes. API invocation therefore remains private. Remote browser or
-operator API access is out of scope until session or client identity,
-authorization, CSRF protection, credential rotation, and audit behavior have a
-separate accepted design. A reverse proxy may terminate webhook TLS, but it
-cannot expose operator routes through the webhook listener.
+The Runner gives the agent a prepared repository and its configured tools.
+Factory does not become a GitHub client on behalf of the agent. This preserves
+the capability of the underlying agent and avoids a second action language.
 
 ## 5. Invariants and requirements
 
 ### Invariants
 
-1. Every admitted invocation creates exactly one Run.
-2. A Run freezes one complete Definition and one complete target set.
+1. Every invocation creates one Run and at least one Job.
+2. A Run freezes one Definition and one complete target set.
 3. Every Job belongs to one Run and one repository.
-4. Replaying the same trigger identity cannot create another Run or Job.
-5. Editing or disabling a Definition or Trigger never changes an admitted Run.
-6. One Attempt lease owns one active agent process.
-7. A provider adapter never performs an action outside the Job's frozen action
-   policy.
-8. Provider payloads and repository contents remain untrusted agent context.
-9. Runner loss cannot erase the Run, Job, Attempt history, or a retained
-   recovery artifact.
-10. One large Run cannot prevent an unrelated Run from making progress while
-    compatible fleet capacity exists.
-11. An agent process in the strongly enforced provider path never receives a
-    provider write credential.
-12. Every provider write is represented by one durable Provider Action before
-    publication begins.
+4. Editing a Definition or Trigger never changes an existing Run.
+5. Replaying one admission identity creates no duplicate Run or Job.
+6. One active Attempt lease owns one agent process.
+7. Runner loss cannot erase Job history or a retained recovery artifact.
+8. One large Run cannot prevent an unrelated compatible Run from progressing.
+9. Factory never claims exactly-once external effects performed by an agent.
 
 ### Requirements
 
-- A manual Run can target one explicit item or up to 500 explicit repositories
-  or work items.
-- Target creation is atomic. An invalid, duplicate, disabled, empty, or
-  oversized target set creates no Run.
-- A Run defaults to at most 20 active Jobs and uses round-robin admission across
-  Runs with queued compatible work.
-- Each Job defaults to one Attempt and may configure at most three automatic
-  Attempts for infrastructure failures. Agent-reported failure is not retried
-  automatically by default.
-- The Run aggregate reports pending, blocked, queued, running, publishing,
-  cancelling, succeeded, failed, cancelled, and skipped counts without hiding
-  individual outcomes.
-- Cancelling a Run cancels undispatched Jobs, requests cancellation of active
-  Attempts, admits no new Provider Action proposals, and does not rewrite
-  terminal Jobs. An action proven unsent is cancelled. An action whose send has
-  begun is reconciled to `succeeded` or `uncertain` before the Job becomes
-  terminal, even if the provider write completes after cancellation.
-- Retrying publication reuses the original Provider Action and stable marker.
-  Rerunning an agent creates a new Attempt and new Actions, preserves all prior
-  history, and never replays its successful siblings. After any earlier Action
-  was sent or became uncertain, rerun requires explicit operator confirmation
-  that the same external effect may be produced again.
-- Webhook requests are bounded to 1 MiB and acknowledged only after a verified
-  delivery receipt and its frozen Trigger and Definition matches are durable.
-- A Job waiting for compatible capacity stays visible and diagnosable rather
-  than failing because a Runner is temporarily offline.
-- A Job with required external writes enters `publishing` after its Attempt
-  succeeds and becomes `succeeded` only after every Provider Action succeeds.
-- An ambiguous provider response is reconciled by its stable action marker. If
-  reconciliation cannot prove the outcome, the action becomes `uncertain` and
-  is not retried blindly.
+- A manual Run can target one or up to 500 configured repositories.
+- Invalid, duplicate, disabled, empty, or oversized target sets create no Run.
+- A Run defaults to at most 20 active Jobs with fair admission across Runs.
+- A Job can be cancelled or retried without replaying successful siblings.
+- A failure before the agent process starts may retry under a bounded
+  infrastructure policy. Any failure after process start requires an explicit
+  warned retry.
+- Retrying any Job after its agent started warns that external effects may
+  already have happened.
+- A Job waiting for a compatible Runner stays visible as blocked.
+- Dashboard aggregates never hide the underlying Jobs.
 
 ## 6. Interfaces and data
 
-### Core resources
-
 | Resource | Owns |
 |---|---|
-| Provider App | provider App identity, public route identity, private-key references, webhook-secret references and generations |
-| Provider Connection | App identity, installation identity, enabled state, repository and permission grants |
-| Job Definition | title, instructions, runtime requirement, defaults, result contract, action policy, generation |
-| Trigger | Definition identity, kind, enabled state, event or schedule rule, target selector, parameter mapping |
-| Provider Delivery | App and Connection identity, delivery key, verified payload, frozen Trigger and Definition matches, processing state, diagnostics |
-| Run | source, idempotency key, Definition snapshot, parameters, trigger payload, target snapshot, aggregate state |
-| Job | Run identity, repository, ref, optional work item, prompt and permission snapshot, result state |
-| Attempt | Job identity, lease, Runner, runtime, timestamps, events, outcome, recovery state |
-| Provider Action | Job identity, kind, target, validated payload, capability decision, stable marker, attempts, outcome |
-| Runner | stable identity, credential, labels, runtime capabilities, source access, capacity, health |
+| Definition | name, prompt, runtime and tool requirements, timeout, defaults, generation |
+| Trigger | Definition, kind, enabled state, schedule or later event rule, target repositories, context, timeout override |
+| Run | source identity, Definition snapshot, parameters, frozen target set, aggregate state |
+| Job | Run, repository, ref or work item, Runner requirement, state, timestamps, result, metrics |
+| Runner | stable identity, runtime and tool capabilities, capacity, health |
 
-The Definition snapshot is a bounded JSON object stored on the Run. It includes
-all behavior-bearing fields. Display-only metadata may stay by reference.
-Every Job stores its own resolved prompt, repository and work-item identity,
-ref, action policy, and parameter snapshot so it remains understandable if the
-Run or Definition is later archived.
+Attempt records remain behind Job and store leases, process identity, events,
+timestamps, outcomes, and recovery state.
 
-### Trigger kinds
+The control plane owns Job state. A Runner reports preparation, process start,
+events, and completion under its Attempt lease; the control plane validates the
+lease before applying a transition.
 
-- `schedule` resolves a saved repository or work-item selector at each due
-  instant.
-- `github_webhook` maps a verified event to one or more explicit targets.
-- `github_query` runs a bounded GitHub search on a schedule for bulk triage and
-  reconciliation.
+- `pending`: admitted but held by the Run concurrency limit.
+- `blocked`: no healthy Runner satisfies the runtime, tools, or repository.
+- `queued`: eligible for a compatible Runner to claim.
+- `preparing`: claimed while the Runner prepares the repository and process.
+- `running`: the agent process has started.
+- `succeeded`, `failed`, `cancelled`, and `skipped`: terminal outcomes.
 
-Manual and API invocation are Run sources rather than stored Trigger kinds.
-An API caller supplies an idempotency key and explicit targets or a saved
-selector.
+The Run state is derived from its Jobs. It is `running` while any Job is
+preparing or running, `blocked` when all remaining Jobs are blocked, `queued`
+when work remains but none is active, and `cancelling` after cancellation is
+requested while work remains. Once every Job is terminal, the Run is `failed`
+if any Job failed, `cancelled` if none failed and any Job was cancelled, and
+otherwise `succeeded`. Per-state Job counts remain visible for mixed outcomes.
 
-### Naming and identity
+Every Job stores `admitted_at`, optional `started_at`, and `terminal_at` when it
+finishes. A Runner is online when its last valid registration is no more than 30
+seconds old. It is degraded when online but none of its enabled runtimes is
+healthy, and offline after 30 seconds without registration.
 
-Provider App, Provider Connection, Definition, Trigger, Run, Job, Attempt,
-Provider Action, Runner, and Provider Delivery IDs are random UUIDs. A Runner
-ID is persisted on its host or in a Kubernetes Secret and is independent of
-hostname or pod UID.
+IDs are random UUIDs. A Runner ID persists on its host. A manual or API Run uses
+a caller request key. A scheduled Run uses `(Trigger ID, scheduled UTC instant)`.
+A later webhook Run uses `(Trigger ID, delivery ID)`.
 
-Webhook delivery identity is `(Provider App, delivery ID)`. The public route
-selects one App, so Factory can verify the raw body before parsing it. The
-verified installation ID must then map to exactly one enabled Connection. At
-receipt, Factory stores the App, Connection, raw verified body, and one frozen
-match per eligible Trigger in one transaction. Each match contains the Trigger
-ID and generation plus every behavior-bearing Trigger and Definition field
-needed to resolve targets, parameters, runtime requirements, attempt policy,
-and action permissions. Display-only metadata may remain by reference. A
-matched Run uses `(trigger ID, provider delivery ID)` as its unique admission
-key. A scheduled Run uses `(trigger ID, scheduled UTC instant)`. An API or
-manual Run uses `(caller scope, request key)`.
+Existing Workflow current content maps to Definition prompt. A Workflow revision
+maps to the snapshot already stored on historical work. Automation schedule
+configuration maps to a Trigger. The Task execution contract informs the new Job
+contract, and worker maps to Runner.
 
-A Job target identity is `(Run ID, repository ID, work-item kind, work-item
-identity, ref)`. The exact target list is stored at admission and never follows
-later selector membership.
-
-A Provider Action has a stable marker derived from its immutable Action ID. The
-adapter uses that marker in a comment, branch, issue, or pull-request artifact
-and checks for it before retrying an ambiguous request. Retrying publication
-reuses the same Action. Rerunning a Job creates a new Attempt and new Action IDs
-while retaining earlier history. If any earlier Action was sent or is
-uncertain, the operator API and UI distinguish `retry publication` from
-`rerun agent`; the latter requires confirmation that it may repeat an external
-effect. Provider operations that cannot be reconciled safely stop as
-`uncertain` for operator resolution.
-
-### Current-model mapping
-
-| Current model | Target model |
-|---|---|
-| Workflow current instructions | Job Definition instructions |
-| Workflow revision | Run Definition snapshot |
-| Automation | Trigger plus invocation defaults attached to a Definition |
-| Occurrence | Run admission identity and source snapshot |
-| Task | Job |
-| Execution | Internal queue compatibility state, later folded behind Job |
-| Attempt | Attempt |
-| Worker | Runner capability or compatibility executor |
-
-Migration is additive first. Existing Workflows become Definitions. Existing
-Automations become named Triggers attached to those Definitions, preserving
-repository selectors, context parameters, timeout overrides, enabled state,
-and due cursors. Existing Tasks, Executions, and Attempts remain historical
-truth.
-
-Cutover first stops old Automation evaluation. Only an Occurrence in `pending`
-state without a linked Task is transactionally translated into one staged
-single-target Run and Job using the Occurrence ID as the source idempotency key,
-then linked to the new Run ID. `failed` and `task_deleted` Occurrences remain
-terminal legacy history and are never translated or dispatched. The scheduler
-cannot dispatch staged Jobs. An Occurrence with a Task and every queued or
-active legacy Execution stays on the compatibility scheduler until terminal.
-New target-model admission is enabled only after every eligible pending
-Occurrence has translated or reached a visible terminal configuration error.
-One cutover transaction writes the forward-only marker that makes staged Jobs
-dispatchable and enables new admission. Before that transaction, rollback
-deletes only staged records and restores their Occurrence links. Old and new
-admission can therefore never both own the same source event.
-
-Old mutation APIs then become read-only for one compatibility window and are
-removed before a stable v1 contract. Compatibility views keep every legacy
-record readable through the new vocabulary where the identity is unambiguous.
+Historical Tasks, Executions, Attempts, events, and linked Occurrences remain in
+a clearly labelled read-only **Legacy history** view. Their existing URLs and
+identities remain valid. Factory does not create synthetic Runs for them or
+project them as Jobs because they never belonged to a Run.
 
 ## 7. Failure behavior and lifecycle
 
-A new Run is accepted only when its Definition snapshot, source identity, and
-complete target set can be stored in one transaction. A selector failure stores
-no partial Run. A provider delivery is different: its verified receipt and
-frozen Trigger and Definition matches are stored first and acknowledged, then
-processing retries with exponential backoff up to 30 minutes until every
-frozen match has either admitted its Run or recorded a terminal configuration
-error. Editing, disabling, or archiving a Trigger or Definition after receipt
-does not change or suppress that delivery. Disabling it before receipt prevents
-a match.
+Run admission stores the Definition snapshot, complete target set, and Jobs in
+one transaction. A selector failure stores nothing.
 
-A Job remains queued or blocked when no compatible Runner is online. Runner
-loss expires the active Attempt lease. Automatic retry occurs only when the
-frozen policy permits it and the failure is classified as infrastructure. If
-retry is exhausted, the Job fails and remains individually retryable.
+If no compatible Runner is online, the Job remains blocked with a reason. If a
+Runner disappears before its agent process starts, its lease expires and the
+Job may follow its bounded infrastructure retry policy. Loss after process
+start fails the Attempt and requires an explicit warned retry because the agent
+may already have changed GitHub. Cancelling a Run cancels undispatched Jobs and
+requests cancellation of active agents without rewriting terminal outcomes.
 
-Disabling a Trigger stops new admissions. Disabling or archiving a Definition
-stops every attached Trigger and new manual Runs. Existing Runs and Jobs
-continue. Deleting a Definition is archival while any Run references it.
+An agent may complete a GitHub write and then crash before reporting success.
+Factory records the Job failure and retained events but does not repeat or undo
+the write. A manual retry displays the duplicate-effect warning and gives the
+new agent the stable Run and Job identities.
 
-A local or VM Runner drains on shutdown, stops claiming, and terminates active
-process groups within the Attempt lease bound. A Kubernetes Runner stops
-creating pods, observes existing pod completion, and leaves uncertain
-workspaces or artifacts retained according to policy.
+Migration starts with a preview of every Workflow and Automation. Factory stops
+new legacy Automation evaluation and lets already admitted Tasks and Executions
+finish or be cancelled. It then imports current Workflow content as Definitions.
 
-A successful Attempt with proposed external writes moves its Job to
-`publishing`. Provider Actions retry bounded transport and rate-limit failures.
-Before retrying an ambiguous response, the adapter queries for the stable
-marker. It records `uncertain` and stops if the provider cannot prove whether
-the action happened. The Job then fails with a publication-specific result and
-keeps the agent result available for inspection.
+Schedule Automations migrate losslessly. Their repository, context, timeout,
+enabled state, schedule, and next due instant become Definition or Trigger
+fields as appropriate. Current GitHub issue and pull-request polling Automations
+have no V1 equivalent. The preview marks them unsupported, keeps their history
+readable, and requires explicit operator confirmation before retiring them. It
+recommends either a scheduled Definition whose agent queries GitHub with `gh`,
+or the later webhook Trigger.
 
-Cancellation during publication stops Actions that the adapter can prove were
-not sent and prevents new proposals. An Action whose send began still runs its
-normal reconciliation to `succeeded` or `uncertain`; the Job remains visibly
-`cancelling` with publication detail until that finishes, then becomes
-`cancelled` without hiding the Action outcome. This avoids both a blind retry
-and a false claim that cancellation prevented an external write.
-`Retry publication` resumes the same Action and marker. `Rerun agent` is a
-separate operation and, after any Action was sent or became uncertain, requires
-an explicit duplicate-effect warning and confirmation before creating new
-Action IDs.
-
-A Run becomes terminal only when every Job is terminal. Mixed outcomes produce
-a partial-failure aggregate, not success or total rollback.
+After every supported item imports or receives an explicit retirement decision,
+Factory writes a cutover marker and enables new admission. No in-flight work is
+translated between execution models. After cutover, completed standalone Tasks
+and Occurrence-linked Tasks remain available only through Legacy history.
 
 ## 8. Security, privacy, and operations
 
-The server has separate operator, webhook, and Runner listeners. The operator
-listener preserves the current loopback Host validation or uses a private Unix
-socket. The webhook listener has no general API router. The Runner listener
-requires TLS and authenticated Runner requests. A short-lived enrollment token
-creates a protected long-lived Runner credential; the control plane stores only
-its digest. Every registration, claim, heartbeat, event, and completion request
-is authorized for that Runner and scoped Job.
+V1 keeps the current trusted-host boundary. The operator API remains loopback
+only. A local agent has the operating-system user's filesystem, network, Git,
+and `gh` permissions. Factory must state this clearly and must not present a
+prompt as a security boundary.
 
-GitHub webhook ingress verifies the raw body signature before parsing, rejects
-oversized bodies, deduplicates delivery IDs, and validates the repository
-against an installed and enabled catalog entry. Payload fields cannot choose an
-arbitrary clone URL, change a Definition, expand action permissions, or select
-a Runner credential.
+“Shared Definition” in V1 means shared by people using the same trusted local
+Factory instance. V1 has no user identity, remote browser access, or per-user
+authorization. Authenticated team access requires a later design.
 
-A Provider App owns the GitHub App ID, unguessable public route identity,
-private-key secret references, webhook-secret references, and their
-generations. The secrets live in a protected file or deployment secret store,
-not in the Factory database. Webhook rotation may accept current and previous
-secret generations for one configured overlap; token minting uses only the
-current private-key generation.
+Remote VM and Kubernetes Runners require authenticated TLS and a separate
+accepted implementation design. Managed credentials must be short-lived and
+scoped to the Job repository where the provider supports it. Host-managed
+credentials remain an explicit trusted mode.
 
-A Provider Connection belongs to one Provider App and owns one installation
-ID, enabled or suspended state, and granted repositories and permissions. One
-App may have many Connections. A verified webhook installation ID that is
-missing, ambiguous, or belongs to another App is rejected before Trigger
-matching.
+A later public webhook listener exposes only signed, bounded delivery routes.
+Webhook payloads and repository content are untrusted agent context and cannot
+choose clone URLs, Runner credentials, or Definition instructions.
 
-Installation change events and periodic reconciliation update the repository
-catalog. Suspension, deletion, or loss of a repository grant immediately stops
-new admission and token minting. A queued affected Job becomes visibly blocked
-and can resume only if the same Connection grant returns. Factory never falls
-back to broader host credentials. Existing read tokens expire naturally, and
-pending Provider Actions remain blocked rather than changing identity.
-
-GitHub App tokens are short-lived and narrowed to one installation and
-repository. Attempts receive read-only materialization permissions. Only the
-trusted provider adapter receives the category-level write token required for a
-validated Provider Action, and it exposes no token to the runtime. Tokens are
-not stored in results or events. Local `gh` compatibility mode remains inside
-the current trusted-host boundary and cannot claim the same enforcement
-strength.
-
-Raw Provider Delivery bodies are purged seven days after terminal processing.
-An unprocessed delivery expires as a visible error after 30 days and its raw
-body is purged. The delivery ID, payload hash, frozen match identities, outcome,
-and diagnostics remain with control-plane history so a late redelivery cannot
-create duplicate work. Runs keep only the bounded normalized fields needed for
-their audit record.
-
-The Kubernetes control plane is not exposed to Factory server credentials. A
-cluster Runner uses a namespace-scoped service account with only the Job, Pod,
-Secret reference, and workspace volume permissions it needs. Runtime images
-are configured execution profiles rather than discovered on cluster nodes.
-
-Each Definition and Trigger has a Run concurrency limit. Each Runner advertises
-hard capacity. Each Run has a target limit, Attempt limit, timeout, event
-budget, output budget, and retained-work budget. Reaching a limit blocks or
-fails the affected Job with an operator-visible code instead of silently
-dropping work.
+Each Runner advertises hard capacity. Runs have target, concurrency, timeout,
+event, output, and retained-work limits. Reaching a limit produces a visible
+blocked or failed Job rather than silently dropping work.
 
 ## 9. Acceptance criteria
 
-- The product exposes Provider App, Provider Connection, Definition, Trigger,
-  Run, Job, Attempt, Provider Action, Runner, and Repository without requiring
-  Workflow, Automation, or Occurrence knowledge.
-- One manual Run can fan out over 100 repositories and preserve per-target
-  retry, cancellation, and results.
-- Manual, schedule, GitHub webhook, GitHub query, and API sources create the
-  same Run and Job records.
-- A replayed GitHub delivery, scheduled instant, or API request creates no
-  duplicate Run or Job.
-- Editing a Definition after admission cannot change any field shown on an
-  existing Run or Job.
-- Editing, disabling, or archiving a Definition after webhook receipt cannot
-  change or suppress the Run created from that receipt.
-- A local host can advertise both Codex and Claude Code under one Runner.
-- A remote VM Runner can enroll, authenticate, execute, disconnect, and return
-  without changing Job identity.
-- A Kubernetes Runner can execute a Job in a bounded pod and preserve its
-  result or recovery artifact after pod exit.
-- Read-only Jobs cannot receive provider or Git credentials that permit writes
-  in the strongly enforced GitHub App path.
-- The webhook listener cannot serve operator or Runner routes, the Runner
-  listener cannot serve operator routes, and a non-loopback operator listener
-  is rejected.
-- A successful Attempt cannot make its Job succeed until every required
-  Provider Action reaches a proven success state.
-- Raw webhook payloads expire without deleting their deduplication identity or
-  normalized Run audit context.
-- Existing Workflow, Automation, Occurrence, Task, Execution, and Attempt
-  history remains readable through migration, and a cutover test proves no
-  pending or active legacy work is lost or duplicated.
-- Migration never dispatches `failed` or `task_deleted` Occurrences, and a
-  preview reports the count and disposition of every current Occurrence state.
-- Cancelling during publication cannot suppress reconciliation of an in-flight
-  write, and rerunning after a sent or uncertain Action requires explicit
-  duplicate-effect confirmation.
+- A new user can configure a local Codex or Claude Code Runner and run a prompt
+  against one repository.
+- One launcher command starts the local instance, reuses its Runner identity,
+  and reports Git, Codex, Claude Code, and `gh` health separately.
+- A team can save and reuse one Definition without selecting revisions.
+- One manual Run can execute the same Definition against five repositories and
+  show independent Job outcomes.
+- The dashboard reports failures, success rate, queue time, cycle time,
+  throughput, active Jobs, and Runner health.
+- A schedule creates the same Run and Jobs as manual **Run once**.
+- An agent can use authenticated `gh` to comment, create an issue, push a branch,
+  or open a pull request without Factory publishing the action.
+- Retrying a Job after its agent started shows the duplicate-effect warning.
+- Current Workflow, Automation, Task, Execution, Attempt, and Occurrence history
+  remains readable after cutover.
+- Standalone and Occurrence-linked Tasks keep their existing URLs and appear in
+  Legacy history without synthetic Runs or Jobs.
+- Migration preserves every schedule Automation field and requires an explicit
+  retirement decision for each unsupported GitHub polling Automation.
+- Definitions run unchanged when remote VM, Kubernetes, and webhook support is
+  added later.
 
 ## 10. Test approach
 
-Store and API tests prove idempotent Run admission, atomic target creation,
-snapshot immutability, aggregate state, cancellation, per-Job retry, migration,
-and bounded pagination. Scheduler tests prove round-robin progress across Runs,
-capacity limits, blocked routing, and Runner return.
+Store and API tests prove Definition snapshots, atomic target creation,
+idempotent admission, aggregate state, cancellation, retry, and bounded
+pagination. State tests prove every Job transition, derived Run state, timestamp,
+metric denominator, and 30-second Runner health boundary. Scheduler tests prove
+capacity, blocked routing, per-Run concurrency, and fair progress.
 
-Provider tests use signed GitHub fixtures to prove raw-body verification,
-delivery deduplication, receipt-time Trigger matching, repository validation,
-App secret rotation, multi-installation routing, Connection suspension and grant
-loss, receipt-time Definition snapshotting across edit and disable races,
-asynchronous processing recovery, payload expiry, and least-privilege token
-requests. Provider Action tests prove schema and capability rejection, durable
-publication, stable-marker reconciliation across publication retry,
-cancellation races for unsent, in-flight, and ambiguous writes, duplicate-risk
-confirmation before full Job rerun, and that write tokens never enter an
-Attempt. No test uses live provider credentials.
+Runner integration tests use fake Codex, Claude Code, and `gh` executables to
+prove first-run identity creation, restart reuse, discovery, authentication
+health, process cleanup, result capture, and stable Factory environment IDs. No
+test uses live provider credentials.
 
-Runner integration tests prove multi-runtime discovery, authenticated remote
-protocol behavior, lease loss, process cleanup, and recovery. Kubernetes tests
-use a fake API for reconciliation and a real disposable cluster for one
-end-to-end Job, cancellation, and pod-loss path.
+Browser tests cover the complete V1 journey: configure a Runner, add
+repositories, save a Definition, run one repository, run five repositories,
+inspect mixed outcomes and metrics, retry one Job, and create a schedule.
 
-HTTP tests start all three listeners and prove their route sets do not overlap.
-They preserve loopback Host validation on the operator surface, require TLS and
-Runner identity on remote execution routes, and expose only bounded signed
-delivery admission publicly.
-
-Browser tests cover creating and editing a Definition, attaching Triggers,
-previewing a frozen target set, running 100 targets, mixed outcomes, individual
-retry publication, confirmed agent rerun, Provider Action status, Connection
-suspension, and Runner capability status. Migration tests preview every current
-Occurrence state, stop old admission, translate only eligible pending
-Occurrences, prove `failed` and `task_deleted` history cannot dispatch, inject a
-failure after each staging write, drain queued and active Executions, enable new
-admission, and prove rollback deletes staged records and restores links only
-before the forward-only cutover marker.
+Migration tests prove legacy admission stops before cutover, active work drains,
+every schedule field imports once, unsupported GitHub polling Automations require
+an explicit decision, history remains readable, and new admission starts only
+after the cutover marker. Browser tests cover both a standalone historical Task
+and an Occurrence-linked Task through their preserved URLs and Legacy history.
 
 ## 11. Risks and tradeoffs
 
-- Migrating names while preserving history can create two visible models. Keep
-  the compatibility window short and show legacy records through the new
-  vocabulary where identity is unambiguous.
-- A 500-target Run increases provider, database, and fleet load. Atomic bounded
-  target creation, per-Run concurrency, and fair dispatch contain it.
-- GitHub App adoption adds installation and token-broker complexity. It is the
-  cost of webhooks, remote Runners, and enforceable action policies.
-- Local host credentials cannot prove least privilege. Label that mode clearly
-  and do not present prompt rules as containment.
-- Kubernetes workspace recovery is harder than long-lived local worktrees.
-  Start with retained per-attempt volumes or encrypted Git bundles before
-  treating pods as disposable.
+- Agent-owned GitHub writes can be duplicated after a crash or retry. Stable
+  identifiers, explicit Definition instructions, and a retry warning make the
+  risk visible without building a second execution engine.
+- A 500-repository Run can consume the fleet. Per-Run concurrency and fair
+  scheduling bound its effect.
+- Shared host credentials are broad. V1 labels local Runners as trusted, while
+  later managed Runners use narrower temporary credentials.
+- The compatibility window exposes old and new names. Keep it short and make
+  all new creation use the target model.
 
 ## 12. Open questions
 
-- Which high-impact actions should later require human approval? This does not
-  block the first target because merge, approval, and unbounded child Jobs are
-  out of scope.
-- Should a later synthesis Job combine results from many targets? This does not
-  block fan-out and is excluded from the first target.
-- When should another Git provider be added? The core identities remain
-  provider-neutral, but no plugin framework is required before a second real
-  provider.
+No question blocks V1. Remote credentials, Kubernetes workspace recovery, and
+public webhook deployment require focused designs before those later milestones
+start.
 
 ## 13. Out of scope
 
-- General business automation and non-engineering provider ecosystems.
-- Human issue boards, chat, inboxes, squads, or project management.
-- DAGs, dependent steps, workflow chaining, and visual pipelines.
-- One Attempt mutating several repositories atomically.
-- Automatic merge, approval, deployment, or release promotion.
-- Unbounded dynamic targets after Run admission.
+- Deterministic GitHub action publishing or exactly-once external side effects.
+- General business automation and non-engineering providers.
+- Human project management, chat, inboxes, personas, or squads.
+- DAGs, workflow chaining, visual pipelines, or synthesis Jobs.
+- One agent process changing several repositories atomically.
+- Remote operator access, automatic merge, approval, deployment, or release.
