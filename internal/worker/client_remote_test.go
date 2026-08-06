@@ -12,6 +12,36 @@ import (
 	"github.com/owainlewis/factory/internal/protocol"
 )
 
+func TestRemoteClientRejectsRedirectsBeforeSendingSecrets(t *testing.T) {
+	targetRequests := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetRequests++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	redirect := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer redirect.Close()
+
+	client := newClient(redirect.URL, redirect.Client())
+	client.credential = "factory_runner_credential"
+	if _, err := client.request(context.Background(), http.MethodPost, "/credential", struct{}{}, nil); err == nil {
+		t.Fatal("credential request followed a redirect")
+	}
+	if _, err := client.requestWithoutCredential(context.Background(), http.MethodPost, "/enrollment", map[string]string{
+		"enrollment_token": "factory_enroll_secret",
+	}, nil); err == nil {
+		t.Fatal("enrollment request followed a redirect")
+	}
+	if targetRequests != 0 {
+		t.Fatalf("redirect target received %d secret-bearing requests", targetRequests)
+	}
+	if redirect.Client().CheckRedirect != nil {
+		t.Fatal("newClient mutated the caller's HTTP client")
+	}
+}
+
 func TestRemoteClientEnrollsOnceAndPersistsCredential(t *testing.T) {
 	const credential = "factory_runner_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const enrollment = "factory_enroll_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
