@@ -17,6 +17,17 @@ func ResolveWorkflowPrompt(instructions, context string) string {
 	return "Workflow instructions:\n\n" + instructions + "\n\nTask context:\n\n" + context
 }
 
+func ResolveDefinitionPrompt(prompt string, parameters map[string]string) (string, error) {
+	if len(parameters) == 0 {
+		return prompt, nil
+	}
+	encoded, err := json.Marshal(parameters)
+	if err != nil {
+		return "", err
+	}
+	return prompt + "\n\nTrusted Factory Run parameters:\n\n" + string(encoded), nil
+}
+
 func ResolveScheduleAutomationPrompt(
 	instructions, context, kind, identity, cron, timezone string,
 ) (string, error) {

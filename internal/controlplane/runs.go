@@ -95,6 +95,10 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 		}
 		parameters[key] = parameter
 	}
+	resolvedPrompt, err := protocol.ResolveDefinitionPrompt(snapshot.Prompt, parameters)
+	if err != nil {
+		return protocol.RunDetail{}, false, unavailable(err)
+	}
 
 	var repositoryIdentity string
 	err = tx.QueryRowContext(ctx, `
@@ -118,7 +122,7 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 	if err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
-	if !protocol.AgentPromptFits(snapshot.Name, repositoryIdentity, snapshot.Prompt) {
+	if !protocol.AgentPromptFits(snapshot.Name, repositoryIdentity, resolvedPrompt) {
 		return protocol.RunDetail{}, false, invalid("agent_prompt_too_large", "the complete agent prompt exceeds 72 KiB")
 	}
 
@@ -153,7 +157,9 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 	blockedReason := "Waiting for a healthy compatible Runner with repository access."
 	var taskID, executionID string
 	if routeErr == nil {
-		taskID, executionID, err = s.insertRunJobExecution(ctx, tx, runID, jobID, snapshot, snapshotJSON, selection, now)
+		taskID, executionID, err = s.insertRunJobExecution(
+			ctx, tx, runID, jobID, snapshot, snapshotJSON, resolvedPrompt, selection, now,
+		)
 		if err != nil {
 			return protocol.RunDetail{}, false, err
 		}
@@ -258,6 +264,7 @@ func (s *Store) insertRunJobExecution(
 	jobID string,
 	snapshot protocol.DefinitionSnapshot,
 	snapshotJSON []byte,
+	resolvedPrompt string,
 	selection taskRouteCandidate,
 	now int64,
 ) (string, string, error) {
@@ -275,7 +282,7 @@ func (s *Store) insertRunJobExecution(
 			id, request_key, title, description, repository_id, timeout_seconds,
 			created_at, context, definition_id, definition_snapshot
 		) VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?)
-	`, taskID, requestKey, snapshot.Name, snapshot.Prompt, selection.repositoryID,
+	`, taskID, requestKey, snapshot.Name, resolvedPrompt, selection.repositoryID,
 		snapshot.TimeoutSeconds, now, snapshot.ID, snapshotJSON); err != nil {
 		return "", "", unavailable(err)
 	}
@@ -297,17 +304,18 @@ func (s *Store) materializeBlockedJobForWorker(
 ) error {
 	const pageSize = 200
 	type candidate struct {
-		jobID        string
-		runID        string
-		repositoryID string
-		snapshotJSON []byte
-		admittedAt   int64
+		jobID          string
+		runID          string
+		repositoryID   string
+		snapshotJSON   []byte
+		parametersJSON []byte
+		admittedAt     int64
 	}
 	var cursorAt int64
 	var cursorID string
 	for {
 		query := `
-			SELECT job.id, job.run_id, repository.id, run.definition_snapshot, job.admitted_at
+			SELECT job.id, job.run_id, repository.id, run.definition_snapshot, run.parameters, job.admitted_at
 			FROM jobs job
 			JOIN runs run ON run.id = job.run_id
 			JOIN repositories repository ON repository.id = job.repository_id
@@ -327,7 +335,8 @@ func (s *Store) materializeBlockedJobForWorker(
 		for rows.Next() {
 			var value candidate
 			if err := rows.Scan(
-				&value.jobID, &value.runID, &value.repositoryID, &value.snapshotJSON, &value.admittedAt,
+				&value.jobID, &value.runID, &value.repositoryID,
+				&value.snapshotJSON, &value.parametersJSON, &value.admittedAt,
 			); err != nil {
 				rows.Close()
 				return unavailable(err)
@@ -342,6 +351,14 @@ func (s *Store) materializeBlockedJobForWorker(
 			if err := json.Unmarshal(value.snapshotJSON, &snapshot); err != nil {
 				return unavailable(errors.New("stored Run Definition snapshot is invalid"))
 			}
+			var parameters map[string]string
+			if err := json.Unmarshal(value.parametersJSON, &parameters); err != nil {
+				return unavailable(errors.New("stored Run parameters are invalid"))
+			}
+			resolvedPrompt, err := protocol.ResolveDefinitionPrompt(snapshot.Prompt, parameters)
+			if err != nil {
+				return unavailable(err)
+			}
 			selection, err := s.selectRunRoute(ctx, tx, value.repositoryID, now, workerID, snapshot.Runtime, snapshot.AllowedTools)
 			if err != nil {
 				if serviceErrorCode(err, "no_eligible_worker") || serviceErrorCode(err, "repository_not_managed") {
@@ -350,7 +367,7 @@ func (s *Store) materializeBlockedJobForWorker(
 				return err
 			}
 			taskID, executionID, err := s.insertRunJobExecution(
-				ctx, tx, value.runID, value.jobID, snapshot, value.snapshotJSON, selection, now,
+				ctx, tx, value.runID, value.jobID, snapshot, value.snapshotJSON, resolvedPrompt, selection, now,
 			)
 			if err != nil {
 				return err
@@ -612,16 +629,25 @@ func (s *Store) Job(ctx context.Context, jobID string) (protocol.JobDetail, erro
 	if blockedReason.Valid {
 		detail.Job.BlockedReason = blockedReason.String
 	}
-	var snapshotJSON []byte
-	if err := s.db.QueryRowContext(ctx, `SELECT definition_snapshot FROM runs WHERE id = ?`, detail.Job.RunID).Scan(&snapshotJSON); err != nil {
+	var snapshotJSON, parametersJSON []byte
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT definition_snapshot, parameters FROM runs WHERE id = ?
+	`, detail.Job.RunID).Scan(&snapshotJSON, &parametersJSON); err != nil {
 		return detail, unavailable(err)
 	}
 	var snapshot protocol.DefinitionSnapshot
 	if err := json.Unmarshal(snapshotJSON, &snapshot); err != nil {
 		return detail, unavailable(errors.New("stored Run Definition snapshot is invalid"))
 	}
+	var parameters map[string]string
+	if err := json.Unmarshal(parametersJSON, &parameters); err != nil {
+		return detail, unavailable(errors.New("stored Run parameters are invalid"))
+	}
 	detail.Job.RequiredRuntime = snapshot.Runtime
-	detail.ResolvedPrompt = snapshot.Prompt
+	detail.ResolvedPrompt, err = protocol.ResolveDefinitionPrompt(snapshot.Prompt, parameters)
+	if err != nil {
+		return detail, unavailable(err)
+	}
 	if !taskID.Valid {
 		return detail, nil
 	}
@@ -634,6 +660,7 @@ func (s *Store) Job(ctx context.Context, jobID string) (protocol.JobDetail, erro
 	detail.Job.AssignedWorkerID = task.Execution.AssignedWorkerID
 	detail.Job.State = task.Execution.State
 	detail.Job.CancellationRequested = task.Execution.CancellationRequested
+	detail.ResolvedPrompt = task.ResolvedPrompt
 	detail.Attempts = task.Attempts
 	for _, attempt := range task.Attempts {
 		if attempt.StartedAt != nil {
@@ -721,8 +748,57 @@ func (s *Store) RetryJob(ctx context.Context, jobID string) (protocol.RunDetail,
 	if job.Job.State != "failed" || job.Job.ExecutionID == "" {
 		return protocol.RunDetail{}, conflict("retry_not_allowed", "only failed Jobs can be retried")
 	}
-	if _, err := s.RetryExecution(ctx, job.Job.ExecutionID); err != nil {
-		return protocol.RunDetail{}, err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.RunDetail{}, unavailable(err)
+	}
+	defer tx.Rollback()
+	var state, assignedWorkerID string
+	var snapshotJSON []byte
+	err = tx.QueryRowContext(ctx, `
+		SELECT execution.state, execution.assigned_worker_id, run.definition_snapshot
+		FROM jobs job
+		JOIN executions execution ON execution.id = job.execution_id
+		JOIN runs run ON run.id = job.run_id
+		WHERE job.id = ? AND execution.id = ?
+	`, job.Job.ID, job.Job.ExecutionID).Scan(&state, &assignedWorkerID, &snapshotJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.RunDetail{}, ErrNotFound
+	}
+	if err != nil {
+		return protocol.RunDetail{}, unavailable(err)
+	}
+	if state != "failed" {
+		return protocol.RunDetail{}, conflict("retry_not_allowed", "only failed Jobs can be retried")
+	}
+	var snapshot protocol.DefinitionSnapshot
+	if err := json.Unmarshal(snapshotJSON, &snapshot); err != nil {
+		return protocol.RunDetail{}, unavailable(errors.New("stored Run Definition snapshot is invalid"))
+	}
+	now := s.now().UnixMilli()
+	selection, routeErr := s.selectRunRoute(
+		ctx, tx, job.Job.RepositoryID, now, "", snapshot.Runtime, snapshot.AllowedTools,
+	)
+	if routeErr == nil {
+		assignedWorkerID = selection.workerID
+	} else if !serviceErrorCode(routeErr, "no_eligible_worker") && !serviceErrorCode(routeErr, "repository_not_managed") {
+		return protocol.RunDetail{}, routeErr
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE executions
+		SET assigned_worker_id = ?, state = 'queued', cancellation_requested = 0,
+		    retry_count = retry_count + 1, updated_at = ?
+		WHERE id = ? AND state = 'failed'
+	`, assignedWorkerID, now, job.Job.ExecutionID)
+	if err != nil {
+		return protocol.RunDetail{}, unavailable(err)
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		return protocol.RunDetail{}, conflict("retry_conflict", "Job state changed before it could be retried")
+	}
+	if err := tx.Commit(); err != nil {
+		return protocol.RunDetail{}, unavailable(err)
 	}
 	return s.Run(ctx, job.Job.RunID)
 }

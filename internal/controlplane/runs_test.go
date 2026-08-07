@@ -51,6 +51,11 @@ func TestRunAdmissionSnapshotsOneDefinitionAndOneRepositoryAtomically(t *testing
 		t.Fatalf("Run claim identities = run %q job %q; want run %q job %q",
 			claim.RunID, claim.JobID, detail.Run.ID, job.ID)
 	}
+	wantPrompt, err := protocol.ResolveDefinitionPrompt(definition.Prompt, map[string]string{"severity": "critical"})
+	if err != nil || claim.Task.Description != wantPrompt || detail.Jobs[0].ResolvedPrompt != wantPrompt {
+		t.Fatalf("resolved Run prompt = claim %q detail %q, err=%v; want %q",
+			claim.Task.Description, detail.Jobs[0].ResolvedPrompt, err, wantPrompt)
+	}
 	if detail.Run.Definition.Generation != definition.Generation ||
 		detail.Run.Definition.Prompt != definition.Prompt || detail.Parameters["severity"] != "critical" {
 		t.Fatalf("frozen Run inputs = definition %#v parameters %#v", detail.Run.Definition, detail.Parameters)
@@ -200,7 +205,8 @@ func TestBlockedRunRoutesWhenACompatibleRunnerClaims(t *testing.T) {
 		[]protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
 	)
 	claim := claimTestTask(t, store, worker.ID, "blocked-run-claim", tokenA)
-	if claim.Task.Title != definition.Name || claim.Task.Description != definition.Prompt {
+	wantPrompt, err := protocol.ResolveDefinitionPrompt(definition.Prompt, definition.Inputs)
+	if err != nil || claim.Task.Title != definition.Name || claim.Task.Description != wantPrompt {
 		t.Fatalf("materialized claim = %#v", claim.Task)
 	}
 	routed, err := store.Run(context.Background(), detail.Run.ID)
@@ -375,6 +381,39 @@ func TestRunLifecycleCapturesResultAndWarnsBeforeRetry(t *testing.T) {
 	retried, err := store.RetryJob(context.Background(), job.ID)
 	if err != nil || retried.Run.State != "queued" || retried.Jobs[0].Job.State != "queued" {
 		t.Fatalf("retry Run: err=%v detail=%#v", err, retried)
+	}
+}
+
+func TestFailedRunRetrySelectsACurrentlyEligibleRunner(t *testing.T) {
+	store, definition, repository, assigned := setupRunTest(t, true)
+	detail, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "reroute-failed-run", DefinitionID: definition.ID, RepositoryID: repository.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := claimTestTask(t, store, assigned.ID, "reroute-failed-run-claim", tokenA)
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Error: "fake agent failed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registerDefinitionWorker(
+		t, store, assigned.ID,
+		protocol.RepositoryRegistration{Key: "run-target", RemoteIdentity: repository.RemoteIdentity},
+		protocol.CapabilityMissing,
+		[]protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+	)
+	replacement := registerDefinitionWorker(
+		t, store, workerB,
+		protocol.RepositoryRegistration{Key: "replacement-target", RemoteIdentity: repository.RemoteIdentity},
+		protocol.CapabilityReady,
+		[]protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+	)
+	retried, err := store.RetryJob(context.Background(), detail.Jobs[0].Job.ID)
+	if err != nil || retried.Jobs[0].Job.State != "queued" ||
+		retried.Jobs[0].Job.AssignedWorkerID != replacement.ID {
+		t.Fatalf("rerouted failed Job: err=%v detail=%#v", err, retried)
 	}
 }
 

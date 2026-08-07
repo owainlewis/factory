@@ -9,6 +9,20 @@ func TestResolveWorkflowPromptUsesCanonicalSections(t *testing.T) {
 	}
 }
 
+func TestResolveDefinitionPromptIncludesDeterministicParameters(t *testing.T) {
+	got, err := ResolveDefinitionPrompt("Find confirmed bugs.", map[string]string{
+		"severity": "critical", "focus": "correctness",
+	})
+	want := "Find confirmed bugs.\n\nTrusted Factory Run parameters:\n\n{\"focus\":\"correctness\",\"severity\":\"critical\"}"
+	if err != nil || got != want {
+		t.Fatalf("ResolveDefinitionPrompt() = %q, %v; want %q", got, err, want)
+	}
+	plain, err := ResolveDefinitionPrompt("Run the review.", nil)
+	if err != nil || plain != "Run the review." {
+		t.Fatalf("ResolveDefinitionPrompt() without parameters = %q, %v", plain, err)
+	}
+}
+
 func TestFormatAgentPromptPreservesSafetyAndBranchContract(t *testing.T) {
 	want := "You are running in a Factory managed Git worktree.\n" +
 		"Work only on the assigned task and repository. Preserve unrelated changes and do not touch Factory state or unrelated worktrees. " +
