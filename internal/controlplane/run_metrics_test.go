@@ -126,6 +126,15 @@ func TestRunHealthMetricsUseOneFilteredJobCohort(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.db.Exec(`
+		UPDATE jobs SET repository_identity = ?
+		WHERE id = (
+			SELECT id FROM jobs WHERE repository_id = ?
+			ORDER BY admitted_at, id LIMIT 1
+		)
+	`, "github.com/example/metrics-a-before-rename", repositoryA.ID); err != nil {
+		t.Fatal(err)
+	}
 	renamedMetrics, err := store.Metrics(context.Background(), metricsWindow24Hours)
 	if err != nil {
 		t.Fatal(err)
@@ -136,6 +145,13 @@ func TestRunHealthMetricsUseOneFilteredJobCohort(t *testing.T) {
 	}
 	if len(renamedMetrics.RunHealth.Definitions) != 2 || definitionNames[definitionB.ID] != "Metrics B Renamed" {
 		t.Fatalf("deduplicated Definition options = %#v", renamedMetrics.RunHealth.Definitions)
+	}
+	repositoryNames := map[string]string{}
+	for _, option := range renamedMetrics.RunHealth.Repositories {
+		repositoryNames[option.ID] = option.Name
+	}
+	if len(renamedMetrics.RunHealth.Repositories) != 3 || repositoryNames[repositoryA.ID] != repositoryA.RemoteIdentity {
+		t.Fatalf("deduplicated repository options = %#v", renamedMetrics.RunHealth.Repositories)
 	}
 }
 

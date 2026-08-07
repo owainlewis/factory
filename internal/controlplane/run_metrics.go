@@ -199,10 +199,18 @@ func loadRunMetricOptions(
 			ORDER BY definition_name, definition_id
 		`},
 		{&metrics.Repositories, `
-			SELECT DISTINCT job.repository_id,
-			       CASE WHEN job.repository_identity = '' THEN repository.remote_identity ELSE job.repository_identity END
-			FROM jobs job JOIN repositories repository ON repository.id = job.repository_id
-			ORDER BY 2, 1
+			SELECT repository_id, repository_identity
+			FROM (
+				SELECT job.repository_id,
+				       CASE WHEN job.repository_identity = '' THEN repository.remote_identity ELSE job.repository_identity END AS repository_identity,
+				       ROW_NUMBER() OVER (
+				           PARTITION BY job.repository_id
+				           ORDER BY job.admitted_at DESC, job.id DESC
+				       ) AS identity_rank
+				FROM jobs job JOIN repositories repository ON repository.id = job.repository_id
+			)
+			WHERE identity_rank = 1
+			ORDER BY repository_identity, repository_id
 		`},
 		{&metrics.Runners, `
 			SELECT DISTINCT worker.id, worker.name
