@@ -511,6 +511,39 @@ describe("App", () => {
     )).toBe(true);
   });
 
+  it("reuses the Run request key after a committed response is lost", async () => {
+    const fetch = mockControlPlane({ runCreateFailures: 1 });
+    await globalThis.fetch("/api/v1/definitions", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "create-replay-definition",
+        name: "Replay-safe review",
+        prompt: "Review this repository once.",
+        runtime: "codex",
+        allowed_tools: ["git"],
+        timeout_seconds: 600,
+        inputs: {},
+      }),
+    });
+    window.history.replaceState({}, "", "/runs?new=true");
+    const user = userEvent.setup();
+    renderApp();
+
+    const dialog = await screen.findByRole("dialog", { name: "Run once" });
+    await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-created");
+    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-managed");
+    await user.click(within(dialog).getByRole("button", { name: "Start Run" }));
+    expect(await within(dialog).findByText(/connection lost after Run commit/)).toBeVisible();
+    await user.click(within(dialog).getByRole("button", { name: "Start Run" }));
+    expect(await screen.findByRole("heading", { name: "Replay-safe review" })).toBeVisible();
+
+    const requests = fetch.mock.calls
+      .filter(([input, init]) => input === "/api/v1/runs" && init?.method === "POST")
+      .map(([, init]) => JSON.parse(String(init?.body)) as { request_key: string });
+    expect(requests).toHaveLength(2);
+    expect(requests[0].request_key).toBe(requests[1].request_key);
+  });
+
   it("loads older Runs through stable cursor pagination", async () => {
     mockControlPlane({ paginatedRuns: true });
     window.history.replaceState({}, "", "/runs");

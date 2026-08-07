@@ -153,6 +153,43 @@ func TestRunOnceRoutesAStaticRepositoryOnlyToItsAdvertisingRunner(t *testing.T) 
 	}
 }
 
+func TestRunOnceTreatsAMalformedGitHubIdentityAsAnAdvertisedStaticRepository(t *testing.T) {
+	store := newTestStore(t)
+	definition := createTestDefinition(t, store, "malformed-static-definition", "Review Static Checkout")
+	staticWorker := registerDefinitionWorker(
+		t, store, workerB,
+		protocol.RepositoryRegistration{Key: "local-checkout", RemoteIdentity: "github.com/team"},
+		protocol.CapabilityReady,
+		nil,
+	)
+	repository := staticWorker.Repositories[0]
+	if _, err := store.db.Exec(`UPDATE repositories SET enabled = 1 WHERE id = ?`, repository.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: workerA, WorkerVersion: "test", Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
+		Capabilities: []protocol.Capability{
+			{Kind: protocol.CapabilityKindTool, Name: "git", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindTool, Name: "gh", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
+		},
+		Capacity: 1, Health: "healthy", AcceptsManagedRepositories: true,
+		SourceAccess: []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, created, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "malformed-static-run", DefinitionID: definition.ID, RepositoryID: repository.ID,
+	})
+	if err != nil || !created {
+		t.Fatalf("create malformed static Run: created=%t err=%v", created, err)
+	}
+	if got := detail.Jobs[0].Job.AssignedWorkerID; got != staticWorker.ID {
+		t.Fatalf("assigned worker = %q; want advertising worker %q", got, staticWorker.ID)
+	}
+}
+
 func TestRunHistoryUsesAStableCursorWithoutDroppingOlderRuns(t *testing.T) {
 	store, definition, repository, _ := setupRunTest(t, true)
 	fixed := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
@@ -378,9 +415,45 @@ func TestRunLifecycleCapturesResultAndWarnsBeforeRetry(t *testing.T) {
 		job.StartedAt == nil || job.TerminalAt == nil || !job.RetryMayRepeatEffects {
 		t.Fatalf("failed Job evidence = %#v", job)
 	}
+	if _, err := store.RetryExecution(context.Background(), job.ExecutionID); err == nil {
+		t.Fatal("legacy retry unexpectedly accepted a Run Job execution")
+	} else {
+		assertErrorCode(t, err, "retry_not_allowed")
+	}
 	retried, err := store.RetryJob(context.Background(), job.ID)
 	if err != nil || retried.Run.State != "queued" || retried.Jobs[0].Job.State != "queued" {
 		t.Fatalf("retry Run: err=%v detail=%#v", err, retried)
+	}
+}
+
+func TestQueuedCancellationAfterRetryDoesNotReuseStaleAttemptEvidence(t *testing.T) {
+	store, definition, repository, worker := setupRunTest(t, true)
+	now := store.now().UTC()
+	store.now = func() time.Time { return now }
+	detail, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "cancel-retried-run", DefinitionID: definition.ID, RepositoryID: repository.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := claimTestTask(t, store, worker.ID, "cancel-retried-run-claim", tokenA)
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Result: "partial stale result", Error: "stale failure",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RetryJob(context.Background(), detail.Jobs[0].Job.ID); err != nil {
+		t.Fatal(err)
+	}
+	cancelledAt := now
+	cancelled, err := store.CancelJob(context.Background(), detail.Jobs[0].Job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := cancelled.Jobs[0].Job
+	if job.State != "cancelled" || job.Result != "" || job.FailureReason != "" ||
+		job.TerminalAt == nil || job.TerminalAt.UnixMilli() != cancelledAt.UnixMilli() {
+		t.Fatalf("cancelled retried Job projected stale evidence: %#v", job)
 	}
 }
 

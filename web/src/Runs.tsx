@@ -105,13 +105,20 @@ function RunOnceDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
   const repositories = useQuery({ queryKey: ["run-repositories"], queryFn: api.runRepositories });
   const [definition, setDefinition] = useState("");
   const [repository, setRepository] = useState("");
+  const requestKey = useRef({ selection: "", value: "" });
   useEffect(() => firstField.current?.focus(), []);
   const create = useMutation({
-    mutationFn: () => api.createRun({
-      request_key: crypto.randomUUID(),
-      definition_id: definition,
-      repository_id: repository,
-    }),
+    mutationFn: () => {
+      const selection = `${definition}\n${repository}`;
+      if (requestKey.current.selection !== selection) {
+        requestKey.current = { selection, value: crypto.randomUUID() };
+      }
+      return api.createRun({
+        request_key: requestKey.current.value,
+        definition_id: definition,
+        repository_id: repository,
+      });
+    },
     onSuccess: onCreated,
   });
   const submit = (event: FormEvent) => {

@@ -640,25 +640,32 @@ func (s *Store) RetryExecution(ctx context.Context, executionID string) (protoco
 	}
 	defer tx.Rollback()
 	var taskID, state, workerID, repositoryID, requiredRuntime, workerRuntime string
+	var runJob int
 	var encodedCapabilities []byte
 	var encodedDefinitionSnapshot sql.NullString
 	err = tx.QueryRowContext(ctx, `
 		SELECT execution.task_id, execution.state, execution.assigned_worker_id, task.repository_id,
 		       execution.required_runtime, worker.runtime, worker.capabilities_json,
-		       task.definition_snapshot
+		       task.definition_snapshot,
+		       EXISTS (SELECT 1 FROM jobs job WHERE job.execution_id = execution.id)
 		FROM executions execution
 		JOIN tasks task ON task.id = execution.task_id
 		JOIN workers worker ON worker.id = execution.assigned_worker_id
 		WHERE execution.id = ?
 	`, executionID).Scan(
 		&taskID, &state, &workerID, &repositoryID, &requiredRuntime, &workerRuntime, &encodedCapabilities,
-		&encodedDefinitionSnapshot,
+		&encodedDefinitionSnapshot, &runJob,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.TaskDetail{}, ErrNotFound
 	}
 	if err != nil {
 		return protocol.TaskDetail{}, unavailable(err)
+	}
+	if runJob != 0 {
+		return protocol.TaskDetail{}, conflict(
+			"retry_not_allowed", "Run Job executions must be retried through the Job endpoint",
+		)
 	}
 	if state != "failed" && state != "cancelled" {
 		return protocol.TaskDetail{}, conflict("retry_not_allowed", "only a failed or cancelled execution can be retried")

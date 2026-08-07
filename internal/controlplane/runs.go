@@ -240,7 +240,7 @@ func (s *Store) selectRunRoute(
 		SourceAccess:             protocol.SourceAccess{Provider: "local", Hostname: "localhost"},
 	}
 	requireSourceAccess := false
-	if enabled != 0 && strings.HasPrefix(strings.ToLower(repositoryIdentity), "github.com/") {
+	if _, githubErr := normalizeManagedGitHubRemote(repositoryIdentity); enabled != 0 && githubErr == nil {
 		route.SourceAccess = protocol.SourceAccess{Provider: "github", Hostname: "github.com"}
 		requireSourceAccess = true
 	}
@@ -495,46 +495,87 @@ func (s *Store) Runs(ctx context.Context, request protocol.RunPageRequest) (prot
 	if request.Limit < 1 || request.Limit > protocol.MaxRunPageSize {
 		return protocol.RunPage{}, invalid("invalid_limit", "limit must be between 1 and 200")
 	}
-	query := `SELECT id, admitted_at FROM runs`
+	query := `
+		WITH page AS (
+			SELECT id, request_key, source_kind, definition_snapshot, admitted_at, updated_at
+			FROM runs`
 	args := make([]any, 0, 4)
 	if request.Cursor != nil {
 		query += ` WHERE (admitted_at < ? OR (admitted_at = ? AND id < ?))`
 		args = append(args, request.Cursor.AdmittedAtMillis, request.Cursor.AdmittedAtMillis, request.Cursor.ID)
 	}
-	query += ` ORDER BY admitted_at DESC, id DESC LIMIT ?`
+	query += `
+			ORDER BY admitted_at DESC, id DESC
+			LIMIT ?
+		)
+		SELECT page.id, page.request_key, page.source_kind, page.definition_snapshot,
+		       page.admitted_at, page.updated_at, job.id, repository.remote_identity,
+		       CASE WHEN execution.id IS NULL THEN job.state ELSE execution.state END,
+		       CASE
+		           WHEN execution.id IS NULL AND job.state = 'cancelled' THEN job.updated_at
+		           WHEN execution.state IN ('succeeded', 'failed', 'cancelled') THEN execution.updated_at
+		       END
+		FROM page
+		LEFT JOIN jobs job ON job.run_id = page.id
+		LEFT JOIN repositories repository ON repository.id = job.repository_id
+		LEFT JOIN executions execution ON execution.id = job.execution_id
+		ORDER BY page.admitted_at DESC, page.id DESC, job.admitted_at, job.id`
 	args = append(args, request.Limit+1)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return protocol.RunPage{}, unavailable(err)
 	}
-	type row struct {
-		id         string
-		admittedAt int64
-	}
-	var values []row
+	defer rows.Close()
+	page := protocol.RunPage{Runs: make([]protocol.Run, 0, request.Limit+1)}
+	indexes := make(map[string]int, request.Limit+1)
+	states := make(map[string][]protocol.JobDetail, request.Limit+1)
 	for rows.Next() {
-		var value row
-		if err := rows.Scan(&value.id, &value.admittedAt); err != nil {
-			rows.Close()
+		var run protocol.Run
+		var snapshotJSON []byte
+		var admittedAt, updatedAt int64
+		var jobID, repositoryIdentity, state sql.NullString
+		var terminalAt sql.NullInt64
+		if err := rows.Scan(
+			&run.ID, &run.RequestKey, &run.SourceKind, &snapshotJSON, &admittedAt, &updatedAt,
+			&jobID, &repositoryIdentity, &state, &terminalAt,
+		); err != nil {
 			return protocol.RunPage{}, unavailable(err)
 		}
-		values = append(values, value)
+		index, exists := indexes[run.ID]
+		if !exists {
+			if err := json.Unmarshal(snapshotJSON, &run.Definition); err != nil {
+				return protocol.RunPage{}, unavailable(errors.New("stored Run Definition snapshot is invalid"))
+			}
+			run.AdmittedAt = fromMillis(admittedAt)
+			run.UpdatedAt = fromMillis(updatedAt)
+			index = len(page.Runs)
+			indexes[run.ID] = index
+			page.Runs = append(page.Runs, run)
+		}
+		if jobID.Valid {
+			page.Runs[index].JobCount++
+			page.Runs[index].RepositoryRemoteIdentities = append(
+				page.Runs[index].RepositoryRemoteIdentities, repositoryIdentity.String,
+			)
+			states[run.ID] = append(states[run.ID], protocol.JobDetail{Job: protocol.Job{State: state.String}})
+			if terminalAt.Valid {
+				terminal := fromMillis(terminalAt.Int64)
+				if terminal.After(page.Runs[index].UpdatedAt) {
+					page.Runs[index].UpdatedAt = terminal
+				}
+			}
+		}
 	}
-	if err := rows.Close(); err != nil {
+	if err := rows.Err(); err != nil {
 		return protocol.RunPage{}, unavailable(err)
 	}
-	page := protocol.RunPage{Runs: make([]protocol.Run, 0, request.Limit)}
-	if len(values) > request.Limit {
-		values = values[:request.Limit]
-		last := values[len(values)-1]
-		page.NextCursor = &protocol.RunCursor{AdmittedAtMillis: last.admittedAt, ID: last.id}
+	for index := range page.Runs {
+		page.Runs[index].State = aggregateRunState(states[page.Runs[index].ID])
 	}
-	for _, value := range values {
-		detail, err := s.Run(ctx, value.id)
-		if err != nil {
-			return protocol.RunPage{}, err
-		}
-		page.Runs = append(page.Runs, detail.Run)
+	if len(page.Runs) > request.Limit {
+		last := page.Runs[request.Limit-1]
+		page.NextCursor = &protocol.RunCursor{AdmittedAtMillis: last.AdmittedAt.UnixMilli(), ID: last.ID}
+		page.Runs = page.Runs[:request.Limit]
 	}
 	return page, nil
 }
@@ -673,9 +714,11 @@ func (s *Store) Job(ctx context.Context, jobID string) (protocol.JobDetail, erro
 	}
 	if len(task.Attempts) > 0 {
 		latest := task.Attempts[len(task.Attempts)-1]
-		detail.Job.Result = latest.Result
-		detail.Job.FailureReason = latest.Error
-		if isTerminalExecution(task.Execution.State) && latest.CompletedAt != nil {
+		if isTerminalExecution(task.Execution.State) && latest.CompletedAt != nil &&
+			latest.CompletedAt.Equal(task.Execution.UpdatedAt) &&
+			attemptProducedExecutionState(latest.State, task.Execution.State) {
+			detail.Job.Result = latest.Result
+			detail.Job.FailureReason = latest.Error
 			completed := *latest.CompletedAt
 			detail.Job.TerminalAt = &completed
 		}
@@ -685,6 +728,10 @@ func (s *Store) Job(ctx context.Context, jobID string) (protocol.JobDetail, erro
 		detail.Job.TerminalAt = &terminal
 	}
 	return detail, nil
+}
+
+func attemptProducedExecutionState(attemptState, executionState string) bool {
+	return attemptState == executionState || (attemptState == "lost" && executionState == "failed")
 }
 
 func isTerminalExecution(state string) bool {

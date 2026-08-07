@@ -187,6 +187,7 @@ export function mockControlPlane(
     paginatedAutomationWorkflows?: boolean;
     paginatedDefinitions?: boolean;
     paginatedRuns?: boolean;
+    runCreateFailures?: number;
     pendingRunCancellation?: boolean;
     paginatedTasks?: boolean;
     refreshesHistoricalWorkflow?: boolean;
@@ -210,6 +211,7 @@ export function mockControlPlane(
 ) {
   let createFailures = options.createFailures ?? 0;
   let runFailures = options.runFailures ?? 0;
+  let runCreateFailures = options.runCreateFailures ?? 0;
   let eventRequests = 0;
   let taskHeadRequests = 0;
   let definitionHeadRequests = 0;
@@ -578,6 +580,13 @@ export function mockControlPlane(
         }],
       };
       runDetails = [detail, ...runDetails];
+      if (runCreateFailures > 0) {
+        runCreateFailures -= 1;
+        return Response.json(
+          { error: { code: "connection_lost", message: "connection lost after Run commit" } },
+          { status: 503 },
+        );
+      }
       return Response.json(detail, { status: 201 });
     }
     if (path.startsWith("/api/v1/runs?")) {
