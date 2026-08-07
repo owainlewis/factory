@@ -75,6 +75,7 @@ func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *Au
 	api := &API{store: store, logger: logger, automations: automations}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", api.health)
+	mux.HandleFunc("POST /api/v1/runner-enrollments", api.createRunnerEnrollment)
 	mux.HandleFunc("PUT /api/v1/workers/{worker_id}", api.registerWorker)
 	mux.HandleFunc("PUT /api/v1/workers/{worker_id}/heartbeat", api.heartbeatWorker)
 	mux.HandleFunc("POST /api/v1/workers/{worker_id}/claims", api.claim)
@@ -132,7 +133,126 @@ func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *Au
 	mux.HandleFunc("GET /api/v1/attempts/{attempt_id}/events", api.getEvents)
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/events", api.appendEvents)
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/complete", api.completeAttempt)
-	return api.requestLog(mux)
+	return api.requestLog(mux, true)
+}
+
+// NewRemoteRunnerHandler exposes only the Runner lifecycle over the optional
+// TLS listener. Operator, repository, Definition, and Run APIs remain local.
+func NewRemoteRunnerHandler(store *Store, logger *slog.Logger) http.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	api := &API{store: store, logger: logger}
+	mux := http.NewServeMux()
+	mux.Handle("GET /healthz", api.requireTLS(http.HandlerFunc(api.health)))
+	mux.Handle("POST /api/v1/runner-enrollments/exchange", api.requireTLS(http.HandlerFunc(api.exchangeRunnerEnrollment)))
+	mux.Handle("PUT /api/v1/workers/{worker_id}", api.remoteWorkerAuth(http.HandlerFunc(api.registerWorker)))
+	mux.Handle("PUT /api/v1/workers/{worker_id}/heartbeat", api.remoteWorkerAuth(http.HandlerFunc(api.heartbeatWorker)))
+	mux.Handle("POST /api/v1/workers/{worker_id}/claims", api.remoteWorkerAuth(http.HandlerFunc(api.claim)))
+	mux.Handle("GET /api/v1/attempts/{attempt_id}", api.remoteAttemptAuth(http.HandlerFunc(api.getAttempt)))
+	mux.Handle("POST /api/v1/attempts/{attempt_id}/start", api.remoteAttemptAuth(http.HandlerFunc(api.startAttempt)))
+	mux.Handle("PUT /api/v1/attempts/{attempt_id}/heartbeat", api.remoteAttemptAuth(http.HandlerFunc(api.heartbeat)))
+	mux.Handle("POST /api/v1/attempts/{attempt_id}/events", api.remoteAttemptAuth(http.HandlerFunc(api.appendEvents)))
+	mux.Handle("POST /api/v1/attempts/{attempt_id}/complete", api.remoteAttemptAuth(http.HandlerFunc(api.completeAttempt)))
+	return api.requestLog(mux, false)
+}
+
+func (a *API) createRunnerEnrollment(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input protocol.CreateRunnerEnrollmentRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	enrollment, err := a.store.CreateRunnerEnrollment(r.Context(), input.WorkerID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, enrollment)
+}
+
+func (a *API) exchangeRunnerEnrollment(w http.ResponseWriter, r *http.Request) {
+	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
+		return
+	}
+	var input protocol.ExchangeRunnerEnrollmentRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	credential, err := a.store.ExchangeRunnerEnrollment(r.Context(), input.WorkerID, input.EnrollmentToken, input.Credential)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, credential)
+}
+
+func (a *API) requireTLS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS == nil {
+			writeError(w, &ServiceError{Code: "tls_required", Message: "the remote Runner API requires TLS", Status: http.StatusUpgradeRequired})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *API) authenticateRemoteRunner(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if r.TLS == nil {
+		writeError(w, &ServiceError{Code: "tls_required", Message: "the remote Runner API requires TLS", Status: http.StatusUpgradeRequired})
+		return "", false
+	}
+	parts := strings.Fields(r.Header.Get("Authorization"))
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeError(w, unauthorizedRunner())
+		return "", false
+	}
+	workerID, err := a.store.AuthenticateRunnerCredential(r.Context(), parts[1])
+	if err != nil {
+		var service *ServiceError
+		if errors.As(err, &service) && service.Status == http.StatusUnauthorized {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+		}
+		writeError(w, err)
+		return "", false
+	}
+	return workerID, true
+}
+
+func (a *API) remoteWorkerAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		workerID, ok := a.authenticateRemoteRunner(w, r)
+		if !ok {
+			return
+		}
+		if workerID != r.PathValue("worker_id") {
+			writeError(w, &ServiceError{Code: "runner_forbidden", Message: "Runner credential does not own this resource", Status: http.StatusForbidden})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *API) remoteAttemptAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		workerID, ok := a.authenticateRemoteRunner(w, r)
+		if !ok {
+			return
+		}
+		attempt, err := a.store.Attempt(r.Context(), r.PathValue("attempt_id"))
+		if err != nil || attempt.WorkerID != workerID {
+			if err != nil && !errors.Is(err, ErrNotFound) {
+				writeError(w, err)
+				return
+			}
+			writeError(w, &ServiceError{Code: "runner_forbidden", Message: "Runner credential does not own this resource", Status: http.StatusForbidden})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (a *API) listDefinitions(w http.ResponseWriter, r *http.Request) {
@@ -473,7 +593,7 @@ func (w *responseRecorder) Write(body []byte) (int, error) {
 	return w.ResponseWriter.Write(body)
 }
 
-func (a *API) requestLog(next http.Handler) http.Handler {
+func (a *API) requestLog(next http.Handler, requireLoopbackHost bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestID, err := newID()
 		if err != nil {
@@ -482,7 +602,7 @@ func (a *API) requestLog(next http.Handler) http.Handler {
 		w.Header().Set("X-Request-ID", requestID)
 		recorder := &responseRecorder{ResponseWriter: w}
 		start := time.Now()
-		if err := validateRequestHost(r.Host); err != nil {
+		if err := validateRequestHost(r.Host); requireLoopbackHost && err != nil {
 			writeError(recorder, &ServiceError{Code: "invalid_host", Message: "Host must identify a loopback address", Status: 403})
 		} else {
 			next.ServeHTTP(recorder, r)

@@ -3,6 +3,8 @@ package worker
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -133,6 +135,16 @@ func New(config Config, options Options, logger *slog.Logger) (*Manager, error) 
 	if logger == nil {
 		logger = slog.Default()
 	}
+	httpClient, err := runnerHTTPClient(config, options.HTTPClient)
+	if err != nil {
+		return nil, err
+	}
+	runnerClient := newClient(config.Server, httpClient)
+	credentialPath := filepath.Join(dataDirectory, "runner-credential")
+	runnerClient.credential, err = loadCredentialFile(credentialPath, config.Server)
+	if err != nil {
+		return nil, err
+	}
 	byKey := make(map[string]Repository, len(repositories))
 	for _, repository := range repositories {
 		byKey[repository.Key] = repository
@@ -147,7 +159,7 @@ func New(config Config, options Options, logger *slog.Logger) (*Manager, error) 
 		lock:                          lock,
 		repositories:                  repositories,
 		repositoriesByKey:             byKey,
-		client:                        newClient(config.Server, options.HTTPClient),
+		client:                        runnerClient,
 		manifests:                     newManifestStore(dataDirectory, id),
 		slots:                         make(chan struct{}, config.MaxConcurrent),
 		health:                        health{State: "unhealthy"},
@@ -160,6 +172,26 @@ func New(config Config, options Options, logger *slog.Logger) (*Manager, error) 
 		disposed:                      make(map[string]bool),
 		pending:                       make(map[string]context.CancelFunc),
 	}, nil
+}
+
+func runnerHTTPClient(config Config, provided *http.Client) (*http.Client, error) {
+	if provided != nil || config.CACertificate == "" {
+		return provided, nil
+	}
+	pem, err := os.ReadFile(config.CACertificate)
+	if err != nil {
+		return nil, fmt.Errorf("read ca_certificate: %w", err)
+	}
+	roots, err := x509.SystemCertPool()
+	if err != nil || roots == nil {
+		roots = x509.NewCertPool()
+	}
+	if !roots.AppendCertsFromPEM(pem) {
+		return nil, errors.New("ca_certificate contains no certificates")
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+	return &http.Client{Transport: transport}, nil
 }
 
 func (options Options) withDefaults(primaryRuntime string, runtimes []string) Options {
@@ -253,6 +285,10 @@ func (manager *Manager) ID() string { return manager.id }
 
 func (manager *Manager) Run(ctx context.Context) error {
 	defer manager.Close()
+	if err := manager.client.enroll(ctx, manager.id, manager.config.EnrollmentToken,
+		filepath.Join(manager.dataDirectory, "runner-credential")); err != nil {
+		return err
+	}
 	for {
 		err := manager.reconcile(ctx)
 		if err == nil {

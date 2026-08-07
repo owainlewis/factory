@@ -9,6 +9,8 @@ Start with the root [README](../README.md) to run Factory.
 - [Local guide](local.md): build, configure, start, delegate, and troubleshoot.
 - [Worker contract](worker.md): identity, runtimes, claiming, process safety,
   and worktree cleanup.
+- [Remote VM Runners](remote-runners.md): TLS listener, one-time enrollment,
+  authentication, and reconnect behavior.
 - [Scheduled Automations](scheduled-automations.md): create, preview, enable,
   replay, and inspect Definition Runs across repositories.
 - [Release guide](release.md): install, verify, upgrade, roll back, reproduce,

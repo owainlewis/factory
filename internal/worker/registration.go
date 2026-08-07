@@ -118,6 +118,7 @@ func (manager *Manager) registrationLocked() protocol.WorkerRegistration {
 	acceptsManagedRepositories := hasGitHubSourceAccess(manager.health.SourceAccess)
 	return protocol.WorkerRegistration{
 		Name:                       strings.TrimSpace(manager.config.Name),
+		Labels:                     manager.config.Labels,
 		WorkerVersion:              manager.options.WorkerVersion,
 		Runtime:                    manager.config.Runtime,
 		RuntimeVersion:             manager.health.RuntimeVersion,

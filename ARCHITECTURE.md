@@ -18,8 +18,8 @@ coordination from agent execution:
 - `factory-server` stores work, assigns it, evaluates typed GitHub issue and
   pull-request Automations through `gh`, admits schedule Automations from its
   clock, exposes the HTTP API, and serves the embedded browser UI.
-- `factory-worker` has one stable identity and a configurable pool for one agent
-  runtime. It advertises runtime capacity and provider access, acquires centrally
+- `factory-worker` has one stable identity and a configurable pool for several
+  coding-agent runtimes. It advertises runtime capacity and provider access, acquires centrally
   managed repositories on demand, and runs concurrent attempts in isolated Git
   worktrees.
 - Codex or Claude Code performs the repository work as a child process of the
@@ -31,7 +31,8 @@ and timeout. The control plane snapshots one resolved prompt in the existing
 task description field before creating the task. Callers may name the
 assignment directly, constrain a routed assignment to one cattle worker, or
 ask the control-plane scheduler to choose from all eligible cattle workers. The
-deployment is limited to a trusted user and loopback HTTP on one host.
+operator access is limited to a trusted user and loopback HTTP. Runners may use
+that local endpoint or a separate authenticated HTTPS endpoint from remote VMs.
 
 Workflow, Workflow Revision, Automation, Occurrence, Task, Execution, Attempt,
 and worker are the implemented model. They are not all target product concepts.
@@ -61,7 +62,8 @@ factory-worker (one identity, several runtime capabilities, N agent slots)
 ```
 
 Workers initiate every connection. The server does not connect to workers, and
-the system does not use WebSockets.
+the system does not use WebSockets. A remote VM uses a narrow HTTPS surface for
+enrollment and the same Runner lifecycle shown above.
 
 ## 3. Architectural invariants
 
@@ -82,8 +84,9 @@ the system does not use WebSockets.
    or Git worktree identity cannot be proved.
 7. Existing worktrees with unpublished, dirty, failed, cancelled, lost, or
    uncertain work are retained for inspection.
-8. The control plane and worker reject non-loopback server addresses because
-   remote authentication and transport security are not implemented.
+8. Plain HTTP remains loopback-only. Remote Runners require the separate TLS
+   listener, a one-time enrollment bound to their stable identity, and their
+   stored per-Runner bearer credential.
 9. Operator builds embed the committed `web/dist` assets and do not require
    Node.js.
 10. Automation evaluation is read-only. An Automation and provider identity
@@ -106,6 +109,8 @@ the system does not use WebSockets.
 `cmd/factory-server` starts the Go HTTP server. It:
 
 - validates and binds a loopback address, `127.0.0.1:7337` by default;
+- optionally binds a separate TLS listener containing only enrollment and
+  authenticated Runner lifecycle routes;
 - opens the SQLite store and applies embedded migrations;
 - sweeps expired leases at startup and every five seconds;
 - mounts the API and embedded UI on one origin;
@@ -537,17 +542,24 @@ relative worker data paths and optional legacy repository paths are resolved
 from the directory that contains the worker TOML; explicit absolute worker data
 paths are unchanged. Managed repositories, Workflows, Automations, and
 evaluation state are configured in SQLite through the control-plane API. Only
-the listen address and database path belong in `config.toml` because the server
-needs them before SQLite opens. Managed repositories are cached below the
-worker data directory.
+the local listen address, database path, and optional remote Runner TLS listener
+and certificate paths belong in `config.toml` because the server needs them
+before SQLite opens. Managed repositories are cached below the worker data
+directory.
 
 ## 7. Security and trust boundaries
 
-The current trust boundary is one trusted user on one host:
+The operator trust boundary is one trusted user on the control-plane host:
 
-- the server binds only to loopback and validates request host resolution;
-- there is no login, authorization, worker credential, TLS, or tenant boundary;
-- worker IDs identify local state but are not secrets;
+- the browser and operator API bind only to loopback and validate request host
+  resolution. There is no operator login or tenant boundary;
+- the optional remote Runner API uses TLS, exposes no operator routes, and
+  authorizes worker and attempt paths against a hashed per-Runner credential;
+- ten-minute enrollment tokens are bound to one worker ID and consumed once;
+  long-lived Runner credentials are returned only over TLS, stored in an
+  owner-only file bound to the exact server origin, never logged, and stored
+  server-side only as SHA-256 digests;
+- worker IDs identify stable local state but are not secrets;
 - the agent process has the worker OS user's permissions and can access anything
   available to that user;
 - the enabled central repository catalog controls routed assignment. Workers
@@ -565,7 +577,8 @@ The current trust boundary is one trusted user on one host:
 - legacy migration reads only explicitly resolved regular non-symlink files,
   binds and retains the locked ledger inode for each action, rejects pathname
   replacement, and never deletes the sources;
-- lease tokens are random, sent over local HTTP, and stored as SHA-256 digests;
+- lease tokens are random, sent over loopback HTTP or authenticated HTTPS, and
+  stored as SHA-256 digests;
 - browser mutations must be same-origin and use JSON;
 - worker data directories, identity files, and manifests use restrictive
   permissions and reject unsafe symlinks where identity matters;
@@ -642,10 +655,11 @@ The contributor check set is documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## 10. Known limitations
 
-- Only local loopback deployments are supported.
+- Remote VM Runners require operator-provided VMs, TLS certificates, network
+  policy, agent credentials, and GitHub credentials. Factory does not provision
+  or manage those resources.
 - Windows workers are unsupported.
-- There is no authentication, authorization, tenant isolation, or remote worker
-  transport.
+- There is no operator authentication or tenant isolation.
 - A task has one execution assigned to one worker. Fan-out and cross-worker
   rescheduling are not implemented.
 - Execution scheduling is pull-based FIFO per worker. There are no priorities

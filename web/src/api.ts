@@ -366,6 +366,7 @@ function normalizeWorker(worker: Worker): Worker {
 		}];
   return {
     ...worker,
+		labels: worker.labels ?? {},
 		capabilities,
     repositories: worker.repositories ?? [],
     retained_worktrees: worker.retained_worktrees ?? [],

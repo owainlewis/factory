@@ -8,6 +8,10 @@ runtime = "codex"
 runtimes = ["pi", "codex", "claude-code"]
 # Optional. Defaults to 10 and accepts values from 1 through 100.
 # max_concurrent = 10
+# Optional scheduling and inventory metadata shown on the Runner profile.
+# [labels]
+# environment = "development"
+# host = "laptop"
 # With no data_directory, this worker stores durable state in
 # ~/.factory/workers/worker, derived from this file's name (worker.toml).
 # Set data_directory only to override that location.
