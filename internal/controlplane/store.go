@@ -2032,8 +2032,9 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		repositoryPredicate = "lower(r.remote_identity) = lower(?)"
 	}
 	var repositoryID, repositoryIdentity string
+	var repositoryEnabled int
 	err := tx.QueryRowContext(ctx, `
-		SELECT r.id, r.remote_identity
+		SELECT r.id, r.remote_identity, r.enabled
 		FROM repositories r
 		WHERE `+repositoryPredicate+`
 		  AND (
@@ -2045,7 +2046,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		            AND available.dynamic = 0
 		      ))
 		  )
-	`, route.RepositoryRemoteIdentity, allowStaticRepository).Scan(&repositoryID, &repositoryIdentity)
+	`, route.RepositoryRemoteIdentity, allowStaticRepository).Scan(&repositoryID, &repositoryIdentity, &repositoryEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return taskRouteCandidate{}, conflict(
 			"repository_not_managed",
@@ -2069,6 +2070,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		WHERE w.health = 'healthy'
 		  AND w.last_heartbeat >= ?
 		  AND (? = '' OR w.id = ?)
+		  AND (? = 0 OR COALESCE(wr.advertised, 0) = 1)
 		  AND (
 		      COALESCE(wr.advertised, 0) = 1
 		      OR NOT EXISTS (
@@ -2124,6 +2126,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		  ) < ?
 		ORDER BY w.id
 	`, repositoryID, now-protocol.WorkerOnlineWindow.Milliseconds(), workerID, workerID,
+		allowStaticRepository && repositoryEnabled == 0,
 		repositoryIdentity, repositoryID,
 		repositoryID, protocol.MaxRepositoryCacheEntries,
 		repositoryID, repositoryID, protocol.MaxRetainedPerRepo)

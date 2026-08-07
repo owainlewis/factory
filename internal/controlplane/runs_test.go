@@ -106,6 +106,40 @@ func TestRunOnceCanUseARepositoryConfiguredOnALocalRunner(t *testing.T) {
 	}
 }
 
+func TestRunOnceRoutesAStaticRepositoryOnlyToItsAdvertisingRunner(t *testing.T) {
+	store := newTestStore(t)
+	definition := createTestDefinition(t, store, "static-route-definition", "Review Static Checkout")
+	staticWorker := registerDefinitionWorker(
+		t, store, workerB,
+		protocol.RepositoryRegistration{Key: "local-checkout", RemoteIdentity: "file:///tmp/factory-static-route"},
+		protocol.CapabilityReady,
+		nil,
+	)
+	repository := staticWorker.Repositories[0]
+	_, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: workerA, WorkerVersion: "test", Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
+		Capabilities: []protocol.Capability{
+			{Kind: protocol.CapabilityKindTool, Name: "git", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindTool, Name: "gh", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
+		},
+		Capacity: 1, Health: "healthy", AcceptsManagedRepositories: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	detail, created, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "static-route-run", DefinitionID: definition.ID, RepositoryID: repository.ID,
+	})
+	if err != nil || !created {
+		t.Fatalf("create static Run: created=%t err=%v", created, err)
+	}
+	if got := detail.Jobs[0].Job.AssignedWorkerID; got != staticWorker.ID {
+		t.Fatalf("assigned worker = %q; want advertising worker %q", got, staticWorker.ID)
+	}
+}
+
 func TestRunHistoryUsesAStableCursorWithoutDroppingOlderRuns(t *testing.T) {
 	store, definition, repository, _ := setupRunTest(t, true)
 	fixed := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
