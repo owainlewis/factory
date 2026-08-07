@@ -285,9 +285,29 @@ func (manager *Manager) ID() string { return manager.id }
 
 func (manager *Manager) Run(ctx context.Context) error {
 	defer manager.Close()
-	if err := manager.client.enroll(ctx, manager.id, manager.config.EnrollmentToken,
-		filepath.Join(manager.dataDirectory, "runner-credential")); err != nil {
-		return err
+	enrollmentBackoff := manager.options.TransportBackoffMin
+	for {
+		err := manager.client.enroll(ctx, manager.id, manager.config.EnrollmentToken,
+			filepath.Join(manager.dataDirectory, "runner-credential"))
+		if err == nil {
+			break
+		}
+		var retryable retryableEnrollmentError
+		if !errors.As(err, &retryable) {
+			return err
+		}
+		manager.logger.Warn("runner_enrollment_retry", "error_class", "transient", "error", err)
+		timer := time.NewTimer(enrollmentBackoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+		enrollmentBackoff *= 2
+		if enrollmentBackoff > manager.options.TransportBackoffMax {
+			enrollmentBackoff = manager.options.TransportBackoffMax
+		}
 	}
 	for {
 		err := manager.reconcile(ctx)

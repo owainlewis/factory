@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/owainlewis/factory/internal/protocol"
 )
@@ -148,6 +151,74 @@ func TestRemoteClientRetriesTheSamePendingCredentialAfterResponseLoss(t *testing
 	}
 	if _, err := os.Stat(path + ".pending"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("pending credential still exists after recovery: %v", err)
+	}
+}
+
+func TestManagerRetriesTransientRemoteEnrollmentWithoutRestart(t *testing.T) {
+	const enrollment = "factory_enroll_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	exchanges := 0
+	registered := make(chan struct{}, 1)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/runner-enrollments/exchange":
+			exchanges++
+			var input protocol.ExchangeRunnerEnrollmentRequest
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Error(err)
+			}
+			if exchanges == 1 {
+				http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(protocol.RunnerCredential{Credential: input.Credential})
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/workers/"):
+			select {
+			case registered <- struct{}{}:
+			default:
+			}
+			_ = json.NewEncoder(w).Encode(protocol.Worker{})
+		case strings.HasSuffix(r.URL.Path, "/claims"):
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	options := testOptions(codexPath)
+	options.HTTPClient = server.Client()
+	options.TransportBackoffMin = 10 * time.Millisecond
+	options.TransportBackoffMax = 20 * time.Millisecond
+	manager, err := New(Config{
+		Server: server.URL, Name: "remote-enrollment-retry", EnrollmentToken: enrollment,
+		Runtime: protocol.RuntimeCodex, MaxConcurrent: 1, DataDirectory: filepath.Join(t.TempDir(), "worker"),
+	}, options, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- manager.Run(ctx) }()
+	select {
+	case <-registered:
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("Manager did not recover from transient enrollment failure")
+	}
+	if exchanges != 2 {
+		cancel()
+		t.Fatalf("enrollment exchanges = %d, want 2", exchanges)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Manager stopped after enrollment recovery: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Manager did not stop after cancellation")
 	}
 }
 

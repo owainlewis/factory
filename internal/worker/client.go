@@ -27,6 +27,12 @@ type APIError struct {
 	Message string
 }
 
+type requestTransportError struct{ error }
+type retryableEnrollmentError struct{ error }
+
+func (err requestTransportError) Unwrap() error    { return err.error }
+func (err retryableEnrollmentError) Unwrap() error { return err.error }
+
 func (err *APIError) Error() string {
 	return fmt.Sprintf("control plane returned %d %s: %s", err.Status, err.Code, err.Message)
 }
@@ -93,7 +99,13 @@ func (client *client) enroll(ctx context.Context, workerID, enrollmentToken, cre
 			WorkerID: workerID, EnrollmentToken: enrollmentToken, Credential: credential,
 		}, &response)
 	if err != nil {
-		return fmt.Errorf("enroll remote Runner: %w", err)
+		wrapped := fmt.Errorf("enroll remote Runner: %w", err)
+		var apiError *APIError
+		var transportError requestTransportError
+		if errors.As(err, &transportError) || (errors.As(err, &apiError) && apiError.Status >= 500) {
+			return retryableEnrollmentError{error: wrapped}
+		}
+		return wrapped
 	}
 	if response.Credential != credential {
 		return errors.New("enroll remote Runner: server returned an invalid credential")
@@ -336,12 +348,12 @@ func (client *client) requestWithCredential(ctx context.Context, method, path st
 	}
 	response, err := client.http.Do(request)
 	if err != nil {
-		return 0, fmt.Errorf("send request: %w", err)
+		return 0, requestTransportError{error: fmt.Errorf("send request: %w", err)}
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, protocol.MaxBodyBytes+1))
 	if err != nil {
-		return response.StatusCode, fmt.Errorf("read response: %w", err)
+		return response.StatusCode, requestTransportError{error: fmt.Errorf("read response: %w", err)}
 	}
 	if len(responseBody) > protocol.MaxBodyBytes {
 		return response.StatusCode, errors.New("control-plane response exceeds 1 MiB")
