@@ -377,14 +377,16 @@ test("filters Run health and drills from a failed Job into its Run", async ({ pa
   const finishRun = async (key: string, state: "succeeded" | "failed") => {
     const run = await json<{
       run: { id: string };
-      jobs: Array<{ job: { assigned_worker_id?: string } }>;
+      jobs: Array<{ job: { id: string; assigned_worker_id?: string } }>;
     }>(await api.post("/api/v1/runs", { data: {
       request_key: `e2e-metrics-${key}`,
       definition_id: definition.id,
       repository_ids: [repositoryID],
       concurrency_limit: 1,
     } }));
-    expect(run.jobs[0]?.job.assigned_worker_id).toBe(metricsWorker);
+    const job = run.jobs[0];
+    expect(job?.job.assigned_worker_id).toBe(metricsWorker);
+    if (!job) throw new Error("Run did not create its metrics Job");
     const token = `metrics-${key}-lease-token-0123456789abcdef0123456789`;
     const claim = await json<{ attempt: { id: string } }>(await api.post(`/api/v1/workers/${metricsWorker}/claims`, { data: {
       request_id: `metrics-${key}-claim`,
@@ -399,10 +401,10 @@ test("filters Run health and drills from a failed Job into its Run", async ({ pa
       state,
       ...(state === "succeeded" ? { result: "Metric success" } : { error: "Metric failure" }),
     } }));
-    return run.run.id;
+    return { runID: run.run.id, jobID: job.job.id };
   };
   await finishRun("succeeded", "succeeded");
-  const failedRunID = await finishRun("failed", "failed");
+  const failed = await finishRun("failed", "failed");
   await json(await api.post("/api/v1/runs", { data: {
     request_key: "e2e-metrics-active",
     definition_id: definition.id,
@@ -436,7 +438,7 @@ test("filters Run health and drills from a failed Job into its Run", async ({ pa
   await expect(page.getByLabel("Definition filter")).toHaveValue(definition.id);
   await page.getByRole("button", { name: /Failed Jobs/ }).click();
   await page.getByRole("button", { name: /file:\/\/\/tmp\/factory-metrics-dashboard/ }).click();
-  await expect(page).toHaveURL(new RegExp(`/runs/${failedRunID}$`));
+  await expect(page).toHaveURL(new RegExp(`/runs/${failed.runID}\\?job=${failed.jobID}$`));
   await expect(page.getByText("Metric failure", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Overview", exact: true }).click();
   await page.getByRole("button", { name: "30 days" }).click();
