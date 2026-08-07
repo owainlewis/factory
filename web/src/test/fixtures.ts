@@ -529,6 +529,7 @@ export function mockControlPlane(
         request_key: string;
         definition_id: string;
         repository_id: string;
+        parameters?: Record<string, string>;
       };
       const replay = runDetails.find((detail) => detail.run.request_key === body.request_key);
       if (replay) return Response.json(replay);
@@ -559,7 +560,7 @@ export function mockControlPlane(
           admitted_at: now,
           updated_at: now,
         },
-        parameters: definition.inputs,
+        parameters: { ...definition.inputs, ...body.parameters },
         jobs: [{
           job: {
             id: "job-created",

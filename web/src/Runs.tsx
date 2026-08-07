@@ -105,11 +105,13 @@ function RunOnceDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
   const repositories = useQuery({ queryKey: ["run-repositories"], queryFn: api.runRepositories });
   const [definition, setDefinition] = useState("");
   const [repository, setRepository] = useState("");
+  const [parameters, setParameters] = useState<Record<string, string>>({});
   const requestKey = useRef({ selection: "", value: "" });
   useEffect(() => firstField.current?.focus(), []);
+  const selectedDefinition = definitions.data?.definitions.find((item) => item.id === definition);
   const create = useMutation({
     mutationFn: () => {
-      const selection = `${definition}\n${repository}`;
+      const selection = JSON.stringify({ definition, repository, parameters });
       if (requestKey.current.selection !== selection) {
         requestKey.current = { selection, value: crypto.randomUUID() };
       }
@@ -117,6 +119,7 @@ function RunOnceDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
         request_key: requestKey.current.value,
         definition_id: definition,
         repository_id: repository,
+        parameters,
       });
     },
     onSuccess: onCreated,
@@ -137,7 +140,18 @@ function RunOnceDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
           <div className="form-grid">
             <div className="field">
               <label htmlFor={definitionID}>Definition</label>
-              <select id={definitionID} ref={firstField} value={definition} onChange={(event) => setDefinition(event.target.value)} required>
+              <select
+                id={definitionID}
+                ref={firstField}
+                value={definition}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setDefinition(value);
+                  const inputs = definitions.data?.definitions.find((item) => item.id === value)?.inputs ?? {};
+                  setParameters({ ...inputs });
+                }}
+                required
+              >
                 <option value="">Choose a Definition</option>
                 {(definitions.data?.definitions ?? []).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
               </select>
@@ -150,6 +164,24 @@ function RunOnceDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
               </select>
             </div>
           </div>
+          {selectedDefinition && Object.keys(selectedDefinition.inputs).length > 0 && (
+            <div className="form-section">
+              <PanelHeading title="Inputs" />
+              <p className="form-help">Override this Definition&apos;s defaults for this Run.</p>
+              <div className="form-grid">
+                {Object.keys(selectedDefinition.inputs).sort().map((name) => (
+                  <div className="field" key={name}>
+                    <label htmlFor={`${definitionID}-input-${name}`}>{name}</label>
+                    <input
+                      id={`${definitionID}-input-${name}`}
+                      value={parameters[name] ?? selectedDefinition.inputs[name]}
+                      onChange={(event) => setParameters((current) => ({ ...current, [name]: event.target.value }))}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {(definitions.error || repositories.error || create.error) && <InlineError error={definitions.error ?? repositories.error ?? create.error} />}
           {!definitions.isPending && definitions.data?.definitions.length === 0 && <p className="form-help">Create an active Definition before starting a Run.</p>}
           {!repositories.isPending && availableRepositories.length === 0 && <p className="form-help">Configure a repository on a Runner or enable managed acquisition before starting a Run.</p>}

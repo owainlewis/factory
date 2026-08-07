@@ -470,6 +470,41 @@ describe("App", () => {
     expect(screen.queryByText("Cancellation requested. The Runner will stop this Job on its next heartbeat.")).not.toBeInTheDocument();
   });
 
+  it("submits per-Run Definition input overrides", async () => {
+    const fetch = mockControlPlane();
+    await globalThis.fetch("/api/v1/definitions", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "create-parameterized-definition",
+        name: "Parameterized review",
+        prompt: "Review {{scope}} at {{severity}} severity.",
+        runtime: "codex",
+        allowed_tools: ["git"],
+        timeout_seconds: 600,
+        inputs: { severity: "high", scope: "repository" },
+      }),
+    });
+    window.history.replaceState({}, "", "/runs?new=true");
+    const user = userEvent.setup();
+    renderApp();
+
+    const dialog = await screen.findByRole("dialog", { name: "Run once" });
+    await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-created");
+    expect(within(dialog).getByLabelText("severity")).toHaveValue("high");
+    expect(within(dialog).getByLabelText("scope")).toHaveValue("repository");
+    await user.clear(within(dialog).getByLabelText("severity"));
+    await user.type(within(dialog).getByLabelText("severity"), "critical");
+    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-managed");
+    await user.click(within(dialog).getByRole("button", { name: "Start Run" }));
+
+    expect(await screen.findByRole("heading", { name: "Parameterized review" })).toBeVisible();
+    const request = fetch.mock.calls
+      .filter(([input, init]) => input === "/api/v1/runs" && init?.method === "POST")
+      .map(([, init]) => JSON.parse(String(init?.body)) as { parameters: Record<string, string> })
+      .at(-1);
+    expect(request?.parameters).toEqual({ severity: "critical", scope: "repository" });
+  });
+
   it("shows pending cancellation and prevents duplicate Job cancellation", async () => {
     mockControlPlane({ pendingRunCancellation: true });
     await globalThis.fetch("/api/v1/definitions", {
