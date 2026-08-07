@@ -3,6 +3,8 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,26 +54,60 @@ func newClient(server string, httpClient *http.Client) *client {
 }
 
 func (client *client) enroll(ctx context.Context, workerID, enrollmentToken, credentialPath string) error {
-	if client.credential != "" || !strings.HasPrefix(client.baseURL, "https://") {
+	if !strings.HasPrefix(client.baseURL, "https://") {
+		return nil
+	}
+	pendingPath := credentialPath + ".pending"
+	if client.credential != "" {
+		err := os.Remove(pendingPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove stale pending Runner credential: %w", err)
+		}
+		if err == nil {
+			if err := syncDirectory(filepath.Dir(pendingPath)); err != nil {
+				return fmt.Errorf("sync Runner credential directory: %w", err)
+			}
+		}
 		return nil
 	}
 	if enrollmentToken == "" {
 		return errors.New("remote Runner requires enrollment_token until its credential has been saved")
 	}
+	credential, err := loadCredentialFile(pendingPath, client.baseURL)
+	if err != nil {
+		return err
+	}
+	if credential == "" {
+		body := make([]byte, 32)
+		if _, err := rand.Read(body); err != nil {
+			return fmt.Errorf("generate Runner credential: %w", err)
+		}
+		credential = "factory_runner_" + base64.RawURLEncoding.EncodeToString(body)
+		if err := writeCredentialFile(pendingPath, client.baseURL, credential); err != nil {
+			return err
+		}
+	}
 	var response protocol.RunnerCredential
-	_, err := client.requestWithoutCredential(ctx, http.MethodPost, "/api/v1/runner-enrollments/exchange",
-		protocol.ExchangeRunnerEnrollmentRequest{WorkerID: workerID, EnrollmentToken: enrollmentToken}, &response)
+	_, err = client.requestWithoutCredential(ctx, http.MethodPost, "/api/v1/runner-enrollments/exchange",
+		protocol.ExchangeRunnerEnrollmentRequest{
+			WorkerID: workerID, EnrollmentToken: enrollmentToken, Credential: credential,
+		}, &response)
 	if err != nil {
 		return fmt.Errorf("enroll remote Runner: %w", err)
 	}
-	if strings.TrimSpace(response.Credential) == "" || len(response.Credential) > 1024 ||
-		response.Credential != strings.TrimSpace(response.Credential) {
+	if response.Credential != credential {
 		return errors.New("enroll remote Runner: server returned an invalid credential")
 	}
-	if err := writeCredentialFile(credentialPath, client.baseURL, response.Credential); err != nil {
+	if err := writeCredentialFile(credentialPath, client.baseURL, credential); err != nil {
 		return err
 	}
-	client.credential = response.Credential
+	client.credential = credential
+	if err := os.Remove(pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove pending Runner credential: %w", err)
+	}
+	if err := syncDirectory(filepath.Dir(pendingPath)); err != nil {
+		return fmt.Errorf("sync Runner credential directory: %w", err)
+	}
 	return nil
 }
 

@@ -202,6 +202,7 @@ type CreateRunnerEnrollmentRequest struct {
 type ExchangeRunnerEnrollmentRequest struct {
 	WorkerID        string `json:"worker_id"`
 	EnrollmentToken string `json:"enrollment_token"`
+	Credential      string `json:"credential"`
 }
 
 type RunnerCredential struct {

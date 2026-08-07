@@ -48,15 +48,13 @@ func (s *Store) CreateRunnerEnrollment(ctx context.Context, workerID string) (pr
 
 func (s *Store) ExchangeRunnerEnrollment(
 	ctx context.Context,
-	workerID, enrollmentToken string,
+	workerID, enrollmentToken, credential string,
 ) (protocol.RunnerCredential, error) {
 	workerID = strings.TrimSpace(workerID)
-	if workerID == "" || len(workerID) > 200 || len(enrollmentToken) < 32 || len(enrollmentToken) > 1024 {
+	if workerID == "" || len(workerID) > 200 || len(enrollmentToken) < 32 || len(enrollmentToken) > 1024 ||
+		len(credential) < 32 || len(credential) > 1024 || credential != strings.TrimSpace(credential) ||
+		!strings.HasPrefix(credential, "factory_runner_") {
 		return protocol.RunnerCredential{}, unauthorizedRunner()
-	}
-	credential, err := randomRunnerSecret("factory_runner_")
-	if err != nil {
-		return protocol.RunnerCredential{}, unavailable(err)
 	}
 	now := s.now().UTC().UnixMilli()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -65,15 +63,33 @@ func (s *Store) ExchangeRunnerEnrollment(
 	}
 	defer tx.Rollback()
 	var enrollmentID string
+	var usedAt sql.NullInt64
+	var expiresAt int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT id FROM runner_enrollments
-		WHERE worker_id = ? AND token_digest = ? AND used_at IS NULL AND expires_at >= ?
-	`, workerID, digestToken(enrollmentToken), now).Scan(&enrollmentID)
+		SELECT id, used_at, expires_at FROM runner_enrollments
+		WHERE worker_id = ? AND token_digest = ?
+	`, workerID, digestToken(enrollmentToken)).Scan(&enrollmentID, &usedAt, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.RunnerCredential{}, unauthorizedRunner()
 	}
 	if err != nil {
 		return protocol.RunnerCredential{}, unavailable(err)
+	}
+	if usedAt.Valid {
+		var storedDigest []byte
+		err = tx.QueryRowContext(ctx, `
+			SELECT token_digest FROM remote_runner_credentials WHERE worker_id = ?
+		`, workerID).Scan(&storedDigest)
+		if err != nil || !equalDigest(storedDigest, digestToken(credential)) {
+			return protocol.RunnerCredential{}, unauthorizedRunner()
+		}
+		if err := tx.Commit(); err != nil {
+			return protocol.RunnerCredential{}, unavailable(err)
+		}
+		return protocol.RunnerCredential{Credential: credential}, nil
+	}
+	if expiresAt < now {
+		return protocol.RunnerCredential{}, unauthorizedRunner()
 	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE runner_enrollments SET used_at = ?
