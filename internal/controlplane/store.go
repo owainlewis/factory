@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -54,6 +55,8 @@ type Store struct {
 	now                   func() time.Time
 	sweepEvery            time.Duration
 	beginLegacyResumeLink func(context.Context) (*sql.Tx, error)
+	rerouteCursorMu       sync.Mutex
+	rerouteCursors        map[string]queuedRunRerouteCursor
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {

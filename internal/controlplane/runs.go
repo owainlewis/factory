@@ -420,7 +420,7 @@ func (s *Store) rerouteQueuedRunJobForWorker(
 	workerID string,
 	now int64,
 ) error {
-	const pageSize = 200
+	const scanLimit = 50
 	type candidate struct {
 		jobID          string
 		executionID    string
@@ -429,9 +429,7 @@ func (s *Store) rerouteQueuedRunJobForWorker(
 		snapshotJSON   []byte
 		admittedAt     int64
 	}
-	var cursorAt int64
-	var cursorID string
-	for {
+	loadCandidates := func(cursor queuedRunRerouteCursor) ([]candidate, error) {
 		query := `
 			SELECT job.id, job.execution_id, job.repository_id,
 			       execution.assigned_worker_id, run.definition_snapshot, job.admitted_at
@@ -442,14 +440,15 @@ func (s *Store) rerouteQueuedRunJobForWorker(
 			  AND execution.assigned_worker_id != ?
 		`
 		args := []any{workerID}
-		if cursorID != "" {
+		if cursor.jobID != "" {
 			query += ` AND (job.admitted_at > ? OR (job.admitted_at = ? AND job.id > ?))`
-			args = append(args, cursorAt, cursorAt, cursorID)
+			args = append(args, cursor.admittedAt, cursor.admittedAt, cursor.jobID)
 		}
-		query += ` ORDER BY job.admitted_at, job.id LIMIT 200`
+		query += ` ORDER BY job.admitted_at, job.id LIMIT ?`
+		args = append(args, scanLimit)
 		rows, err := tx.QueryContext(ctx, query, args...)
 		if err != nil {
-			return unavailable(err)
+			return nil, unavailable(err)
 		}
 		var candidates []candidate
 		for rows.Next() {
@@ -459,56 +458,97 @@ func (s *Store) rerouteQueuedRunJobForWorker(
 				&value.assignedWorker, &value.snapshotJSON, &value.admittedAt,
 			); err != nil {
 				rows.Close()
-				return unavailable(err)
+				return nil, unavailable(err)
 			}
 			candidates = append(candidates, value)
 		}
 		if err := rows.Close(); err != nil {
-			return unavailable(err)
+			return nil, unavailable(err)
 		}
-		for _, value := range candidates {
-			var snapshot protocol.DefinitionSnapshot
-			if err := json.Unmarshal(value.snapshotJSON, &snapshot); err != nil {
-				return unavailable(errors.New("stored Run Definition snapshot is invalid"))
-			}
-			if _, err := s.selectRunRoute(
-				ctx, tx, value.repositoryID, now, value.assignedWorker, snapshot.Runtime, snapshot.AllowedTools,
-			); err == nil {
+		return candidates, nil
+	}
+	cursor := s.queuedRunRerouteCursor(workerID)
+	candidates, err := loadCandidates(cursor)
+	if err != nil {
+		return err
+	}
+	if len(candidates) == 0 && cursor.jobID != "" {
+		cursor = queuedRunRerouteCursor{}
+		s.setQueuedRunRerouteCursor(workerID, cursor)
+		candidates, err = loadCandidates(cursor)
+		if err != nil {
+			return err
+		}
+	}
+	for _, value := range candidates {
+		s.setQueuedRunRerouteCursor(workerID, queuedRunRerouteCursor{
+			admittedAt: value.admittedAt,
+			jobID:      value.jobID,
+		})
+		var snapshot protocol.DefinitionSnapshot
+		if err := json.Unmarshal(value.snapshotJSON, &snapshot); err != nil {
+			return unavailable(errors.New("stored Run Definition snapshot is invalid"))
+		}
+		if _, err := s.selectRunRoute(
+			ctx, tx, value.repositoryID, now, value.assignedWorker, snapshot.Runtime, snapshot.AllowedTools,
+		); err == nil {
+			continue
+		} else if !serviceErrorCode(err, "no_eligible_worker") && !serviceErrorCode(err, "repository_not_managed") {
+			return err
+		}
+		selection, err := s.selectRunRoute(
+			ctx, tx, value.repositoryID, now, workerID, snapshot.Runtime, snapshot.AllowedTools,
+		)
+		if err != nil {
+			if serviceErrorCode(err, "no_eligible_worker") || serviceErrorCode(err, "repository_not_managed") {
 				continue
-			} else if !serviceErrorCode(err, "no_eligible_worker") && !serviceErrorCode(err, "repository_not_managed") {
-				return err
 			}
-			selection, err := s.selectRunRoute(
-				ctx, tx, value.repositoryID, now, workerID, snapshot.Runtime, snapshot.AllowedTools,
-			)
-			if err != nil {
-				if serviceErrorCode(err, "no_eligible_worker") || serviceErrorCode(err, "repository_not_managed") {
-					continue
-				}
-				return err
-			}
-			result, err := tx.ExecContext(ctx, `
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `
 				UPDATE executions
 				SET assigned_worker_id = ?, updated_at = ?
 				WHERE id = ? AND state = 'queued' AND assigned_worker_id = ?
 			`, selection.workerID, now, value.executionID, value.assignedWorker)
-			if err != nil {
+		if err != nil {
+			return unavailable(err)
+		}
+		changed, _ := result.RowsAffected()
+		if changed == 1 {
+			if _, err := tx.ExecContext(ctx, `UPDATE jobs SET updated_at = ? WHERE id = ?`, now, value.jobID); err != nil {
 				return unavailable(err)
 			}
-			changed, _ := result.RowsAffected()
-			if changed == 1 {
-				if _, err := tx.ExecContext(ctx, `UPDATE jobs SET updated_at = ? WHERE id = ?`, now, value.jobID); err != nil {
-					return unavailable(err)
-				}
-				return nil
-			}
-		}
-		if len(candidates) < pageSize {
 			return nil
 		}
-		last := candidates[len(candidates)-1]
-		cursorAt, cursorID = last.admittedAt, last.jobID
 	}
+	if len(candidates) < scanLimit {
+		s.setQueuedRunRerouteCursor(workerID, queuedRunRerouteCursor{})
+	}
+	return nil
+}
+
+type queuedRunRerouteCursor struct {
+	admittedAt int64
+	jobID      string
+}
+
+func (s *Store) queuedRunRerouteCursor(workerID string) queuedRunRerouteCursor {
+	s.rerouteCursorMu.Lock()
+	defer s.rerouteCursorMu.Unlock()
+	return s.rerouteCursors[workerID]
+}
+
+func (s *Store) setQueuedRunRerouteCursor(workerID string, cursor queuedRunRerouteCursor) {
+	s.rerouteCursorMu.Lock()
+	defer s.rerouteCursorMu.Unlock()
+	if cursor.jobID == "" {
+		delete(s.rerouteCursors, workerID)
+		return
+	}
+	if s.rerouteCursors == nil {
+		s.rerouteCursors = make(map[string]queuedRunRerouteCursor)
+	}
+	s.rerouteCursors[workerID] = cursor
 }
 
 func (s *Store) Runs(ctx context.Context, request protocol.RunPageRequest) (protocol.RunPage, error) {

@@ -410,7 +410,7 @@ func TestQueuedRunReroutesWhenItsAssignedRunnerGoesOffline(t *testing.T) {
 	}
 }
 
-func TestQueuedRunReroutingScansPastEligibleCandidatePages(t *testing.T) {
+func TestQueuedRunReroutingAdvancesAcrossBoundedEligibleCandidatePages(t *testing.T) {
 	store, definition, repository, _ := setupRunTest(t, true)
 	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
@@ -454,7 +454,15 @@ func TestQueuedRunReroutingScansPastEligibleCandidatePages(t *testing.T) {
 			[]protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
 		)
 	}
-	claim := claimTestTask(t, store, "worker-c", "reroute-second-page-claim", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+	for page := 0; page < 4; page++ {
+		claim, err := store.Claim(context.Background(), "worker-c", protocol.ClaimRequest{
+			RequestID: fmt.Sprintf("reroute-page-%d", page), LeaseToken: tokenA,
+		})
+		if err != nil || claim != nil {
+			t.Fatalf("bounded reroute page %d claim = %#v, err=%v", page, claim, err)
+		}
+	}
+	claim := claimTestTask(t, store, "worker-c", "reroute-final-page-claim", tokenB)
 	if claim.Execution.ID != target.Jobs[0].Job.ExecutionID {
 		t.Fatalf("second-page rerouted claim = %q, want %q", claim.Execution.ID, target.Jobs[0].Job.ExecutionID)
 	}
