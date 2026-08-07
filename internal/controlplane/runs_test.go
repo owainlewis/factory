@@ -686,6 +686,36 @@ func TestFailedJobCannotRetryAfterManagedRepositoryIsDisabled(t *testing.T) {
 	}
 }
 
+func TestQueuedJobPausesWhileManagedRepositoryIsDisabled(t *testing.T) {
+	store, definition, repository, worker := setupRunTest(t, true)
+	detail, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "disabled-queued", DefinitionID: definition.ID, RepositoryID: repository.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetManagedRepositoryEnabled(context.Background(), repository.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.Claim(context.Background(), worker.ID, protocol.ClaimRequest{
+		RequestID: "disabled-queued-claim", LeaseToken: tokenA,
+	})
+	if err != nil || claim != nil {
+		t.Fatalf("disabled repository claim = %#v, err=%v", claim, err)
+	}
+	preserved, err := store.Run(context.Background(), detail.Run.ID)
+	if err != nil || preserved.Jobs[0].Job.State != "queued" || len(preserved.Jobs[0].Attempts) != 0 {
+		t.Fatalf("disabled repository changed queued Job: err=%v detail=%#v", err, preserved)
+	}
+	if _, err := store.SetManagedRepositoryEnabled(context.Background(), repository.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	claimed := claimTestTask(t, store, worker.ID, "reenabled-queued-claim", tokenB)
+	if claimed.JobID != detail.Jobs[0].Job.ID {
+		t.Fatalf("re-enabled repository claimed Job %q; want %q", claimed.JobID, detail.Jobs[0].Job.ID)
+	}
+}
+
 func TestTerminalJobsRejectCancellation(t *testing.T) {
 	for _, terminalState := range []string{"succeeded", "failed", "cancelled"} {
 		t.Run(terminalState, func(t *testing.T) {

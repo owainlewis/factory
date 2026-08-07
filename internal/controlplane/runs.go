@@ -220,9 +220,12 @@ func (s *Store) RunRepositories(ctx context.Context) ([]protocol.RunRepository, 
 }
 
 func runRepositoryAvailable(remoteIdentity string, enabled, centrallyManaged, advertised int) bool {
+	if centrallyManaged != 0 && enabled == 0 {
+		return false
+	}
 	_, githubErr := normalizeManagedGitHubRemote(remoteIdentity)
 	if centrallyManaged != 0 && githubErr == nil {
-		return enabled != 0
+		return true
 	}
 	return advertised != 0
 }
@@ -251,13 +254,13 @@ func (s *Store) selectRunRoute(
 		RepositoryRemoteIdentity: repositoryIdentity,
 		SourceAccess:             protocol.SourceAccess{Provider: "local", Hostname: "localhost"},
 	}
+	if centrallyManaged != 0 && enabled == 0 {
+		return taskRouteCandidate{}, conflict(
+			"repository_not_managed", "repository is not enabled in the control-plane managed repository catalog",
+		)
+	}
 	requireSourceAccess := false
 	if _, githubErr := normalizeManagedGitHubRemote(repositoryIdentity); centrallyManaged != 0 && githubErr == nil {
-		if enabled == 0 {
-			return taskRouteCandidate{}, conflict(
-				"repository_not_managed", "repository is not enabled in the control-plane managed repository catalog",
-			)
-		}
 		route.SourceAccess = protocol.SourceAccess{Provider: "github", Hostname: "github.com"}
 		requireSourceAccess = true
 	}

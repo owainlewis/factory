@@ -111,6 +111,7 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		SELECT e.id
 		FROM executions e
 		JOIN tasks t ON t.id = e.task_id
+		JOIN repositories repository ON repository.id = t.repository_id
 		JOIN worker_repositories wr
 		  ON wr.worker_id = e.assigned_worker_id AND wr.repository_id = t.repository_id
 		WHERE e.assigned_worker_id = ?
@@ -142,6 +143,11 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		  )
 		  AND e.state = 'queued'
 		  AND wr.advertised = 1
+		  AND (
+		      repository.centrally_managed = 0
+		      OR repository.enabled = 1
+		      OR NOT EXISTS (SELECT 1 FROM jobs job WHERE job.execution_id = e.id)
+		  )
 		  AND wr.retained_count + (
 		      SELECT COUNT(*)
 		      FROM attempts active_attempt
