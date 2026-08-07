@@ -322,7 +322,7 @@ func (s *Store) materializeBlockedJobForWorker(
 	workerID string,
 	now int64,
 ) error {
-	const pageSize = 200
+	const scanLimit = 50
 	type candidate struct {
 		jobID          string
 		runID          string
@@ -331,9 +331,7 @@ func (s *Store) materializeBlockedJobForWorker(
 		parametersJSON []byte
 		admittedAt     int64
 	}
-	var cursorAt int64
-	var cursorID string
-	for {
+	loadCandidates := func(cursor runJobScanCursor) ([]candidate, error) {
 		query := `
 			SELECT job.id, job.run_id, repository.id, run.definition_snapshot, run.parameters, job.admitted_at
 			FROM jobs job
@@ -341,15 +339,16 @@ func (s *Store) materializeBlockedJobForWorker(
 			JOIN repositories repository ON repository.id = job.repository_id
 			WHERE job.state = 'blocked' AND job.task_id IS NULL
 		`
-		args := make([]any, 0, 3)
-		if cursorID != "" {
+		args := make([]any, 0, 4)
+		if cursor.jobID != "" {
 			query += ` AND (job.admitted_at > ? OR (job.admitted_at = ? AND job.id > ?))`
-			args = append(args, cursorAt, cursorAt, cursorID)
+			args = append(args, cursor.admittedAt, cursor.admittedAt, cursor.jobID)
 		}
-		query += ` ORDER BY job.admitted_at, job.id LIMIT 200`
+		query += ` ORDER BY job.admitted_at, job.id LIMIT ?`
+		args = append(args, scanLimit)
 		rows, err := tx.QueryContext(ctx, query, args...)
 		if err != nil {
-			return unavailable(err)
+			return nil, unavailable(err)
 		}
 		var candidates []candidate
 		for rows.Next() {
@@ -359,59 +358,76 @@ func (s *Store) materializeBlockedJobForWorker(
 				&value.snapshotJSON, &value.parametersJSON, &value.admittedAt,
 			); err != nil {
 				rows.Close()
-				return unavailable(err)
+				return nil, unavailable(err)
 			}
 			candidates = append(candidates, value)
 		}
 		if err := rows.Close(); err != nil {
+			return nil, unavailable(err)
+		}
+		return candidates, nil
+	}
+	cursor := s.runJobScanCursor(blockedRunJobScan, workerID)
+	candidates, err := loadCandidates(cursor)
+	if err != nil {
+		return err
+	}
+	if len(candidates) == 0 && cursor.jobID != "" {
+		cursor = runJobScanCursor{}
+		s.setRunJobScanCursor(blockedRunJobScan, workerID, cursor)
+		candidates, err = loadCandidates(cursor)
+		if err != nil {
+			return err
+		}
+	}
+	for _, value := range candidates {
+		s.setRunJobScanCursor(blockedRunJobScan, workerID, runJobScanCursor{
+			admittedAt: value.admittedAt,
+			jobID:      value.jobID,
+		})
+		var snapshot protocol.DefinitionSnapshot
+		if err := json.Unmarshal(value.snapshotJSON, &snapshot); err != nil {
+			return unavailable(errors.New("stored Run Definition snapshot is invalid"))
+		}
+		var parameters map[string]string
+		if err := json.Unmarshal(value.parametersJSON, &parameters); err != nil {
+			return unavailable(errors.New("stored Run parameters are invalid"))
+		}
+		resolvedPrompt, err := protocol.ResolveDefinitionPrompt(snapshot.Prompt, parameters)
+		if err != nil {
 			return unavailable(err)
 		}
-		for _, value := range candidates {
-			var snapshot protocol.DefinitionSnapshot
-			if err := json.Unmarshal(value.snapshotJSON, &snapshot); err != nil {
-				return unavailable(errors.New("stored Run Definition snapshot is invalid"))
+		selection, err := s.selectRunRoute(ctx, tx, value.repositoryID, now, workerID, snapshot.Runtime, snapshot.AllowedTools)
+		if err != nil {
+			if serviceErrorCode(err, "no_eligible_worker") || serviceErrorCode(err, "repository_not_managed") {
+				continue
 			}
-			var parameters map[string]string
-			if err := json.Unmarshal(value.parametersJSON, &parameters); err != nil {
-				return unavailable(errors.New("stored Run parameters are invalid"))
-			}
-			resolvedPrompt, err := protocol.ResolveDefinitionPrompt(snapshot.Prompt, parameters)
-			if err != nil {
-				return unavailable(err)
-			}
-			selection, err := s.selectRunRoute(ctx, tx, value.repositoryID, now, workerID, snapshot.Runtime, snapshot.AllowedTools)
-			if err != nil {
-				if serviceErrorCode(err, "no_eligible_worker") || serviceErrorCode(err, "repository_not_managed") {
-					continue
-				}
-				return err
-			}
-			taskID, executionID, err := s.insertRunJobExecution(
-				ctx, tx, value.runID, value.jobID, snapshot, value.snapshotJSON, resolvedPrompt, selection, now,
-			)
-			if err != nil {
-				return err
-			}
-			result, err := tx.ExecContext(ctx, `
+			return err
+		}
+		taskID, executionID, err := s.insertRunJobExecution(
+			ctx, tx, value.runID, value.jobID, snapshot, value.snapshotJSON, resolvedPrompt, selection, now,
+		)
+		if err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `
 				UPDATE jobs
 				SET task_id = ?, execution_id = ?, state = 'queued', blocked_reason = NULL, updated_at = ?
 				WHERE id = ? AND state = 'blocked' AND task_id IS NULL
 			`, taskID, executionID, now, value.jobID)
-			if err != nil {
-				return unavailable(err)
-			}
-			changed, _ := result.RowsAffected()
-			if changed != 1 {
-				return conflict("job_route_conflict", "Job routing state changed before it could be assigned")
-			}
-			return nil
+		if err != nil {
+			return unavailable(err)
 		}
-		if len(candidates) < pageSize {
-			return nil
+		changed, _ := result.RowsAffected()
+		if changed != 1 {
+			return conflict("job_route_conflict", "Job routing state changed before it could be assigned")
 		}
-		last := candidates[len(candidates)-1]
-		cursorAt, cursorID = last.admittedAt, last.jobID
+		return nil
 	}
+	if len(candidates) < scanLimit {
+		s.setRunJobScanCursor(blockedRunJobScan, workerID, runJobScanCursor{})
+	}
+	return nil
 }
 
 func (s *Store) rerouteQueuedRunJobForWorker(
@@ -429,7 +445,7 @@ func (s *Store) rerouteQueuedRunJobForWorker(
 		snapshotJSON   []byte
 		admittedAt     int64
 	}
-	loadCandidates := func(cursor queuedRunRerouteCursor) ([]candidate, error) {
+	loadCandidates := func(cursor runJobScanCursor) ([]candidate, error) {
 		query := `
 			SELECT job.id, job.execution_id, job.repository_id,
 			       execution.assigned_worker_id, run.definition_snapshot, job.admitted_at
@@ -467,21 +483,21 @@ func (s *Store) rerouteQueuedRunJobForWorker(
 		}
 		return candidates, nil
 	}
-	cursor := s.queuedRunRerouteCursor(workerID)
+	cursor := s.runJobScanCursor(queuedRunJobScan, workerID)
 	candidates, err := loadCandidates(cursor)
 	if err != nil {
 		return err
 	}
 	if len(candidates) == 0 && cursor.jobID != "" {
-		cursor = queuedRunRerouteCursor{}
-		s.setQueuedRunRerouteCursor(workerID, cursor)
+		cursor = runJobScanCursor{}
+		s.setRunJobScanCursor(queuedRunJobScan, workerID, cursor)
 		candidates, err = loadCandidates(cursor)
 		if err != nil {
 			return err
 		}
 	}
 	for _, value := range candidates {
-		s.setQueuedRunRerouteCursor(workerID, queuedRunRerouteCursor{
+		s.setRunJobScanCursor(queuedRunJobScan, workerID, runJobScanCursor{
 			admittedAt: value.admittedAt,
 			jobID:      value.jobID,
 		})
@@ -522,33 +538,46 @@ func (s *Store) rerouteQueuedRunJobForWorker(
 		}
 	}
 	if len(candidates) < scanLimit {
-		s.setQueuedRunRerouteCursor(workerID, queuedRunRerouteCursor{})
+		s.setRunJobScanCursor(queuedRunJobScan, workerID, runJobScanCursor{})
 	}
 	return nil
 }
 
-type queuedRunRerouteCursor struct {
+type runJobScanKind string
+
+const (
+	blockedRunJobScan runJobScanKind = "blocked"
+	queuedRunJobScan  runJobScanKind = "queued"
+)
+
+type runJobScanCursorKey struct {
+	kind     runJobScanKind
+	workerID string
+}
+
+type runJobScanCursor struct {
 	admittedAt int64
 	jobID      string
 }
 
-func (s *Store) queuedRunRerouteCursor(workerID string) queuedRunRerouteCursor {
-	s.rerouteCursorMu.Lock()
-	defer s.rerouteCursorMu.Unlock()
-	return s.rerouteCursors[workerID]
+func (s *Store) runJobScanCursor(kind runJobScanKind, workerID string) runJobScanCursor {
+	s.runJobScanCursorMu.Lock()
+	defer s.runJobScanCursorMu.Unlock()
+	return s.runJobScanCursors[runJobScanCursorKey{kind: kind, workerID: workerID}]
 }
 
-func (s *Store) setQueuedRunRerouteCursor(workerID string, cursor queuedRunRerouteCursor) {
-	s.rerouteCursorMu.Lock()
-	defer s.rerouteCursorMu.Unlock()
+func (s *Store) setRunJobScanCursor(kind runJobScanKind, workerID string, cursor runJobScanCursor) {
+	s.runJobScanCursorMu.Lock()
+	defer s.runJobScanCursorMu.Unlock()
+	key := runJobScanCursorKey{kind: kind, workerID: workerID}
 	if cursor.jobID == "" {
-		delete(s.rerouteCursors, workerID)
+		delete(s.runJobScanCursors, key)
 		return
 	}
-	if s.rerouteCursors == nil {
-		s.rerouteCursors = make(map[string]queuedRunRerouteCursor)
+	if s.runJobScanCursors == nil {
+		s.runJobScanCursors = make(map[runJobScanCursorKey]runJobScanCursor)
 	}
-	s.rerouteCursors[workerID] = cursor
+	s.runJobScanCursors[key] = cursor
 }
 
 func (s *Store) Runs(ctx context.Context, request protocol.RunPageRequest) (protocol.RunPage, error) {

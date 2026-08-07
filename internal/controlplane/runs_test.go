@@ -468,7 +468,7 @@ func TestQueuedRunReroutingAdvancesAcrossBoundedEligibleCandidatePages(t *testin
 	}
 }
 
-func TestBlockedRunMaterializationScansPastIncompatibleCandidatePages(t *testing.T) {
+func TestBlockedRunMaterializationAdvancesAcrossBoundedIncompatibleCandidatePages(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
@@ -502,7 +502,15 @@ func TestBlockedRunMaterializationScansPastIncompatibleCandidatePages(t *testing
 		protocol.CapabilityReady,
 		[]protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
 	)
-	claim := claimTestTask(t, store, workerA, "materialize-second-page-claim", tokenA)
+	for page := 0; page < 4; page++ {
+		claim, err := store.Claim(context.Background(), workerA, protocol.ClaimRequest{
+			RequestID: fmt.Sprintf("materialize-page-%d", page), LeaseToken: tokenA,
+		})
+		if err != nil || claim != nil {
+			t.Fatalf("bounded materialization page %d claim = %#v, err=%v", page, claim, err)
+		}
+	}
+	claim := claimTestTask(t, store, workerA, "materialize-final-page-claim", tokenB)
 	if claim.Task.Title != codexDefinition.Name {
 		t.Fatalf("second-page materialized claim = %#v", claim.Task)
 	}

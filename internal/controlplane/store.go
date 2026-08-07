@@ -55,8 +55,8 @@ type Store struct {
 	now                   func() time.Time
 	sweepEvery            time.Duration
 	beginLegacyResumeLink func(context.Context) (*sql.Tx, error)
-	rerouteCursorMu       sync.Mutex
-	rerouteCursors        map[string]queuedRunRerouteCursor
+	runJobScanCursorMu    sync.Mutex
+	runJobScanCursors     map[runJobScanCursorKey]runJobScanCursor
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
