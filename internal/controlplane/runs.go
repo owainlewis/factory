@@ -224,7 +224,7 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 		blockedReason := "Waiting for an available Run concurrency slot."
 		var taskID, executionID string
 		if materialized < value.ConcurrencyLimit {
-			selection, routeErr := s.selectRunRoute(ctx, tx, target.id, now, "", snapshot.Runtime, snapshot.AllowedTools)
+			selection, routeErr := s.selectRunRoute(ctx, tx, target.id, target.identity, now, "", snapshot.Runtime, snapshot.AllowedTools)
 			blockedReason = "Waiting for a healthy compatible Runner with repository access."
 			if routeErr == nil {
 				taskID, executionID, err = s.insertRunJobExecution(ctx, tx, runID, jobID, snapshot, snapshotJSON, selection, now)
@@ -290,21 +290,25 @@ func (s *Store) selectRunRoute(
 	ctx context.Context,
 	tx *sql.Tx,
 	repositoryID string,
+	repositoryIdentity string,
 	now int64,
 	workerID string,
 	requiredRuntime string,
 	requiredTools []string,
 ) (taskRouteCandidate, error) {
-	var repositoryIdentity string
 	var enabled int
+	var currentIdentity string
 	err := tx.QueryRowContext(ctx, `
 		SELECT remote_identity, enabled FROM repositories WHERE id = ?
-	`, repositoryID).Scan(&repositoryIdentity, &enabled)
+	`, repositoryID).Scan(&currentIdentity, &enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return taskRouteCandidate{}, conflict("repository_not_available", "repository is not configured on a Runner or enabled for managed acquisition")
 	}
 	if err != nil {
 		return taskRouteCandidate{}, unavailable(err)
+	}
+	if repositoryIdentity == "" {
+		repositoryIdentity = currentIdentity
 	}
 	route := protocol.TaskRoute{
 		RepositoryRemoteIdentity: repositoryIdentity,
@@ -319,7 +323,7 @@ func (s *Store) selectRunRoute(
 		return taskRouteCandidate{}, err
 	}
 	return s.selectTaskRouteWithSourceRequirement(
-		ctx, tx, route, now, requireSourceAccess, true, workerID, requiredRuntime, requiredTools,
+		ctx, tx, route, now, requireSourceAccess, true, repositoryID, workerID, requiredRuntime, requiredTools,
 	)
 }
 
@@ -377,6 +381,7 @@ func (s *Store) materializeBlockedJobForWorker(
 		jobID        string
 		runID        string
 		repositoryID string
+		identity     string
 		snapshotJSON []byte
 		admittedAt   int64
 	}
@@ -384,7 +389,8 @@ func (s *Store) materializeBlockedJobForWorker(
 	var cursorID string
 	for {
 		query := `
-			SELECT job.id, job.run_id, repository.id, run.definition_snapshot, job.admitted_at
+			SELECT job.id, job.run_id, repository.id, job.repository_identity,
+			       run.definition_snapshot, job.admitted_at
 			FROM jobs job
 			JOIN runs run ON run.id = job.run_id
 			JOIN repositories repository ON repository.id = job.repository_id
@@ -411,7 +417,8 @@ func (s *Store) materializeBlockedJobForWorker(
 		for rows.Next() {
 			var value candidate
 			if err := rows.Scan(
-				&value.jobID, &value.runID, &value.repositoryID, &value.snapshotJSON, &value.admittedAt,
+				&value.jobID, &value.runID, &value.repositoryID, &value.identity,
+				&value.snapshotJSON, &value.admittedAt,
 			); err != nil {
 				rows.Close()
 				return unavailable(err)
@@ -426,7 +433,9 @@ func (s *Store) materializeBlockedJobForWorker(
 			if err := json.Unmarshal(value.snapshotJSON, &snapshot); err != nil {
 				return unavailable(errors.New("stored Run Definition snapshot is invalid"))
 			}
-			selection, err := s.selectRunRoute(ctx, tx, value.repositoryID, now, workerID, snapshot.Runtime, snapshot.AllowedTools)
+			selection, err := s.selectRunRoute(
+				ctx, tx, value.repositoryID, value.identity, now, workerID, snapshot.Runtime, snapshot.AllowedTools,
+			)
 			if err != nil {
 				if serviceErrorCode(err, "no_eligible_worker") || serviceErrorCode(err, "repository_not_managed") {
 					continue
@@ -472,6 +481,7 @@ func (s *Store) rerouteQueuedRunJobForWorker(
 		jobID          string
 		executionID    string
 		repositoryID   string
+		identity       string
 		assignedWorker string
 		snapshotJSON   []byte
 		admittedAt     int64
@@ -480,7 +490,7 @@ func (s *Store) rerouteQueuedRunJobForWorker(
 	var cursorID string
 	for {
 		query := `
-			SELECT job.id, job.execution_id, job.repository_id,
+			SELECT job.id, job.execution_id, job.repository_id, job.repository_identity,
 			       execution.assigned_worker_id, run.definition_snapshot, job.admitted_at
 			FROM jobs job
 			JOIN executions execution ON execution.id = job.execution_id
@@ -502,7 +512,7 @@ func (s *Store) rerouteQueuedRunJobForWorker(
 		for rows.Next() {
 			var value candidate
 			if err := rows.Scan(
-				&value.jobID, &value.executionID, &value.repositoryID,
+				&value.jobID, &value.executionID, &value.repositoryID, &value.identity,
 				&value.assignedWorker, &value.snapshotJSON, &value.admittedAt,
 			); err != nil {
 				rows.Close()
@@ -519,14 +529,14 @@ func (s *Store) rerouteQueuedRunJobForWorker(
 				return unavailable(errors.New("stored Run Definition snapshot is invalid"))
 			}
 			if _, err := s.selectRunRoute(
-				ctx, tx, value.repositoryID, now, value.assignedWorker, snapshot.Runtime, snapshot.AllowedTools,
+				ctx, tx, value.repositoryID, value.identity, now, value.assignedWorker, snapshot.Runtime, snapshot.AllowedTools,
 			); err == nil {
 				continue
 			} else if !serviceErrorCode(err, "no_eligible_worker") && !serviceErrorCode(err, "repository_not_managed") {
 				return err
 			}
 			selection, err := s.selectRunRoute(
-				ctx, tx, value.repositoryID, now, workerID, snapshot.Runtime, snapshot.AllowedTools,
+				ctx, tx, value.repositoryID, value.identity, now, workerID, snapshot.Runtime, snapshot.AllowedTools,
 			)
 			if err != nil {
 				if serviceErrorCode(err, "no_eligible_worker") || serviceErrorCode(err, "repository_not_managed") {

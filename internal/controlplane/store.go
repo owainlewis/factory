@@ -2013,7 +2013,7 @@ func (s *Store) selectTaskRoute(
 	requiredRuntime string,
 	requiredTools []string,
 ) (taskRouteCandidate, error) {
-	return s.selectTaskRouteWithSourceRequirement(ctx, tx, route, now, true, false, workerID, requiredRuntime, requiredTools)
+	return s.selectTaskRouteWithSourceRequirement(ctx, tx, route, now, true, false, "", workerID, requiredRuntime, requiredTools)
 }
 
 func (s *Store) selectTaskRouteWithSourceRequirement(
@@ -2023,6 +2023,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 	now int64,
 	requireSourceAccess bool,
 	allowStaticRepository bool,
+	repositoryID string,
 	workerID string,
 	requiredRuntime string,
 	requiredTools []string,
@@ -2031,22 +2032,41 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 	if route.SourceAccess.Provider == "github" && route.SourceAccess.Hostname == "github.com" {
 		repositoryPredicate = "lower(r.remote_identity) = lower(?)"
 	}
-	var repositoryID, repositoryIdentity string
+	var repositoryIdentity string
 	var repositoryEnabled int
-	err := tx.QueryRowContext(ctx, `
-		SELECT r.id, r.remote_identity, r.enabled
-		FROM repositories r
-		WHERE `+repositoryPredicate+`
-		  AND (
-		      r.enabled = 1
-		      OR (? = 1 AND EXISTS (
-		          SELECT 1 FROM worker_repositories available
-		          WHERE available.repository_id = r.id
-		            AND available.advertised = 1
-		            AND available.dynamic = 0
-		      ))
-		  )
-	`, route.RepositoryRemoteIdentity, allowStaticRepository).Scan(&repositoryID, &repositoryIdentity, &repositoryEnabled)
+	var err error
+	if repositoryID == "" {
+		err = tx.QueryRowContext(ctx, `
+			SELECT r.id, r.remote_identity, r.enabled
+			FROM repositories r
+			WHERE `+repositoryPredicate+`
+			  AND (
+			      r.enabled = 1
+			      OR (? = 1 AND EXISTS (
+			          SELECT 1 FROM worker_repositories available
+			          WHERE available.repository_id = r.id
+			            AND available.advertised = 1
+			            AND available.dynamic = 0
+			      ))
+			  )
+		`, route.RepositoryRemoteIdentity, allowStaticRepository).Scan(&repositoryID, &repositoryIdentity, &repositoryEnabled)
+	} else {
+		err = tx.QueryRowContext(ctx, `
+			SELECT r.enabled
+			FROM repositories r
+			WHERE r.id = ?
+			  AND (
+			      r.enabled = 1
+			      OR (? = 1 AND EXISTS (
+			          SELECT 1 FROM worker_repositories available
+			          WHERE available.repository_id = r.id
+			            AND available.advertised = 1
+			            AND available.dynamic = 0
+			      ))
+			  )
+		`, repositoryID, allowStaticRepository).Scan(&repositoryEnabled)
+		repositoryIdentity = route.RepositoryRemoteIdentity
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return taskRouteCandidate{}, conflict(
 			"repository_not_managed",

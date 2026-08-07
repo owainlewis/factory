@@ -109,6 +109,40 @@ func TestRunOnceCanUseARepositoryConfiguredOnALocalRunner(t *testing.T) {
 	}
 }
 
+func TestRunOnceRoutesAStaticRepositoryOnlyToItsAdvertisingRunner(t *testing.T) {
+	store := newTestStore(t)
+	definition := createTestDefinition(t, store, "static-route-definition", "Review Static Checkout")
+	staticWorker := registerDefinitionWorker(
+		t, store, workerB,
+		protocol.RepositoryRegistration{Key: "local-checkout", RemoteIdentity: "file:///tmp/factory-static-route"},
+		protocol.CapabilityReady,
+		nil,
+	)
+	repository := staticWorker.Repositories[0]
+	_, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: workerA, WorkerVersion: "test", Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
+		Capabilities: []protocol.Capability{
+			{Kind: protocol.CapabilityKindTool, Name: "git", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindTool, Name: "gh", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
+		},
+		Capacity: 1, Health: "healthy", AcceptsManagedRepositories: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	detail, created, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "static-route-run", DefinitionID: definition.ID, RepositoryID: repository.ID,
+	})
+	if err != nil || !created {
+		t.Fatalf("create static Run: created=%t err=%v", created, err)
+	}
+	if got := detail.Jobs[0].Job.AssignedWorkerID; got != staticWorker.ID {
+		t.Fatalf("assigned worker = %q; want advertising worker %q", got, staticWorker.ID)
+	}
+}
+
 func TestMultiRepositoryRunFansOutAtomicallyWithFrozenTargetsAndBoundedConcurrency(t *testing.T) {
 	store := newTestStore(t)
 	definition := createTestDefinition(t, store, "fleet-definition", "Review Fleet")
@@ -219,6 +253,69 @@ func TestMultiRepositoryRunFansOutAtomicallyWithFrozenTargetsAndBoundedConcurren
 	retried, err := store.RetryJob(context.Background(), failedJobID)
 	if err != nil || retried.Run.State != "queued" {
 		t.Fatalf("retry after Run slot opens: err=%v Run=%#v", err, retried.Run)
+	}
+}
+
+func TestBlockedRunJobRoutesAndClaimsItsFrozenRepositoryIdentity(t *testing.T) {
+	store := newTestStore(t)
+	definition := createTestDefinition(t, store, "frozen-route-definition", "Review Frozen Targets")
+	firstRepository := createManagedTestRepository(t, store, "github.com/example/frozen-first")
+	secondRepository := createManagedTestRepository(t, store, "github.com/example/frozen-second")
+	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: workerA, WorkerVersion: "test", Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
+		Capabilities: []protocol.Capability{
+			{Kind: protocol.CapabilityKindTool, Name: "git", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindTool, Name: "gh", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
+		},
+		Capacity: 1, Health: "healthy",
+		Repositories: []protocol.RepositoryRegistration{
+			{Key: "frozen-first", RemoteIdentity: firstRepository.RemoteIdentity},
+			{Key: "frozen-second", RemoteIdentity: secondRepository.RemoteIdentity},
+		},
+		SourceAccess: []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, created, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "frozen-route-run", DefinitionID: definition.ID,
+		RepositoryIDs: []string{firstRepository.ID, secondRepository.ID}, ConcurrencyLimit: 1,
+	})
+	if err != nil || !created {
+		t.Fatalf("create Run: created=%t err=%v", created, err)
+	}
+	var blocked protocol.Job
+	for _, job := range detail.Jobs {
+		if job.Job.State == "blocked" {
+			blocked = job.Job
+		}
+	}
+	if blocked.ID == "" {
+		t.Fatalf("Run has no blocked Job: %#v", detail.Jobs)
+	}
+	if _, err := store.db.Exec(
+		`UPDATE repositories SET remote_identity = 'github.com/example/renamed-after-admission' WHERE id = ?`,
+		blocked.RepositoryID,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	first := claimTestTask(t, store, worker.ID, "frozen-route-first", tokenA)
+	if _, err := store.StartAttempt(context.Background(), first.Attempt.ID, protocol.StartAttemptRequest{
+		LeaseToken: tokenA, ProcessIdentity: "fake-agent",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteAttempt(context.Background(), first.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "succeeded", Result: "done",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second := claimTestTask(t, store, worker.ID, "frozen-route-second", tokenB)
+	if second.Repository.ID != blocked.RepositoryID || second.Repository.RemoteIdentity != blocked.RepositoryRemoteIdentity {
+		t.Fatalf("materialized claim repository = %#v; want ID %q and frozen identity %q",
+			second.Repository, blocked.RepositoryID, blocked.RepositoryRemoteIdentity)
 	}
 }
 
