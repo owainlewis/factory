@@ -193,6 +193,11 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 		if !runRepositoryAvailable(repositoryIdentity, repositoryEnabled, repositoryCentrallyManaged, repositoryAdvertised) {
 			return protocol.RunDetail{}, false, conflict("repository_not_available", "every repository must be configured on a Runner or enabled for managed acquisition")
 		}
+		if repositoryCentrallyManaged != 0 {
+			if canonical, normalizeErr := normalizeManagedGitHubRemote(repositoryIdentity); normalizeErr == nil {
+				repositoryIdentity = canonical
+			}
+		}
 		if !protocol.AgentPromptFits(snapshot.Name, repositoryIdentity, resolvedPrompt) {
 			return protocol.RunDetail{}, false, invalid("agent_prompt_too_large", "the complete agent prompt exceeds 72 KiB")
 		}
@@ -428,7 +433,7 @@ func (s *Store) materializeBlockedJobForWorker(
 			      FROM jobs active_job
 			      JOIN executions active_execution ON active_execution.id = active_job.execution_id
 			      WHERE active_job.run_id = job.run_id
-			        AND active_execution.state IN ('queued', 'preparing', 'running')
+			        AND active_execution.state IN ('preparing', 'running')
 			  ) < run.concurrency_limit
 		`
 		args := make([]any, 0, 4)
@@ -792,28 +797,15 @@ func (s *Store) Run(ctx context.Context, runID string) (protocol.RunDetail, erro
 	detail.Run.AdmittedAt = fromMillis(admittedAt)
 	detail.Run.UpdatedAt = fromMillis(updatedAt)
 
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM jobs WHERE run_id = ? ORDER BY admitted_at, id`, detail.Run.ID)
+	resolvedPrompt, err := protocol.ResolveDefinitionPrompt(detail.Run.Definition.Prompt, detail.Parameters)
 	if err != nil {
 		return detail, unavailable(err)
 	}
-	var jobIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return detail, unavailable(err)
-		}
-		jobIDs = append(jobIDs, id)
+	detail.Jobs, err = s.runJobs(ctx, detail.Run.ID, detail.Run.Definition.Runtime, resolvedPrompt)
+	if err != nil {
+		return detail, err
 	}
-	if err := rows.Close(); err != nil {
-		return detail, unavailable(err)
-	}
-	for _, jobID := range jobIDs {
-		job, err := s.Job(ctx, jobID)
-		if err != nil {
-			return detail, err
-		}
-		detail.Jobs = append(detail.Jobs, job)
+	for _, job := range detail.Jobs {
 		detail.Run.RepositoryRemoteIdentities = append(
 			detail.Run.RepositoryRemoteIdentities, job.Job.RepositoryRemoteIdentity,
 		)
@@ -824,6 +816,146 @@ func (s *Store) Run(ctx context.Context, runID string) (protocol.RunDetail, erro
 	detail.Run.JobCount = len(detail.Jobs)
 	detail.Run.State = aggregateRunState(detail.Jobs)
 	return detail, nil
+}
+
+func (s *Store) runJobs(
+	ctx context.Context,
+	runID string,
+	requiredRuntime string,
+	resolvedPrompt string,
+) ([]protocol.JobDetail, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT job.id, job.run_id, job.repository_id,
+		       CASE WHEN job.repository_identity = '' THEN repository.remote_identity ELSE job.repository_identity END,
+		       job.task_id, job.execution_id, job.state, job.blocked_reason,
+		       job.admitted_at, job.updated_at, task.description,
+		       execution.assigned_worker_id, execution.required_runtime, execution.state,
+		       execution.cancellation_requested, execution.updated_at
+		FROM jobs job
+		JOIN repositories repository ON repository.id = job.repository_id
+		LEFT JOIN tasks task ON task.id = job.task_id
+		LEFT JOIN executions execution ON execution.id = job.execution_id
+		WHERE job.run_id = ?
+		ORDER BY job.admitted_at, job.id
+	`, runID)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	defer rows.Close()
+
+	details := make([]protocol.JobDetail, 0)
+	executionIndexes := make(map[string]int)
+	executionUpdatedAt := make(map[string]int64)
+	for rows.Next() {
+		var detail protocol.JobDetail
+		var taskID, executionID, blockedReason, taskPrompt sql.NullString
+		var assignedWorkerID, executionRuntime, executionState sql.NullString
+		var admittedAt, jobUpdatedAt int64
+		var cancellationRequested, executionUpdated sql.NullInt64
+		if err := rows.Scan(
+			&detail.Job.ID, &detail.Job.RunID, &detail.Job.RepositoryID,
+			&detail.Job.RepositoryRemoteIdentity, &taskID, &executionID, &detail.Job.State,
+			&blockedReason, &admittedAt, &jobUpdatedAt, &taskPrompt, &assignedWorkerID,
+			&executionRuntime, &executionState, &cancellationRequested, &executionUpdated,
+		); err != nil {
+			return nil, unavailable(err)
+		}
+		detail.Job.RequiredRuntime = requiredRuntime
+		detail.Job.AdmittedAt = fromMillis(admittedAt)
+		detail.ResolvedPrompt = resolvedPrompt
+		if blockedReason.Valid {
+			detail.Job.BlockedReason = blockedReason.String
+		}
+		if !taskID.Valid {
+			if detail.Job.State == "cancelled" {
+				terminal := fromMillis(jobUpdatedAt)
+				detail.Job.TerminalAt = &terminal
+			}
+			details = append(details, detail)
+			continue
+		}
+		if !executionID.Valid || !assignedWorkerID.Valid || !executionRuntime.Valid ||
+			!executionState.Valid || !cancellationRequested.Valid || !executionUpdated.Valid || !taskPrompt.Valid {
+			return nil, unavailable(errors.New("stored Run Job execution is incomplete"))
+		}
+		detail.Job.TaskID = taskID.String
+		detail.Job.ExecutionID = executionID.String
+		detail.Job.AssignedWorkerID = assignedWorkerID.String
+		detail.Job.RequiredRuntime = executionRuntime.String
+		detail.Job.State = executionState.String
+		detail.Job.CancellationRequested = cancellationRequested.Int64 != 0
+		detail.ResolvedPrompt = taskPrompt.String
+		executionIndexes[executionID.String] = len(details)
+		executionUpdatedAt[executionID.String] = executionUpdated.Int64
+		details = append(details, detail)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, unavailable(err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, unavailable(err)
+	}
+
+	attemptRows, err := s.db.QueryContext(ctx, `
+		SELECT attempt.id, attempt.execution_id, attempt.worker_id, attempt.attempt_number,
+		       attempt.state, attempt.lease_expires_at, attempt.supervisor_pid,
+		       attempt.process_identity, attempt.process_group_id, attempt.result, attempt.error,
+		       attempt.started_at, attempt.completed_at, attempt.created_at
+		FROM attempts attempt
+		JOIN executions execution ON execution.id = attempt.execution_id
+		JOIN jobs job ON job.execution_id = execution.id
+		WHERE job.run_id = ?
+		ORDER BY job.admitted_at, job.id, attempt.attempt_number
+	`, runID)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	defer attemptRows.Close()
+	for attemptRows.Next() {
+		attempt, err := scanAttempt(attemptRows)
+		if err != nil {
+			return nil, unavailable(err)
+		}
+		index, exists := executionIndexes[attempt.ExecutionID]
+		if !exists {
+			return nil, unavailable(errors.New("stored Run attempt has no Job execution"))
+		}
+		details[index].Attempts = append(details[index].Attempts, attempt)
+	}
+	if err := attemptRows.Err(); err != nil {
+		return nil, unavailable(err)
+	}
+
+	for index := range details {
+		detail := &details[index]
+		for _, attempt := range detail.Attempts {
+			if attempt.StartedAt != nil {
+				detail.Job.RetryMayRepeatEffects = true
+				if detail.Job.StartedAt == nil || attempt.StartedAt.Before(*detail.Job.StartedAt) {
+					started := *attempt.StartedAt
+					detail.Job.StartedAt = &started
+				}
+			}
+		}
+		if !isTerminalExecution(detail.Job.State) {
+			continue
+		}
+		executionUpdated := fromMillis(executionUpdatedAt[detail.Job.ExecutionID])
+		if len(detail.Attempts) > 0 {
+			latest := detail.Attempts[len(detail.Attempts)-1]
+			if latest.CompletedAt != nil && latest.CompletedAt.Equal(executionUpdated) &&
+				attemptProducedExecutionState(latest.State, detail.Job.State) {
+				detail.Job.Result = latest.Result
+				detail.Job.FailureReason = latest.Error
+				completed := *latest.CompletedAt
+				detail.Job.TerminalAt = &completed
+			}
+		}
+		if detail.Job.TerminalAt == nil {
+			detail.Job.TerminalAt = &executionUpdated
+		}
+	}
+	return details, nil
 }
 
 func (s *Store) Job(ctx context.Context, jobID string) (protocol.JobDetail, error) {
@@ -1044,7 +1176,7 @@ func (s *Store) RetryJob(ctx context.Context, jobID string) (protocol.RunDetail,
 		FROM jobs job
 		JOIN executions execution ON execution.id = job.execution_id
 		WHERE job.run_id = ?
-		  AND execution.state IN ('queued', 'preparing', 'running')
+		  AND execution.state IN ('preparing', 'running')
 	`, job.Job.RunID).Scan(&activeJobs); err != nil {
 		return protocol.RunDetail{}, unavailable(err)
 	}

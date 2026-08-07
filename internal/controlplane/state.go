@@ -142,6 +142,22 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		      )
 		  )
 		  AND e.state = 'queued'
+		  AND (
+		      NOT EXISTS (SELECT 1 FROM jobs current_job WHERE current_job.execution_id = e.id)
+		      OR (
+		          SELECT COUNT(*)
+		          FROM jobs current_job
+		          JOIN jobs active_job ON active_job.run_id = current_job.run_id
+		          JOIN executions active_execution ON active_execution.id = active_job.execution_id
+		          WHERE current_job.execution_id = e.id
+		            AND active_execution.state IN ('preparing', 'running')
+		      ) < (
+		          SELECT run.concurrency_limit
+		          FROM jobs current_job
+		          JOIN runs run ON run.id = current_job.run_id
+		          WHERE current_job.execution_id = e.id
+		      )
+		  )
 		  AND wr.advertised = 1
 		  AND (
 		      repository.centrally_managed = 0
@@ -277,7 +293,7 @@ func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Cla
 	err = s.db.QueryRowContext(ctx, `
 		SELECT r.id, wr.display_key,
 		       COALESCE(
-		           CASE WHEN wr.dynamic = 0 THEN NULLIF(job.repository_identity, '') END,
+		           NULLIF(job.repository_identity, ''),
 		           NULLIF(wr.worker_remote_identity, ''),
 		           r.remote_identity
 		       ),

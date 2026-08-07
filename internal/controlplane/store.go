@@ -2064,8 +2064,11 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 	if err != nil {
 		return taskRouteCandidate{}, unavailable(err)
 	}
-	workerRepositoryIdentity := repositoryIdentity
-	if canonical, normalizeErr := normalizeManagedGitHubRemote(repositoryIdentity); normalizeErr == nil {
+	workerRepositoryIdentity := route.RepositoryRemoteIdentity
+	if workerRepositoryIdentity == "" {
+		workerRepositoryIdentity = repositoryIdentity
+	}
+	if canonical, normalizeErr := normalizeManagedGitHubRemote(workerRepositoryIdentity); normalizeErr == nil {
 		workerRepositoryIdentity = canonical
 	}
 	requireAdvertisedRepository := allowStaticRepository &&
