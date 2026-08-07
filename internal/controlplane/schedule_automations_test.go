@@ -264,6 +264,36 @@ func TestDefinitionScheduleCreatesOneRunWithOneJobPerRepository(t *testing.T) {
 	}
 }
 
+func TestAutomationOccurrenceRunStateUsesRunJobIndex(t *testing.T) {
+	store := newTestStore(t)
+	rows, err := store.db.Query(`EXPLAIN QUERY PLAN `+automationOccurrenceSelect+`
+		WHERE occurrence.automation_id = ?
+		ORDER BY occurrence.created_at DESC, occurrence.id DESC
+		LIMIT ?`, "automation-query-plan", protocol.MaxAutomationPageSize+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	plan := ""
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan += detail + "\n"
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if stringsContain(plan, "MATERIALIZE") || stringsContain(plan, "SCAN run_job") {
+		t.Fatalf("occurrence Run state query scans all Jobs:\n%s", plan)
+	}
+	if !stringsContain(plan, "SEARCH run_job USING INDEX jobs_run_order (run_id=?)") {
+		t.Fatalf("occurrence Run state query does not use jobs_run_order:\n%s", plan)
+	}
+}
+
 func TestLegacyWorkflowScheduleRemainsEditableAfterDefinitionScheduleMigration(t *testing.T) {
 	store, detail := createAutomationFixture(t, false)
 	if _, err := store.db.Exec(`DELETE FROM automation_github_issue_triggers WHERE automation_id = ?`, detail.Automation.ID); err != nil {

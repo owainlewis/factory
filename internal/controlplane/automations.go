@@ -524,7 +524,21 @@ const automationOccurrenceSelect = `
 	       pull_request.observed_draft, pull_request.observed_base_branch,
 	       pull_request.observed_head_commit, pull_request.observed_labels_json,
 	       schedule.kind, schedule.scheduled_at, schedule.run_request_key,
-	       schedule.cron, schedule.timezone, schedule.run_id, run_summary.state,
+	       schedule.cron, schedule.timezone, schedule.run_id,
+	       (
+	           SELECT CASE
+	               WHEN MAX(CASE WHEN COALESCE(run_execution.state, run_job.state) IN ('preparing', 'running') THEN 1 ELSE 0 END) = 1 THEN 'running'
+	               WHEN MAX(CASE WHEN COALESCE(run_execution.state, run_job.state) = 'queued' THEN 1 ELSE 0 END) = 1 THEN 'queued'
+	               WHEN MAX(CASE WHEN COALESCE(run_execution.state, run_job.state) = 'blocked' THEN 1 ELSE 0 END) = 1 THEN 'blocked'
+	               WHEN MAX(CASE WHEN COALESCE(run_execution.state, run_job.state) = 'failed' THEN 1 ELSE 0 END) = 1 THEN 'failed'
+	               WHEN MAX(CASE WHEN COALESCE(run_execution.state, run_job.state) = 'cancelled' THEN 1 ELSE 0 END) = 1 THEN 'cancelled'
+	               WHEN COUNT(run_job.id) > 0 THEN 'succeeded'
+	               ELSE NULL
+	           END
+	           FROM jobs run_job
+	           LEFT JOIN executions run_execution ON run_execution.id = run_job.execution_id
+	           WHERE run_job.run_id = schedule.run_id
+	       ),
 	       occurrence.task_request_key, occurrence.task_id_snapshot,
 	       occurrence.diagnostic, occurrence.created_at, occurrence.updated_at,
 	       task.id, task.title, execution.state
@@ -533,20 +547,6 @@ const automationOccurrenceSelect = `
 	LEFT JOIN automation_github_issue_occurrences issue ON issue.occurrence_id = occurrence.id
 	LEFT JOIN automation_github_pull_request_occurrences pull_request ON pull_request.occurrence_id = occurrence.id
 	LEFT JOIN automation_schedule_occurrences schedule ON schedule.occurrence_id = occurrence.id
-	LEFT JOIN (
-		SELECT job.run_id,
-		       CASE
-		           WHEN MAX(CASE WHEN COALESCE(execution.state, job.state) IN ('preparing', 'running') THEN 1 ELSE 0 END) = 1 THEN 'running'
-		           WHEN MAX(CASE WHEN COALESCE(execution.state, job.state) = 'queued' THEN 1 ELSE 0 END) = 1 THEN 'queued'
-		           WHEN MAX(CASE WHEN COALESCE(execution.state, job.state) = 'blocked' THEN 1 ELSE 0 END) = 1 THEN 'blocked'
-		           WHEN MAX(CASE WHEN COALESCE(execution.state, job.state) = 'failed' THEN 1 ELSE 0 END) = 1 THEN 'failed'
-		           WHEN MAX(CASE WHEN COALESCE(execution.state, job.state) = 'cancelled' THEN 1 ELSE 0 END) = 1 THEN 'cancelled'
-		           ELSE 'succeeded'
-		       END AS state
-		FROM jobs job
-		LEFT JOIN executions execution ON execution.id = job.execution_id
-		GROUP BY job.run_id
-	) run_summary ON run_summary.run_id = schedule.run_id
 	LEFT JOIN tasks task ON task.id = occurrence.task_id
 	LEFT JOIN executions execution ON execution.task_id = task.id
 `
