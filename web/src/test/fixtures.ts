@@ -1104,6 +1104,7 @@ export function mockControlPlane(
           cron: automationDetail.automation.trigger.type === "schedule" ? automationDetail.automation.trigger.cron : "",
           timezone: automationDetail.automation.trigger.type === "schedule" ? automationDetail.automation.trigger.timezone : "",
           run_id: "run-schedule-run-now",
+          run_state: "succeeded",
           task_request_key: `automation:${automationDetail.automation.id}:schedule:run:${body.request_key}`,
           created_at: "2026-08-01T08:00:00Z",
           updated_at: "2026-08-01T08:00:00Z",

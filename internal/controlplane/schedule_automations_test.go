@@ -195,6 +195,24 @@ func TestSchedulePreviewEnableDueDispatchAndIdempotencyUseFakeClock(t *testing.T
 		len(run.Jobs) != 1 || run.Parameters["scope"] != "safe" {
 		t.Fatalf("scheduled Run = %#v", run)
 	}
+	if current.Occurrences[0].RunState != "queued" {
+		t.Fatalf("scheduled occurrence Run state = %q, want queued", current.Occurrences[0].RunState)
+	}
+	claim := claimTestTask(t, store, "schedule-worker", "schedule-state-claim", tokenA)
+	if _, err := store.StartAttempt(context.Background(), claim.Attempt.ID, protocol.StartAttemptRequest{
+		LeaseToken: tokenA, ProcessIdentity: "scheduled-agent",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "succeeded", Result: "schedule completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current, err = store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil || current.Occurrences[0].RunState != "succeeded" {
+		t.Fatalf("completed scheduled occurrence: err=%v occurrence=%#v", err, current.Occurrences[0])
+	}
 }
 
 func TestDefinitionScheduleCreatesOneRunWithOneJobPerRepository(t *testing.T) {

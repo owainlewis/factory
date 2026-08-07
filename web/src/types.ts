@@ -345,6 +345,7 @@ export interface AutomationOccurrence {
 	cron?: string;
 	timezone?: string;
 	run_id?: string;
+	run_state?: RunState;
 	task_request_key: string;
 	task?: AutomationTaskSummary;
 	task_id_snapshot?: string;

@@ -390,7 +390,7 @@ export function AutomationDetail({
         <section className="panel detail-main">
           <PanelHeading title="Configuration" aside={`Version ${automation.version}`} />
           <dl className="metadata">
-            {automation.definition_id ? <>
+            {automation.trigger.type === "schedule" && automation.definition_id ? <>
               <div><dt>Definition</dt><dd>{automation.definition_name} · generation {automation.definition_generation}</dd></div>
               <div><dt>Repositories</dt><dd className="mono">{automationRepositoryIdentities(automation).join(", ")}</dd></div>
               <div><dt>Concurrency</dt><dd>{automation.concurrency_limit}</dd></div>
@@ -1172,6 +1172,7 @@ function formatRunState(state: string): string {
     task_deleted: "Task deleted",
     dispatching: "Preparing",
     dispatched: "Dispatched",
+    blocked: "Blocked",
     preparing: "Preparing",
     queued: "Queued",
     running: "Running",
@@ -1186,6 +1187,9 @@ function formatRunState(state: string): string {
 }
 
 function automationRunState(occurrence: AutomationOccurrence): { style: string; label: string } {
+  if (occurrence.run_id && occurrence.run_state) {
+    return { style: occurrence.run_state, label: formatRunState(occurrence.run_state) };
+  }
   if (occurrence.task) {
     const state = occurrence.task.state;
     const known = new Set(["queued", "preparing", "running", "succeeded", "failed", "cancelled", "lost"]);

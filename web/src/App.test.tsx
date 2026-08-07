@@ -908,7 +908,10 @@ describe("App", () => {
     await user.click(await screen.findByRole("button", { name: "Run now" }));
     expect(await screen.findByText(/connection lost after Run now commit/i)).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Run now" }));
-    expect(await screen.findByText("Run now", { selector: ".occurrence-identity strong" })).toBeVisible();
+    const runIdentity = await screen.findByText("Run now", { selector: ".occurrence-identity strong" });
+    const runRow = runIdentity.closest(".occurrence-row");
+    expect(runRow).not.toBeNull();
+    expect(within(runRow as HTMLElement).getByText("Succeeded", { selector: ".status-badge" })).toBeVisible();
     expect(screen.getAllByText("Run now", { selector: ".occurrence-identity strong" })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Open Run" })).toHaveLength(1);
     const runBodies = fetch.mock.calls

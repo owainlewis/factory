@@ -712,6 +712,7 @@ type AutomationOccurrence struct {
 	ScheduledAt        *time.Time             `json:"scheduled_at,omitempty"`
 	RunRequestKey      string                 `json:"run_request_key,omitempty"`
 	RunID              string                 `json:"run_id,omitempty"`
+	RunState           string                 `json:"run_state,omitempty"`
 	Cron               string                 `json:"cron,omitempty"`
 	Timezone           string                 `json:"timezone,omitempty"`
 	TaskRequestKey     string                 `json:"task_request_key"`

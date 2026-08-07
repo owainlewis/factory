@@ -524,7 +524,7 @@ const automationOccurrenceSelect = `
 	       pull_request.observed_draft, pull_request.observed_base_branch,
 	       pull_request.observed_head_commit, pull_request.observed_labels_json,
 	       schedule.kind, schedule.scheduled_at, schedule.run_request_key,
-	       schedule.cron, schedule.timezone, schedule.run_id,
+	       schedule.cron, schedule.timezone, schedule.run_id, run_summary.state,
 	       occurrence.task_request_key, occurrence.task_id_snapshot,
 	       occurrence.diagnostic, occurrence.created_at, occurrence.updated_at,
 	       task.id, task.title, execution.state
@@ -533,6 +533,20 @@ const automationOccurrenceSelect = `
 	LEFT JOIN automation_github_issue_occurrences issue ON issue.occurrence_id = occurrence.id
 	LEFT JOIN automation_github_pull_request_occurrences pull_request ON pull_request.occurrence_id = occurrence.id
 	LEFT JOIN automation_schedule_occurrences schedule ON schedule.occurrence_id = occurrence.id
+	LEFT JOIN (
+		SELECT job.run_id,
+		       CASE
+		           WHEN MAX(CASE WHEN COALESCE(execution.state, job.state) IN ('preparing', 'running') THEN 1 ELSE 0 END) = 1 THEN 'running'
+		           WHEN MAX(CASE WHEN COALESCE(execution.state, job.state) = 'queued' THEN 1 ELSE 0 END) = 1 THEN 'queued'
+		           WHEN MAX(CASE WHEN COALESCE(execution.state, job.state) = 'blocked' THEN 1 ELSE 0 END) = 1 THEN 'blocked'
+		           WHEN MAX(CASE WHEN COALESCE(execution.state, job.state) = 'failed' THEN 1 ELSE 0 END) = 1 THEN 'failed'
+		           WHEN MAX(CASE WHEN COALESCE(execution.state, job.state) = 'cancelled' THEN 1 ELSE 0 END) = 1 THEN 'cancelled'
+		           ELSE 'succeeded'
+		       END AS state
+		FROM jobs job
+		LEFT JOIN executions execution ON execution.id = job.execution_id
+		GROUP BY job.run_id
+	) run_summary ON run_summary.run_id = schedule.run_id
 	LEFT JOIN tasks task ON task.id = occurrence.task_id
 	LEFT JOIN executions execution ON execution.task_id = task.id
 `
@@ -1216,7 +1230,7 @@ func scanAutomationOccurrences(rows *sql.Rows, capacity int) ([]protocol.Automat
 		var issueNumber, pullRequestNumber, observedDraft sql.NullInt64
 		var issueURL, issueTitle, issueState, pullRequestURL, pullRequestTitle sql.NullString
 		var pullRequestState, baseBranch, headCommit sql.NullString
-		var scheduleKind, runRequestKey, scheduleCron, scheduleTimezone, runID sql.NullString
+		var scheduleKind, runRequestKey, scheduleCron, scheduleTimezone, runID, runState sql.NullString
 		var scheduledAt sql.NullInt64
 		var issueLabels, pullRequestLabels []byte
 		var taskID, taskTitle, taskState sql.NullString
@@ -1227,7 +1241,7 @@ func scanAutomationOccurrences(rows *sql.Rows, capacity int) ([]protocol.Automat
 			&issueTitle, &issueState, &issueLabels, &pullRequestNumber,
 			&pullRequestURL, &pullRequestTitle, &pullRequestState, &observedDraft,
 			&baseBranch, &headCommit, &pullRequestLabels,
-			&scheduleKind, &scheduledAt, &runRequestKey, &scheduleCron, &scheduleTimezone, &runID,
+			&scheduleKind, &scheduledAt, &runRequestKey, &scheduleCron, &scheduleTimezone, &runID, &runState,
 			&occurrence.TaskRequestKey, &occurrence.TaskIDSnapshot,
 			&occurrence.Diagnostic, &createdAt, &updatedAt,
 			&taskID, &taskTitle, &taskState,
@@ -1279,6 +1293,9 @@ func scanAutomationOccurrences(rows *sql.Rows, capacity int) ([]protocol.Automat
 			}
 			if runID.Valid {
 				occurrence.RunID = runID.String
+			}
+			if runState.Valid {
+				occurrence.RunState = runState.String
 			}
 		default:
 			return nil, unavailable(errors.New("Occurrence has an invalid trigger type"))
