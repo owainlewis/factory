@@ -681,7 +681,7 @@ func (s *Store) Runs(ctx context.Context, request protocol.RunPageRequest) (prot
 	}
 	query := `
 		WITH page AS (
-			SELECT id, request_key, source_kind, definition_snapshot, admitted_at, updated_at
+			SELECT id, request_key, source_kind, definition_snapshot, concurrency_limit, admitted_at, updated_at
 			FROM runs`
 	args := make([]any, 0, 4)
 	if request.Cursor != nil {
@@ -693,7 +693,8 @@ func (s *Store) Runs(ctx context.Context, request protocol.RunPageRequest) (prot
 			LIMIT ?
 		)
 		SELECT page.id, page.request_key, page.source_kind, page.definition_snapshot,
-		       page.admitted_at, page.updated_at, job.id, repository.remote_identity,
+		       page.concurrency_limit, page.admitted_at, page.updated_at, job.id,
+		       CASE WHEN job.repository_identity = '' THEN repository.remote_identity ELSE job.repository_identity END,
 		       CASE WHEN execution.id IS NULL THEN job.state ELSE execution.state END,
 		       CASE
 		           WHEN execution.id IS NULL AND job.state = 'cancelled' THEN job.updated_at
@@ -720,8 +721,8 @@ func (s *Store) Runs(ctx context.Context, request protocol.RunPageRequest) (prot
 		var jobID, repositoryIdentity, state sql.NullString
 		var terminalAt sql.NullInt64
 		if err := rows.Scan(
-			&run.ID, &run.RequestKey, &run.SourceKind, &snapshotJSON, &admittedAt, &updatedAt,
-			&jobID, &repositoryIdentity, &state, &terminalAt,
+			&run.ID, &run.RequestKey, &run.SourceKind, &snapshotJSON, &run.ConcurrencyLimit,
+			&admittedAt, &updatedAt, &jobID, &repositoryIdentity, &state, &terminalAt,
 		); err != nil {
 			return protocol.RunPage{}, unavailable(err)
 		}

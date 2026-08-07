@@ -630,15 +630,23 @@ func TestRunHistoryUsesAStableCursorWithoutDroppingOlderRuns(t *testing.T) {
 	store, definition, repository, _ := setupRunTest(t, true)
 	fixed := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return fixed }
-	createdIDs := make(map[string]bool)
-	for _, requestKey := range []string{"run-page-a", "run-page-b", "run-page-c"} {
+	createdRuns := make(map[string]int)
+	for index, requestKey := range []string{"run-page-a", "run-page-b", "run-page-c"} {
+		concurrencyLimit := index + 1
 		detail, created, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
-			RequestKey: requestKey, DefinitionID: definition.ID, RepositoryID: repository.ID,
+			RequestKey: requestKey, DefinitionID: definition.ID,
+			RepositoryIDs: []string{repository.ID}, ConcurrencyLimit: concurrencyLimit,
 		})
 		if err != nil || !created {
 			t.Fatalf("create paged Run %q: created=%t err=%v", requestKey, created, err)
 		}
-		createdIDs[detail.Run.ID] = true
+		createdRuns[detail.Run.ID] = concurrencyLimit
+	}
+	if _, err := store.db.Exec(
+		`UPDATE repositories SET remote_identity = 'github.com/example/renamed-after-run-history' WHERE id = ?`,
+		repository.ID,
+	); err != nil {
+		t.Fatal(err)
 	}
 	first, err := store.Runs(context.Background(), protocol.RunPageRequest{Limit: 2})
 	if err != nil || len(first.Runs) != 2 || first.NextCursor == nil {
@@ -654,9 +662,16 @@ func TestRunHistoryUsesAStableCursorWithoutDroppingOlderRuns(t *testing.T) {
 			t.Fatalf("Run %q appeared on more than one page", run.ID)
 		}
 		seen[run.ID] = true
+		if run.ConcurrencyLimit != createdRuns[run.ID] {
+			t.Fatalf("Run %q concurrency = %d, want %d", run.ID, run.ConcurrencyLimit, createdRuns[run.ID])
+		}
+		if len(run.RepositoryRemoteIdentities) != 1 || run.RepositoryRemoteIdentities[0] != repository.RemoteIdentity {
+			t.Fatalf("Run %q repositories = %#v, want frozen identity %q",
+				run.ID, run.RepositoryRemoteIdentities, repository.RemoteIdentity)
+		}
 	}
-	if len(seen) != len(createdIDs) {
-		t.Fatalf("paged Run IDs = %#v, want %#v", seen, createdIDs)
+	if len(seen) != len(createdRuns) {
+		t.Fatalf("paged Run IDs = %#v, want %#v", seen, createdRuns)
 	}
 }
 

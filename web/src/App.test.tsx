@@ -504,7 +504,7 @@ describe("App", () => {
     expect(within(dialog).getByLabelText("scope")).toHaveValue("repository");
     await user.clear(within(dialog).getByLabelText("severity"));
     await user.type(within(dialog).getByLabelText("severity"), "critical");
-    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-managed");
+    await user.selectOptions(within(dialog).getByLabelText("Repositories"), "repo-managed");
     await user.click(within(dialog).getByRole("button", { name: "Start Run" }));
 
     expect(await screen.findByRole("heading", { name: "Parameterized review" })).toBeVisible();
@@ -535,7 +535,7 @@ describe("App", () => {
 
     const dialog = await screen.findByRole("dialog", { name: "Run once" });
     await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-created");
-    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-managed");
+    await user.selectOptions(within(dialog).getByLabelText("Repositories"), "repo-managed");
     await user.click(within(dialog).getByRole("button", { name: "Start Run" }));
     await user.click(await screen.findByRole("button", { name: "Cancel Job" }));
     await user.click(screen.getByRole("button", { name: "Confirm cancel" }));
@@ -576,7 +576,7 @@ describe("App", () => {
 
     const dialog = await screen.findByRole("dialog", { name: "Run once" });
     await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-created");
-    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-managed");
+    await user.selectOptions(within(dialog).getByLabelText("Repositories"), "repo-managed");
     await user.click(within(dialog).getByRole("button", { name: "Start Run" }));
     expect(await within(dialog).findByText(/connection lost after Run commit/)).toBeVisible();
     await user.click(within(dialog).getByRole("button", { name: "Start Run" }));
