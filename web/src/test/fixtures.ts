@@ -187,6 +187,7 @@ export function mockControlPlane(
     paginatedAutomationWorkflows?: boolean;
     paginatedDefinitions?: boolean;
     paginatedRuns?: boolean;
+    pendingRunCancellation?: boolean;
     paginatedTasks?: boolean;
     refreshesHistoricalWorkflow?: boolean;
     shiftingWorkflowBoundary?: boolean;
@@ -196,6 +197,7 @@ export function mockControlPlane(
     taskDetailFailuresAfter?: number;
     terminalEventFailures?: number;
     terminalTaskAfter?: number;
+    terminalRunCancellationFlag?: boolean;
     repositoryToggleFailure?: boolean;
     runFailures?: number;
     workflowHistoryGate?: Promise<void>;
@@ -549,7 +551,7 @@ export function mockControlPlane(
             inputs: definition.inputs,
             generation: definition.generation,
           },
-          state: "queued",
+          state: options.pendingRunCancellation ? "running" : "queued",
           job_count: 1,
           repository_remote_identities: [repository.remote_identity],
           admitted_at: now,
@@ -566,9 +568,10 @@ export function mockControlPlane(
             execution_id: "run-execution-created",
             assigned_worker_id: worker.id,
             required_runtime: definition.runtime,
-            state: "queued",
+            state: options.pendingRunCancellation ? "running" : "queued",
             admitted_at: now,
             retry_may_repeat_effects: false,
+            cancellation_requested: false,
           },
           attempts: null,
           resolved_prompt: definition.prompt,
@@ -625,11 +628,20 @@ export function mockControlPlane(
       const jobID = parts[4];
       const detail = runDetails.find((item) => item.jobs.some((job) => job.job.id === jobID));
       if (!detail) return Response.json({ error: { code: "not_found", message: "not found" } }, { status: 404 });
-      const state = parts[5] === "cancel" ? "cancelled" as const : "queued" as const;
+      const cancellationPending = parts[5] === "cancel" && Boolean(options.pendingRunCancellation);
+      const jobState = cancellationPending ? detail.jobs[0].job.state : parts[5] === "cancel" ? "cancelled" as const : "queued" as const;
+      const runState: Run["state"] = cancellationPending ? detail.run.state : parts[5] === "cancel" ? "cancelled" : "queued";
       const updated: RunDetail = {
         ...detail,
-        run: { ...detail.run, state, updated_at: new Date().toISOString() },
-        jobs: detail.jobs.map((job) => job.job.id === jobID ? { ...job, job: { ...job.job, state } } : job),
+        run: { ...detail.run, state: runState, updated_at: new Date().toISOString() },
+        jobs: detail.jobs.map((job) => job.job.id === jobID ? {
+          ...job,
+          job: {
+            ...job.job,
+            state: jobState,
+            cancellation_requested: cancellationPending || Boolean(options.terminalRunCancellationFlag),
+          },
+        } : job),
       };
       runDetails = runDetails.map((item) => item.run.id === updated.run.id ? updated : item);
       return Response.json(updated);

@@ -633,6 +633,7 @@ func (s *Store) Job(ctx context.Context, jobID string) (protocol.JobDetail, erro
 	}
 	detail.Job.AssignedWorkerID = task.Execution.AssignedWorkerID
 	detail.Job.State = task.Execution.State
+	detail.Job.CancellationRequested = task.Execution.CancellationRequested
 	detail.Attempts = task.Attempts
 	for _, attempt := range task.Attempts {
 		if attempt.StartedAt != nil {

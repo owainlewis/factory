@@ -121,6 +121,9 @@ func TestRunOnceRoutesAStaticRepositoryOnlyToItsAdvertisingRunner(t *testing.T) 
 		nil,
 	)
 	repository := staticWorker.Repositories[0]
+	if _, err := store.db.Exec(`UPDATE repositories SET enabled = 1 WHERE id = ?`, repository.ID); err != nil {
+		t.Fatal(err)
+	}
 	_, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
 		Name: workerA, WorkerVersion: "test", Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
 		Capabilities: []protocol.Capability{
@@ -391,5 +394,24 @@ func TestBlockedJobCanBeCancelledWithoutCreatingLegacyExecution(t *testing.T) {
 	var tasks int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM tasks`).Scan(&tasks); err != nil || tasks != 0 {
 		t.Fatalf("blocked cancellation created %d Tasks, err=%v", tasks, err)
+	}
+}
+
+func TestActiveJobExposesPendingCancellation(t *testing.T) {
+	store, definition, repository, worker := setupRunTest(t, true)
+	detail, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "cancel-active-run", DefinitionID: definition.ID, RepositoryID: repository.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := claimTestTask(t, store, worker.ID, "cancel-active-run-claim", tokenA)
+	if claim.JobID != detail.Jobs[0].Job.ID {
+		t.Fatalf("claimed Job = %q; want %q", claim.JobID, detail.Jobs[0].Job.ID)
+	}
+	cancelled, err := store.CancelJob(context.Background(), claim.JobID)
+	if err != nil || cancelled.Jobs[0].Job.State != "preparing" ||
+		!cancelled.Jobs[0].Job.CancellationRequested {
+		t.Fatalf("pending Job cancellation: err=%v detail=%#v", err, cancelled)
 	}
 }

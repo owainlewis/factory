@@ -339,6 +339,7 @@ type Job struct {
 	Result                   string     `json:"result,omitempty"`
 	FailureReason            string     `json:"failure_reason,omitempty"`
 	RetryMayRepeatEffects    bool       `json:"retry_may_repeat_effects"`
+	CancellationRequested    bool       `json:"cancellation_requested"`
 }
 
 type JobDetail struct {

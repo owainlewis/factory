@@ -2056,6 +2056,8 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 	if err != nil {
 		return taskRouteCandidate{}, unavailable(err)
 	}
+	requireAdvertisedRepository := allowStaticRepository &&
+		(repositoryEnabled == 0 || route.SourceAccess.Provider != "github" || route.SourceAccess.Hostname != "github.com")
 	rows, err := tx.QueryContext(ctx, `
 		SELECT w.id, w.runtime, w.capabilities_json, w.capacity, w.active_count,
 		       w.source_access_json, COALESCE(wr.advertised, 0),
@@ -2126,7 +2128,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		  ) < ?
 		ORDER BY w.id
 	`, repositoryID, now-protocol.WorkerOnlineWindow.Milliseconds(), workerID, workerID,
-		allowStaticRepository && repositoryEnabled == 0,
+		requireAdvertisedRepository,
 		repositoryIdentity, repositoryID,
 		repositoryID, protocol.MaxRepositoryCacheEntries,
 		repositoryID, repositoryID, protocol.MaxRetainedPerRepo)

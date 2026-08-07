@@ -221,6 +221,7 @@ export interface Job {
   result?: string;
   failure_reason?: string;
   retry_may_repeat_effects: boolean;
+  cancellation_requested: boolean;
 }
 
 export interface JobDetail {

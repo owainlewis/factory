@@ -239,7 +239,7 @@ export function RunDetail({ id, onBack }: { id: string; onBack: () => void }) {
   if (detail.isPending) return <LoadingState label="Loading Run" />;
   if (!detail.data || !job) return <ErrorState error={detail.error} onRetry={() => void detail.refetch()} />;
   const data = detail.data;
-  const active = ["blocked", "queued", "preparing", "running"].includes(job.job.state);
+  const active = ["blocked", "queued", "preparing", "running"].includes(job.job.state) && !job.job.cancellation_requested;
   const progress = (events.data ?? []).flatMap((event) => {
     const summary = eventSummary(event);
     return summary ? [{ event, summary }] : [];
@@ -257,6 +257,7 @@ export function RunDetail({ id, onBack }: { id: string; onBack: () => void }) {
       {confirmCancel && <div className="confirm-action" role="alert"><span>Cancel this Job?</span><button className="button button-danger" onClick={() => cancel.mutate()} disabled={cancel.isPending}>{cancel.isPending ? "Cancelling…" : "Confirm cancel"}</button><button className="button button-secondary" onClick={() => setConfirmCancel(false)}>Keep running</button></div>}
       {confirmRetry && <div className="warning-banner" role="alert"><AlertCircle size={17} /><span>{job.job.retry_may_repeat_effects ? "The first agent process started and may already have changed GitHub. Retrying can repeat external effects." : "Retry this failed Job?"}</span><button className="button button-primary" onClick={() => retry.mutate()} disabled={retry.isPending}>{retry.isPending ? "Retrying…" : "Confirm retry"}</button><button className="button button-secondary" onClick={() => setConfirmRetry(false)}>Cancel</button></div>}
       {(detail.error || cancel.error || retry.error) && <InlineError error={detail.error ?? cancel.error ?? retry.error} />}
+      {jobIsActive && job.job.cancellation_requested && <div className="warning-banner"><Clock3 size={17} /> Cancellation requested. The Runner will stop this Job on its next heartbeat.</div>}
       {job.job.blocked_reason && <div className="warning-banner"><Clock3 size={17} /> {job.job.blocked_reason}</div>}
       <div className="detail-grid">
         <section className="panel detail-main"><PanelHeading title="Definition prompt" /><div className="long-copy">{job.resolved_prompt}</div></section>

@@ -437,7 +437,7 @@ describe("App", () => {
   });
 
   it("runs one shared Definition against one repository and tracks the Job", async () => {
-    mockControlPlane();
+    mockControlPlane({ terminalRunCancellationFlag: true });
     await globalThis.fetch("/api/v1/definitions", {
       method: "POST",
       body: JSON.stringify({
@@ -467,6 +467,36 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Cancel Job" }));
     await user.click(screen.getByRole("button", { name: "Confirm cancel" }));
     expect((await screen.findAllByText("Cancelled", { selector: ".status-badge" })).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Cancellation requested. The Runner will stop this Job on its next heartbeat.")).not.toBeInTheDocument();
+  });
+
+  it("shows pending cancellation and prevents duplicate Job cancellation", async () => {
+    mockControlPlane({ pendingRunCancellation: true });
+    await globalThis.fetch("/api/v1/definitions", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "create-cancellable-definition",
+        name: "Review active repository",
+        prompt: "Review this repository.",
+        runtime: "codex",
+        allowed_tools: ["git", "gh"],
+        timeout_seconds: 600,
+        inputs: {},
+      }),
+    });
+    window.history.replaceState({}, "", "/runs?new=true");
+    const user = userEvent.setup();
+    renderApp();
+
+    const dialog = await screen.findByRole("dialog", { name: "Run once" });
+    await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-created");
+    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-managed");
+    await user.click(within(dialog).getByRole("button", { name: "Start Run" }));
+    await user.click(await screen.findByRole("button", { name: "Cancel Job" }));
+    await user.click(screen.getByRole("button", { name: "Confirm cancel" }));
+
+    expect(await screen.findByText("Cancellation requested. The Runner will stop this Job on its next heartbeat.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Cancel Job" })).not.toBeInTheDocument();
   });
 
   it("loads every active Definition page in the Run once selector", async () => {
