@@ -909,6 +909,8 @@ type Claim struct {
 	Execution  Execution  `json:"execution"`
 	Task       Task       `json:"task"`
 	Repository Repository `json:"repository"`
+	RunID      string     `json:"run_id,omitempty"`
+	JobID      string     `json:"job_id,omitempty"`
 }
 
 type LeaseRequest struct {

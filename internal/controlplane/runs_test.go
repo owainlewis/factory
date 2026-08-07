@@ -46,6 +46,11 @@ func TestRunAdmissionSnapshotsOneDefinitionAndOneRepositoryAtomically(t *testing
 		job.RequiredRuntime != protocol.RuntimeCodex || job.TaskID == "" || job.ExecutionID == "" {
 		t.Fatalf("created Job = %#v", job)
 	}
+	claim := claimTestTask(t, store, worker.ID, "manual-run-one-claim", tokenA)
+	if claim.RunID != detail.Run.ID || claim.JobID != job.ID {
+		t.Fatalf("Run claim identities = run %q job %q; want run %q job %q",
+			claim.RunID, claim.JobID, detail.Run.ID, job.ID)
+	}
 	if detail.Run.Definition.Generation != definition.Generation ||
 		detail.Run.Definition.Prompt != definition.Prompt || detail.Parameters["severity"] != "critical" {
 		t.Fatalf("frozen Run inputs = definition %#v parameters %#v", detail.Run.Definition, detail.Parameters)

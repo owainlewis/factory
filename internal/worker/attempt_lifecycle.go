@@ -163,6 +163,8 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		ResultPath:        path,
 		Prompt:            prompt,
 		TimeoutSeconds:    remainingTimeoutSeconds(taskDeadline),
+		RunID:             claim.RunID,
+		JobID:             claim.JobID,
 	}, os.Stderr)
 	if err != nil {
 		manager.finishWithWorktree(claim, token, handle, repository, value, "failed", "", err.Error())
@@ -257,6 +259,12 @@ func (manager *Manager) validateClaim(claim protocol.Claim) error {
 	}
 	if !protocol.AgentPromptFits(claim.Task.Title, claim.Repository.RemoteIdentity, claim.Task.Description) {
 		return errors.New("claim agent prompt exceeds 72 KiB")
+	}
+	if (claim.RunID == "") != (claim.JobID == "") {
+		return errors.New("claim Run and Job identities must be supplied together")
+	}
+	if claim.RunID != "" && (!uuidPattern.MatchString(claim.RunID) || !uuidPattern.MatchString(claim.JobID)) {
+		return errors.New("claim Run or Job identity is invalid")
 	}
 	return nil
 }

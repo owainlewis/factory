@@ -263,6 +263,12 @@ func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Cla
 		return claim, unavailable(err)
 	}
 	err = s.db.QueryRowContext(ctx, `
+		SELECT id, run_id FROM jobs WHERE task_id = ?
+	`, claim.Task.ID).Scan(&claim.JobID, &claim.RunID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return claim, unavailable(err)
+	}
+	err = s.db.QueryRowContext(ctx, `
 		SELECT r.id, wr.display_key,
 		       COALESCE(NULLIF(wr.worker_remote_identity, ''), r.remote_identity),
 		       wr.retained_count

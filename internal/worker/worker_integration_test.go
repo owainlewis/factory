@@ -496,6 +496,10 @@ case "${1:-}" in
   --list-models) printf 'provider model\nopenai test-model\n' ;;
   --print)
     test "${2:-}" = "--no-session"
+	if [ -n "${FACTORY_TEST_EXPECTED_RUN_ID:-}" ]; then
+	  test "${FACTORY_RUN_ID:-}" = "$FACTORY_TEST_EXPECTED_RUN_ID"
+	  test "${FACTORY_JOB_ID:-}" = "$FACTORY_TEST_EXPECTED_JOB_ID"
+	fi
     cat >/dev/null
     echo "completed by fake Pi"
     ;;
@@ -533,6 +537,8 @@ func TestMultiRuntimeHealthAndPiSupervisorContract(t *testing.T) {
 	}
 
 	t.Setenv("FACTORY_TEST_SUPERVISOR", "1")
+	t.Setenv("FACTORY_TEST_EXPECTED_RUN_ID", "11111111-1111-4111-8111-111111111111")
+	t.Setenv("FACTORY_TEST_EXPECTED_JOB_ID", "22222222-2222-4222-8222-222222222222")
 	repository := createRepository(t, "pi-supervisor")
 	process, err := startSupervisor(
 		[]string{os.Args[0], "-test.run=TestWorkerSupervisorHelperProcess", "--"},
@@ -540,6 +546,8 @@ func TestMultiRuntimeHealthAndPiSupervisorContract(t *testing.T) {
 			Runtime: protocol.RuntimePi, RuntimeExecutable: piPath,
 			Worktree: repository.path, ResultPath: filepath.Join(t.TempDir(), "unused-result"),
 			Prompt: "complete this task", TimeoutSeconds: 60,
+			RunID: "11111111-1111-4111-8111-111111111111",
+			JobID: "22222222-2222-4222-8222-222222222222",
 		},
 		io.Discard,
 	)
