@@ -101,9 +101,9 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 	}
 
 	var repositoryIdentity string
-	var repositoryEnabled, repositoryAdvertised int
+	var repositoryEnabled, repositoryCentrallyManaged, repositoryAdvertised int
 	err = tx.QueryRowContext(ctx, `
-		SELECT repository.remote_identity, repository.enabled,
+		SELECT repository.remote_identity, repository.enabled, repository.centrally_managed,
 		       EXISTS (
 		           SELECT 1 FROM worker_repositories available
 		           WHERE available.repository_id = repository.id
@@ -113,14 +113,14 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 		FROM repositories repository
 		WHERE repository.id = ?
 	`, value.RepositoryID).
-		Scan(&repositoryIdentity, &repositoryEnabled, &repositoryAdvertised)
+		Scan(&repositoryIdentity, &repositoryEnabled, &repositoryCentrallyManaged, &repositoryAdvertised)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.RunDetail{}, false, conflict("repository_not_available", "repository is not configured on a Runner or enabled for managed acquisition")
 	}
 	if err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
-	if !runRepositoryAvailable(repositoryIdentity, repositoryEnabled, repositoryAdvertised) {
+	if !runRepositoryAvailable(repositoryIdentity, repositoryEnabled, repositoryCentrallyManaged, repositoryAdvertised) {
 		return protocol.RunDetail{}, false, conflict("repository_not_available", "repository is not configured on a Runner or enabled for managed acquisition")
 	}
 	if !protocol.AgentPromptFits(snapshot.Name, repositoryIdentity, resolvedPrompt) {
@@ -187,7 +187,7 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 
 func (s *Store) RunRepositories(ctx context.Context) ([]protocol.RunRepository, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT repository.id, repository.remote_identity, repository.enabled,
+		SELECT repository.id, repository.remote_identity, repository.enabled, repository.centrally_managed,
 		       EXISTS (
 		           SELECT 1 FROM worker_repositories available
 		           WHERE available.repository_id = repository.id
@@ -204,11 +204,11 @@ func (s *Store) RunRepositories(ctx context.Context) ([]protocol.RunRepository, 
 	result := make([]protocol.RunRepository, 0)
 	for rows.Next() {
 		var repository protocol.RunRepository
-		var enabled, advertised int
-		if err := rows.Scan(&repository.ID, &repository.RemoteIdentity, &enabled, &advertised); err != nil {
+		var enabled, centrallyManaged, advertised int
+		if err := rows.Scan(&repository.ID, &repository.RemoteIdentity, &enabled, &centrallyManaged, &advertised); err != nil {
 			return nil, unavailable(err)
 		}
-		if !runRepositoryAvailable(repository.RemoteIdentity, enabled, advertised) {
+		if !runRepositoryAvailable(repository.RemoteIdentity, enabled, centrallyManaged, advertised) {
 			continue
 		}
 		result = append(result, repository)
@@ -219,12 +219,12 @@ func (s *Store) RunRepositories(ctx context.Context) ([]protocol.RunRepository, 
 	return result, nil
 }
 
-func runRepositoryAvailable(remoteIdentity string, enabled, advertised int) bool {
-	if advertised != 0 {
-		return true
+func runRepositoryAvailable(remoteIdentity string, enabled, centrallyManaged, advertised int) bool {
+	_, githubErr := normalizeManagedGitHubRemote(remoteIdentity)
+	if centrallyManaged != 0 && githubErr == nil {
+		return enabled != 0
 	}
-	_, err := normalizeManagedGitHubRemote(remoteIdentity)
-	return enabled != 0 && err == nil
+	return advertised != 0
 }
 
 func (s *Store) selectRunRoute(
@@ -237,10 +237,10 @@ func (s *Store) selectRunRoute(
 	requiredTools []string,
 ) (taskRouteCandidate, error) {
 	var repositoryIdentity string
-	var enabled int
+	var enabled, centrallyManaged int
 	err := tx.QueryRowContext(ctx, `
-		SELECT remote_identity, enabled FROM repositories WHERE id = ?
-	`, repositoryID).Scan(&repositoryIdentity, &enabled)
+		SELECT remote_identity, enabled, centrally_managed FROM repositories WHERE id = ?
+	`, repositoryID).Scan(&repositoryIdentity, &enabled, &centrallyManaged)
 	if errors.Is(err, sql.ErrNoRows) {
 		return taskRouteCandidate{}, conflict("repository_not_available", "repository is not configured on a Runner or enabled for managed acquisition")
 	}
@@ -252,7 +252,12 @@ func (s *Store) selectRunRoute(
 		SourceAccess:             protocol.SourceAccess{Provider: "local", Hostname: "localhost"},
 	}
 	requireSourceAccess := false
-	if _, githubErr := normalizeManagedGitHubRemote(repositoryIdentity); enabled != 0 && githubErr == nil {
+	if _, githubErr := normalizeManagedGitHubRemote(repositoryIdentity); centrallyManaged != 0 && githubErr == nil {
+		if enabled == 0 {
+			return taskRouteCandidate{}, conflict(
+				"repository_not_managed", "repository is not enabled in the control-plane managed repository catalog",
+			)
+		}
 		route.SourceAccess = protocol.SourceAccess{Provider: "github", Hostname: "github.com"}
 		requireSourceAccess = true
 	}

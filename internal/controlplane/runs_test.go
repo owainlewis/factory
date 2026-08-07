@@ -233,6 +233,46 @@ func TestRunOnceExcludesAnEnabledStaticRepositoryAfterItsRunnerStopsAdvertising(
 	assertErrorCode(t, err, "repository_not_available")
 }
 
+func TestRunOnceRejectsADisabledManagedRepositoryEvenWhenAdvertised(t *testing.T) {
+	store, definition, repository, _ := setupRunTest(t, false)
+	blocked, created, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "disabled-managed-blocked", DefinitionID: definition.ID, RepositoryID: repository.ID,
+	})
+	if err != nil || !created || blocked.Run.State != "blocked" {
+		t.Fatalf("create blocked Run: created=%t err=%v detail=%#v", created, err, blocked)
+	}
+	if _, err := store.SetManagedRepositoryEnabled(context.Background(), repository.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	registerDefinitionWorker(
+		t, store, workerA,
+		protocol.RepositoryRegistration{Key: "run-target", RemoteIdentity: repository.RemoteIdentity},
+		protocol.CapabilityReady,
+		[]protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+	)
+
+	repositories, err := store.RunRepositories(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, option := range repositories {
+		if option.ID == repository.ID {
+			t.Fatalf("disabled managed repository remained selectable: %#v", option)
+		}
+	}
+	preserved, err := store.Run(context.Background(), blocked.Run.ID)
+	if err != nil || preserved.Run.State != "blocked" || preserved.Jobs[0].Job.TaskID != "" {
+		t.Fatalf("disabled managed repository materialized blocked Run: err=%v detail=%#v", err, preserved)
+	}
+	_, created, err = store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "disabled-managed-new", DefinitionID: definition.ID, RepositoryID: repository.ID,
+	})
+	if created {
+		t.Fatal("disabled managed repository created a new Run")
+	}
+	assertErrorCode(t, err, "repository_not_available")
+}
+
 func TestRunHistoryUsesAStableCursorWithoutDroppingOlderRuns(t *testing.T) {
 	store, definition, repository, _ := setupRunTest(t, true)
 	fixed := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
