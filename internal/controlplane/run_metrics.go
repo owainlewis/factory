@@ -185,8 +185,18 @@ func loadRunMetricOptions(
 		query  string
 	}{
 		{&metrics.Definitions, `
-			SELECT DISTINCT run.definition_id, json_extract(run.definition_snapshot, '$.name')
-			FROM runs run ORDER BY 2, 1
+			SELECT definition_id, definition_name
+			FROM (
+				SELECT run.definition_id,
+				       json_extract(run.definition_snapshot, '$.name') AS definition_name,
+				       ROW_NUMBER() OVER (
+				           PARTITION BY run.definition_id
+				           ORDER BY run.admitted_at DESC, run.id DESC
+				       ) AS version_rank
+				FROM runs run
+			)
+			WHERE version_rank = 1
+			ORDER BY definition_name, definition_id
 		`},
 		{&metrics.Repositories, `
 			SELECT DISTINCT job.repository_id,
