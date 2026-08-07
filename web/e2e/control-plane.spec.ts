@@ -684,6 +684,19 @@ test("confirms and deletes terminal task history", async ({ page }) => {
 
 test("shows worker capacity, current work, retained cleanup, and saves Workers", async ({ page }) => {
   const browser = observeBrowser(page);
+  const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
+  const fixtureID = Date.now().toString();
+  await registerWorker(api, workerOnline, "Build Mac", onlineRepositories);
+  await createTask(
+    api,
+    `e2e-worker-current-${fixtureID}`,
+    "Implement the modern control-plane UI",
+    workerOnline,
+    identifiers.factoryRepository,
+  );
+  await claimAndStart(api, `claim-worker-current-${fixtureID}`);
+  await registerWorker(api, workerOnline, "Build Mac", onlineRepositories, 1);
+  await api.dispose();
   await page.goto("/workers");
   await expect(page.getByRole("heading", { name: "Execution capacity" })).toBeVisible();
   const workersNavigation = page.getByRole("button", { name: "Runners", exact: true });
