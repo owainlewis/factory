@@ -294,6 +294,27 @@ func TestAutomationOccurrenceRunStateUsesRunJobIndex(t *testing.T) {
 	}
 }
 
+func TestDefinitionScheduleRejectsDisabledManagedRepositoryEvenWhenAdvertised(t *testing.T) {
+	store, definition, repository, _ := setupRunTest(t, true)
+	if _, err := store.SetManagedRepositoryEnabled(context.Background(), repository.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	_, created, err := store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
+		RequestKey:       "disabled-managed-schedule",
+		Title:            "Disabled managed repository",
+		DefinitionID:     definition.ID,
+		RepositoryIDs:    []string{repository.ID},
+		ConcurrencyLimit: 1,
+		Trigger: protocol.AutomationTrigger{
+			Type: protocol.AutomationTriggerSchedule, Cron: "0 9 * * *", Timezone: "UTC",
+		},
+	})
+	if created {
+		t.Fatal("disabled managed repository created a schedule")
+	}
+	assertErrorCode(t, err, "repository_not_available")
+}
+
 func TestLegacyWorkflowScheduleRemainsEditableAfterDefinitionScheduleMigration(t *testing.T) {
 	store, detail := createAutomationFixture(t, false)
 	if _, err := store.db.Exec(`DELETE FROM automation_github_issue_triggers WHERE automation_id = ?`, detail.Automation.ID); err != nil {

@@ -434,26 +434,25 @@ func validateDefinitionScheduleDependencies(
 		}
 	}
 	for _, repositoryID := range repositoryIDs {
-		var available int
+		var remoteIdentity string
+		var enabled, centrallyManaged, advertised int
 		err := tx.QueryRowContext(ctx, `
-			SELECT EXISTS(
-				SELECT 1 FROM repositories repository
-				WHERE repository.id = ?
-				  AND (
-				      repository.enabled = 1
-				      OR EXISTS (
-				          SELECT 1 FROM worker_repositories available
-				          WHERE available.repository_id = repository.id
-				            AND available.advertised = 1
-				            AND available.dynamic = 0
-				      )
-				  )
-			)
-		`, repositoryID).Scan(&available)
-		if err != nil {
+			SELECT repository.remote_identity, repository.enabled, repository.centrally_managed,
+			       EXISTS (
+			           SELECT 1 FROM worker_repositories available
+			           WHERE available.repository_id = repository.id
+			             AND available.advertised = 1
+			             AND available.dynamic = 0
+			       )
+			FROM repositories repository
+			WHERE repository.id = ?
+		`, repositoryID).Scan(&remoteIdentity, &enabled, &centrallyManaged, &advertised)
+		if errors.Is(err, sql.ErrNoRows) {
+			enabled = 0
+		} else if err != nil {
 			return unavailable(err)
 		}
-		if available == 0 {
+		if !runRepositoryAvailable(remoteIdentity, enabled, centrallyManaged, advertised) {
 			code := "repository_not_available"
 			message := "every scheduled repository must be configured on a Runner or enabled for managed acquisition"
 			if requireRunnable {
