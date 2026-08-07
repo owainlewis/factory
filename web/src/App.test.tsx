@@ -69,6 +69,7 @@ describe("App", () => {
     });
     await user.click(screen.getByRole("button", { name: /github.com\/example\/factory/ }));
     expect(window.location.pathname).toBe("/runs/run-health-failed");
+    expect(window.location.search).toBe("?job=job-health-failed");
   });
 
   it("marks only exact navigation destinations as the current page", async () => {

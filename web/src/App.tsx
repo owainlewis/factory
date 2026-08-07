@@ -20,7 +20,7 @@ type Route =
   | { page: "overview" }
   | { page: "work" }
   | { page: "runs"; create?: boolean }
-  | { page: "run"; id: string }
+  | { page: "run"; id: string; jobID?: string }
   | { page: "workers" }
   | { page: "repositories" }
   | { page: "task"; id: string }
@@ -37,7 +37,9 @@ function readRoute(): Route {
   const parts = window.location.pathname.split("/").filter(Boolean);
   const archived = new URLSearchParams(window.location.search).get("archived") === "true";
   const createRun = new URLSearchParams(window.location.search).get("new") === "true";
-  if (parts[0] === "runs" && parts[1]) return { page: "run", id: parts[1] };
+  if (parts[0] === "runs" && parts[1]) {
+    return { page: "run", id: parts[1], jobID: new URLSearchParams(window.location.search).get("job") ?? undefined };
+  }
   if (parts[0] === "runs") return { page: "runs", create: createRun };
   if (parts[0] === "tasks" && parts[1]) return { page: "task", id: parts[1] };
   if (parts[0] === "workers" && parts[1]) return { page: "worker", id: parts[1] };
@@ -56,7 +58,7 @@ function readRoute(): Route {
 
 function routePath(route: Route): string {
   if (route.page === "task") return `/tasks/${route.id}`;
-  if (route.page === "run") return `/runs/${route.id}`;
+  if (route.page === "run") return `/runs/${route.id}${route.jobID ? `?job=${encodeURIComponent(route.jobID)}` : ""}`;
   if (route.page === "runs") return `/runs${route.create ? "?new=true" : ""}`;
   if (route.page === "worker") return `/workers/${route.id}`;
   if (route.page === "definition") return `/definitions/${route.id}${route.archived ? "?archived=true" : ""}`;
@@ -276,7 +278,7 @@ export function App() {
         </header>
 
         <main>
-          {route.page === "overview" && <Overview onRun={(id) => navigate({ page: "run", id })} />}
+          {route.page === "overview" && <Overview onRun={(id, jobID) => navigate({ page: "run", id, jobID })} />}
           {route.page === "runs" && (
             <RunsView
               createOpen={Boolean(route.create)}
@@ -284,7 +286,7 @@ export function App() {
               onRun={(id) => navigate({ page: "run", id })}
             />
           )}
-          {route.page === "run" && <RunDetail id={route.id} onBack={() => navigate({ page: "runs" })} />}
+          {route.page === "run" && <RunDetail id={route.id} initialJobID={route.jobID} onBack={() => navigate({ page: "runs" })} />}
           {route.page === "work" && (
             <WorkView
               tasks={taskItems}

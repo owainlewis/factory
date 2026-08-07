@@ -112,6 +112,31 @@ func TestRunHealthMetricsUseOneFilteredJobCohort(t *testing.T) {
 	if len(runnerFiltered.RunHealth.Definitions) != 2 || len(runnerFiltered.RunHealth.Repositories) != 3 {
 		t.Fatalf("filter options changed with cohort filter: %#v", runnerFiltered.RunHealth)
 	}
+
+	updatedDefinition, changed, err := store.UpdateDefinition(context.Background(), definitionB.ID, protocol.UpdateDefinitionRequest{
+		RequestKey: "metrics-definition-b-rename", ExpectedGeneration: definitionB.Generation,
+		Name: "Metrics B Renamed", Prompt: definitionB.Prompt, Runtime: definitionB.Runtime,
+		AllowedTools: definitionB.AllowedTools, TimeoutSeconds: definitionB.TimeoutSeconds, Inputs: definitionB.Inputs,
+	})
+	if err != nil || !changed || updatedDefinition.Name != "Metrics B Renamed" {
+		t.Fatalf("rename Definition: changed=%t err=%v Definition=%#v", changed, err, updatedDefinition)
+	}
+	if _, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "metrics-active-b-renamed", DefinitionID: definitionB.ID, RepositoryID: repositoryA.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	renamedMetrics, err := store.Metrics(context.Background(), metricsWindow24Hours)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitionNames := map[string]string{}
+	for _, option := range renamedMetrics.RunHealth.Definitions {
+		definitionNames[option.ID] = option.Name
+	}
+	if len(renamedMetrics.RunHealth.Definitions) != 2 || definitionNames[definitionB.ID] != "Metrics B Renamed" {
+		t.Fatalf("deduplicated Definition options = %#v", renamedMetrics.RunHealth.Definitions)
+	}
 }
 
 func seedRunMetricOutcome(

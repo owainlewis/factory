@@ -16,7 +16,7 @@ const windows: Array<{ value: MetricsWindow; label: string }> = [
 
 type JobView = "all" | "active" | "blocked" | "succeeded" | "failed" | "finished" | "started" | "terminal";
 
-export function Overview({ onRun }: { onRun: (id: string) => void }) {
+export function Overview({ onRun }: { onRun: (id: string, jobID?: string) => void }) {
   const [window, setWindow] = useState<MetricsWindow>("7d");
   const [filters, setFilters] = useState<MetricsFilters>({});
   const [jobView, setJobView] = useState<JobView>("all");
@@ -76,7 +76,7 @@ function RunMetrics({
   onFilters: (filters: MetricsFilters) => void;
   jobView: JobView;
   onJobView: (view: JobView) => void;
-  onRun: (id: string) => void;
+  onRun: (id: string, jobID?: string) => void;
 }) {
   const health = data.run_health;
   const cards: Array<{ label: string; value: string; detail: string; view: JobView }> = [
@@ -117,7 +117,7 @@ function RunMetrics({
         <PanelHeading title={jobView === "all" ? "Jobs in this view" : `${jobViewLabel(jobView)} Jobs`} aside={`${visibleJobs.length} shown · ${health.total_jobs} total`} />
         {jobView !== "all" && <button className="button button-secondary" onClick={() => onJobView("all")}>Show all Jobs</button>}
         {visibleJobs.length === 0 ? <div className="quiet-empty">No Jobs match this metric and filter set.</div> : <div className="run-health-job-list">
-          {visibleJobs.map((job) => <button key={job.job_id} className="run-health-job" onClick={() => onRun(job.run_id)}>
+          {visibleJobs.map((job) => <button key={job.job_id} className="run-health-job" onClick={() => onRun(job.run_id, job.job_id)}>
             <span><strong>{job.repository_remote_identity}</strong><small>{job.definition_name} · {job.runner_name || "No Runner assigned"}</small></span>
             <StatusBadge state={job.state} />
             <span className="mono muted">{job.terminal_at ? duration(job.admitted_at, job.terminal_at) : timeAgo(job.admitted_at)}</span>

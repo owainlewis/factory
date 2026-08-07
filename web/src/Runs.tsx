@@ -191,10 +191,10 @@ function RunOnceDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
   );
 }
 
-export function RunDetail({ id, onBack }: { id: string; onBack: () => void }) {
+export function RunDetail({ id, initialJobID = "", onBack }: { id: string; initialJobID?: string; onBack: () => void }) {
   const interval = useVisibleInterval(2_000);
   const queryClient = useQueryClient();
-  const [selectedJobID, setSelectedJobID] = useState("");
+  const [selectedJobID, setSelectedJobID] = useState(initialJobID);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmRetry, setConfirmRetry] = useState(false);
   const [terminalCatchupAttemptID, setTerminalCatchupAttemptID] = useState<string | null>(null);
