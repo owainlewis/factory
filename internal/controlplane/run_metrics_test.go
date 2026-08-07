@@ -252,6 +252,36 @@ func TestRunMetricsUseFinalExecutionTransitionAsTerminalTime(t *testing.T) {
 	requireRunMetric(t, "average cycle", metrics.RunHealth.AverageCycleTimeSeconds, 90*time.Minute.Seconds())
 }
 
+func TestRunMetricsUseJobTransitionForBlockedCancellation(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	repository := createManagedTestRepository(t, store, "github.com/example/blocked-cancellation")
+	definition := createTestDefinition(t, store, "blocked-cancellation-definition", "Blocked cancellation")
+	store.now = func() time.Time { return now.Add(-2 * time.Hour) }
+	run, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "blocked-cancellation-run", DefinitionID: definition.ID, RepositoryID: repository.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelledAt := now.Add(-30 * time.Minute)
+	store.now = func() time.Time { return cancelledAt }
+	if _, err := store.CancelJob(context.Background(), run.Jobs[0].Job.ID); err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return now }
+
+	metrics, err := store.Metrics(context.Background(), metricsWindow24Hours)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metrics.RunHealth.Cancelled != 1 || len(metrics.RunHealth.Jobs) != 1 ||
+		metrics.RunHealth.Jobs[0].TerminalAt == nil || !metrics.RunHealth.Jobs[0].TerminalAt.Equal(cancelledAt) {
+		t.Fatalf("blocked cancellation metrics = %#v", metrics.RunHealth)
+	}
+	requireRunMetric(t, "average cycle", metrics.RunHealth.AverageCycleTimeSeconds, 90*time.Minute.Seconds())
+}
+
 func TestRunMetricsApplyJobViewBeforeDrillDownLimit(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)

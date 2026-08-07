@@ -17,8 +17,11 @@ no lower time boundary.
 | Throughput | Count of succeeded, failed, and cancelled Jobs in the cohort |
 
 The effective state comes from the Job's Execution after one exists, otherwise
-from the durable Job admission record. The first start and terminal time come
-from stored Attempts and Executions. A retry does not create another Job and
+from the durable Job admission record. First start is the earliest stored
+Attempt start. Terminal time prefers the terminal Execution's update time, then
+the latest stored Attempt completion when an Execution transition time is not
+available, then the Job update time. The final fallback covers a blocked Job
+cancelled before an Execution exists. A retry does not create another Job and
 therefore does not inflate throughput.
 
 The overview returns at most the 100 most recently admitted matching Jobs for
