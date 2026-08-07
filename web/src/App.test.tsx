@@ -959,6 +959,37 @@ describe("App", () => {
     });
   });
 
+  it("preserves configured GitHub webhook actions when editing", async () => {
+    const fetch = mockControlPlane({ scheduleDefinition: true });
+    await globalThis.fetch("/api/v1/automations", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "opened-only-webhook",
+        title: "Opened only webhook",
+        definition_id: "definition-maintenance",
+        repository_ids: ["repo-factory"],
+        concurrency_limit: 1,
+        trigger: { type: "github_webhook", actions: ["opened"] },
+      }),
+    });
+    window.history.replaceState({}, "", "/automations");
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: /Opened only webhook/ }));
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Automation" });
+    expect(within(dialog).getByDisplayValue("Opened")).toBeVisible();
+    await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    await vi.waitFor(() => {
+      const update = fetch.mock.calls.find(([input, init]) =>
+        String(input).includes("/api/v1/automations/automation-created") && init?.method === "PUT");
+      expect(update).toBeDefined();
+      expect(JSON.parse(String(update?.[1]?.body)).trigger).toEqual({ type: "github_webhook", actions: ["opened"] });
+    });
+  });
+
   it("preserves Automation form focus and typed input during background refresh", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

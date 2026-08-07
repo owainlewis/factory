@@ -879,7 +879,9 @@ function AutomationForm({
       timezone,
     } : isWebhook ? {
       type: "github_webhook",
-      actions: ["opened", "synchronize"],
+      actions: current?.trigger.type === "github_webhook"
+        ? current.trigger.actions
+        : ["opened", "synchronize"],
     } : isPullRequest ? {
       type: "github_pull_request",
       state: String(form.get("state")) as "open" | "closed" | "merged",
@@ -1106,7 +1108,9 @@ function AutomationForm({
                     <input id={timezoneID} name="timezone" defaultValue={current?.trigger.type === "schedule" ? current.trigger.timezone : Intl.DateTimeFormat().resolvedOptions().timeZone} aria-invalid={Boolean(errors.timezone)} />
                   </Field>
                 </> : isWebhook ? <Field key="webhook-events" label="Pull request actions" htmlFor={triggerTypeID} hint="Factory verifies the delivery, then the agent uses gh for review work.">
-                  <input value="Opened and updated" readOnly />
+                  <input value={current?.trigger.type === "github_webhook"
+                    ? current.trigger.actions.map((action) => action === "opened" ? "Opened" : "Updated").join(" and ")
+                    : "Opened and updated"} readOnly />
                 </Field> : <Field key="provider-labels" label="Required labels" htmlFor={labelsID} error={errors.labels} hint="Comma separated · up to 20">
                   <input id={labelsID} name="required_labels" defaultValue={current?.trigger.type === "github_issue" || current?.trigger.type === "github_pull_request" ? current.trigger.required_labels.join(", ") : "factory:ready"} aria-invalid={Boolean(errors.labels)} />
                 </Field>}

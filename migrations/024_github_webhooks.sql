@@ -114,6 +114,8 @@ CREATE INDEX runs_list_order ON runs(admitted_at DESC, id DESC);
 CREATE INDEX runs_metrics_definition ON runs(definition_id, admitted_at);
 CREATE INDEX automations_due ON automations(enabled, next_check_at, id);
 CREATE INDEX github_webhook_deliveries_history ON github_webhook_deliveries(created_at DESC, delivery_id DESC);
+CREATE INDEX automation_github_webhook_occurrences_delivery
+ON automation_github_webhook_occurrences(delivery_id, automation_id);
 
 CREATE TRIGGER automation_trigger_type_immutable
 BEFORE UPDATE OF trigger_type ON automations
@@ -152,6 +154,11 @@ WHEN (SELECT trigger_type FROM automations WHERE id = NEW.automation_id) != 'git
   OR EXISTS (SELECT 1 FROM automation_schedule_triggers WHERE automation_id = NEW.automation_id)
 BEGIN SELECT RAISE(ABORT, 'GitHub webhook Trigger does not match Automation type'); END;
 
+CREATE TRIGGER automation_webhook_trigger_automation_immutable
+BEFORE UPDATE OF automation_id ON automation_github_webhook_triggers
+WHEN NEW.automation_id != OLD.automation_id
+BEGIN SELECT RAISE(ABORT, 'GitHub webhook Trigger Automation is immutable'); END;
+
 CREATE TRIGGER automation_issue_occurrence_type_guard
 BEFORE INSERT ON automation_github_issue_occurrences
 WHEN (SELECT trigger_type FROM automations WHERE id = NEW.automation_id) != 'github_issue'
@@ -187,3 +194,8 @@ WHEN (SELECT trigger_type FROM automations WHERE id = NEW.automation_id) != 'git
   OR EXISTS (SELECT 1 FROM automation_github_pull_request_occurrences WHERE occurrence_id = NEW.occurrence_id)
   OR EXISTS (SELECT 1 FROM automation_schedule_occurrences WHERE occurrence_id = NEW.occurrence_id)
 BEGIN SELECT RAISE(ABORT, 'GitHub webhook Occurrence does not match Automation type'); END;
+
+CREATE TRIGGER automation_webhook_occurrence_automation_immutable
+BEFORE UPDATE OF automation_id ON automation_github_webhook_occurrences
+WHEN NEW.automation_id != OLD.automation_id
+BEGIN SELECT RAISE(ABORT, 'GitHub webhook Occurrence Automation is immutable'); END;

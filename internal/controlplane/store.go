@@ -1166,9 +1166,33 @@ func (s *Store) SetManagedRepositoryEnabled(
 	if enabled {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE automations
-			SET health_status = CASE WHEN enabled = 1 THEN 'healthy' ELSE health_status END,
-			    health_code = CASE WHEN enabled = 1 THEN '' ELSE health_code END,
-			    health_message = CASE WHEN enabled = 1 THEN 'Repository enabled; waiting for a signed GitHub webhook.' ELSE health_message END,
+			SET health_status = CASE
+			        WHEN enabled = 1 AND EXISTS (
+			            SELECT 1 FROM automation_github_webhook_triggers webhook
+			            JOIN definitions definition ON definition.id = webhook.definition_id
+			            WHERE webhook.automation_id = automations.id AND definition.archived = 0
+			        ) THEN 'healthy'
+			        WHEN enabled = 1 THEN 'blocked'
+			        ELSE health_status
+			    END,
+			    health_code = CASE
+			        WHEN enabled = 1 AND EXISTS (
+			            SELECT 1 FROM automation_github_webhook_triggers webhook
+			            JOIN definitions definition ON definition.id = webhook.definition_id
+			            WHERE webhook.automation_id = automations.id AND definition.archived = 0
+			        ) THEN ''
+			        WHEN enabled = 1 THEN 'definition_archived'
+			        ELSE health_code
+			    END,
+			    health_message = CASE
+			        WHEN enabled = 1 AND EXISTS (
+			            SELECT 1 FROM automation_github_webhook_triggers webhook
+			            JOIN definitions definition ON definition.id = webhook.definition_id
+			            WHERE webhook.automation_id = automations.id AND definition.archived = 0
+			        ) THEN 'Repository enabled; waiting for a signed GitHub webhook.'
+			        WHEN enabled = 1 THEN 'Restore the selected Definition before webhook deliveries can run.'
+			        ELSE health_message
+			    END,
 			    next_check_at = NULL
 			WHERE repository_id = ? AND trigger_type = 'github_webhook'
 		`, repositoryID)
