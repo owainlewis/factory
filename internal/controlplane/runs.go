@@ -877,7 +877,7 @@ func (s *Store) RetryJob(ctx context.Context, jobID string) (protocol.RunDetail,
 	)
 	if routeErr == nil {
 		assignedWorkerID = selection.workerID
-	} else if !serviceErrorCode(routeErr, "no_eligible_worker") && !serviceErrorCode(routeErr, "repository_not_managed") {
+	} else if !serviceErrorCode(routeErr, "no_eligible_worker") {
 		return protocol.RunDetail{}, routeErr
 	}
 	result, err := tx.ExecContext(ctx, `

@@ -641,10 +641,48 @@ func TestActiveJobExposesPendingCancellation(t *testing.T) {
 	if claim.JobID != detail.Jobs[0].Job.ID {
 		t.Fatalf("claimed Job = %q; want %q", claim.JobID, detail.Jobs[0].Job.ID)
 	}
+	if _, err := store.CancelTask(context.Background(), claim.Task.ID); err == nil {
+		t.Fatal("legacy cancellation unexpectedly accepted a Run Job Task")
+	} else {
+		assertErrorCode(t, err, "cancel_not_allowed")
+	}
+	before, err := store.Run(context.Background(), detail.Run.ID)
+	if err != nil || before.Jobs[0].Job.CancellationRequested {
+		t.Fatalf("legacy cancellation changed the Run Job: err=%v detail=%#v", err, before)
+	}
 	cancelled, err := store.CancelJob(context.Background(), claim.JobID)
 	if err != nil || cancelled.Jobs[0].Job.State != "preparing" ||
 		!cancelled.Jobs[0].Job.CancellationRequested {
 		t.Fatalf("pending Job cancellation: err=%v detail=%#v", err, cancelled)
+	}
+}
+
+func TestFailedJobCannotRetryAfterManagedRepositoryIsDisabled(t *testing.T) {
+	store, definition, repository, worker := setupRunTest(t, true)
+	detail, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "disabled-retry", DefinitionID: definition.ID, RepositoryID: repository.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := claimTestTask(t, store, worker.ID, "disabled-retry-claim", tokenA)
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Error: "expected failure",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetManagedRepositoryEnabled(context.Background(), repository.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RetryJob(context.Background(), detail.Jobs[0].Job.ID); err == nil {
+		t.Fatal("disabled managed repository accepted a Job retry")
+	} else {
+		assertErrorCode(t, err, "repository_not_managed")
+	}
+	preserved, err := store.Run(context.Background(), detail.Run.ID)
+	if err != nil || preserved.Jobs[0].Job.State != "failed" ||
+		preserved.Jobs[0].Job.AssignedWorkerID != worker.ID {
+		t.Fatalf("rejected retry changed the failed Job: err=%v detail=%#v", err, preserved)
 	}
 }
 
