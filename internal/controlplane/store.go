@@ -2061,6 +2061,10 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 	if err != nil {
 		return taskRouteCandidate{}, unavailable(err)
 	}
+	workerRepositoryIdentity := repositoryIdentity
+	if canonical, normalizeErr := normalizeManagedGitHubRemote(repositoryIdentity); normalizeErr == nil {
+		workerRepositoryIdentity = canonical
+	}
 	requireAdvertisedRepository := allowStaticRepository &&
 		(repositoryEnabled == 0 || route.SourceAccess.Provider != "github" || route.SourceAccess.Hostname != "github.com")
 	rows, err := tx.QueryContext(ctx, `
@@ -2134,7 +2138,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		ORDER BY w.id
 	`, repositoryID, now-protocol.WorkerOnlineWindow.Milliseconds(), workerID, workerID,
 		requireAdvertisedRepository,
-		repositoryIdentity, repositoryID,
+		workerRepositoryIdentity, repositoryID,
 		repositoryID, protocol.MaxRepositoryCacheEntries,
 		repositoryID, repositoryID, protocol.MaxRetainedPerRepo)
 	if err != nil {
@@ -2219,7 +2223,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 				advertised=1,
 				dynamic=1,
 				updated_at=excluded.updated_at
-		`, best.workerID, repositoryIdentity, repositoryID, repositoryIdentity, now); err != nil {
+		`, best.workerID, workerRepositoryIdentity, repositoryID, workerRepositoryIdentity, now); err != nil {
 			return taskRouteCandidate{}, unavailable(err)
 		}
 	}

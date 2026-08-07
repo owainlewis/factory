@@ -300,6 +300,11 @@ func TestRunOnceRoutesAnUpgradedManagedRepositoryWithAGitSuffix(t *testing.T) {
 	if job := detail.Jobs[0].Job; job.RepositoryID != repository.ID || job.AssignedWorkerID != worker.ID {
 		t.Fatalf("upgraded Run Job = %#v", job)
 	}
+	claim := claimTestTask(t, store, worker.ID, "upgraded-git-suffix-claim", tokenA)
+	if claim.Repository.ID != repository.ID || claim.Repository.RemoteIdentity != repository.RemoteIdentity {
+		t.Fatalf("upgraded Run claim repository = %#v; want ID %q identity %q",
+			claim.Repository, repository.ID, repository.RemoteIdentity)
+	}
 }
 
 func TestRunHistoryUsesAStableCursorWithoutDroppingOlderRuns(t *testing.T) {
