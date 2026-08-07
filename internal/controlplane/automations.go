@@ -433,6 +433,17 @@ func validateDefinitionScheduleDependencies(
 			return invalid("unknown_run_parameter", "parameters must be declared by the selected Definition")
 		}
 	}
+	resolvedParameters := make(map[string]string, len(definition.Inputs))
+	for key, defaultValue := range definition.Inputs {
+		resolvedParameters[key] = defaultValue
+	}
+	for key, value := range parameters {
+		resolvedParameters[key] = value
+	}
+	resolvedPrompt, err := protocol.ResolveDefinitionPrompt(definition.Prompt, resolvedParameters)
+	if err != nil {
+		return unavailable(err)
+	}
 	for _, repositoryID := range repositoryIDs {
 		var remoteIdentity string
 		var enabled, centrallyManaged, advertised int
@@ -459,6 +470,14 @@ func validateDefinitionScheduleDependencies(
 				return conflict(code, message)
 			}
 			return invalid(code, message)
+		}
+		if centrallyManaged != 0 {
+			if canonical, normalizeErr := normalizeManagedGitHubRemote(remoteIdentity); normalizeErr == nil {
+				remoteIdentity = canonical
+			}
+		}
+		if !protocol.AgentPromptFits(definition.Name, remoteIdentity, resolvedPrompt) {
+			return invalid("agent_prompt_too_large", "the complete agent prompt exceeds 72 KiB")
 		}
 	}
 	return nil

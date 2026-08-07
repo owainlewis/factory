@@ -315,6 +315,40 @@ func TestDefinitionScheduleRejectsDisabledManagedRepositoryEvenWhenAdvertised(t 
 	assertErrorCode(t, err, "repository_not_available")
 }
 
+func TestDefinitionScheduleRejectsResolvedAgentPromptAboveRuntimeLimit(t *testing.T) {
+	store := newTestStore(t)
+	definition, created, err := store.CreateDefinition(context.Background(), protocol.CreateDefinitionRequest{
+		RequestKey:     "oversized-schedule-definition",
+		Name:           "Oversized scheduled prompt",
+		Prompt:         string(bytes.Repeat([]byte("p"), protocol.MaxDefinitionPromptBytes)),
+		Runtime:        protocol.RuntimeCodex,
+		TimeoutSeconds: 600,
+		Inputs: map[string]string{
+			"scope_a": string(bytes.Repeat([]byte("x"), maxDefinitionInputBytes)),
+			"scope_b": string(bytes.Repeat([]byte("y"), maxDefinitionInputBytes)),
+			"scope_c": string(bytes.Repeat([]byte("z"), maxDefinitionInputBytes)),
+		},
+	})
+	if err != nil || !created {
+		t.Fatalf("create oversized Definition: created=%t err=%v", created, err)
+	}
+	repository := createManagedTestRepository(t, store, "github.com/owainlewis/oversized-schedule")
+	_, created, err = store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
+		RequestKey:       "oversized-schedule",
+		Title:            "Oversized schedule",
+		DefinitionID:     definition.ID,
+		RepositoryIDs:    []string{repository.ID},
+		ConcurrencyLimit: 1,
+		Trigger: protocol.AutomationTrigger{
+			Type: protocol.AutomationTriggerSchedule, Cron: "0 9 * * *", Timezone: "UTC",
+		},
+	})
+	if created {
+		t.Fatal("oversized resolved prompt created a schedule")
+	}
+	assertErrorCode(t, err, "agent_prompt_too_large")
+}
+
 func TestLegacyWorkflowScheduleRemainsEditableAfterDefinitionScheduleMigration(t *testing.T) {
 	store, detail := createAutomationFixture(t, false)
 	if _, err := store.db.Exec(`DELETE FROM automation_github_issue_triggers WHERE automation_id = ?`, detail.Automation.ID); err != nil {
