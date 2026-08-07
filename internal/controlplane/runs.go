@@ -101,26 +101,27 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 	}
 
 	var repositoryIdentity string
+	var repositoryEnabled, repositoryAdvertised int
 	err = tx.QueryRowContext(ctx, `
-		SELECT repository.remote_identity
+		SELECT repository.remote_identity, repository.enabled,
+		       EXISTS (
+		           SELECT 1 FROM worker_repositories available
+		           WHERE available.repository_id = repository.id
+		             AND available.advertised = 1
+		             AND available.dynamic = 0
+		       )
 		FROM repositories repository
 		WHERE repository.id = ?
-		  AND (
-		      repository.enabled = 1
-		      OR EXISTS (
-		          SELECT 1 FROM worker_repositories available
-		          WHERE available.repository_id = repository.id
-		            AND available.advertised = 1
-		            AND available.dynamic = 0
-		      )
-		  )
 	`, value.RepositoryID).
-		Scan(&repositoryIdentity)
+		Scan(&repositoryIdentity, &repositoryEnabled, &repositoryAdvertised)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.RunDetail{}, false, conflict("repository_not_available", "repository is not configured on a Runner or enabled for managed acquisition")
 	}
 	if err != nil {
 		return protocol.RunDetail{}, false, unavailable(err)
+	}
+	if !runRepositoryAvailable(repositoryIdentity, repositoryEnabled, repositoryAdvertised) {
+		return protocol.RunDetail{}, false, conflict("repository_not_available", "repository is not configured on a Runner or enabled for managed acquisition")
 	}
 	if !protocol.AgentPromptFits(snapshot.Name, repositoryIdentity, resolvedPrompt) {
 		return protocol.RunDetail{}, false, invalid("agent_prompt_too_large", "the complete agent prompt exceeds 72 KiB")
@@ -186,15 +187,14 @@ func (s *Store) CreateRun(ctx context.Context, input protocol.CreateRunRequest) 
 
 func (s *Store) RunRepositories(ctx context.Context) ([]protocol.RunRepository, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT repository.id, repository.remote_identity
+		SELECT repository.id, repository.remote_identity, repository.enabled,
+		       EXISTS (
+		           SELECT 1 FROM worker_repositories available
+		           WHERE available.repository_id = repository.id
+		             AND available.advertised = 1
+		             AND available.dynamic = 0
+		       )
 		FROM repositories repository
-		WHERE repository.enabled = 1
-		   OR EXISTS (
-		       SELECT 1 FROM worker_repositories available
-		       WHERE available.repository_id = repository.id
-		         AND available.advertised = 1
-		         AND available.dynamic = 0
-		   )
 		ORDER BY repository.remote_identity, repository.id
 	`)
 	if err != nil {
@@ -204,8 +204,12 @@ func (s *Store) RunRepositories(ctx context.Context) ([]protocol.RunRepository, 
 	result := make([]protocol.RunRepository, 0)
 	for rows.Next() {
 		var repository protocol.RunRepository
-		if err := rows.Scan(&repository.ID, &repository.RemoteIdentity); err != nil {
+		var enabled, advertised int
+		if err := rows.Scan(&repository.ID, &repository.RemoteIdentity, &enabled, &advertised); err != nil {
 			return nil, unavailable(err)
+		}
+		if !runRepositoryAvailable(repository.RemoteIdentity, enabled, advertised) {
+			continue
 		}
 		result = append(result, repository)
 	}
@@ -213,6 +217,14 @@ func (s *Store) RunRepositories(ctx context.Context) ([]protocol.RunRepository, 
 		return nil, unavailable(err)
 	}
 	return result, nil
+}
+
+func runRepositoryAvailable(remoteIdentity string, enabled, advertised int) bool {
+	if advertised != 0 {
+		return true
+	}
+	_, err := normalizeManagedGitHubRemote(remoteIdentity)
+	return enabled != 0 && err == nil
 }
 
 func (s *Store) selectRunRoute(

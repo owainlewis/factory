@@ -190,6 +190,49 @@ func TestRunOnceTreatsAMalformedGitHubIdentityAsAnAdvertisedStaticRepository(t *
 	}
 }
 
+func TestRunOnceExcludesAnEnabledStaticRepositoryAfterItsRunnerStopsAdvertising(t *testing.T) {
+	store := newTestStore(t)
+	definition := createTestDefinition(t, store, "unavailable-static-definition", "Review Static Checkout")
+	worker := registerDefinitionWorker(
+		t, store, workerB,
+		protocol.RepositoryRegistration{Key: "local-checkout", RemoteIdentity: "file:///tmp/factory-unavailable-static"},
+		protocol.CapabilityReady,
+		nil,
+	)
+	repository := worker.Repositories[0]
+	if _, err := store.db.Exec(`UPDATE repositories SET enabled = 1 WHERE id = ?`, repository.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterWorker(context.Background(), workerB, protocol.WorkerRegistration{
+		Name: workerB, WorkerVersion: "test", Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
+		Capabilities: []protocol.Capability{
+			{Kind: protocol.CapabilityKindTool, Name: "git", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindTool, Name: "gh", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
+		},
+		Capacity: 1, Health: "healthy",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	repositories, err := store.RunRepositories(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, option := range repositories {
+		if option.ID == repository.ID {
+			t.Fatalf("unadvertised static repository remained selectable: %#v", option)
+		}
+	}
+	_, created, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "unavailable-static-run", DefinitionID: definition.ID, RepositoryID: repository.ID,
+	})
+	if created {
+		t.Fatal("unadvertised static repository created a Run")
+	}
+	assertErrorCode(t, err, "repository_not_available")
+}
+
 func TestRunHistoryUsesAStableCursorWithoutDroppingOlderRuns(t *testing.T) {
 	store, definition, repository, _ := setupRunTest(t, true)
 	fixed := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
