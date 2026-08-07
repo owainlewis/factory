@@ -25,7 +25,7 @@ var testIssue = protocol.GitHubIssueMatch{
 	Title:  "Add control-plane GitHub issue Automations",
 	URL:    "https://github.com/owainlewis/factory/issues/184",
 	State:  "open",
-	Labels: []string{"enhancement", "factory:ready"},
+	Labels: []string{"enhancement", "needs-agent"},
 }
 
 var testPullRequest = protocol.GitHubPullRequestMatch{
@@ -36,7 +36,7 @@ var testPullRequest = protocol.GitHubPullRequestMatch{
 	IsDraft:    false,
 	BaseBranch: "main",
 	HeadCommit: strings.Repeat("a", 40),
-	Labels:     []string{"enhancement", "factory:review"},
+	Labels:     []string{"enhancement", "needs-agent"},
 }
 
 type fakeGitHubIssueLister struct {
@@ -130,7 +130,7 @@ func createAutomationFixture(
 		Context: "Open a reviewed pull request.", TimeoutSeconds: 3600,
 		Trigger: protocol.AutomationTrigger{
 			Type: protocol.AutomationTriggerGitHubIssue, State: "open",
-			RequiredLabels: []string{"factory:ready"}, PollIntervalSeconds: 10,
+			RequiredLabels: []string{"needs-agent"}, PollIntervalSeconds: 10,
 		},
 	})
 	if err != nil || !created {
@@ -164,7 +164,7 @@ func createPullRequestAutomationFixture(
 		Context: "Review the live pull request without merging it.", TimeoutSeconds: 3600,
 		Trigger: protocol.AutomationTrigger{
 			Type: protocol.AutomationTriggerGitHubPullRequest, State: "open",
-			IncludeDrafts: false, RequiredLabels: []string{"factory:review"},
+			IncludeDrafts: false, RequiredLabels: []string{"needs-agent"},
 			BaseBranches: []string{"main"}, PollIntervalSeconds: 10,
 		},
 	})
@@ -202,7 +202,7 @@ func TestAutomationStoreLifecycleIsTypedDisabledFirstAndOptimistic(t *testing.T)
 		WorkflowID: detail.Automation.WorkflowID, RepositoryID: detail.Automation.RepositoryID,
 		Context: "Open a reviewed pull request.", TimeoutSeconds: 3600,
 		Trigger: protocol.AutomationTrigger{
-			Type: "github_issue", State: "open", RequiredLabels: []string{"factory:ready"}, PollIntervalSeconds: 10,
+			Type: "github_issue", State: "open", RequiredLabels: []string{"needs-agent"}, PollIntervalSeconds: 10,
 		},
 	})
 	if err != nil || created || replayed.Automation.ID != detail.Automation.ID {
@@ -212,7 +212,7 @@ func TestAutomationStoreLifecycleIsTypedDisabledFirstAndOptimistic(t *testing.T)
 		ExpectedVersion: 1, Title: "Ready implementation issues",
 		WorkflowID: detail.Automation.WorkflowID, Context: "Use live state.", TimeoutSeconds: 7200,
 		Trigger: protocol.AutomationTrigger{
-			Type: "github_issue", State: "open", RequiredLabels: []string{"bug", "factory:ready"}, PollIntervalSeconds: 30,
+			Type: "github_issue", State: "open", RequiredLabels: []string{"bug", "needs-agent"}, PollIntervalSeconds: 30,
 		},
 	})
 	if err != nil || updated.Automation.Version != 2 || updated.Automation.RepositoryID != detail.Automation.RepositoryID {
@@ -222,7 +222,7 @@ func TestAutomationStoreLifecycleIsTypedDisabledFirstAndOptimistic(t *testing.T)
 		ExpectedVersion: 1, Title: "Ready implementation issues",
 		WorkflowID: detail.Automation.WorkflowID, Context: "Use live state.", TimeoutSeconds: 7200,
 		Trigger: protocol.AutomationTrigger{
-			Type: "github_issue", State: "open", RequiredLabels: []string{"bug", "factory:ready"}, PollIntervalSeconds: 30,
+			Type: "github_issue", State: "open", RequiredLabels: []string{"bug", "needs-agent"}, PollIntervalSeconds: 30,
 		},
 	})
 	if err != nil || replayedUpdate.Automation.Version != 2 {
@@ -303,7 +303,7 @@ func TestAutomationEvaluationPersistsBeforeAtomicIdempotentDispatch(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"Trusted trigger conditions:", "Untrusted trigger observation:", "Use gh to fetch the live GitHub item", `"required_labels":["factory:ready"]`} {
+	for _, required := range []string{"Trusted trigger conditions:", "Untrusted trigger observation:", "Use gh to fetch the live GitHub item", `"required_labels":["needs-agent"]`} {
 		if !stringsContain(task.ResolvedPrompt, required) {
 			t.Fatalf("resolved prompt missing %q:\n%s", required, task.ResolvedPrompt)
 		}
@@ -829,7 +829,7 @@ func TestAutomationServiceShutdownCancelsGitHubAndAdmitsNoOccurrence(t *testing.
 }
 
 func TestGitHubIssueRunnerReportsActionableDependencyTimeoutAndOutputFailures(t *testing.T) {
-	trigger := protocol.GitHubIssueTrigger{Type: "github_issue", State: "open", RequiredLabels: []string{"factory:ready"}, PollIntervalSeconds: 10}
+	trigger := protocol.GitHubIssueTrigger{Type: "github_issue", State: "open", RequiredLabels: []string{"needs-agent"}, PollIntervalSeconds: 10}
 	tests := []struct {
 		name   string
 		runner githubIssueRunner
@@ -876,7 +876,7 @@ func TestGitHubIssueRunnerReportsActionableDependencyTimeoutAndOutputFailures(t 
 		values[index] = map[string]any{
 			"number": number, "title": "Issue", "state": "OPEN",
 			"url":    "https://github.com/owainlewis/factory/issues/" + strconvItoa(number),
-			"labels": []map[string]string{{"id": "1", "name": "factory:ready", "description": "", "color": "ffffff"}},
+			"labels": []map[string]string{{"id": "1", "name": "needs-agent", "description": "", "color": "ffffff"}},
 		}
 	}
 	body, _ := json.Marshal(values)
@@ -891,7 +891,7 @@ func TestGitHubIssueRunnerReportsActionableDependencyTimeoutAndOutputFailures(t 
 func TestGitHubIssueRunnerUsesFixedBoundedArguments(t *testing.T) {
 	trigger := protocol.GitHubIssueTrigger{
 		Type: protocol.AutomationTriggerGitHubIssue, State: "open",
-		RequiredLabels: []string{"factory:ready", "triage"}, PollIntervalSeconds: 10,
+		RequiredLabels: []string{"needs-agent", "triage"}, PollIntervalSeconds: 10,
 	}
 	var executable string
 	var arguments []string
@@ -900,13 +900,13 @@ func TestGitHubIssueRunnerUsesFixedBoundedArguments(t *testing.T) {
 		run: func(_ context.Context, command string, values ...string) ([]byte, []byte, bool, bool, error) {
 			executable = command
 			arguments = append([]string(nil), values...)
-			return []byte(`[{"number":184,"title":"Issue","url":"https://github.com/owainlewis/factory/issues/184","state":"OPEN","labels":[{"id":"1","name":"factory:ready","description":"","color":"fff"},{"id":"2","name":"triage","description":"","color":"fff"}]}]`), nil, false, false, nil
+			return []byte(`[{"number":184,"title":"Issue","url":"https://github.com/owainlewis/factory/issues/184","state":"OPEN","labels":[{"id":"1","name":"needs-agent","description":"","color":"fff"},{"id":"2","name":"triage","description":"","color":"fff"}]}]`), nil, false, false, nil
 		},
 	}
 	if _, err := runner.ListIssues(context.Background(), "github.com/owainlewis/factory", trigger); err != nil {
 		t.Fatal(err)
 	}
-	want := "issue list --repo owainlewis/factory --state open --limit 101 --json number,title,url,labels,state --label factory:ready --label triage"
+	want := "issue list --repo owainlewis/factory --state open --limit 101 --json number,title,url,labels,state --label needs-agent --label triage"
 	if executable != "gh" || strings.Join(arguments, " ") != want {
 		t.Fatalf("command = %q %q, want gh %q", executable, strings.Join(arguments, " "), want)
 	}
@@ -918,7 +918,7 @@ func TestGitHubIssueRunnerUsesFixedBoundedArguments(t *testing.T) {
 func TestGitHubPullRequestRunnerUsesTypedFiltersAndCompleteBaseBranchPasses(t *testing.T) {
 	trigger := protocol.GitHubPullRequestTrigger{
 		Type: protocol.AutomationTriggerGitHubPullRequest, State: "open",
-		IncludeDrafts: false, RequiredLabels: []string{"factory:review"},
+		IncludeDrafts: false, RequiredLabels: []string{"needs-agent"},
 		BaseBranches: []string{"main", "release"}, PollIntervalSeconds: 10,
 	}
 	calls := make([]string, 0, 2)
@@ -944,7 +944,7 @@ func TestGitHubPullRequestRunnerUsesTypedFiltersAndCompleteBaseBranchPasses(t *t
 	for _, fragment := range []string{
 		"gh pr list --repo owainlewis/factory --state open --limit 101",
 		"--json number,title,url,labels,state,isDraft,baseRefName,headRefOid",
-		"--search draft:false", "--label factory:review",
+		"--search draft:false", "--label needs-agent",
 	} {
 		if !strings.Contains(calls[0], fragment) {
 			t.Fatalf("first pull-request command %q missing %q", calls[0], fragment)
@@ -958,7 +958,7 @@ func TestGitHubPullRequestRunnerUsesTypedFiltersAndCompleteBaseBranchPasses(t *t
 func TestGitHubPullRequestRunnerValidatesDraftLabelsBasesLimitsAndErrors(t *testing.T) {
 	baseTrigger := protocol.GitHubPullRequestTrigger{
 		Type: protocol.AutomationTriggerGitHubPullRequest, State: "open",
-		RequiredLabels: []string{"factory:review"}, BaseBranches: []string{"main"},
+		RequiredLabels: []string{"needs-agent"}, BaseBranches: []string{"main"},
 		PollIntervalSeconds: 10,
 	}
 	tests := []struct {
@@ -1012,7 +1012,7 @@ func TestGitHubPullRequestRunnerValidatesDraftLabelsBasesLimitsAndErrors(t *test
 	}{
 		{name: "malformed", runner: githubIssueRunner{lookPath: fakeGHPath, run: fakeGHRun([]byte("{"), nil, false, false, nil)}, code: "gh_malformed_output"},
 		{name: "null array", runner: githubIssueRunner{lookPath: fakeGHPath, run: fakeGHRun([]byte("null"), nil, false, false, nil)}, code: "gh_malformed_output"},
-		{name: "missing draft field", runner: githubIssueRunner{lookPath: fakeGHPath, run: fakeGHRun([]byte(`[{"number":185,"title":"Pull request","url":"https://github.com/owainlewis/factory/pull/185","state":"OPEN","baseRefName":"main","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[{"id":"1","name":"factory:review","description":"","color":"ffffff"}]}]`), nil, false, false, nil)}, code: "gh_malformed_output"},
+		{name: "missing draft field", runner: githubIssueRunner{lookPath: fakeGHPath, run: fakeGHRun([]byte(`[{"number":185,"title":"Pull request","url":"https://github.com/owainlewis/factory/pull/185","state":"OPEN","baseRefName":"main","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[{"id":"1","name":"needs-agent","description":"","color":"ffffff"}]}]`), nil, false, false, nil)}, code: "gh_malformed_output"},
 		{name: "permission", runner: githubIssueRunner{lookPath: fakeGHPath, run: fakeGHRun(nil, []byte("GraphQL: Resource not accessible by personal access token"), false, false, errors.New("exit 1"))}, code: "gh_permission_denied"},
 		{name: "oversized", runner: githubIssueRunner{lookPath: fakeGHPath, run: fakeGHRun(nil, nil, true, false, nil)}, code: "gh_output_too_large"},
 	} {
@@ -1100,7 +1100,7 @@ func TestAutomationAndOccurrencePagesUseStableCursors(t *testing.T) {
 			TimeoutSeconds: 60,
 			Trigger: protocol.AutomationTrigger{
 				Type: protocol.AutomationTriggerGitHubIssue, State: "open",
-				RequiredLabels: []string{"factory:ready"}, PollIntervalSeconds: 10,
+				RequiredLabels: []string{"needs-agent"}, PollIntervalSeconds: 10,
 			},
 		})
 		if err != nil || !created {
@@ -1131,7 +1131,7 @@ func TestAutomationAndOccurrencePagesUseStableCursors(t *testing.T) {
 		matches[index] = protocol.GitHubIssueMatch{
 			Number: number, Title: "Issue " + strconv.Itoa(number), State: "open",
 			URL:    "https://github.com/owainlewis/factory/issues/" + strconv.Itoa(number),
-			Labels: []string{"factory:ready"},
+			Labels: []string{"needs-agent"},
 		}
 	}
 	if err := store.completeAutomationSuccess(context.Background(), evaluation, matches); err != nil {
@@ -1259,7 +1259,7 @@ func TestHTTPAutomationLifecycleAndPreview(t *testing.T) {
 	response := postJSON(http.MethodPost, "/api/v1/automations", protocol.CreateAutomationRequest{
 		RequestKey: "http-create", Title: "HTTP ready issues", WorkflowID: workflow.Workflow.ID,
 		RepositoryID: repository.ID, Context: "Use live state.", TimeoutSeconds: 60,
-		Trigger: protocol.AutomationTrigger{Type: "github_issue", State: "open", RequiredLabels: []string{"factory:ready"}, PollIntervalSeconds: 10},
+		Trigger: protocol.AutomationTrigger{Type: "github_issue", State: "open", RequiredLabels: []string{"needs-agent"}, PollIntervalSeconds: 10},
 	})
 	requireStatus(t, response, http.StatusCreated)
 	created := decodeResponse[protocol.AutomationDetail](t, response)
@@ -1320,7 +1320,7 @@ func TestHTTPPullRequestAutomationUsesStrictTypedTrigger(t *testing.T) {
 		"request_key":"http-pull-request-create","title":"HTTP pull requests",
 		"workflow_id":%q,"repository_id":%q,"context":"Review only.","timeout_seconds":60,
 		"trigger":{"type":"github_pull_request","state":"open","include_drafts":false,
-		"required_labels":["factory:review"],"base_branches":["main"],"poll_interval_seconds":10}
+		"required_labels":["needs-agent"],"base_branches":["main"],"poll_interval_seconds":10}
 	}`, workflow.Workflow.ID, repository.ID)
 	response = post(validBody)
 	requireStatus(t, response, http.StatusCreated)

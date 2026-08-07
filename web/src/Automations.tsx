@@ -975,7 +975,7 @@ function AutomationForm({
                     <input id={timezoneID} name="timezone" defaultValue={current?.trigger.type === "schedule" ? current.trigger.timezone : Intl.DateTimeFormat().resolvedOptions().timeZone} aria-invalid={Boolean(errors.timezone)} />
                   </Field>
                 </> : <Field key="provider-labels" label="Required labels" htmlFor={labelsID} error={errors.labels} hint="Comma separated · up to 20">
-                  <input id={labelsID} name="required_labels" defaultValue={current?.trigger.type === "github_issue" || current?.trigger.type === "github_pull_request" ? current.trigger.required_labels.join(", ") : "factory:ready"} aria-invalid={Boolean(errors.labels)} />
+                  <input id={labelsID} name="required_labels" defaultValue={current?.trigger.type === "github_issue" || current?.trigger.type === "github_pull_request" ? current.trigger.required_labels.join(", ") : "needs-agent"} aria-invalid={Boolean(errors.labels)} />
                 </Field>}
               </div>
             </section>

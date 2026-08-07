@@ -1121,7 +1121,7 @@ test("previews and dispatches one typed GitHub pull-request Automation without d
   await automation.getByLabel("Runbook").selectOption({ label: "E2E pull-request review" });
   await automation.getByLabel("Repository").selectOption(identifiers.automationRepository);
   await automation.getByLabel("Trigger").selectOption("github_pull_request");
-  await automation.getByLabel("Required labels").fill("factory:review");
+  await automation.getByLabel("Required labels").fill("needs-agent");
   await automation.getByLabel("Base branches").fill("main");
   await automation.getByLabel("Context for this Automation").fill("Review only the safe synthetic pull request and never merge it.");
   await automation.getByRole("button", { name: "Create Automation" }).click();

@@ -175,9 +175,9 @@ Untrusted trigger observation:
 
 Trigger-condition JSON has no insignificant whitespace and uses fixed field
 order. Issue conditions are
-`{"type":"github_issue","state":"open","required_labels":["factory:ready"]}`.
+`{"type":"github_issue","state":"open","required_labels":["needs-agent"]}`.
 Pull-request conditions are illustrated by
-`{"type":"github_pull_request","state":"open","include_drafts":false,"required_labels":["factory:review"],"base_branches":["main"]}`.
+`{"type":"github_pull_request","state":"open","include_drafts":false,"required_labels":["needs-agent"],"base_branches":["main"]}`.
 Values come from the typed snapshot. Strings use JSON escaping and arrays use
 their snapshotted canonical order. The polling interval is operational timing,
 not an item predicate, and is omitted.
@@ -532,7 +532,7 @@ For example:
   "trigger": {
     "type": "github_issue",
     "state": "open",
-    "required_labels": ["factory:ready"],
+    "required_labels": ["needs-agent"],
     "poll_interval_seconds": 30
   }
 }
@@ -545,7 +545,7 @@ The other Trigger shapes are:
   "type": "github_pull_request",
   "state": "open",
   "include_drafts": false,
-  "required_labels": ["factory:review"],
+    "required_labels": ["needs-agent"],
   "base_branches": ["main"],
   "poll_interval_seconds": 60
 }

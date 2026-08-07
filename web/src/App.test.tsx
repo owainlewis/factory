@@ -925,7 +925,7 @@ describe("App", () => {
     await user.selectOptions(within(dialog).getByLabelText("Pull request state"), "open");
     await user.click(within(dialog).getByLabelText("Include drafts"));
     await user.clear(within(dialog).getByLabelText("Required labels"));
-    await user.type(within(dialog).getByLabelText("Required labels"), "factory:review");
+    await user.type(within(dialog).getByLabelText("Required labels"), "needs-agent");
     await user.type(within(dialog).getByLabelText("Base branches"), "main, release");
     await user.click(within(dialog).getByRole("button", { name: "Create Automation" }));
 

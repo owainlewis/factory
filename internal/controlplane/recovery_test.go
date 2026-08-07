@@ -45,7 +45,7 @@ func TestBackupAndRestorePreserveDurableControlPlaneState(t *testing.T) {
 		Context: "Preserve this automation.", TimeoutSeconds: 3600,
 		Trigger: protocol.AutomationTrigger{
 			Type: protocol.AutomationTriggerGitHubIssue, State: "open",
-			RequiredLabels: []string{"factory:ready"}, PollIntervalSeconds: 60,
+			RequiredLabels: []string{"needs-agent"}, PollIntervalSeconds: 60,
 		},
 	})
 	if err != nil || !created {

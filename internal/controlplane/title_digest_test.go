@@ -38,7 +38,7 @@ func TestTitleRenamePreservesLegacyMutationDigests(t *testing.T) {
 		RepositoryID: "repository", Context: "", TimeoutSeconds: 60,
 		Trigger: protocol.AutomationTrigger{
 			Type: protocol.AutomationTriggerGitHubIssue, State: "open",
-			RequiredLabels: []string{"factory:ready"}, PollIntervalSeconds: 30,
+			RequiredLabels: []string{"needs-agent"}, PollIntervalSeconds: 30,
 		},
 	}
 	automationDigestValue, err := automationDigest(automation)

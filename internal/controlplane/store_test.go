@@ -115,7 +115,7 @@ func TestTitleMigrationPreservesWorkflowAutomationAndTaskSnapshots(t *testing.T)
 			'workflow', 'repository', '', 60, 'github_issue', 1, 1);
 		INSERT INTO automation_github_issue_triggers(
 			automation_id, issue_state, required_labels_json, poll_interval_seconds
-		) VALUES ('automation', 'open', '["factory:ready"]', 10);
+		) VALUES ('automation', 'open', '["needs-agent"]', 10);
 		INSERT INTO automation_occurrences(
 			id, automation_id, automation_version, automation_name, workflow_revision_id,
 			repository_id, repository_identity, context, timeout_seconds, state,
@@ -216,7 +216,7 @@ func TestPullRequestAutomationMigrationPreservesGitHubIssueAutomations(t *testin
 			'repository', '', 60, 'github_issue', 1, 1);
 		INSERT INTO automation_github_issue_triggers(
 			automation_id, issue_state, required_labels_json, poll_interval_seconds
-		) VALUES ('automation', 'open', '["factory:ready"]', 10);
+		) VALUES ('automation', 'open', '["needs-agent"]', 10);
 	`); err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestPullRequestAutomationMigrationPreservesGitHubIssueAutomations(t *testin
 	`).Scan(&triggerType, &state, &labels); err != nil {
 		t.Fatal(err)
 	}
-	if triggerType != "github_issue" || state != "open" || labels != `["factory:ready"]` {
+	if triggerType != "github_issue" || state != "open" || labels != `["needs-agent"]` {
 		t.Fatalf("migrated issue Automation = type %q state %q labels %q", triggerType, state, labels)
 	}
 	if _, err := database.Exec(`
@@ -356,11 +356,11 @@ func TestScheduleAutomationMigrationPreservesExistingTypedAutomationsAndOccurren
 			('pull-request', 'pr-request', X'00', 'Pull requests', 'pull requests', 'workflow', 'repository', '', 60, 'github_pull_request', 1, 1);
 		INSERT INTO automation_github_issue_triggers(
 			automation_id, issue_state, required_labels_json, poll_interval_seconds
-		) VALUES ('issue', 'open', '["factory:ready"]', 10);
+		) VALUES ('issue', 'open', '["needs-agent"]', 10);
 		INSERT INTO automation_github_pull_request_triggers(
 			automation_id, pull_request_state, include_drafts, required_labels_json,
 			base_branches_json, poll_interval_seconds
-		) VALUES ('pull-request', 'open', 0, '["factory:review"]', '["main"]', 10);
+		) VALUES ('pull-request', 'open', 0, '["needs-agent"]', '["main"]', 10);
 		INSERT INTO automation_occurrences(
 			id, automation_id, automation_version, automation_name, workflow_revision_id,
 			repository_id, repository_identity, context, timeout_seconds, state,
@@ -374,7 +374,7 @@ func TestScheduleAutomationMigrationPreservesExistingTypedAutomationsAndOccurren
 			occurrence_id, automation_id, issue_number, issue_url, issue_title,
 			observed_state, observed_labels_json, configured_state, required_labels_json
 		) VALUES ('issue-occurrence', 'issue', 186, 'https://github.com/example/repository/issues/186',
-			'Issue', 'open', '["factory:ready"]', 'open', '["factory:ready"]');
+			'Issue', 'open', '["needs-agent"]', 'open', '["needs-agent"]');
 		INSERT INTO automation_github_pull_request_occurrences(
 			occurrence_id, automation_id, pull_request_number, pull_request_url,
 			pull_request_title, observed_state, observed_draft, observed_base_branch,
@@ -382,7 +382,7 @@ func TestScheduleAutomationMigrationPreservesExistingTypedAutomationsAndOccurren
 			include_drafts, required_labels_json, base_branches_json
 		) VALUES ('pr-occurrence', 'pull-request', 191, 'https://github.com/example/repository/pull/191',
 			'Pull request', 'open', 0, 'main', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-			'["factory:review"]', 'open', 0, '["factory:review"]', '["main"]');
+			'["needs-agent"]', 'open', 0, '["needs-agent"]', '["main"]');
 	`); err != nil {
 		t.Fatal(err)
 	}

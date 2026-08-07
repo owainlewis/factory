@@ -39,7 +39,7 @@ name = "github-ready"
 source = "github"
 project = "example/project"
 status = "open"
-labels = ["factory:ready"]
+labels = ["needs-agent"]
 prompt = "Implement the issue and open a reviewed pull request."
 timeout_seconds = 3600
 `
@@ -205,7 +205,7 @@ func TestLegacyPollerMigrationPendingResumeFinalizeAndDuplicatePrevention(t *tes
 	}
 	if err := store.completeAutomationSuccess(context.Background(), evaluation, []protocol.GitHubIssueMatch{{
 		Number: 42, Title: "Issue", URL: "https://github.com/example/project/issues/42",
-		State: "open", Labels: []string{"factory:ready"},
+		State: "open", Labels: []string{"needs-agent"},
 	}}); err != nil {
 		t.Fatal(err)
 	}

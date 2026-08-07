@@ -136,12 +136,12 @@ if [ "\${1:-}" = "auth" ] && [ "\${2:-}" = "status" ]; then
 fi
 
 if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "list" ]; then
-  printf '%s\n' '[{"number":184,"title":"Typed Automation browser fixture","url":"https://github.com/example/automation-fixture/issues/184","state":"OPEN","labels":[{"id":"label-ready","name":"factory:ready","description":"","color":"ffffff"}]}]'
+  printf '%s\n' '[{"number":184,"title":"Typed Automation browser fixture","url":"https://github.com/example/automation-fixture/issues/184","state":"OPEN","labels":[{"id":"label-ready","name":"needs-agent","description":"","color":"ffffff"}]}]'
   exit 0
 fi
 
 if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "list" ]; then
-  printf '%s\n' '[{"number":185,"title":"Typed pull-request Automation browser fixture","url":"https://github.com/example/automation-fixture/pull/185","state":"OPEN","isDraft":false,"baseRefName":"main","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[{"id":"label-review","name":"factory:review","description":"","color":"ffffff"}]}]'
+  printf '%s\n' '[{"number":185,"title":"Typed pull-request Automation browser fixture","url":"https://github.com/example/automation-fixture/pull/185","state":"OPEN","isDraft":false,"baseRefName":"main","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[{"id":"label-review","name":"needs-agent","description":"","color":"ffffff"}]}]'
   exit 0
 fi
 
@@ -166,7 +166,7 @@ name = "browser-ready"
 source = "github"
 project = "example/automation-fixture"
 status = "open"
-labels = ["factory:ready"]
+labels = ["needs-agent"]
 prompt = "Implement the issue and open a reviewed pull request."
 timeout_seconds = 3600
 `,

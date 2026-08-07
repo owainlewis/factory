@@ -154,7 +154,7 @@ const initialAutomationDetail: AutomationDetail = {
     trigger: {
       type: "github_issue",
       state: "open",
-      required_labels: ["factory:ready"],
+      required_labels: ["needs-agent"],
       poll_interval_seconds: 30,
     },
     health: { status: "disabled", message: "Automation is disabled." },
@@ -288,7 +288,7 @@ export function mockControlPlane(
         issue_url: "https://github.com/example/factory/issues/184",
         issue_title: "Typed Automation run state",
         observed_state: "open",
-        observed_labels: ["factory:ready"],
+        observed_labels: ["needs-agent"],
         task_request_key: "automation:automation-ready:github_issue:184",
         task,
         task_id_snapshot: task.id,
@@ -313,7 +313,7 @@ export function mockControlPlane(
       issue_url: "https://github.com/example/factory/issues/185",
       issue_title: "Newest run without task",
       observed_state: "open",
-      observed_labels: ["factory:ready"],
+      observed_labels: ["needs-agent"],
       task_request_key: "automation:automation-ready:github_issue:185",
       task_id_snapshot: options.automationRunWithoutTaskState === "task_deleted" ? "task-deleted" : undefined,
       diagnostic: options.automationRunWithoutTaskState === "failed" ? "No eligible worker." : undefined,
@@ -339,7 +339,7 @@ export function mockControlPlane(
     issue_url: `https://github.com/example/factory/issues/${issue}`,
     issue_title: `Paged issue ${issue}`,
     observed_state: "open",
-    observed_labels: ["factory:ready"],
+    observed_labels: ["needs-agent"],
     task_request_key: `automation:${automationDetail.automation.id}:github_issue:${issue}`,
     created_at: createdAt,
     updated_at: createdAt,
@@ -815,7 +815,7 @@ export function mockControlPlane(
           source: "github",
           project: "example/factory",
           state: "open",
-          required_labels: ["factory:ready"],
+          required_labels: ["needs-agent"],
           poll_interval_seconds: 30,
           timeout_seconds: 3600,
           repository_id: "repo-factory",
@@ -972,13 +972,13 @@ export function mockControlPlane(
           title: "Typed pull-request Automations",
           url: "https://github.com/example/factory/pull/185",
           state: "open",
-          labels: ["factory:review"],
+          labels: ["needs-agent"],
           is_draft: false,
           base_branch: "main",
           head_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         }] });
       }
-      return Response.json({ matches: [{ number: 184, title: "Typed Automations", url: "https://github.com/example/factory/issues/184", state: "open", labels: ["factory:ready"] }] });
+      return Response.json({ matches: [{ number: 184, title: "Typed Automations", url: "https://github.com/example/factory/issues/184", state: "open", labels: ["needs-agent"] }] });
     }
     if (path === `/api/v1/automations/${automationDetail.automation.id}/enabled` && init?.method === "PUT") {
       const body = JSON.parse(String(init.body)) as { enabled: boolean };

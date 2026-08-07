@@ -200,7 +200,7 @@ data_directory = "/Users/example/.factory/ingest/github"
 
 [github]
 repository = "owner/repository"
-label = "factory:ready-to-implement"
+label = "needs-agent"
 worker_id = "61b30338-95dc-4704-80bd-8a4c63aa3037"
 repository_key = "repository"
 workflow_id = "9ec13fe1-4f41-49e2-94c9-5bb4b7f3c807"

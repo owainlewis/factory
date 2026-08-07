@@ -391,7 +391,7 @@ func TestInvalidStoredScheduleDegradesOnlyItsAutomation(t *testing.T) {
 		TimeoutSeconds: 60,
 		Trigger: protocol.AutomationTrigger{
 			Type: protocol.AutomationTriggerGitHubIssue, State: "open",
-			RequiredLabels: []string{"factory:ready"}, PollIntervalSeconds: 30,
+			RequiredLabels: []string{"needs-agent"}, PollIntervalSeconds: 30,
 		},
 	})
 	if err != nil || !created {
