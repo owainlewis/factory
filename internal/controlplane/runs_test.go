@@ -458,6 +458,14 @@ func TestRunLifecycleCapturesResultAndWarnsBeforeRetry(t *testing.T) {
 		job.StartedAt == nil || job.TerminalAt == nil || !job.RetryMayRepeatEffects {
 		t.Fatalf("failed Job evidence = %#v", job)
 	}
+	if err := store.DeleteTask(context.Background(), job.TaskID); err == nil {
+		t.Fatal("legacy deletion unexpectedly accepted a Run Job Task")
+	} else {
+		assertErrorCode(t, err, "task_delete_not_allowed")
+	}
+	if preserved, err := store.Run(context.Background(), detail.Run.ID); err != nil || preserved.Run.State != "failed" {
+		t.Fatalf("Run changed after rejected legacy deletion: err=%v detail=%#v", err, preserved)
+	}
 	if _, err := store.RetryExecution(context.Background(), job.ExecutionID); err == nil {
 		t.Fatal("legacy retry unexpectedly accepted a Run Job execution")
 	} else {

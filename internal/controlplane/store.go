@@ -2645,14 +2645,21 @@ func (s *Store) DeleteTask(ctx context.Context, taskID string) error {
 	defer tx.Rollback()
 
 	var executionID, state string
+	var runJob int
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, state FROM executions WHERE task_id = ?
-	`, taskID).Scan(&executionID, &state)
+		SELECT execution.id, execution.state,
+		       EXISTS (SELECT 1 FROM jobs job WHERE job.task_id = execution.task_id)
+		FROM executions execution
+		WHERE execution.task_id = ?
+	`, taskID).Scan(&executionID, &state, &runJob)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return unavailable(err)
+	}
+	if runJob != 0 {
+		return conflict("task_delete_not_allowed", "Run Job Tasks cannot be deleted through the legacy Task endpoint")
 	}
 	if state != "succeeded" && state != "failed" && state != "cancelled" {
 		return conflict("task_not_terminal", "only terminal task history can be deleted")
