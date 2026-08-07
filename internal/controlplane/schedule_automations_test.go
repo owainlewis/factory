@@ -246,6 +246,56 @@ func TestDefinitionScheduleCreatesOneRunWithOneJobPerRepository(t *testing.T) {
 	}
 }
 
+func TestLegacyWorkflowScheduleRemainsEditableAfterDefinitionScheduleMigration(t *testing.T) {
+	store, detail := createAutomationFixture(t, false)
+	if _, err := store.db.Exec(`DELETE FROM automation_github_issue_triggers WHERE automation_id = ?`, detail.Automation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`DROP TRIGGER automation_trigger_type_immutable`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE automations SET trigger_type = 'schedule' WHERE id = ?`, detail.Automation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`
+		INSERT INTO automation_schedule_triggers(
+			automation_id, cron, timezone, definition_id, parameters_json, concurrency_limit
+		) VALUES (?, '0 9 * * 1', 'UTC', NULL, '{}', 3)
+	`, detail.Automation.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	legacy, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
+		ExpectedVersion: legacy.Automation.Version,
+		Title:           "Edited legacy schedule",
+		WorkflowID:      legacy.Automation.WorkflowID,
+		Context:         "Updated legacy context.",
+		TimeoutSeconds:  1800,
+		Trigger: protocol.AutomationTrigger{
+			Type: protocol.AutomationTriggerSchedule, Cron: "30 10 * * 2", Timezone: "Europe/London",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Automation.DefinitionID != "" || updated.Automation.WorkflowID != legacy.Automation.WorkflowID ||
+		updated.Automation.Title != "Edited legacy schedule" || updated.Automation.Context != "Updated legacy context." ||
+		updated.Automation.TimeoutSeconds != 1800 || updated.Automation.Trigger.Cron != "30 10 * * 2" {
+		t.Fatalf("updated legacy schedule = %#v", updated.Automation)
+	}
+	var definitionID *string
+	if err := store.db.QueryRow(`SELECT definition_id FROM automation_schedule_triggers WHERE automation_id = ?`, detail.Automation.ID).Scan(&definitionID); err != nil {
+		t.Fatal(err)
+	}
+	if definitionID != nil {
+		t.Fatalf("legacy schedule definition_id = %v; want NULL", definitionID)
+	}
+}
+
 func TestDefinitionScheduleFreezesDefinitionAtOccurrenceAdmission(t *testing.T) {
 	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
 	store, detail := createScheduleAutomationFixture(t, &now, false)

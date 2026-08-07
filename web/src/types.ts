@@ -435,7 +435,7 @@ export interface CreateAutomationInput {
 	trigger: AutomationTrigger;
 }
 
-export interface UpdateAutomationInput extends Omit<CreateAutomationInput, "request_key"> {
+export interface UpdateAutomationInput extends Omit<CreateAutomationInput, "request_key" | "repository_id"> {
 	expected_version: number;
 }
 

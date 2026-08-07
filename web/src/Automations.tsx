@@ -390,7 +390,7 @@ export function AutomationDetail({
         <section className="panel detail-main">
           <PanelHeading title="Configuration" aside={`Version ${automation.version}`} />
           <dl className="metadata">
-            {automation.trigger.type === "schedule" ? <>
+            {automation.definition_id ? <>
               <div><dt>Definition</dt><dd>{automation.definition_name} · generation {automation.definition_generation}</dd></div>
               <div><dt>Repositories</dt><dd className="mono">{automationRepositoryIdentities(automation).join(", ")}</dd></div>
               <div><dt>Concurrency</dt><dd>{automation.concurrency_limit}</dd></div>
@@ -400,13 +400,19 @@ export function AutomationDetail({
             </> : <>
               <div><dt>Runbook</dt><dd>{automation.workflow_title} · revision {automation.workflow_revision}</dd></div>
               <div><dt>Repository</dt><dd className="mono">{automation.repository_identity}</dd></div>
-              <div><dt>{automation.trigger.type === "github_pull_request" ? "Pull request state" : "Issue state"}</dt><dd>{automation.trigger.state}</dd></div>
-            {automation.trigger.type === "github_pull_request" && <>
-              <div><dt>Drafts</dt><dd>{automation.trigger.include_drafts ? "Included" : "Excluded"}</dd></div>
-              <div><dt>Base branches</dt><dd>{automation.trigger.base_branches.join(", ") || "Any"}</dd></div>
-            </>}
-            <div><dt>Required labels</dt><dd>{automation.trigger.required_labels.join(", ") || "None"}</dd></div>
-            <div><dt>Polling</dt><dd>Every {automation.trigger.poll_interval_seconds} seconds</dd></div>
+              {automation.trigger.type === "schedule" ? <>
+                <div><dt>Cron</dt><dd className="mono">{automation.trigger.cron}</dd></div>
+                <div><dt>Timezone</dt><dd>{automation.trigger.timezone}</dd></div>
+                <div><dt>Next due UTC</dt><dd>{automation.next_due_at ? new Date(automation.next_due_at).toISOString() : "Disabled"}</dd></div>
+              </> : <>
+                <div><dt>{automation.trigger.type === "github_pull_request" ? "Pull request state" : "Issue state"}</dt><dd>{automation.trigger.state}</dd></div>
+                {automation.trigger.type === "github_pull_request" && <>
+                  <div><dt>Drafts</dt><dd>{automation.trigger.include_drafts ? "Included" : "Excluded"}</dd></div>
+                  <div><dt>Base branches</dt><dd>{automation.trigger.base_branches.join(", ") || "Any"}</dd></div>
+                </>}
+                <div><dt>Required labels</dt><dd>{automation.trigger.required_labels.join(", ") || "None"}</dd></div>
+                <div><dt>Polling</dt><dd>Every {automation.trigger.poll_interval_seconds} seconds</dd></div>
+              </>}
             </>}
             {!automation.definition_id && <div><dt>Timeout</dt><dd>{automation.timeout_seconds} seconds</dd></div>}
           </dl>
@@ -770,6 +776,7 @@ function AutomationForm({
   const [triggerType, setTriggerType] = useState<AutomationTrigger["type"]>(current?.trigger.type ?? "github_issue");
   const [workflowSelection, setWorkflowSelection] = useState(current?.workflow_id ?? "");
   const [definitionSelection, setDefinitionSelection] = useState(current?.definition_id ?? "");
+  const [parameterOverrides, setParameterOverrides] = useState<Record<string, string>>(current?.parameters ?? {});
   const [repositorySelections, setRepositorySelections] = useState(() => new Set(
     current?.repositories?.map((repository) => repository.id) ?? [],
   ));
@@ -779,6 +786,7 @@ function AutomationForm({
   const [customCron, setCustomCron] = useState(initialSchedule.cron);
   const isPullRequest = triggerType === "github_pull_request";
   const isSchedule = triggerType === "schedule";
+  const usesDefinitionSchedule = isSchedule && (mode === "create" || Boolean(current?.definition_id));
   const selectedRunbook = useQuery({
     queryKey: ["workflow", workflowSelection, "automation-form"],
     queryFn: () => api.workflow(workflowSelection),
@@ -803,7 +811,6 @@ function AutomationForm({
             expected_version: current!.version,
             title: input.title,
             workflow_id: input.workflow_id,
-            repository_id: input.repository_id,
             definition_id: input.definition_id,
             repository_ids: input.repository_ids,
             parameters: input.parameters,
@@ -826,10 +833,9 @@ function AutomationForm({
     const repository = current?.repository_id ?? String(form.get("repository_id") ?? "");
     const repositoryIDs = Array.from(repositorySelections);
     const definition = definitionSelection;
-    const parameters = Object.fromEntries(Object.keys(selectedDefinition?.inputs ?? {}).map((key) => [
-      key,
-      String(form.get(`parameter:${key}`) ?? "").trim(),
-    ]).filter(([, value]) => value !== ""));
+    const parameters = Object.fromEntries(Object.entries(parameterOverrides).filter(([key]) =>
+      Object.hasOwn(selectedDefinition?.inputs ?? {}, key),
+    ));
     const concurrency = Number(form.get("concurrency_limit") || current?.concurrency_limit || 3);
     const context = String(form.get("context") ?? "");
     const timeout = Number(form.get("timeout_seconds"));
@@ -842,19 +848,19 @@ function AutomationForm({
     const nextErrors: Record<string, string> = {};
     if (!title) nextErrors.title = "Enter an Automation title.";
     else if (Array.from(title).length > 100) nextErrors.title = "Keep the title to 100 characters.";
-    if (isSchedule && !definition) nextErrors.definition = "Choose a Definition.";
-    if (!isSchedule && !workflow) nextErrors.workflow = "Choose a runbook.";
-    if (isSchedule && repositoryIDs.length === 0) nextErrors.repository = "Choose at least one repository.";
-    if (!isSchedule && !repository) nextErrors.repository = "Choose a repository.";
+    if (usesDefinitionSchedule && !definition) nextErrors.definition = "Choose a Definition.";
+    if (!usesDefinitionSchedule && !workflow) nextErrors.workflow = "Choose a runbook.";
+    if (usesDefinitionSchedule && repositoryIDs.length === 0) nextErrors.repository = "Choose at least one repository.";
+    if (!usesDefinitionSchedule && !repository) nextErrors.repository = "Choose a repository.";
     if (!isSchedule && (labels.length > 20 || labels.some((label) => new TextEncoder().encode(label).length > 200))) nextErrors.labels = "Use at most 20 labels of 200 bytes each.";
     if (isPullRequest && (baseBranches.length > 20 || baseBranches.some((branch) => new TextEncoder().encode(branch).length > 255))) nextErrors.branches = "Use at most 20 base branches of 255 bytes each.";
     if (!isSchedule && (!Number.isInteger(pollInterval) || pollInterval < 10 || pollInterval > 86_400)) nextErrors.interval = "Use 10 to 86,400 seconds.";
     if (isSchedule && schedulePreset !== "custom" && !/^\d{2}:\d{2}$/.test(scheduleTime)) nextErrors.schedule = "Choose a schedule time.";
     if (isSchedule && cron.split(" ").length !== 5) nextErrors.cron = "Enter exactly five cron fields, with no seconds field.";
     if (isSchedule && !timezone) nextErrors.timezone = "Enter an IANA timezone, such as Europe/London.";
-    if (isSchedule && (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 100)) nextErrors.concurrency = "Use 1 to 100 concurrent Jobs.";
-    if (!isSchedule && (!Number.isInteger(timeout) || timeout < 1 || timeout > 28_800)) nextErrors.timeout = "Use 1 to 28,800 seconds.";
-    if (!isSchedule && new TextEncoder().encode(context).length > 8 * 1024) nextErrors.context = "Keep context to 8 KiB.";
+    if (usesDefinitionSchedule && (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 100)) nextErrors.concurrency = "Use 1 to 100 concurrent Jobs.";
+    if (!usesDefinitionSchedule && (!Number.isInteger(timeout) || timeout < 1 || timeout > 28_800)) nextErrors.timeout = "Use 1 to 28,800 seconds.";
+    if (!usesDefinitionSchedule && new TextEncoder().encode(context).length > 8 * 1024) nextErrors.context = "Keep context to 8 KiB.";
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) {
       if (nextErrors.interval || nextErrors.cron || nextErrors.timeout || nextErrors.concurrency) advancedRef.current?.setAttribute("open", "");
@@ -877,7 +883,7 @@ function AutomationForm({
       required_labels: labels,
       poll_interval_seconds: pollInterval,
     };
-    const payload: Omit<CreateAutomationInput, "request_key"> = isSchedule ? {
+    const payload: Omit<CreateAutomationInput, "request_key"> = usesDefinitionSchedule ? {
       title,
       definition_id: definition,
       repository_ids: repositoryIDs,
@@ -919,17 +925,20 @@ function AutomationForm({
             <section className="automation-form-section">
               <div className="automation-section-heading">
                 <span>1</span>
-                <div><strong>What should run?</strong><small>{isSchedule ? "Choose the shared Definition every agent will run." : "Choose the legacy runbook the agent will follow."}</small></div>
+                <div><strong>What should run?</strong><small>{usesDefinitionSchedule ? "Choose the shared Definition every agent will run." : "Choose the legacy runbook the agent will follow."}</small></div>
               </div>
               <div className="automation-form-grid">
                 <Field label="Title" htmlFor={titleID} error={errors.title}>
                   <input ref={titleRef} id={titleID} name="title" autoComplete="off" defaultValue={current?.title ?? ""} aria-invalid={Boolean(errors.title)} />
                 </Field>
-                {isSchedule ? <Field label="Definition" htmlFor={definitionID} error={errors.definition} hint="Saved prompt, runtime, tools, and inputs.">
+                {usesDefinitionSchedule ? <Field label="Definition" htmlFor={definitionID} error={errors.definition} hint="Saved prompt, runtime, tools, and inputs.">
                   <select
                     id={definitionID}
                     value={definitionSelection}
-                    onChange={(event) => setDefinitionSelection(event.target.value)}
+                    onChange={(event) => {
+                      setDefinitionSelection(event.target.value);
+                      setParameterOverrides({});
+                    }}
                     aria-invalid={Boolean(errors.definition)}
                   >
                     <option value="">Choose a Definition</option>
@@ -954,13 +963,13 @@ function AutomationForm({
                   </select>
                 </Field>}
               </div>
-              {isSchedule && selectedDefinition && (
+              {usesDefinitionSchedule && selectedDefinition && (
                 <div className="runbook-preview" aria-live="polite">
                   <div><BookOpenText size={14} /><strong>{selectedDefinition.name}</strong><span>Generation {selectedDefinition.generation} · {selectedDefinition.runtime}</span></div>
                   <pre>{selectedDefinition.prompt}</pre>
                 </div>
               )}
-              {!isSchedule && workflowSelection && (
+              {!usesDefinitionSchedule && workflowSelection && (
                 <div className="runbook-preview" aria-live="polite">
                   <div><BookOpenText size={14} /><strong>{selectedRunbook.data?.workflow.current_revision.title ?? selectedWorkflow?.current_revision.title ?? current?.workflow_title ?? "Runbook"}</strong><span>{selectedRunbook.data ? `Revision ${selectedRunbook.data.workflow.current_revision.revision_number}` : "Loading…"}</span></div>
                   {selectedRunbook.data ? <pre>{selectedRunbook.data.workflow.current_revision.instructions}</pre> : selectedRunbook.error ? <InlineError error={selectedRunbook.error as Error} /> : null}
@@ -971,9 +980,9 @@ function AutomationForm({
             <section className="automation-form-section">
               <div className="automation-section-heading">
                 <span>2</span>
-                <div><strong>Where should it run?</strong><small>{isSchedule ? "A Run creates one isolated Job per selected repository." : "Each task uses one managed Git repository."}</small></div>
+                <div><strong>Where should it run?</strong><small>{usesDefinitionSchedule ? "A Run creates one isolated Job per selected repository." : "Each task uses one managed Git repository."}</small></div>
               </div>
-              {isSchedule ? <Field label="Repositories" htmlFor={repositoryID} error={errors.repository} hint={`${repositorySelections.size} selected · local and remote Runner routes are supported`}>
+              {usesDefinitionSchedule ? <Field label="Repositories" htmlFor={repositoryID} error={errors.repository} hint={`${repositorySelections.size} selected · local and remote Runner routes are supported`}>
                 <select
                   id={repositoryID}
                   multiple
@@ -996,20 +1005,26 @@ function AutomationForm({
                   {repositoryItems.filter((repository) => repository.id !== current?.repository_id).map((repository) => <option key={repository.id} value={repository.id}>{repository.remote_identity}{repository.enabled ? "" : " (disabled)"}</option>)}
                 </select>
               </Field>}
-              {isSchedule && selectedDefinition && Object.keys(selectedDefinition.inputs).length > 0 && (
+              {usesDefinitionSchedule && selectedDefinition && Object.keys(selectedDefinition.inputs).length > 0 && (
                 <div className="automation-form-grid">
                   {Object.entries(selectedDefinition.inputs).map(([key, defaultValue]) => (
                     <Field key={`${selectedDefinition.id}:${key}`} label={key} htmlFor={`automation-parameter-${key}`} hint={`Default: ${defaultValue || "empty"}`}>
                       <input
                         id={`automation-parameter-${key}`}
                         name={`parameter:${key}`}
-                        defaultValue={selectedDefinition.id === current?.definition_id ? current.parameters?.[key] ?? "" : ""}
+                        value={parameterOverrides[key] ?? ""}
+                        onChange={(event) => setParameterOverrides((values) => ({ ...values, [key]: event.target.value }))}
                       />
+                      {Object.hasOwn(parameterOverrides, key) && <button type="button" className="button button-secondary" onClick={() => setParameterOverrides((values) => {
+                        const next = { ...values };
+                        delete next[key];
+                        return next;
+                      })}>Use default</button>}
                     </Field>
                   ))}
                 </div>
               )}
-              {!isSchedule && <Field label="Context for this Automation" htmlFor={contextID} error={errors.context} hint="Optional repository-specific context · 8 KiB">
+              {!usesDefinitionSchedule && <Field label="Context for this Automation" htmlFor={contextID} error={errors.context} hint="Optional repository-specific context · 8 KiB">
                 <textarea id={contextID} name="context" rows={4} defaultValue={current?.context ?? ""} aria-invalid={Boolean(errors.context)} />
               </Field>}
             </section>
@@ -1072,7 +1087,7 @@ function AutomationForm({
             </section>
 
             <details ref={advancedRef} className="automation-advanced">
-              <summary><span><SlidersHorizontal size={14} /> Expert settings</span><small>{isSchedule ? `Cron ${schedulePreset === "custom" ? customCron : cronForSchedule(schedulePreset, scheduleTime)} · concurrency ${current?.concurrency_limit ?? 3}` : `Poll every ${current?.trigger.type === "github_issue" || current?.trigger.type === "github_pull_request" ? current.trigger.poll_interval_seconds : 30}s · timeout ${current?.timeout_seconds ?? 7200}s`}</small></summary>
+              <summary><span><SlidersHorizontal size={14} /> Expert settings</span><small>{isSchedule ? `Cron ${schedulePreset === "custom" ? customCron : cronForSchedule(schedulePreset, scheduleTime)} · ${usesDefinitionSchedule ? `concurrency ${current?.concurrency_limit ?? 3}` : `timeout ${current?.timeout_seconds ?? 7200}s`}` : `Poll every ${current?.trigger.type === "github_issue" || current?.trigger.type === "github_pull_request" ? current.trigger.poll_interval_seconds : 30}s · timeout ${current?.timeout_seconds ?? 7200}s`}</small></summary>
               <div className="automation-form-grid">
                 {isSchedule ? <Field key="schedule-cron" label="Cron (five fields)" htmlFor={cronID} error={errors.cron} hint="Choose Custom cron above to edit the raw expression.">
                   <input
@@ -1087,19 +1102,19 @@ function AutomationForm({
                 </Field> : <Field key="provider-poll" label="Poll interval (seconds)" htmlFor={intervalID} error={errors.interval}>
                   <input id={intervalID} name="poll_interval_seconds" type="number" min={10} max={86_400} defaultValue={current?.trigger.type === "github_issue" || current?.trigger.type === "github_pull_request" ? current.trigger.poll_interval_seconds : 30} aria-invalid={Boolean(errors.interval)} />
                 </Field>}
-                {isSchedule ? <Field key="schedule-concurrency" label="Concurrent Jobs" htmlFor={concurrencyID} error={errors.concurrency} hint="Maximum repositories running at once · 1 to 100">
+                {usesDefinitionSchedule ? <Field key="schedule-concurrency" label="Concurrent Jobs" htmlFor={concurrencyID} error={errors.concurrency} hint="Maximum repositories running at once · 1 to 100">
                   <input id={concurrencyID} name="concurrency_limit" type="number" min={1} max={100} defaultValue={current?.concurrency_limit ?? 3} aria-invalid={Boolean(errors.concurrency)} />
                 </Field> : <Field key="provider-timeout" label="Task timeout (seconds)" htmlFor={timeoutID} error={errors.timeout}>
                   <input id={timeoutID} name="timeout_seconds" type="number" min={1} max={28_800} defaultValue={current?.timeout_seconds ?? 7200} aria-invalid={Boolean(errors.timeout)} />
                 </Field>}
               </div>
             </details>
-            {(isSchedule ? definitions.error || runRepositories.error || save.error : workflows.error || repositories.error || save.error) && <InlineError error={(isSchedule ? definitions.error || runRepositories.error || save.error : workflows.error || repositories.error || save.error) as Error} />}
+            {(usesDefinitionSchedule ? definitions.error || runRepositories.error || save.error : workflows.error || repositories.error || save.error) && <InlineError error={(usesDefinitionSchedule ? definitions.error || runRepositories.error || save.error : workflows.error || repositories.error || save.error) as Error} />}
           </div>
           <div className="modal-footer">
             <span className="disabled-first-note"><Activity size={14} /> New Automations are disabled.</span>
             <button type="button" className="button button-secondary" onClick={onClose}>Cancel</button>
-            <button type="submit" className="button button-primary" disabled={save.isPending || (isSchedule ? definitions.isPending || runRepositories.isPending : workflows.isPending || repositories.isPending)}>
+            <button type="submit" className="button button-primary" disabled={save.isPending || (usesDefinitionSchedule ? definitions.isPending || runRepositories.isPending : workflows.isPending || repositories.isPending)}>
               {save.isPending ? <><LoaderCircle size={16} className="spin" /> Saving…</> : <><Plus size={16} /> {mode === "create" ? "Create Automation" : "Save changes"}</>}
             </button>
           </div>
