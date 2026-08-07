@@ -7,3 +7,9 @@ database = "server/factory.sqlite3"
 # runner_listen = "0.0.0.0:7443"
 # runner_tls_cert = "/etc/factory/tls/server.crt"
 # runner_tls_key = "/etc/factory/tls/server.key"
+
+# Optional public GitHub webhook endpoint. Configure all four values together.
+# webhook_listen = "0.0.0.0:7444"
+# webhook_tls_cert = "/etc/factory/tls/server.crt"
+# webhook_tls_key = "/etc/factory/tls/server.key"
+# github_webhook_secret_file = "/etc/factory/github-webhook-secret"

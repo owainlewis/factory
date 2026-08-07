@@ -15,9 +15,9 @@ Factory is the current local implementation of a control plane for running
 software-engineering agents in Git repositories. It separates durable
 coordination from agent execution:
 
-- `factory-server` stores work, assigns it, evaluates typed GitHub issue and
-  pull-request Automations through `gh`, admits schedule Automations from its
-  clock, exposes the HTTP API, and serves the embedded browser UI.
+- `factory-server` stores work, assigns it, evaluates legacy typed GitHub
+  polling Automations through `gh`, admits Definition-backed schedule and
+  signed webhook Automations, exposes the HTTP API, and serves the embedded UI.
 - `factory-worker` has one stable identity and a configurable pool for several
   coding-agent runtimes. It advertises runtime capacity and provider access, acquires centrally
   managed repositories on demand, and runs concurrent attempts in isolated Git
@@ -99,8 +99,8 @@ enrollment and the same Runner lifecycle shown above.
     Workers remain generic and receive the resolved prompt through the existing
     claim task description.
 13. A typed Automation is created disabled. One issue, pull request, scheduled
-    UTC instant, or idempotent Run now key creates at most one durable
-    Occurrence and one ordinary Task per Automation.
+    UTC instant, webhook delivery ID, or idempotent Run now key creates at most
+    one durable Occurrence and one Task or Definition Run per Automation.
 
 ## 4. Components and dependencies
 
@@ -111,6 +111,8 @@ enrollment and the same Runner lifecycle shown above.
 - validates and binds a loopback address, `127.0.0.1:7337` by default;
 - optionally binds a separate TLS listener containing only enrollment and
   authenticated Runner lifecycle routes;
+- optionally binds another TLS listener containing only health and the signed
+  GitHub webhook delivery route;
 - opens the SQLite store and applies embedded migrations;
 - sweeps expired leases at startup and every five seconds;
 - mounts the API and embedded UI on one origin;
@@ -118,8 +120,8 @@ enrollment and the same Runner lifecycle shown above.
 - allows ten seconds for HTTP shutdown.
 
 `internal/controlplane` owns the API, validation, state transitions, scheduling,
-metrics, pagination, Workflow revisions, typed GitHub and schedule Automations,
-provider health, prompt composition, and persistence.
+metrics, pagination, Workflow revisions, typed GitHub, schedule, and webhook
+Automations, provider health, prompt composition, and persistence.
 Claim selection is transactional and FIFO by execution creation time for the
 requesting worker.
 
@@ -309,9 +311,25 @@ Node.js is a contributor dependency only when UI source changes.
 4. Startup admits at most the stored overdue instant, then advances directly to
    the first future match. Run now uses a separate idempotent request-key domain
    and never changes the due cursor.
-5. The existing occurrence dispatcher routes the snapshotted Workflow and
-   repository as an ordinary Task. Schedule work does not require provider
+5. The occurrence dispatcher creates an ordinary Definition Run using the
+   frozen snapshot and repository set. Schedule work does not require provider
    access, and workers retain the same claim contract.
+
+### GitHub webhook Automation
+
+1. An operator binds one shared Definition and one configured repository to
+   pull-request `opened` and `synchronize` actions, then enables the Automation.
+2. A separate TLS listener accepts only the signed GitHub route. HMAC-SHA256 is
+   verified over bounded raw bytes before JSON parsing.
+3. The first delivery freezes every matching enabled Automation and Definition
+   snapshot. `(Automation ID, delivery ID)` is the occurrence identity, and a
+   reused delivery ID with different bytes is rejected.
+4. Each occurrence creates an ordinary `source_kind: webhook` Run. Its record
+   includes the delivery, event, pull-request number and URL, and observed head
+   commit. Valid redelivery reuses the same occurrence and Run.
+5. Webhook fields are untrusted agent context. The prompt requires the agent to
+   fetch live state and perform review comments or other GitHub work with its
+   authenticated `gh` CLI. Factory does not publish GitHub actions itself.
 
 ### Attempt execution
 
@@ -446,8 +464,8 @@ Task     1 --- 1 Execution       1 --- * Attempt 1 --- * AttemptEvent
   snapshot, and its exact resolved prompt in the existing description field.
 - A repository is the central fleet record. Its enabled flag gates new routed
   work but does not rewrite existing assignments.
-- An Automation stores one concrete `github_issue`, `github_pull_request`, or
-  `schedule` Trigger, health and polling or due cursor, counters, and
+- An Automation stores one concrete `github_issue`, `github_pull_request`,
+  `schedule`, or `github_webhook` Trigger, health and polling or due cursor, counters, and
   disabled-first state. Its
   Occurrences snapshot the Workflow revision, repository, predicate,
   observation, prompt, and deterministic Task request key before dispatch.
@@ -542,10 +560,10 @@ relative worker data paths and optional legacy repository paths are resolved
 from the directory that contains the worker TOML; explicit absolute worker data
 paths are unchanged. Managed repositories, Workflows, Automations, and
 evaluation state are configured in SQLite through the control-plane API. Only
-the local listen address, database path, and optional remote Runner TLS listener
-and certificate paths belong in `config.toml` because the server needs them
-before SQLite opens. Managed repositories are cached below the worker data
-directory.
+the local listen address, database path, optional remote Runner TLS listener,
+and optional GitHub webhook TLS listener and secret path belong in `config.toml`
+because the server needs them before SQLite opens. Managed repositories are
+cached below the worker data directory.
 
 ## 7. Security and trust boundaries
 
@@ -555,6 +573,8 @@ The operator trust boundary is one trusted user on the control-plane host:
   resolution. There is no operator login or tenant boundary;
 - the optional remote Runner API uses TLS, exposes no operator routes, and
   authorizes worker and attempt paths against a hashed per-Runner credential;
+- the optional webhook API uses TLS, exposes no operator or Runner routes, and
+  authenticates bounded raw deliveries with an owner-only HMAC secret;
 - ten-minute enrollment tokens are bound to one worker ID and consumed once;
   long-lived Runner credentials are returned only over TLS, stored in an
   owner-only file bound to the exact server origin, never logged, and stored
@@ -692,6 +712,7 @@ designs.
 | Typed Automation store and API | `internal/controlplane/automations.go`, `automations_http.go` |
 | GitHub evaluator and occurrence dispatch | `internal/controlplane/automation_runtime.go` |
 | Schedule parsing and admission | `internal/controlplane/schedule_cron.go`, `schedule_runtime.go` |
+| GitHub webhook verification and admission | `internal/controlplane/github_webhook_http.go`, `github_webhooks.go` |
 | Legacy poller migration and archive | `internal/controlplane/legacy_poller_*` |
 | Prompt composition and complete agent input | `internal/protocol/prompt.go` |
 | Database schema | `migrations` |

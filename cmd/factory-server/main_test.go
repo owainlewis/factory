@@ -142,6 +142,29 @@ func TestRemoteRunnerTLSConfigurationIsAllOrNothing(t *testing.T) {
 	}
 }
 
+func TestGitHubWebhookConfigurationAndSecretAreLockedDown(t *testing.T) {
+	if err := validateWebhookTLSConfig("0.0.0.0:7444", "server.crt", "server.key", ""); err == nil {
+		t.Fatal("accepted webhook listener without a secret")
+	}
+	if err := validateWebhookTLSConfig("0.0.0.0:7444", "server.crt", "server.key", "secret"); err != nil {
+		t.Fatalf("complete webhook configuration rejected: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "webhook-secret")
+	if err := os.WriteFile(path, []byte(strings.Repeat("s", 32)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := loadGitHubWebhookSecret(path)
+	if err != nil || string(secret) != strings.Repeat("s", 32) {
+		t.Fatalf("load webhook secret = %q, %v", secret, err)
+	}
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadGitHubWebhookSecret(path); err == nil || !strings.Contains(err.Error(), "only by its owner") {
+		t.Fatalf("permissive secret error = %v", err)
+	}
+}
+
 func TestValidateNoLegacyServerDefaultRefusesLegacyState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

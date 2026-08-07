@@ -13,6 +13,8 @@ Start with the root [README](../README.md) to run Factory.
   authentication, and reconnect behavior.
 - [Scheduled Automations](scheduled-automations.md): create, preview, enable,
   replay, and inspect Definition Runs across repositories.
+- [GitHub webhook Automations](github-webhooks.md): configure signed
+  pull-request events that start ordinary Definition Runs.
 - [Release guide](release.md): install, verify, upgrade, roll back, reproduce,
   and publish tagged releases.
 - [Changelog](../CHANGELOG.md): user-visible changes and compatibility notes.

@@ -956,6 +956,7 @@ export function mockControlPlane(
     if (path === "/api/v1/automations" && init?.method === "POST") {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       const trigger = body.trigger as AutomationDetail["automation"]["trigger"];
+      const definitionTrigger = trigger.type === "schedule" || trigger.type === "github_webhook";
       const definition = definitionItems.find((item) => item.id === body.definition_id);
       const selectedRepositoryIDs = Array.isArray(body.repository_ids) ? body.repository_ids as string[] : [];
       automationDetail = {
@@ -963,9 +964,9 @@ export function mockControlPlane(
           ...automationDetail.automation,
           id: "automation-created",
           title: String(body.title),
-          workflow_id: trigger.type === "schedule" ? undefined : String(body.workflow_id),
-          workflow_title: trigger.type === "schedule" ? undefined : automationDetail.automation.workflow_title,
-          workflow_revision: trigger.type === "schedule" ? undefined : automationDetail.automation.workflow_revision,
+          workflow_id: definitionTrigger ? undefined : String(body.workflow_id),
+          workflow_title: definitionTrigger ? undefined : automationDetail.automation.workflow_title,
+          workflow_revision: definitionTrigger ? undefined : automationDetail.automation.workflow_revision,
           definition_id: definition?.id,
           definition_name: definition?.name,
           definition_generation: definition?.generation,
@@ -975,10 +976,10 @@ export function mockControlPlane(
           })),
           parameters: body.parameters as Record<string, string> | undefined,
           concurrency_limit: Number(body.concurrency_limit) || undefined,
-          repository_id: trigger.type === "schedule" ? selectedRepositoryIDs[0] : String(body.repository_id),
-          repository_identity: trigger.type === "schedule" ? repositoryItems.find((item) => item.id === selectedRepositoryIDs[0])?.remote_identity ?? "" : automationDetail.automation.repository_identity,
-          context: trigger.type === "schedule" ? "" : String(body.context),
-          timeout_seconds: trigger.type === "schedule" ? definition?.timeout_seconds ?? 1800 : Number(body.timeout_seconds),
+          repository_id: definitionTrigger ? selectedRepositoryIDs[0] : String(body.repository_id),
+          repository_identity: definitionTrigger ? repositoryItems.find((item) => item.id === selectedRepositoryIDs[0])?.remote_identity ?? "" : automationDetail.automation.repository_identity,
+          context: definitionTrigger ? "" : String(body.context),
+          timeout_seconds: definitionTrigger ? definition?.timeout_seconds ?? 1800 : Number(body.timeout_seconds),
           trigger,
           updated_at: new Date().toISOString(),
         },

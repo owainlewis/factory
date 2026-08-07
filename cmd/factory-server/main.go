@@ -55,12 +55,26 @@ func run() (returnErr error) {
 	runnerListen := flag.String("runner-listen", bootstrap.RunnerListen, "optional remote Runner HTTPS listen address")
 	runnerTLSCert := flag.String("runner-tls-cert", bootstrap.RunnerTLSCert, "remote Runner TLS certificate path")
 	runnerTLSKey := flag.String("runner-tls-key", bootstrap.RunnerTLSKey, "remote Runner TLS private key path")
+	webhookListen := flag.String("webhook-listen", bootstrap.WebhookListen, "optional GitHub webhook HTTPS listen address")
+	webhookTLSCert := flag.String("webhook-tls-cert", bootstrap.WebhookTLSCert, "GitHub webhook TLS certificate path")
+	webhookTLSKey := flag.String("webhook-tls-key", bootstrap.WebhookTLSKey, "GitHub webhook TLS private key path")
+	githubWebhookSecretFile := flag.String("github-webhook-secret-file", bootstrap.GitHubWebhookSecretFile, "owner-only GitHub webhook secret file")
 	backup := flag.String("backup", "", "write a consistent database backup and exit")
 	restore := flag.String("restore", "", "restore a validated backup into the selected fresh database and exit")
 	printListen := flag.Bool("print-listen", false, "print the resolved listen address and exit")
 	flag.Parse()
 	if err := validateRunnerTLSConfig(*runnerListen, *runnerTLSCert, *runnerTLSKey); err != nil {
 		return err
+	}
+	if err := validateWebhookTLSConfig(*webhookListen, *webhookTLSCert, *webhookTLSKey, *githubWebhookSecretFile); err != nil {
+		return err
+	}
+	var githubWebhookSecret []byte
+	if *webhookListen != "" {
+		githubWebhookSecret, err = loadGitHubWebhookSecret(*githubWebhookSecretFile)
+		if err != nil {
+			return err
+		}
 	}
 	if *backup != "" && *restore != "" {
 		return errors.New("backup and restore modes are mutually exclusive")
@@ -179,7 +193,7 @@ func run() (returnErr error) {
 	}
 	handler := factoryweb.NewHandler(controlplane.NewHandlerWithAutomation(store, logger, automationService))
 	server := controlplane.NewHTTPServer(*listen, handler)
-	serverErrors := make(chan error, 2)
+	serverErrors := make(chan error, 3)
 	serverCount := 1
 	go func() {
 		logger.Info("server_started",
@@ -200,6 +214,19 @@ func run() (returnErr error) {
 		go func() {
 			logger.Info("runner_server_started", "address", runnerListener.Addr().String())
 			serverErrors <- runnerServer.ServeTLS(runnerListener, *runnerTLSCert, *runnerTLSKey)
+		}()
+	}
+	var webhookServer *http.Server
+	if *webhookListen != "" {
+		webhookListener, err := net.Listen("tcp", *webhookListen)
+		if err != nil {
+			return fmt.Errorf("listen for GitHub webhooks: %w", err)
+		}
+		webhookServer = controlplane.NewHTTPServer(*webhookListen, controlplane.NewGitHubWebhookHandler(store, githubWebhookSecret, logger))
+		serverCount++
+		go func() {
+			logger.Info("webhook_server_started", "address", webhookListener.Addr().String())
+			serverErrors <- webhookServer.ServeTLS(webhookListener, *webhookTLSCert, *webhookTLSKey)
 		}()
 	}
 
@@ -225,6 +252,11 @@ func run() (returnErr error) {
 	if runnerServer != nil {
 		if err := runnerServer.Shutdown(shutdown); err != nil && serveErr == nil {
 			serveErr = fmt.Errorf("shut down remote Runner server: %w", err)
+		}
+	}
+	if webhookServer != nil {
+		if err := webhookServer.Shutdown(shutdown); err != nil && serveErr == nil {
+			serveErr = fmt.Errorf("shut down GitHub webhook server: %w", err)
 		}
 	}
 	for receivedServerErrors < serverCount {
@@ -259,6 +291,49 @@ func validateRunnerTLSConfig(listen, certificate, key string) error {
 		}
 	}
 	return nil
+}
+
+func validateWebhookTLSConfig(listen, certificate, key, secretFile string) error {
+	configured := 0
+	for _, value := range []string{listen, certificate, key, secretFile} {
+		if strings.TrimSpace(value) != "" {
+			configured++
+		}
+	}
+	if configured != 0 && configured != 4 {
+		return errors.New("webhook-listen, webhook-tls-cert, webhook-tls-key, and github-webhook-secret-file must be configured together")
+	}
+	if configured == 4 {
+		if _, _, err := net.SplitHostPort(listen); err != nil {
+			return fmt.Errorf("GitHub webhook listen address must include host and port: %w", err)
+		}
+	}
+	return nil
+}
+
+func loadGitHubWebhookSecret(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("inspect GitHub webhook secret: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("GitHub webhook secret must be a regular non-symlink file")
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return nil, errors.New("GitHub webhook secret must be readable only by its owner")
+	}
+	if info.Size() < 1 || info.Size() > 1024 {
+		return nil, errors.New("GitHub webhook secret file must contain at most 1024 bytes")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read GitHub webhook secret: %w", err)
+	}
+	secret := []byte(strings.TrimSpace(string(body)))
+	if len(secret) < 32 || len(secret) > 1024 {
+		return nil, errors.New("GitHub webhook secret must contain 32 to 1024 non-whitespace bytes")
+	}
+	return secret, nil
 }
 
 func runRecoveryMode(

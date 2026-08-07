@@ -196,12 +196,18 @@ export type JobState = RunState | "preparing";
 export interface Run {
   id: string;
   request_key: string;
-  source_kind: "manual" | "schedule";
+  source_kind: "manual" | "schedule" | "webhook";
   definition: DefinitionSnapshot;
   state: RunState;
   job_count: number;
   concurrency_limit: number;
   repository_remote_identities: string[];
+  delivery_id?: string;
+  event?: string;
+  action?: string;
+  pull_request_number?: number;
+  pull_request_url?: string;
+  observed_head_commit?: string;
   admitted_at: string;
   updated_at: string;
 }
@@ -277,7 +283,12 @@ export interface ScheduleTrigger {
 	timezone: string;
 }
 
-export type AutomationTrigger = GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger;
+export interface GitHubWebhookTrigger {
+	type: "github_webhook";
+	actions: Array<"opened" | "synchronize">;
+}
+
+export type AutomationTrigger = GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger | GitHubWebhookTrigger;
 
 export interface AutomationTaskSummary {
 	id: string;
@@ -339,6 +350,9 @@ export interface AutomationOccurrence {
 	observed_draft?: boolean;
 	observed_base_branch?: string;
 	observed_head_commit?: string;
+	delivery_id?: string;
+	event?: string;
+	action?: string;
 	kind?: "scheduled" | "run_now";
 	scheduled_at?: string;
 	run_request_key?: string;

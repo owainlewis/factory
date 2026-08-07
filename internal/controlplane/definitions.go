@@ -268,6 +268,30 @@ func (s *Store) UpdateDefinition(
 		definition, err := s.Definition(ctx, definitionID)
 		return definition, false, err
 	}
+	allowsGitHubCLI := false
+	for _, tool := range value.AllowedTools {
+		if tool == "gh" {
+			allowsGitHubCLI = true
+			break
+		}
+	}
+	if !allowsGitHubCLI {
+		var enabledWebhookAutomations int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM automations automation
+			JOIN automation_github_webhook_triggers webhook ON webhook.automation_id = automation.id
+			WHERE automation.enabled = 1 AND webhook.definition_id = ?
+		`, definitionID).Scan(&enabledWebhookAutomations); err != nil {
+			return protocol.Definition{}, false, unavailable(err)
+		}
+		if enabledWebhookAutomations > 0 {
+			return protocol.Definition{}, false, conflict(
+				"definition_required_by_webhook",
+				"disable webhook Automations that use this Definition before removing the gh tool",
+			)
+		}
+	}
 	if err := definitionNameAvailable(ctx, tx, nameKey, definitionID); err != nil {
 		return protocol.Definition{}, false, err
 	}
@@ -360,6 +384,45 @@ func (s *Store) SetDefinitionArchived(
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE definitions SET archived = ?, generation = generation + 1, updated_at = ? WHERE id = ?
 	`, archived, s.now().UnixMilli(), definitionID); err != nil {
+		return protocol.Definition{}, unavailable(err)
+	}
+	now := s.now().UnixMilli()
+	if archived {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE automations
+			SET health_status = CASE WHEN enabled = 1 THEN 'blocked' ELSE health_status END,
+			    health_code = CASE WHEN enabled = 1 THEN 'definition_archived' ELSE health_code END,
+			    health_message = CASE WHEN enabled = 1 THEN 'Restore the selected Definition before webhook deliveries can run.' ELSE health_message END,
+			    updated_at = ?
+			WHERE trigger_type = 'github_webhook' AND id IN (
+				SELECT automation_id FROM automation_github_webhook_triggers WHERE definition_id = ?
+			)
+		`, now, definitionID)
+	} else {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE automations
+			SET health_status = CASE
+			        WHEN enabled = 1 AND EXISTS (SELECT 1 FROM repositories WHERE id = automations.repository_id AND enabled = 1) THEN 'healthy'
+			        WHEN enabled = 1 THEN 'blocked'
+			        ELSE health_status
+			    END,
+			    health_code = CASE
+			        WHEN enabled = 1 AND EXISTS (SELECT 1 FROM repositories WHERE id = automations.repository_id AND enabled = 1) THEN ''
+			        WHEN enabled = 1 THEN 'repository_disabled'
+			        ELSE health_code
+			    END,
+			    health_message = CASE
+			        WHEN enabled = 1 AND EXISTS (SELECT 1 FROM repositories WHERE id = automations.repository_id AND enabled = 1) THEN 'Waiting for a signed GitHub webhook.'
+			        WHEN enabled = 1 THEN 'Enable the selected repository before webhook deliveries can run.'
+			        ELSE health_message
+			    END,
+			    updated_at = ?
+			WHERE trigger_type = 'github_webhook' AND id IN (
+				SELECT automation_id FROM automation_github_webhook_triggers WHERE definition_id = ?
+			)
+		`, now, definitionID)
+	}
+	if err != nil {
 		return protocol.Definition{}, unavailable(err)
 	}
 	if err := tx.Commit(); err != nil {
