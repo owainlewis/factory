@@ -273,6 +273,35 @@ func TestRunOnceRejectsADisabledManagedRepositoryEvenWhenAdvertised(t *testing.T
 	assertErrorCode(t, err, "repository_not_available")
 }
 
+func TestRunOnceRoutesAnUpgradedManagedRepositoryWithAGitSuffix(t *testing.T) {
+	store, definition, repository, _ := setupRunTest(t, false)
+	if _, err := store.db.Exec(`UPDATE repositories SET remote_identity = remote_identity || '.git' WHERE id = ?`, repository.ID); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
+		Name: workerA, WorkerVersion: "test", Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
+		Capabilities: []protocol.Capability{
+			{Kind: protocol.CapabilityKindTool, Name: "git", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindTool, Name: "gh", Status: protocol.CapabilityReady},
+			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
+		},
+		Capacity: 1, Health: "healthy", AcceptsManagedRepositories: true,
+		SourceAccess: []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, created, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: "upgraded-git-suffix", DefinitionID: definition.ID, RepositoryID: repository.ID,
+	})
+	if err != nil || !created || detail.Run.State != "queued" {
+		t.Fatalf("create upgraded Run: created=%t err=%v detail=%#v", created, err, detail)
+	}
+	if job := detail.Jobs[0].Job; job.RepositoryID != repository.ID || job.AssignedWorkerID != worker.ID {
+		t.Fatalf("upgraded Run Job = %#v", job)
+	}
+}
+
 func TestRunHistoryUsesAStableCursorWithoutDroppingOlderRuns(t *testing.T) {
 	store, definition, repository, _ := setupRunTest(t, true)
 	fixed := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)

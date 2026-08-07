@@ -265,7 +265,7 @@ func (s *Store) selectRunRoute(
 		return taskRouteCandidate{}, err
 	}
 	return s.selectTaskRouteWithSourceRequirement(
-		ctx, tx, route, now, requireSourceAccess, true, workerID, requiredRuntime, requiredTools,
+		ctx, tx, route, repositoryID, now, requireSourceAccess, true, workerID, requiredRuntime, requiredTools,
 	)
 }
 

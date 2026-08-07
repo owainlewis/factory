@@ -2013,13 +2013,14 @@ func (s *Store) selectTaskRoute(
 	requiredRuntime string,
 	requiredTools []string,
 ) (taskRouteCandidate, error) {
-	return s.selectTaskRouteWithSourceRequirement(ctx, tx, route, now, true, false, workerID, requiredRuntime, requiredTools)
+	return s.selectTaskRouteWithSourceRequirement(ctx, tx, route, "", now, true, false, workerID, requiredRuntime, requiredTools)
 }
 
 func (s *Store) selectTaskRouteWithSourceRequirement(
 	ctx context.Context,
 	tx *sql.Tx,
 	route protocol.TaskRoute,
+	selectedRepositoryID string,
 	now int64,
 	requireSourceAccess bool,
 	allowStaticRepository bool,
@@ -2028,7 +2029,11 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 	requiredTools []string,
 ) (taskRouteCandidate, error) {
 	repositoryPredicate := "r.remote_identity = ?"
-	if route.SourceAccess.Provider == "github" && route.SourceAccess.Hostname == "github.com" {
+	repositoryLookup := route.RepositoryRemoteIdentity
+	if selectedRepositoryID != "" {
+		repositoryPredicate = "r.id = ?"
+		repositoryLookup = selectedRepositoryID
+	} else if route.SourceAccess.Provider == "github" && route.SourceAccess.Hostname == "github.com" {
 		repositoryPredicate = "lower(r.remote_identity) = lower(?)"
 	}
 	var repositoryID, repositoryIdentity string
@@ -2046,7 +2051,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		            AND available.dynamic = 0
 		      ))
 		  )
-	`, route.RepositoryRemoteIdentity, allowStaticRepository).Scan(&repositoryID, &repositoryIdentity, &repositoryEnabled)
+	`, repositoryLookup, allowStaticRepository).Scan(&repositoryID, &repositoryIdentity, &repositoryEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return taskRouteCandidate{}, conflict(
 			"repository_not_managed",
