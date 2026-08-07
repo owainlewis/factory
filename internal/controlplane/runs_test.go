@@ -647,3 +647,47 @@ func TestActiveJobExposesPendingCancellation(t *testing.T) {
 		t.Fatalf("pending Job cancellation: err=%v detail=%#v", err, cancelled)
 	}
 }
+
+func TestTerminalJobsRejectCancellation(t *testing.T) {
+	for _, terminalState := range []string{"succeeded", "failed", "cancelled"} {
+		t.Run(terminalState, func(t *testing.T) {
+			store, definition, repository, worker := setupRunTest(t, true)
+			detail, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+				RequestKey:   "terminal-cancel-" + terminalState,
+				DefinitionID: definition.ID, RepositoryID: repository.ID,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			jobID := detail.Jobs[0].Job.ID
+			if terminalState == "cancelled" {
+				if _, err := store.CancelJob(context.Background(), jobID); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				claim := claimTestTask(t, store, worker.ID, "terminal-cancel-claim-"+terminalState, tokenA)
+				if _, err := store.StartAttempt(context.Background(), claim.Attempt.ID, protocol.StartAttemptRequest{
+					LeaseToken: tokenA, ProcessIdentity: "terminal-cancel-agent",
+				}); err != nil {
+					t.Fatal(err)
+				}
+				request := protocol.CompleteAttemptRequest{LeaseToken: tokenA, State: terminalState}
+				if terminalState == "failed" {
+					request.Error = "expected failure"
+				}
+				if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, request); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := store.CancelJob(context.Background(), jobID); err == nil {
+				t.Fatalf("%s Job accepted another cancellation", terminalState)
+			} else {
+				assertErrorCode(t, err, "cancel_not_allowed")
+			}
+			preserved, err := store.Run(context.Background(), detail.Run.ID)
+			if err != nil || preserved.Jobs[0].Job.State != terminalState {
+				t.Fatalf("terminal Job changed after rejected cancellation: err=%v detail=%#v", err, preserved)
+			}
+		})
+	}
+}

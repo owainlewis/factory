@@ -782,26 +782,58 @@ func aggregateRunState(jobs []protocol.JobDetail) string {
 }
 
 func (s *Store) CancelJob(ctx context.Context, jobID string) (protocol.RunDetail, error) {
-	job, err := s.Job(ctx, jobID)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return protocol.RunDetail{}, err
+		return protocol.RunDetail{}, unavailable(err)
 	}
-	if job.Job.TaskID == "" {
-		result, err := s.db.ExecContext(ctx, `
-			UPDATE jobs SET state = 'cancelled', blocked_reason = NULL, updated_at = ?
-			WHERE id = ? AND state = 'blocked'
-		`, s.now().UnixMilli(), jobID)
+	defer tx.Rollback()
+	now := s.now().UnixMilli()
+	var executionID, runID string
+	err = tx.QueryRowContext(ctx, `
+		UPDATE executions
+		SET state = CASE WHEN state = 'queued' THEN 'cancelled' ELSE state END,
+		    cancellation_requested = CASE
+		        WHEN state IN ('preparing', 'running') THEN 1
+		        ELSE cancellation_requested
+		    END,
+		    updated_at = ?
+		WHERE id = (SELECT execution_id FROM jobs WHERE id = ?)
+		  AND (
+		      state = 'queued'
+		      OR (state IN ('preparing', 'running') AND cancellation_requested = 0)
+		  )
+		RETURNING id
+	`, now, jobID).Scan(&executionID)
+	if err == nil {
+		if err := tx.QueryRowContext(ctx, `SELECT run_id FROM jobs WHERE execution_id = ?`, executionID).Scan(&runID); err != nil {
+			return protocol.RunDetail{}, unavailable(err)
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return protocol.RunDetail{}, unavailable(err)
+	} else {
+		err = tx.QueryRowContext(ctx, `
+			UPDATE jobs
+			SET state = 'cancelled', blocked_reason = NULL, updated_at = ?
+			WHERE id = ? AND state = 'blocked' AND task_id IS NULL
+			RETURNING run_id
+		`, now, jobID).Scan(&runID)
+		if errors.Is(err, sql.ErrNoRows) {
+			var exists int
+			if lookupErr := tx.QueryRowContext(ctx, `SELECT 1 FROM jobs WHERE id = ?`, jobID).Scan(&exists); errors.Is(lookupErr, sql.ErrNoRows) {
+				return protocol.RunDetail{}, ErrNotFound
+			} else if lookupErr != nil {
+				return protocol.RunDetail{}, unavailable(lookupErr)
+			}
+			return protocol.RunDetail{}, conflict("cancel_not_allowed", "only active Jobs can be cancelled")
+		}
 		if err != nil {
 			return protocol.RunDetail{}, unavailable(err)
 		}
-		changed, _ := result.RowsAffected()
-		if changed != 1 {
-			return protocol.RunDetail{}, conflict("cancel_not_allowed", "only active Jobs can be cancelled")
-		}
-	} else if _, err := s.CancelTask(ctx, job.Job.TaskID); err != nil {
-		return protocol.RunDetail{}, err
 	}
-	return s.Run(ctx, job.Job.RunID)
+	if err := tx.Commit(); err != nil {
+		return protocol.RunDetail{}, unavailable(err)
+	}
+	return s.Run(ctx, runID)
 }
 
 func (s *Store) RetryJob(ctx context.Context, jobID string) (protocol.RunDetail, error) {
