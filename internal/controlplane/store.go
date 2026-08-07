@@ -2053,7 +2053,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		            AND available.advertised = 1
 		            AND available.dynamic = 0
 		      ))
-		  )
+			  )
 	`, repositoryLookup, allowStaticRepository).Scan(&repositoryID, &repositoryIdentity, &repositoryEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return taskRouteCandidate{}, conflict(
