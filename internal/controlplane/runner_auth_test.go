@@ -71,9 +71,13 @@ func issueRemoteRunnerCredential(
 	if err != nil {
 		t.Fatal(err)
 	}
+	credential, err := randomRunnerSecret("factory_runner_")
+	if err != nil {
+		t.Fatal(err)
+	}
 	response := remoteRunnerRequest(t, server.Client(), server.URL, http.MethodPost,
 		"/api/v1/runner-enrollments/exchange", "", protocol.ExchangeRunnerEnrollmentRequest{
-			WorkerID: workerID, EnrollmentToken: enrollment.EnrollmentToken,
+			WorkerID: workerID, EnrollmentToken: enrollment.EnrollmentToken, Credential: credential,
 		})
 	requireStatus(t, response, http.StatusCreated)
 	return decodeResponse[protocol.RunnerCredential](t, response).Credential
@@ -90,10 +94,11 @@ func TestRemoteRunnerTLSLifecycleAndIsolation(t *testing.T) {
 	}
 	exchange := protocol.ExchangeRunnerEnrollmentRequest{
 		WorkerID: "remote-a", EnrollmentToken: enrollment.EnrollmentToken,
+		Credential: "factory_runner_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	}
 	response := remoteRunnerRequest(t, server.Client(), server.URL, http.MethodPost,
 		"/api/v1/runner-enrollments/exchange", "", protocol.ExchangeRunnerEnrollmentRequest{
-			WorkerID: "remote-b", EnrollmentToken: enrollment.EnrollmentToken,
+			WorkerID: "remote-b", EnrollmentToken: enrollment.EnrollmentToken, Credential: exchange.Credential,
 		})
 	requireStatus(t, response, http.StatusUnauthorized)
 	response.Body.Close()
@@ -104,6 +109,13 @@ func TestRemoteRunnerTLSLifecycleAndIsolation(t *testing.T) {
 	if credential == "" || credential == enrollment.EnrollmentToken {
 		t.Fatal("enrollment did not return a distinct Runner credential")
 	}
+	response = remoteRunnerRequest(t, server.Client(), server.URL, http.MethodPost,
+		"/api/v1/runner-enrollments/exchange", "", exchange)
+	requireStatus(t, response, http.StatusCreated)
+	if replayed := decodeResponse[protocol.RunnerCredential](t, response).Credential; replayed != credential {
+		t.Fatalf("replayed credential = %q; want %q", replayed, credential)
+	}
+	exchange.Credential = "factory_runner_ccccccccccccccccccccccccccccccccccccccccccc"
 	response = remoteRunnerRequest(t, server.Client(), server.URL, http.MethodPost,
 		"/api/v1/runner-enrollments/exchange", "", exchange)
 	requireStatus(t, response, http.StatusUnauthorized)

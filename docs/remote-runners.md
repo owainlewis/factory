@@ -70,7 +70,7 @@ successful start.
 
 The VM reuses its protected `worker-id` and credential after restarts. Deleting
 the data directory creates a new identity. To rotate a credential, stop the
-Runner, remove only `runner-credential`, create a new enrollment, update the
+Runner, remove `runner-credential` and `runner-credential.pending`, create a new enrollment, update the
 short-lived token, and restart it.
 
 The saved credential is bound to the exact Factory server origin. Changing the

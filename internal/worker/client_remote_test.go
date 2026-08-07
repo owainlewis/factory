@@ -3,10 +3,12 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/owainlewis/factory/internal/protocol"
@@ -43,9 +45,9 @@ func TestRemoteClientRejectsRedirectsBeforeSendingSecrets(t *testing.T) {
 }
 
 func TestRemoteClientEnrollsOnceAndPersistsCredential(t *testing.T) {
-	const credential = "factory_runner_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const enrollment = "factory_enroll_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	requests := 0
+	credential := ""
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		w.Header().Set("Content-Type", "application/json")
@@ -55,10 +57,12 @@ func TestRemoteClientEnrollsOnceAndPersistsCredential(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				t.Error(err)
 			}
-			if input.WorkerID != "remote-worker" || input.EnrollmentToken != enrollment {
+			if input.WorkerID != "remote-worker" || input.EnrollmentToken != enrollment ||
+				!strings.HasPrefix(input.Credential, "factory_runner_") {
 				t.Errorf("exchange input = %#v", input)
 			}
-			_ = json.NewEncoder(w).Encode(protocol.RunnerCredential{Credential: credential})
+			credential = input.Credential
+			_ = json.NewEncoder(w).Encode(protocol.RunnerCredential{Credential: input.Credential})
 		case "/api/v1/workers/remote-worker":
 			if got := r.Header.Get("Authorization"); got != "Bearer "+credential {
 				t.Errorf("Authorization = %q", got)
@@ -101,6 +105,72 @@ func TestRemoteClientEnrollsOnceAndPersistsCredential(t *testing.T) {
 	}
 	if _, err := loadCredentialFile(path, "https://other-factory.example.com:7443"); err == nil {
 		t.Fatal("Runner credential was accepted for a different Factory server")
+	}
+}
+
+func TestRemoteClientRetriesTheSamePendingCredentialAfterResponseLoss(t *testing.T) {
+	const enrollment = "factory_enroll_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	requests := 0
+	firstCredential := ""
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var input protocol.ExchangeRunnerEnrollmentRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Error(err)
+		}
+		if requests == 1 {
+			firstCredential = input.Credential
+			panic(http.ErrAbortHandler)
+		}
+		if input.Credential != firstCredential {
+			t.Errorf("retried credential = %q; want %q", input.Credential, firstCredential)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(protocol.RunnerCredential{Credential: input.Credential})
+	}))
+	t.Cleanup(server.Close)
+
+	path := filepath.Join(t.TempDir(), "runner-credential")
+	first := newClient(server.URL, server.Client())
+	if err := first.enroll(context.Background(), "remote-worker", enrollment, path); err == nil {
+		t.Fatal("enrollment unexpectedly survived a lost response")
+	}
+	if _, err := os.Stat(path + ".pending"); err != nil {
+		t.Fatalf("pending credential was not preserved: %v", err)
+	}
+	second := newClient(server.URL, server.Client())
+	if err := second.enroll(context.Background(), "remote-worker", enrollment, path); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := loadCredentialFile(path, server.URL)
+	if err != nil || stored != firstCredential {
+		t.Fatalf("recovered credential = %q, err %v; want %q", stored, err, firstCredential)
+	}
+	if _, err := os.Stat(path + ".pending"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending credential still exists after recovery: %v", err)
+	}
+}
+
+func TestRemoteClientRemovesStalePendingCredentialAfterCompletedEnrollment(t *testing.T) {
+	const credential = "factory_runner_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("completed enrollment unexpectedly contacted the server")
+	}))
+	t.Cleanup(server.Close)
+	path := filepath.Join(t.TempDir(), "runner-credential")
+	if err := writeCredentialFile(path, server.URL, credential); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentialFile(path+".pending", server.URL, credential); err != nil {
+		t.Fatal(err)
+	}
+	client := newClient(server.URL, server.Client())
+	client.credential = credential
+	if err := client.enroll(context.Background(), "remote-worker", "", path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".pending"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale pending credential still exists: %v", err)
 	}
 }
 

@@ -181,7 +181,7 @@ func (a *API) exchangeRunnerEnrollment(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	credential, err := a.store.ExchangeRunnerEnrollment(r.Context(), input.WorkerID, input.EnrollmentToken)
+	credential, err := a.store.ExchangeRunnerEnrollment(r.Context(), input.WorkerID, input.EnrollmentToken, input.Credential)
 	if err != nil {
 		writeError(w, err)
 		return
