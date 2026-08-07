@@ -147,10 +147,13 @@ func loadCredentialFile(path, server string) (string, error) {
 }
 
 func writeCredentialFile(path, server, credential string) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	directory := filepath.Dir(path)
+	file, err := os.CreateTemp(directory, "."+filepath.Base(path)+".tmp-")
 	if err != nil {
-		return fmt.Errorf("create Runner credential: %w", err)
+		return fmt.Errorf("create temporary Runner credential: %w", err)
 	}
+	temporaryPath := file.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
 	writeErr := error(nil)
 	if err := json.NewEncoder(file).Encode(storedRunnerCredential{
 		Server: strings.TrimRight(server, "/"), Credential: credential,
@@ -163,10 +166,15 @@ func writeCredentialFile(path, server, credential string) error {
 		writeErr = err
 	}
 	if writeErr != nil {
-		_ = os.Remove(path)
 		return fmt.Errorf("write Runner credential: %w", writeErr)
 	}
-	if err := syncDirectory(filepath.Dir(path)); err != nil {
+	if err := os.Link(temporaryPath, path); err != nil {
+		return fmt.Errorf("install Runner credential: %w", err)
+	}
+	if err := os.Remove(temporaryPath); err != nil {
+		return fmt.Errorf("remove temporary Runner credential: %w", err)
+	}
+	if err := syncDirectory(directory); err != nil {
 		return fmt.Errorf("sync Runner credential directory: %w", err)
 	}
 	return nil

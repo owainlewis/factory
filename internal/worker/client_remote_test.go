@@ -174,6 +174,30 @@ func TestRemoteClientRemovesStalePendingCredentialAfterCompletedEnrollment(t *te
 	}
 }
 
+func TestRunnerCredentialAtomicInstallDoesNotReplaceAnExistingFile(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "runner-credential")
+	const server = "https://factory.example.com:7443"
+	const original = "factory_runner_original"
+	if err := writeCredentialFile(path, server, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCredentialFile(path, server, "factory_runner_replacement"); err == nil {
+		t.Fatal("credential writer replaced an existing file")
+	}
+	stored, err := loadCredentialFile(path, server)
+	if err != nil || stored != original {
+		t.Fatalf("stored credential = %q, err %v; want original", stored, err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(path) {
+		t.Fatalf("credential directory contains temporary files: %#v", entries)
+	}
+}
+
 func TestRunnerCredentialRejectsBroadPermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runner-credential")
 	if err := os.WriteFile(path, []byte(`{"server":"https://factory.example.com:7443","credential":"factory_runner_secret"}`), 0o644); err != nil {
