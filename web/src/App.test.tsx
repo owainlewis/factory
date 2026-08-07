@@ -891,6 +891,42 @@ describe("App", () => {
     expect(within(dialog).getByLabelText("scope")).toHaveValue("");
   });
 
+  it("preserves exact scheduled Definition parameter overrides", async () => {
+    const fetch = mockControlPlane({ scheduleDefinition: true });
+    await globalThis.fetch("/api/v1/automations", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "exact-parameter-schedule",
+        title: "Exact parameter schedule",
+        definition_id: "definition-maintenance",
+        repository_ids: ["repo-factory"],
+        parameters: { scope: "saved override" },
+        concurrency_limit: 1,
+        trigger: { type: "schedule", cron: "0 9 * * 1", timezone: "UTC" },
+      }),
+    });
+    window.history.replaceState({}, "", "/automations");
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: /Exact parameter schedule/ }));
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Automation" });
+    const scope = within(dialog).getByLabelText("scope");
+    await user.clear(scope);
+    await user.type(scope, "  exact value  ");
+    await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    await vi.waitFor(() => {
+      const update = fetch.mock.calls.find(([input, init]) =>
+        String(input).includes("/api/v1/automations/automation-created") && init?.method === "PUT");
+      expect(update).toBeDefined();
+      const body = JSON.parse(String(update?.[1]?.body));
+      expect(body.parameters).toEqual({ scope: "  exact value  " });
+      expect(body).not.toHaveProperty("repository_id");
+    });
+  });
+
   it("preserves Automation form focus and typed input during background refresh", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

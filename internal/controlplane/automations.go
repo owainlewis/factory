@@ -48,6 +48,7 @@ func normalizeAutomation(
 	parameters map[string]string,
 	concurrencyLimit int,
 	requireRequestKey bool,
+	allowLegacySchedule bool,
 ) (normalizedAutomation, string, error) {
 	value := normalizedAutomation{
 		RequestKey: strings.TrimSpace(requestKey),
@@ -73,45 +74,62 @@ func normalizeAutomation(
 	}
 	if value.Trigger.Type == protocol.AutomationTriggerSchedule {
 		if value.DefinitionID == "" {
-			return value, "", invalid("definition_required", "definition_id is required for a scheduled Automation")
-		}
-		if value.WorkflowID != "" || value.RepositoryID != "" {
-			return value, "", invalid("legacy_schedule_shape", "scheduled Automations use definition_id and repository_ids")
-		}
-		seenRepositories := make(map[string]struct{}, len(value.RepositoryIDs))
-		for index, repositoryID := range value.RepositoryIDs {
-			repositoryID = strings.TrimSpace(repositoryID)
-			if repositoryID == "" {
-				return value, "", invalid("repository_required", "repository_ids cannot contain an empty value")
+			if !allowLegacySchedule || value.WorkflowID == "" {
+				return value, "", invalid("definition_required", "definition_id is required for a scheduled Automation")
 			}
-			if _, exists := seenRepositories[repositoryID]; exists {
-				return value, "", invalid("duplicate_repository", "each repository may be selected only once")
+			if len(value.RepositoryIDs) != 0 || len(value.Parameters) != 0 {
+				return value, "", invalid("legacy_schedule_shape", "legacy scheduled Automations use their existing repository and runbook")
 			}
-			seenRepositories[repositoryID] = struct{}{}
-			value.RepositoryIDs[index] = repositoryID
+			value.RepositoryIDs = nil
+			value.Parameters = map[string]string{}
+			if value.ConcurrencyLimit == 0 {
+				value.ConcurrencyLimit = defaultRunConcurrency
+			}
+			if len([]byte(value.Context)) > protocol.MaxAutomationContextBytes {
+				return value, "", invalid("invalid_automation_context", "context is limited to 8 KiB")
+			}
+			if value.TimeoutSeconds < 1 || value.TimeoutSeconds > int(protocol.MaxTimeout/time.Second) {
+				return value, "", invalid("invalid_timeout", "timeout_seconds must be between 1 and 28800")
+			}
+		} else {
+			if value.WorkflowID != "" || value.RepositoryID != "" {
+				return value, "", invalid("legacy_schedule_shape", "scheduled Automations use definition_id and repository_ids")
+			}
+			seenRepositories := make(map[string]struct{}, len(value.RepositoryIDs))
+			for index, repositoryID := range value.RepositoryIDs {
+				repositoryID = strings.TrimSpace(repositoryID)
+				if repositoryID == "" {
+					return value, "", invalid("repository_required", "repository_ids cannot contain an empty value")
+				}
+				if _, exists := seenRepositories[repositoryID]; exists {
+					return value, "", invalid("duplicate_repository", "each repository may be selected only once")
+				}
+				seenRepositories[repositoryID] = struct{}{}
+				value.RepositoryIDs[index] = repositoryID
+			}
+			if len(value.RepositoryIDs) == 0 {
+				return value, "", invalid("repository_required", "at least one repository_id is required")
+			}
+			if len(value.RepositoryIDs) > 200 {
+				return value, "", invalid("too_many_repositories", "a scheduled Automation is limited to 200 repositories")
+			}
+			sort.Strings(value.RepositoryIDs)
+			value.RepositoryID = value.RepositoryIDs[0]
+			if value.ConcurrencyLimit == 0 {
+				value.ConcurrencyLimit = defaultRunConcurrency
+			}
+			if value.ConcurrencyLimit < 1 || value.ConcurrencyLimit > 100 {
+				return value, "", invalid("invalid_concurrency_limit", "concurrency_limit must be between 1 and 100")
+			}
+			normalizedParameters, inputErr := normalizeDefinitionInputs(value.Parameters)
+			if inputErr != nil {
+				return value, "", inputErr
+			}
+			value.Parameters = normalizedParameters
+			value.WorkflowID = ""
+			value.Context = ""
+			value.TimeoutSeconds = 1
 		}
-		if len(value.RepositoryIDs) == 0 {
-			return value, "", invalid("repository_required", "at least one repository_id is required")
-		}
-		if len(value.RepositoryIDs) > 200 {
-			return value, "", invalid("too_many_repositories", "a scheduled Automation is limited to 200 repositories")
-		}
-		sort.Strings(value.RepositoryIDs)
-		value.RepositoryID = value.RepositoryIDs[0]
-		if value.ConcurrencyLimit == 0 {
-			value.ConcurrencyLimit = defaultRunConcurrency
-		}
-		if value.ConcurrencyLimit < 1 || value.ConcurrencyLimit > 100 {
-			return value, "", invalid("invalid_concurrency_limit", "concurrency_limit must be between 1 and 100")
-		}
-		normalizedParameters, inputErr := normalizeDefinitionInputs(value.Parameters)
-		if inputErr != nil {
-			return value, "", inputErr
-		}
-		value.Parameters = normalizedParameters
-		value.WorkflowID = ""
-		value.Context = ""
-		value.TimeoutSeconds = 1
 		_, cron, timezone, parseErr := parseCronSchedule(value.Trigger.Cron, value.Trigger.Timezone)
 		if parseErr != nil {
 			if strings.Contains(parseErr.Error(), "timezone") {
@@ -216,7 +234,7 @@ func (s *Store) CreateAutomation(
 	value, titleKey, err := normalizeAutomation(
 		input.RequestKey, input.Title, input.WorkflowID, input.RepositoryID,
 		input.Context, input.TimeoutSeconds, input.Trigger,
-		input.DefinitionID, input.RepositoryIDs, input.Parameters, input.ConcurrencyLimit, true,
+		input.DefinitionID, input.RepositoryIDs, input.Parameters, input.ConcurrencyLimit, true, false,
 	)
 	if err != nil {
 		return protocol.AutomationDetail{}, false, err
@@ -732,7 +750,7 @@ func (s *Store) UpdateAutomation(
 	value, titleKey, err := normalizeAutomation(
 		"", input.Title, input.WorkflowID, "", input.Context,
 		input.TimeoutSeconds, input.Trigger,
-		input.DefinitionID, input.RepositoryIDs, input.Parameters, input.ConcurrencyLimit, false,
+		input.DefinitionID, input.RepositoryIDs, input.Parameters, input.ConcurrencyLimit, false, true,
 	)
 	if err != nil {
 		return protocol.AutomationDetail{}, err
@@ -859,12 +877,18 @@ func (s *Store) UpdateAutomation(
 		return protocol.AutomationDetail{}, unavailable(err)
 	}
 	if value.Trigger.Type == protocol.AutomationTriggerSchedule {
-		if err := validateDefinitionScheduleDependencies(
-			ctx, tx, value.DefinitionID, value.RepositoryIDs, value.Parameters, false,
-		); err != nil {
-			return protocol.AutomationDetail{}, err
+		if value.DefinitionID == "" {
+			if err := validateAutomationDependencies(ctx, tx, value.WorkflowID, repositoryID, false); err != nil {
+				return protocol.AutomationDetail{}, err
+			}
+		} else {
+			if err := validateDefinitionScheduleDependencies(
+				ctx, tx, value.DefinitionID, value.RepositoryIDs, value.Parameters, false,
+			); err != nil {
+				return protocol.AutomationDetail{}, err
+			}
+			repositoryID = value.RepositoryID
 		}
-		repositoryID = value.RepositoryID
 	} else if err := validateAutomationDependencies(ctx, tx, value.WorkflowID, repositoryID, false); err != nil {
 		return protocol.AutomationDetail{}, err
 	}
@@ -917,7 +941,7 @@ func (s *Store) UpdateAutomation(
 			UPDATE automation_schedule_triggers
 			SET cron = ?, timezone = ?, definition_id = ?, parameters_json = ?, concurrency_limit = ?
 			WHERE automation_id = ?
-		`, value.Trigger.Cron, value.Trigger.Timezone, value.DefinitionID, parametersJSON,
+		`, value.Trigger.Cron, value.Trigger.Timezone, nullableString(value.DefinitionID), parametersJSON,
 			value.ConcurrencyLimit, automationID); err != nil {
 			return protocol.AutomationDetail{}, unavailable(err)
 		}
