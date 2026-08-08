@@ -1029,37 +1029,37 @@ describe("App", () => {
   });
 
   it("preserves saved schedule parameters when Definitions cannot be loaded", async () => {
-	const fetch = mockControlPlane({ scheduleDefinition: true, definitionListFailure: true });
-	await globalThis.fetch("/api/v1/automations", {
-	  method: "POST",
-	  body: JSON.stringify({
-		request_key: "unavailable-definition-schedule",
-		title: "Unavailable Definition schedule",
-		definition_id: "definition-maintenance",
-		repository_ids: ["repo-factory"],
-		parameters: { scope: "saved override" },
-		concurrency_limit: 1,
-		trigger: { type: "schedule", cron: "0 9 * * 1", timezone: "UTC" },
-	  }),
-	});
-	window.history.replaceState({}, "", "/automations");
-	const user = userEvent.setup();
-	renderApp();
+    const fetch = mockControlPlane({ scheduleDefinition: true, definitionListFailure: true });
+    await globalThis.fetch("/api/v1/automations", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "unavailable-definition-schedule",
+        title: "Unavailable Definition schedule",
+        definition_id: "definition-maintenance",
+        repository_ids: ["repo-factory"],
+        parameters: { scope: "saved override" },
+        concurrency_limit: 1,
+        trigger: { type: "schedule", cron: "0 9 * * 1", timezone: "UTC" },
+      }),
+    });
+    window.history.replaceState({}, "", "/automations");
+    const user = userEvent.setup();
+    renderApp();
 
-	await user.click(await screen.findByRole("button", { name: /Unavailable Definition schedule/ }));
-	await user.click(screen.getByRole("button", { name: "Edit" }));
-	const dialog = screen.getByRole("dialog", { name: "Edit Automation" });
-	await user.clear(within(dialog).getByLabelText("Title"));
-	await user.type(within(dialog).getByLabelText("Title"), "Renamed unavailable Definition schedule");
-	await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await user.click(await screen.findByRole("button", { name: /Unavailable Definition schedule/ }));
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Automation" });
+    await user.clear(within(dialog).getByLabelText("Title"));
+    await user.type(within(dialog).getByLabelText("Title"), "Renamed unavailable Definition schedule");
+    await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
 
-	await vi.waitFor(() => {
-	  const update = fetch.mock.calls.find(([input, init]) =>
-		String(input).includes("/api/v1/automations/automation-created") && init?.method === "PUT");
-	  expect(update).toBeDefined();
-	  const body = JSON.parse(String(update?.[1]?.body));
-	  expect(body.parameters).toEqual({ scope: "saved override" });
-	});
+    await vi.waitFor(() => {
+      const update = fetch.mock.calls.find(([input, init]) =>
+        String(input).includes("/api/v1/automations/automation-created") && init?.method === "PUT");
+      expect(update).toBeDefined();
+      const body = JSON.parse(String(update?.[1]?.body));
+      expect(body.parameters).toEqual({ scope: "saved override" });
+    });
   });
 
   it("preserves Automation form focus and typed input during background refresh", async () => {
