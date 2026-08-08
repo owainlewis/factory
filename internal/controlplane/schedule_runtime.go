@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -46,31 +47,44 @@ type scheduleSnapshot struct {
 	automationEnabled    bool
 	workflowEnabled      bool
 	repositoryEnabled    bool
+	definitionID         string
+	repositoryIDs        []string
+	parameters           map[string]string
+	concurrencyLimit     int
+	definitionArchived   bool
 }
 
 func loadScheduleSnapshot(ctx context.Context, tx *sql.Tx, automationID string) (scheduleSnapshot, error) {
 	var snapshot scheduleSnapshot
-	var automationEnabled, workflowEnabled, repositoryEnabled int
+	var automationEnabled, workflowEnabled, repositoryEnabled, definitionArchived int
+	var workflowID, workflowRevisionID, workflowTitle, workflowInstructions sql.NullString
+	var workflowRevision sql.NullInt64
+	var definitionID sql.NullString
+	var parametersJSON []byte
 	err := tx.QueryRowContext(ctx, `
 		SELECT automation.id, automation.title, automation.version,
 		       workflow.id, revision.id, revision.title, revision.revision_number,
 		       revision.instructions, repository.id, repository.remote_identity,
 		       automation.context, automation.timeout_seconds,
 		       schedule.cron, schedule.timezone, schedule.next_due_at,
-		       automation.enabled, workflow.enabled, repository.enabled
+		       automation.enabled, COALESCE(workflow.enabled, 0), repository.enabled,
+		       schedule.definition_id, schedule.parameters_json, schedule.concurrency_limit,
+		       COALESCE(definition.archived, 0)
 		FROM automations automation
 		JOIN automation_schedule_triggers schedule ON schedule.automation_id = automation.id
-		JOIN workflows workflow ON workflow.id = automation.workflow_id
-		JOIN workflow_revisions revision ON revision.id = workflow.current_revision_id
+		LEFT JOIN workflows workflow ON workflow.id = automation.workflow_id
+		LEFT JOIN workflow_revisions revision ON revision.id = workflow.current_revision_id
+		LEFT JOIN definitions definition ON definition.id = schedule.definition_id
 		JOIN repositories repository ON repository.id = automation.repository_id
 		WHERE automation.id = ? AND automation.trigger_type = 'schedule'
 	`, strings.TrimSpace(automationID)).Scan(
 		&snapshot.automationID, &snapshot.automationTitle, &snapshot.automationVersion,
-		&snapshot.workflowID, &snapshot.workflowRevisionID, &snapshot.workflowTitle,
-		&snapshot.workflowRevision, &snapshot.workflowInstructions,
+		&workflowID, &workflowRevisionID, &workflowTitle,
+		&workflowRevision, &workflowInstructions,
 		&snapshot.repositoryID, &snapshot.repositoryIdentity,
 		&snapshot.context, &snapshot.timeoutSeconds, &snapshot.cron, &snapshot.timezone,
 		&snapshot.nextDueAt, &automationEnabled, &workflowEnabled, &repositoryEnabled,
+		&definitionID, &parametersJSON, &snapshot.concurrencyLimit, &definitionArchived,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return snapshot, ErrNotFound
@@ -81,6 +95,36 @@ func loadScheduleSnapshot(ctx context.Context, tx *sql.Tx, automationID string) 
 	snapshot.automationEnabled = automationEnabled != 0
 	snapshot.workflowEnabled = workflowEnabled != 0
 	snapshot.repositoryEnabled = repositoryEnabled != 0
+	snapshot.workflowID = workflowID.String
+	snapshot.workflowRevisionID = workflowRevisionID.String
+	snapshot.workflowTitle = workflowTitle.String
+	snapshot.workflowRevision = int(workflowRevision.Int64)
+	snapshot.workflowInstructions = workflowInstructions.String
+	snapshot.definitionID = definitionID.String
+	snapshot.definitionArchived = definitionArchived != 0
+	if snapshot.definitionID != "" {
+		if err := json.Unmarshal(parametersJSON, &snapshot.parameters); err != nil {
+			return snapshot, unavailable(err)
+		}
+		rows, err := tx.QueryContext(ctx, `
+			SELECT repository_id FROM automation_schedule_repositories
+			WHERE automation_id = ? ORDER BY position
+		`, snapshot.automationID)
+		if err != nil {
+			return snapshot, unavailable(err)
+		}
+		for rows.Next() {
+			var repositoryID string
+			if err := rows.Scan(&repositoryID); err != nil {
+				rows.Close()
+				return snapshot, unavailable(err)
+			}
+			snapshot.repositoryIDs = append(snapshot.repositoryIDs, repositoryID)
+		}
+		if err := rows.Close(); err != nil {
+			return snapshot, unavailable(err)
+		}
+	}
 	return snapshot, nil
 }
 
@@ -189,7 +233,19 @@ func (s *Store) admitDueSchedule(ctx context.Context, automationID string) error
 		healthMessage = "Scheduled occurrence was already durable; advanced to the next due instant."
 	} else {
 		state, diagnostic := "pending", ""
-		if !snapshot.workflowEnabled {
+		if snapshot.definitionID != "" {
+			if dependencyErr := validateDefinitionScheduleDependencies(
+				ctx, tx, snapshot.definitionID, snapshot.repositoryIDs, snapshot.parameters, true,
+			); dependencyErr != nil {
+				serviceErr, durable := durableScheduleDependencyFailure(dependencyErr)
+				if !durable {
+					return dependencyErr
+				}
+				state, diagnostic, skipped = "failed", serviceErr.Code, 1
+				healthStatus, healthCode = "blocked", diagnostic
+				healthMessage = "Scheduled occurrence recorded without a Run because its Definition or repository set is unavailable."
+			}
+		} else if !snapshot.workflowEnabled {
 			state, diagnostic, skipped = "failed", "workflow_disabled", 1
 			healthStatus, healthCode, healthMessage = "blocked", "workflow_disabled", "Scheduled occurrence recorded without a task because the Workflow is disabled."
 		} else if !snapshot.repositoryEnabled {
@@ -277,11 +333,19 @@ func (s *Store) RunAutomationNow(
 	if !snapshot.automationEnabled {
 		return protocol.AutomationDetail{}, conflict("automation_disabled", "enable the Automation before using Run now")
 	}
-	if !snapshot.workflowEnabled {
-		return protocol.AutomationDetail{}, conflict("workflow_disabled", "enable the selected Workflow before using Run now")
-	}
-	if !snapshot.repositoryEnabled {
-		return protocol.AutomationDetail{}, conflict("repository_disabled", "enable the selected repository before using Run now")
+	if snapshot.definitionID != "" {
+		if err := validateDefinitionScheduleDependencies(
+			ctx, tx, snapshot.definitionID, snapshot.repositoryIDs, snapshot.parameters, true,
+		); err != nil {
+			return protocol.AutomationDetail{}, err
+		}
+	} else {
+		if !snapshot.workflowEnabled {
+			return protocol.AutomationDetail{}, conflict("workflow_disabled", "enable the selected Workflow before using Run now")
+		}
+		if !snapshot.repositoryEnabled {
+			return protocol.AutomationDetail{}, conflict("repository_disabled", "enable the selected repository before using Run now")
+		}
 	}
 	var occurrenceCount int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM automation_occurrences`).Scan(&occurrenceCount); err != nil {
@@ -308,6 +372,14 @@ func (s *Store) RunAutomationNow(
 	return s.Automation(ctx, automationID)
 }
 
+func durableScheduleDependencyFailure(err error) (*ServiceError, bool) {
+	var serviceErr *ServiceError
+	if !errors.As(err, &serviceErr) || serviceErr.Status >= 500 {
+		return nil, false
+	}
+	return serviceErr, true
+}
+
 func (s *Store) insertScheduleOccurrence(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -321,22 +393,25 @@ func (s *Store) insertScheduleOccurrence(
 		title = snapshot.automationTitle + ": scheduled " + identity
 		requestKey = "automation:" + snapshot.automationID + ":schedule:scheduled:" + identity
 	}
-	prompt, err := protocol.ResolveScheduleAutomationPrompt(
-		snapshot.workflowInstructions, snapshot.context, kind, identity, snapshot.cron, snapshot.timezone,
-	)
-	if err != nil {
-		return unavailable(err)
-	}
-	var storedPrompt any = prompt
-	if state == "pending" && (len([]byte(prompt)) > protocol.MaxResolvedPromptBytes ||
-		!protocol.AgentPromptFits(title, snapshot.repositoryIdentity, prompt)) {
-		if kind == "run_now" {
-			return invalid("resolved_prompt_too_large", "the resolved schedule prompt exceeds the Task limit")
+	var storedPrompt any
+	if snapshot.definitionID == "" {
+		prompt, err := protocol.ResolveScheduleAutomationPrompt(
+			snapshot.workflowInstructions, snapshot.context, kind, identity, snapshot.cron, snapshot.timezone,
+		)
+		if err != nil {
+			return unavailable(err)
 		}
-		state, diagnostic, storedPrompt = "failed", "resolved_prompt_too_large", nil
-	}
-	if state != "pending" {
-		storedPrompt = nil
+		storedPrompt = prompt
+		if state == "pending" && (len([]byte(prompt)) > protocol.MaxResolvedPromptBytes ||
+			!protocol.AgentPromptFits(title, snapshot.repositoryIdentity, prompt)) {
+			if kind == "run_now" {
+				return invalid("resolved_prompt_too_large", "the resolved schedule prompt exceeds the Task limit")
+			}
+			state, diagnostic, storedPrompt = "failed", "resolved_prompt_too_large", nil
+		}
+		if state != "pending" {
+			storedPrompt = nil
+		}
 	}
 	occurrenceID, err := newID()
 	if err != nil {
@@ -350,7 +425,7 @@ func (s *Store) insertScheduleOccurrence(
 			diagnostic, retry_at, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, occurrenceID, snapshot.automationID, snapshot.automationVersion, snapshot.automationTitle,
-		snapshot.workflowRevisionID, snapshot.repositoryID, snapshot.repositoryIdentity,
+		nullableString(snapshot.workflowRevisionID), snapshot.repositoryID, snapshot.repositoryIdentity,
 		snapshot.context, snapshot.timeoutSeconds, state, storedPrompt, requestKey,
 		diagnostic, now.UnixMilli(), now.UnixMilli(), now.UnixMilli()); err != nil {
 		return unavailable(err)
@@ -365,11 +440,35 @@ func (s *Store) insertScheduleOccurrence(
 	} else {
 		runRequestKey = identity
 	}
+	var definitionID, definitionSnapshotJSON, repositoryIDsJSON, parametersJSON, concurrencyLimit any
+	if snapshot.definitionID != "" {
+		definitionID = snapshot.definitionID
+		definition, err := scanDefinition(tx.QueryRowContext(ctx, definitionSelect+` WHERE id = ?`, snapshot.definitionID))
+		if err != nil {
+			return unavailable(err)
+		}
+		encodedDefinition, err := json.Marshal(definition.Snapshot())
+		if err != nil {
+			return unavailable(err)
+		}
+		definitionSnapshotJSON = encodedDefinition
+		encodedRepositories, err := json.Marshal(snapshot.repositoryIDs)
+		if err != nil {
+			return unavailable(err)
+		}
+		encodedParameters, err := json.Marshal(snapshot.parameters)
+		if err != nil {
+			return unavailable(err)
+		}
+		repositoryIDsJSON, parametersJSON, concurrencyLimit = encodedRepositories, encodedParameters, snapshot.concurrencyLimit
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO automation_schedule_occurrences(
-			occurrence_id, automation_id, kind, scheduled_at, run_request_key, cron, timezone
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, occurrenceID, snapshot.automationID, kind, scheduledAt, runRequestKey, snapshot.cron, snapshot.timezone); err != nil {
+			occurrence_id, automation_id, kind, scheduled_at, run_request_key, cron, timezone,
+			definition_id, definition_snapshot, repository_ids_json, parameters_json, concurrency_limit
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, occurrenceID, snapshot.automationID, kind, scheduledAt, runRequestKey, snapshot.cron,
+		snapshot.timezone, definitionID, definitionSnapshotJSON, repositoryIDsJSON, parametersJSON, concurrencyLimit); err != nil {
 		return unavailable(err)
 	}
 	return nil

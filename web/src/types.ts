@@ -195,7 +195,7 @@ export type JobState = RunState | "preparing";
 export interface Run {
   id: string;
   request_key: string;
-  source_kind: "manual";
+  source_kind: "manual" | "schedule";
   definition: DefinitionSnapshot;
   state: RunState;
   job_count: number;
@@ -294,9 +294,15 @@ export interface AutomationHealth {
 export interface Automation {
 	id: string;
 	title: string;
-	workflow_id: string;
-	workflow_title: string;
-	workflow_revision: number;
+	workflow_id?: string;
+	workflow_title?: string;
+	workflow_revision?: number;
+	definition_id?: string;
+	definition_name?: string;
+	definition_generation?: number;
+	repositories?: RunRepository[];
+	parameters?: Record<string, string>;
+	concurrency_limit?: number;
 	repository_id: string;
 	repository_identity: string;
 	context: string;
@@ -338,6 +344,8 @@ export interface AutomationOccurrence {
 	run_request_key?: string;
 	cron?: string;
 	timezone?: string;
+	run_id?: string;
+	run_state?: RunState;
 	task_request_key: string;
 	task?: AutomationTaskSummary;
 	task_id_snapshot?: string;
@@ -417,10 +425,14 @@ export interface AutomationOccurrencePage {
 export interface CreateAutomationInput {
 	request_key: string;
 	title: string;
-	workflow_id: string;
-	repository_id: string;
-	context: string;
-	timeout_seconds: number;
+	workflow_id?: string;
+	repository_id?: string;
+	definition_id?: string;
+	repository_ids?: string[];
+	parameters?: Record<string, string>;
+	concurrency_limit?: number;
+	context?: string;
+	timeout_seconds?: number;
 	trigger: AutomationTrigger;
 }
 

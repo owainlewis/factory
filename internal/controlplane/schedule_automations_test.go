@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -103,13 +104,22 @@ func createScheduleAutomationFixture(
 	t.Helper()
 	store := newTestStore(t)
 	store.now = func() time.Time { return *now }
-	workflow := createTestWorkflow(t, store, "schedule-workflow", "Scheduled maintenance", "Inspect the repository and perform the scheduled maintenance.")
+	definition, created, err := store.CreateDefinition(context.Background(), protocol.CreateDefinitionRequest{
+		RequestKey: "schedule-definition", Name: "Scheduled maintenance",
+		Prompt:  "Inspect the repository and perform the scheduled maintenance.",
+		Runtime: protocol.RuntimeCodex, TimeoutSeconds: 3600,
+		Inputs: map[string]string{"scope": "safe"},
+	})
+	if err != nil || !created {
+		t.Fatalf("create Definition: created=%t err=%v", created, err)
+	}
 	repository := createManagedTestRepository(t, store, "github.com/owainlewis/factory")
 	if withWorker {
 		_, err := store.RegisterWorker(context.Background(), "schedule-worker", protocol.WorkerRegistration{
 			Name: "schedule-worker", WorkerVersion: "test", RuntimeVersion: "test",
 			Capacity: 1, Health: "healthy", AcceptsManagedRepositories: true,
 			ManagedRepositoryIDs: []string{repository.ID},
+			SourceAccess:         []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -117,8 +127,8 @@ func createScheduleAutomationFixture(
 	}
 	detail, created, err := store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
 		RequestKey: "schedule-create", Title: "Daily maintenance",
-		WorkflowID: workflow.Workflow.ID, RepositoryID: repository.ID,
-		Context: "Use the safe managed repository only.", TimeoutSeconds: 3600,
+		DefinitionID: definition.ID, RepositoryIDs: []string{repository.ID},
+		Parameters: map[string]string{"scope": "safe"}, ConcurrencyLimit: 2,
 		Trigger: protocol.AutomationTrigger{
 			Type: protocol.AutomationTriggerSchedule, Cron: "0 9 * * *", Timezone: "Europe/London",
 		},
@@ -150,6 +160,7 @@ func TestSchedulePreviewEnableDueDispatchAndIdempotencyUseFakeClock(t *testing.T
 		Name: "schedule-worker", WorkerVersion: "test", RuntimeVersion: "test",
 		Capacity: 1, Health: "healthy", AcceptsManagedRepositories: true,
 		ManagedRepositoryIDs: []string{detail.Automation.RepositoryID},
+		SourceAccess:         []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +180,7 @@ func TestSchedulePreviewEnableDueDispatchAndIdempotencyUseFakeClock(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(current.Occurrences) != 1 || current.Occurrences[0].Task == nil ||
+	if len(current.Occurrences) != 1 || current.Occurrences[0].RunID == "" ||
 		current.Occurrences[0].Kind != "scheduled" || current.Occurrences[0].ScheduledAt == nil ||
 		!current.Occurrences[0].ScheduledAt.Equal(now) {
 		t.Fatalf("scheduled occurrence = %#v", current.Occurrences)
@@ -177,17 +188,402 @@ func TestSchedulePreviewEnableDueDispatchAndIdempotencyUseFakeClock(t *testing.T
 	if current.Automation.NextDueAt == nil || !current.Automation.NextDueAt.After(now) || current.Automation.DispatchedCount != 1 {
 		t.Fatalf("schedule counters/cursor = %#v", current.Automation)
 	}
-	task, err := store.Task(context.Background(), current.Occurrences[0].Task.ID)
+	run, err := store.Run(context.Background(), current.Occurrences[0].RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"Schedule instruction:", `"type":"schedule"`, `"kind":"scheduled"`, `"timezone":"Europe/London"`} {
-		if !stringsContain(task.ResolvedPrompt, required) {
-			t.Fatalf("schedule prompt missing %q:\n%s", required, task.ResolvedPrompt)
+	if run.Run.SourceKind != "schedule" || run.Run.Definition.ID != detail.Automation.DefinitionID ||
+		len(run.Jobs) != 1 || run.Parameters["scope"] != "safe" {
+		t.Fatalf("scheduled Run = %#v", run)
+	}
+	if current.Occurrences[0].RunState != "queued" {
+		t.Fatalf("scheduled occurrence Run state = %q, want queued", current.Occurrences[0].RunState)
+	}
+	claim := claimTestTask(t, store, "schedule-worker", "schedule-state-claim", tokenA)
+	if _, err := store.StartAttempt(context.Background(), claim.Attempt.ID, protocol.StartAttemptRequest{
+		LeaseToken: tokenA, ProcessIdentity: "scheduled-agent",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "succeeded", Result: "schedule completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current, err = store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil || current.Occurrences[0].RunState != "succeeded" {
+		t.Fatalf("completed scheduled occurrence: err=%v occurrence=%#v", err, current.Occurrences[0])
+	}
+}
+
+func TestDefinitionScheduleCreatesOneRunWithOneJobPerRepository(t *testing.T) {
+	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
+	store, detail := createScheduleAutomationFixture(t, &now, false)
+	second := createManagedTestRepository(t, store, "github.com/owainlewis/second")
+	updated, err := store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
+		ExpectedVersion:  1,
+		Title:            detail.Automation.Title,
+		DefinitionID:     detail.Automation.DefinitionID,
+		RepositoryIDs:    []string{detail.Automation.RepositoryID, second.ID},
+		Parameters:       map[string]string{"scope": "safe"},
+		ConcurrencyLimit: 2,
+		Trigger:          detail.Automation.Trigger,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := enableAutomation(t, store, updated.Automation.ID)
+	now = *enabled.Automation.NextDueAt
+	for range 2 {
+		if err := store.processDueSchedules(context.Background(), 100); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.dispatchPendingOccurrences(context.Background(), 100); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if stringsContain(task.ResolvedPrompt, "Use authenticated gh") || stringsContain(task.ResolvedPrompt, "provider item") && !stringsContain(task.ResolvedPrompt, "There is no provider item") {
-		t.Fatalf("schedule prompt contains provider revalidation: %s", task.ResolvedPrompt)
+	current, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current.Occurrences) != 1 || current.Occurrences[0].RunID == "" {
+		t.Fatalf("occurrences = %#v", current.Occurrences)
+	}
+	run, err := store.Run(context.Background(), current.Occurrences[0].RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Run.SourceKind != "schedule" || run.Run.ConcurrencyLimit != 2 || len(run.Jobs) != 2 {
+		t.Fatalf("scheduled multi-repository Run = %#v", run)
+	}
+	var runCount int
+	if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM runs WHERE request_key = ?`, current.Occurrences[0].TaskRequestKey).Scan(&runCount); err != nil {
+		t.Fatal(err)
+	}
+	if runCount != 1 {
+		t.Fatalf("idempotent Run count = %d, want 1", runCount)
+	}
+}
+
+func TestAutomationOccurrenceRunStateUsesRunJobIndex(t *testing.T) {
+	store := newTestStore(t)
+	rows, err := store.db.Query(`EXPLAIN QUERY PLAN `+automationOccurrenceSelect+`
+		WHERE occurrence.automation_id = ?
+		ORDER BY occurrence.created_at DESC, occurrence.id DESC
+		LIMIT ?`, "automation-query-plan", protocol.MaxAutomationPageSize+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	plan := ""
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan += detail + "\n"
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if stringsContain(plan, "MATERIALIZE") || stringsContain(plan, "SCAN run_job") {
+		t.Fatalf("occurrence Run state query scans all Jobs:\n%s", plan)
+	}
+	if !stringsContain(plan, "SEARCH run_job USING INDEX jobs_run_order (run_id=?)") {
+		t.Fatalf("occurrence Run state query does not use jobs_run_order:\n%s", plan)
+	}
+}
+
+func TestDefinitionScheduleRejectsDisabledManagedRepositoryEvenWhenAdvertised(t *testing.T) {
+	store, definition, repository, _ := setupRunTest(t, true)
+	if _, err := store.SetManagedRepositoryEnabled(context.Background(), repository.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	_, created, err := store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
+		RequestKey:       "disabled-managed-schedule",
+		Title:            "Disabled managed repository",
+		DefinitionID:     definition.ID,
+		RepositoryIDs:    []string{repository.ID},
+		ConcurrencyLimit: 1,
+		Trigger: protocol.AutomationTrigger{
+			Type: protocol.AutomationTriggerSchedule, Cron: "0 9 * * *", Timezone: "UTC",
+		},
+	})
+	if created {
+		t.Fatal("disabled managed repository created a schedule")
+	}
+	assertErrorCode(t, err, "repository_not_available")
+}
+
+func TestDefinitionScheduleRejectsResolvedAgentPromptAboveRuntimeLimit(t *testing.T) {
+	store := newTestStore(t)
+	definition, created, err := store.CreateDefinition(context.Background(), protocol.CreateDefinitionRequest{
+		RequestKey:     "oversized-schedule-definition",
+		Name:           "Oversized scheduled prompt",
+		Prompt:         string(bytes.Repeat([]byte("p"), protocol.MaxDefinitionPromptBytes)),
+		Runtime:        protocol.RuntimeCodex,
+		TimeoutSeconds: 600,
+		Inputs: map[string]string{
+			"scope_a": string(bytes.Repeat([]byte("x"), maxDefinitionInputBytes)),
+			"scope_b": string(bytes.Repeat([]byte("y"), maxDefinitionInputBytes)),
+			"scope_c": string(bytes.Repeat([]byte("z"), maxDefinitionInputBytes)),
+		},
+	})
+	if err != nil || !created {
+		t.Fatalf("create oversized Definition: created=%t err=%v", created, err)
+	}
+	repository := createManagedTestRepository(t, store, "github.com/owainlewis/oversized-schedule")
+	_, created, err = store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
+		RequestKey:       "oversized-schedule",
+		Title:            "Oversized schedule",
+		DefinitionID:     definition.ID,
+		RepositoryIDs:    []string{repository.ID},
+		ConcurrencyLimit: 1,
+		Trigger: protocol.AutomationTrigger{
+			Type: protocol.AutomationTriggerSchedule, Cron: "0 9 * * *", Timezone: "UTC",
+		},
+	})
+	if created {
+		t.Fatal("oversized resolved prompt created a schedule")
+	}
+	assertErrorCode(t, err, "agent_prompt_too_large")
+}
+
+func TestLegacyWorkflowScheduleRemainsEditableAfterDefinitionScheduleMigration(t *testing.T) {
+	store, detail := createAutomationFixture(t, false)
+	if _, err := store.db.Exec(`DELETE FROM automation_github_issue_triggers WHERE automation_id = ?`, detail.Automation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`DROP TRIGGER automation_trigger_type_immutable`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE automations SET trigger_type = 'schedule' WHERE id = ?`, detail.Automation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`
+		INSERT INTO automation_schedule_triggers(
+			automation_id, cron, timezone, definition_id, parameters_json, concurrency_limit
+		) VALUES (?, '0 9 * * 1', 'UTC', NULL, '{}', 3)
+	`, detail.Automation.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	legacy, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
+		ExpectedVersion: legacy.Automation.Version,
+		Title:           "Edited legacy schedule",
+		WorkflowID:      legacy.Automation.WorkflowID,
+		Context:         "Updated legacy context.",
+		TimeoutSeconds:  1800,
+		Trigger: protocol.AutomationTrigger{
+			Type: protocol.AutomationTriggerSchedule, Cron: "30 10 * * 2", Timezone: "Europe/London",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Automation.DefinitionID != "" || updated.Automation.WorkflowID != legacy.Automation.WorkflowID ||
+		updated.Automation.Title != "Edited legacy schedule" || updated.Automation.Context != "Updated legacy context." ||
+		updated.Automation.TimeoutSeconds != 1800 || updated.Automation.Trigger.Cron != "30 10 * * 2" {
+		t.Fatalf("updated legacy schedule = %#v", updated.Automation)
+	}
+	var definitionID *string
+	if err := store.db.QueryRow(`SELECT definition_id FROM automation_schedule_triggers WHERE automation_id = ?`, detail.Automation.ID).Scan(&definitionID); err != nil {
+		t.Fatal(err)
+	}
+	if definitionID != nil {
+		t.Fatalf("legacy schedule definition_id = %v; want NULL", definitionID)
+	}
+}
+
+func TestLegacyWorkflowScheduleCreateReplaySurvivesDefinitionScheduleMigration(t *testing.T) {
+	store := newTestStore(t)
+	workflow := createTestWorkflow(t, store, "legacy-schedule-replay-workflow", "Legacy replay", "Run legacy work.")
+	repository := createManagedTestRepository(t, store, "github.com/owainlewis/legacy-replay")
+	input := protocol.CreateAutomationRequest{
+		RequestKey: "legacy-schedule-replay", Title: "Legacy schedule replay",
+		WorkflowID: workflow.Workflow.ID, RepositoryID: repository.ID,
+		Context: "Preserve the original request.", TimeoutSeconds: 900,
+		Trigger: protocol.AutomationTrigger{Type: protocol.AutomationTriggerSchedule, Cron: "0 9 * * 1", Timezone: "UTC"},
+	}
+	value, titleKey, err := normalizeAutomation(
+		input.RequestKey, input.Title, input.WorkflowID, input.RepositoryID, input.Context,
+		input.TimeoutSeconds, input.Trigger, "", nil, nil, 0, true, true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := legacyAutomationDigest(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := store.now().UnixMilli()
+	if _, err := store.db.Exec(`
+		INSERT INTO automations(
+			id, request_key, request_digest, title, title_key, workflow_id,
+			repository_id, context, timeout_seconds, trigger_type, created_at, updated_at
+		) VALUES ('legacy-schedule', ?, ?, ?, ?, ?, ?, ?, ?, 'schedule', ?, ?)
+	`, value.RequestKey, digest, value.Title, titleKey, value.WorkflowID, value.RepositoryID,
+		value.Context, value.TimeoutSeconds, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`
+		INSERT INTO automation_schedule_triggers(
+			automation_id, cron, timezone, definition_id, parameters_json, concurrency_limit
+		) VALUES ('legacy-schedule', ?, ?, NULL, '{}', 3)
+	`, value.Trigger.Cron, value.Trigger.Timezone); err != nil {
+		t.Fatal(err)
+	}
+	replayed, created, err := store.CreateAutomation(context.Background(), input)
+	if err != nil || created || replayed.Automation.ID != "legacy-schedule" {
+		t.Fatalf("legacy schedule replay: created=%t detail=%#v err=%v", created, replayed.Automation, err)
+	}
+	changed := input
+	changed.Title = "Changed legacy schedule"
+	_, _, err = store.CreateAutomation(context.Background(), changed)
+	assertErrorCode(t, err, "request_key_conflict")
+	newRequest := input
+	newRequest.RequestKey = "new-legacy-schedule"
+	_, _, err = store.CreateAutomation(context.Background(), newRequest)
+	assertErrorCode(t, err, "definition_required")
+}
+
+func TestDefinitionScheduleCannotBeDowngradedToLegacyWorkflowShape(t *testing.T) {
+	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
+	store, detail := createScheduleAutomationFixture(t, &now, false)
+	workflow := createTestWorkflow(t, store, "schedule-downgrade-workflow", "Legacy workflow", "Do legacy work.")
+	_, err := store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
+		ExpectedVersion: detail.Automation.Version,
+		Title:           detail.Automation.Title,
+		WorkflowID:      workflow.Workflow.ID,
+		Context:         "Downgrade the Definition schedule.",
+		TimeoutSeconds:  600,
+		Trigger: protocol.AutomationTrigger{
+			Type: protocol.AutomationTriggerSchedule, Cron: detail.Automation.Trigger.Cron, Timezone: detail.Automation.Trigger.Timezone,
+		},
+	})
+	assertErrorCode(t, err, "definition_required")
+	current, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Automation.DefinitionID != detail.Automation.DefinitionID ||
+		len(current.Automation.Repositories) != len(detail.Automation.Repositories) {
+		t.Fatalf("Definition schedule changed after rejected downgrade: %#v", current.Automation)
+	}
+}
+
+func TestDefinitionScheduleFreezesDefinitionAtOccurrenceAdmission(t *testing.T) {
+	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
+	store, detail := createScheduleAutomationFixture(t, &now, false)
+	enableAutomation(t, store, detail.Automation.ID)
+	admitted, err := store.RunAutomationNow(context.Background(), detail.Automation.ID, protocol.RunAutomationRequest{RequestKey: "frozen-definition"})
+	if err != nil || len(admitted.Occurrences) != 1 {
+		t.Fatalf("admit Run now = %#v, error %v", admitted.Occurrences, err)
+	}
+	definition, err := store.Definition(context.Background(), detail.Automation.DefinitionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, changed, err := store.UpdateDefinition(context.Background(), definition.ID, protocol.UpdateDefinitionRequest{
+		RequestKey: "edit-after-schedule-admission", ExpectedGeneration: definition.Generation,
+		Name: definition.Name, Prompt: "A newer prompt must not change admitted work.",
+		Runtime: protocol.RuntimePi, TimeoutSeconds: definition.TimeoutSeconds,
+		Inputs: definition.Inputs,
+	})
+	if err != nil || !changed || updated.Generation != definition.Generation+1 {
+		t.Fatalf("update Definition = %#v, changed %v, error %v", updated, changed, err)
+	}
+	if err := store.dispatchPendingOccurrences(context.Background(), 100); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Run(context.Background(), current.Occurrences[0].RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Run.Definition.Generation != definition.Generation ||
+		run.Run.Definition.Prompt != definition.Prompt || run.Run.Definition.Runtime != definition.Runtime {
+		t.Fatalf("scheduled Run did not use frozen Definition: %#v", run.Run.Definition)
+	}
+}
+
+func TestDefinitionScheduleRejectsManualRunRequestKeyCollision(t *testing.T) {
+	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
+	store, detail := createScheduleAutomationFixture(t, &now, false)
+	enableAutomation(t, store, detail.Automation.ID)
+	admitted, err := store.RunAutomationNow(context.Background(), detail.Automation.ID, protocol.RunAutomationRequest{RequestKey: "source-collision"})
+	if err != nil || len(admitted.Occurrences) != 1 {
+		t.Fatalf("admit Run now = %#v, error %v", admitted.Occurrences, err)
+	}
+	occurrence := admitted.Occurrences[0]
+	manual, created, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+		RequestKey: occurrence.TaskRequestKey, DefinitionID: detail.Automation.DefinitionID,
+		RepositoryIDs: []string{detail.Automation.RepositoryID},
+		Parameters:    map[string]string{"scope": "safe"}, ConcurrencyLimit: 2,
+	})
+	if err != nil || !created || manual.Run.SourceKind != "manual" {
+		t.Fatalf("create colliding manual Run = %#v, created %v, error %v", manual.Run, created, err)
+	}
+	if err := store.dispatchPendingOccurrences(context.Background(), 100); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Occurrences[0].RunID != "" || current.Occurrences[0].State != "failed" ||
+		current.Occurrences[0].Diagnostic != "request_key_conflict" {
+		t.Fatalf("source collision occurrence = %#v", current.Occurrences[0])
+	}
+}
+
+func TestDefinitionScheduleDispatchSerializesWithDisable(t *testing.T) {
+	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
+	store, detail := createScheduleAutomationFixture(t, &now, false)
+	enableAutomation(t, store, detail.Automation.ID)
+	if _, err := store.RunAutomationNow(context.Background(), detail.Automation.ID, protocol.RunAutomationRequest{RequestKey: "disable-race"}); err != nil {
+		t.Fatal(err)
+	}
+	enabledChecked := make(chan struct{})
+	releaseDispatch := make(chan struct{})
+	store.afterScheduleEnabledCheck = func() {
+		close(enabledChecked)
+		<-releaseDispatch
+	}
+	dispatchDone := make(chan error, 1)
+	go func() { dispatchDone <- store.dispatchPendingOccurrences(context.Background(), 100) }()
+	<-enabledChecked
+	disableDone := make(chan error, 1)
+	go func() {
+		_, err := store.SetAutomationEnabled(context.Background(), detail.Automation.ID, false, false)
+		disableDone <- err
+	}()
+	select {
+	case err := <-disableDone:
+		t.Fatalf("Disable passed an in-flight admission: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(releaseDispatch)
+	if err := <-dispatchDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-disableDone; err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Automation.Enabled || len(current.Occurrences) != 1 || current.Occurrences[0].RunID == "" {
+		t.Fatalf("serialized disable state = %#v", current)
 	}
 }
 
@@ -195,8 +591,10 @@ func TestScheduleAutomationUpdateNormalizesAndRecoversLostResponse(t *testing.T)
 	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
 	store, detail := createScheduleAutomationFixture(t, &now, false)
 	input := protocol.UpdateAutomationRequest{
-		ExpectedVersion: 1, Title: "Weekday maintenance", WorkflowID: detail.Automation.WorkflowID,
-		Context: "Updated schedule context.", TimeoutSeconds: 7200,
+		ExpectedVersion: 1, Title: "Weekday maintenance",
+		DefinitionID:  detail.Automation.DefinitionID,
+		RepositoryIDs: []string{detail.Automation.RepositoryID},
+		Parameters:    map[string]string{"scope": "safe"}, ConcurrencyLimit: 2,
 		Trigger: protocol.AutomationTrigger{Type: protocol.AutomationTriggerSchedule, Cron: " 30  10 * * MON-FRI ", Timezone: " UTC "},
 	}
 	updated, err := store.UpdateAutomation(context.Background(), detail.Automation.ID, input)
@@ -288,7 +686,13 @@ func TestScheduleDisabledDependencyCatchUpCountsMissedInstants(t *testing.T) {
 	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
 	store, detail := createScheduleAutomationFixture(t, &now, false)
 	enabled := enableAutomation(t, store, detail.Automation.ID)
-	if _, err := store.SetWorkflowEnabled(context.Background(), detail.Automation.WorkflowID, false); err != nil {
+	definition, err := store.Definition(context.Background(), detail.Automation.DefinitionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetDefinitionArchived(
+		context.Background(), definition.ID, true, definition.Generation,
+	); err != nil {
 		t.Fatal(err)
 	}
 	now = time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
@@ -301,7 +705,7 @@ func TestScheduleDisabledDependencyCatchUpCountsMissedInstants(t *testing.T) {
 	}
 	if len(current.Occurrences) != 1 || current.Occurrences[0].ScheduledAt == nil ||
 		!current.Occurrences[0].ScheduledAt.Equal(*enabled.Automation.NextDueAt) ||
-		current.Occurrences[0].Diagnostic != "workflow_disabled; catch_up; 3 later scheduled instants skipped" {
+		current.Occurrences[0].Diagnostic != "definition_archived; catch_up; 3 later scheduled instants skipped" {
 		t.Fatalf("disabled catch-up occurrence = %#v", current.Occurrences)
 	}
 	if current.Automation.SkippedCount != 4 {
@@ -309,6 +713,16 @@ func TestScheduleDisabledDependencyCatchUpCountsMissedInstants(t *testing.T) {
 	}
 	if current.Automation.NextDueAt == nil || !current.Automation.NextDueAt.After(now) {
 		t.Fatalf("disabled catch-up cursor = %#v", current.Automation.NextDueAt)
+	}
+}
+
+func TestScheduleDependencyFailureClassificationRetriesStorageErrors(t *testing.T) {
+	if _, durable := durableScheduleDependencyFailure(unavailable(errors.New("temporary database failure"))); durable {
+		t.Fatal("transient storage failure was classified as durable")
+	}
+	serviceErr, durable := durableScheduleDependencyFailure(conflict("definition_archived", "archived"))
+	if !durable || serviceErr.Code != "definition_archived" {
+		t.Fatalf("dependency conflict classification = %#v, durable %t", serviceErr, durable)
 	}
 }
 
@@ -350,12 +764,12 @@ func TestScheduleRunNowConcurrentReplayDisableAndCursorIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(current.Occurrences) != 1 || current.Occurrences[0].Kind != "run_now" || current.Occurrences[0].Task == nil {
+	if len(current.Occurrences) != 1 || current.Occurrences[0].Kind != "run_now" || current.Occurrences[0].RunID == "" {
 		t.Fatalf("concurrent Run now occurrences = %#v", current.Occurrences)
 	}
-	task, err := store.Task(context.Background(), current.Occurrences[0].Task.ID)
-	if err != nil || task.Task.State != "queued" {
-		t.Fatalf("disable changed the admitted task = %#v, error %v", task.Task, err)
+	run, err := store.Run(context.Background(), current.Occurrences[0].RunID)
+	if err != nil || run.Run.State != "queued" {
+		t.Fatalf("disable changed the admitted Run = %#v, error %v", run.Run, err)
 	}
 	if current.Automation.NextDueAt != nil {
 		t.Fatalf("disabled schedule retained due cursor %s", current.Automation.NextDueAt)
@@ -385,9 +799,10 @@ func TestInvalidStoredScheduleDegradesOnlyItsAutomation(t *testing.T) {
 		t.Fatalf("degraded schedule = %#v, error %v", degraded.Automation, err)
 	}
 
+	workflow := createTestWorkflow(t, store, "provider-after-schedule", "Provider", "Inspect provider items.")
 	provider, created, err := store.CreateAutomation(context.Background(), protocol.CreateAutomationRequest{
 		RequestKey: "provider-after-schedule-degradation", Title: "Provider remains available",
-		WorkflowID: detail.Automation.WorkflowID, RepositoryID: detail.Automation.RepositoryID,
+		WorkflowID: workflow.Workflow.ID, RepositoryID: detail.Automation.RepositoryID,
 		TimeoutSeconds: 60,
 		Trigger: protocol.AutomationTrigger{
 			Type: protocol.AutomationTriggerGitHubIssue, State: "open",
@@ -456,6 +871,7 @@ func TestScheduleShutdownDrainsOccurrenceCommittedBeforeCancellation(t *testing.
 		Name: "schedule-worker", WorkerVersion: "test", RuntimeVersion: "test",
 		Capacity: 1, Health: "healthy", AcceptsManagedRepositories: true,
 		ManagedRepositoryIDs: []string{detail.Automation.RepositoryID},
+		SourceAccess:         []protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -473,12 +889,12 @@ func TestScheduleShutdownDrainsOccurrenceCommittedBeforeCancellation(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(current.Occurrences) != 1 || current.Occurrences[0].Kind != "scheduled" || current.Occurrences[0].Task == nil {
+	if len(current.Occurrences) != 1 || current.Occurrences[0].Kind != "scheduled" || current.Occurrences[0].RunID == "" {
 		t.Fatalf("shutdown did not drain committed occurrence = %#v", current.Occurrences)
 	}
-	task, err := store.Task(context.Background(), current.Occurrences[0].Task.ID)
-	if err != nil || task.Task.State != "queued" {
-		t.Fatalf("shutdown-drained task = %#v, error %v", task.Task, err)
+	run, err := store.Run(context.Background(), current.Occurrences[0].RunID)
+	if err != nil || run.Run.State != "queued" {
+		t.Fatalf("shutdown-drained Run = %#v, error %v", run.Run, err)
 	}
 }
 
@@ -586,4 +1002,25 @@ func TestHTTPSchedulePreviewEnableAndRunNowAreStrictAndIdempotent(t *testing.T) 
 	})
 	requireStatus(t, response, http.StatusBadRequest)
 	response.Body.Close()
+}
+
+func TestDefinitionScheduleIgnoresOutOfRangeLegacyTimeout(t *testing.T) {
+	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
+	store, detail := createScheduleAutomationFixture(t, &now, false)
+	updated, err := store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
+		ExpectedVersion:  detail.Automation.Version,
+		Title:            detail.Automation.Title,
+		DefinitionID:     detail.Automation.DefinitionID,
+		RepositoryIDs:    []string{detail.Automation.RepositoryID},
+		Parameters:       detail.Automation.Parameters,
+		ConcurrencyLimit: detail.Automation.ConcurrencyLimit,
+		TimeoutSeconds:   int(protocol.MaxTimeout/time.Second) + 1,
+		Trigger:          detail.Automation.Trigger,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Automation.TimeoutSeconds != 1 {
+		t.Fatalf("schedule timeout = %d, want ignored sentinel 1", updated.Automation.TimeoutSeconds)
+	}
 }

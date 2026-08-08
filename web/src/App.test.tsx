@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -667,7 +667,9 @@ describe("App", () => {
     await user.selectOptions(within(dialog).getByLabelText("Runbook"), "workflow-implement");
     await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
     await user.type(within(dialog).getByLabelText("Context for this Automation"), "Fetch and revalidate live state.");
+    expect(within(dialog).getByRole("button", { name: "Create Automation" })).toBeEnabled();
     await user.click(within(dialog).getByRole("button", { name: "Create Automation" }));
+    expect(dialog.querySelector(".field-error")?.textContent ?? "").toBe("");
 
     expect(await screen.findByRole("heading", { name: "Factory ready issues" })).toBeVisible();
     expect(screen.getByText("Automation is disabled.")).toBeVisible();
@@ -869,22 +871,31 @@ describe("App", () => {
 
   it("creates, previews, enables, and runs a typed schedule Automation", async () => {
     window.history.replaceState({}, "", "/automations");
-    const fetch = mockControlPlane({ runFailures: 1 });
+    const fetch = mockControlPlane({ runFailures: 1, scheduleDefinition: true });
     const user = userEvent.setup();
     renderApp();
 
     await user.click(await screen.findByRole("button", { name: "Create Automation" }));
     const dialog = screen.getByRole("dialog", { name: "Create Automation" });
     await user.type(within(dialog).getByLabelText("Title"), "Daily Factory maintenance");
-    await user.selectOptions(within(dialog).getByLabelText("Runbook"), "workflow-implement");
-    await user.selectOptions(within(dialog).getByLabelText("Repository"), "repo-factory");
     await user.selectOptions(within(dialog).getByLabelText("Trigger"), "schedule");
+    await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-maintenance");
+    await user.selectOptions(within(dialog).getByLabelText("Repositories"), ["repo-factory", "repo-managed"]);
+    await user.clear(within(dialog).getByLabelText("scope"));
+    await user.type(within(dialog).getByLabelText("scope"), "security and correctness");
     await user.selectOptions(within(dialog).getByLabelText("Frequency"), "custom");
     await user.clear(within(dialog).getByLabelText("Cron (five fields)"));
     await user.type(within(dialog).getByLabelText("Cron (five fields)"), "0 9 * * 1");
     await user.clear(within(dialog).getByLabelText("Timezone"));
     await user.type(within(dialog).getByLabelText("Timezone"), "Europe/London");
+    expect(within(dialog).getByRole("button", { name: "Create Automation" })).toBeEnabled();
     await user.click(within(dialog).getByRole("button", { name: "Create Automation" }));
+    expect(dialog.querySelector(".field-error")?.textContent ?? "").toBe("");
+
+    await waitFor(() => expect(fetch.mock.calls.some(([input, init]) => {
+      const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return path === "/api/v1/automations" && init?.method === "POST";
+    })).toBe(true));
 
     expect(await screen.findByRole("heading", { name: "Daily Factory maintenance" })).toBeVisible();
     expect(screen.getByText("0 9 * * 1")).toBeVisible();
@@ -897,9 +908,12 @@ describe("App", () => {
     await user.click(await screen.findByRole("button", { name: "Run now" }));
     expect(await screen.findByText(/connection lost after Run now commit/i)).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Run now" }));
-    expect(await screen.findByText("Run now", { selector: ".occurrence-identity strong" })).toBeVisible();
+    const runIdentity = await screen.findByText("Run now", { selector: ".occurrence-identity strong" });
+    const runRow = runIdentity.closest(".occurrence-row");
+    expect(runRow).not.toBeNull();
+    expect(within(runRow as HTMLElement).getByText("Succeeded", { selector: ".status-badge" })).toBeVisible();
     expect(screen.getAllByText("Run now", { selector: ".occurrence-identity strong" })).toHaveLength(1);
-    expect(screen.getAllByRole("button", { name: "Open task" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Open Run" })).toHaveLength(1);
     const runBodies = fetch.mock.calls
       .filter(([input, init]) => {
         const path = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -908,6 +922,144 @@ describe("App", () => {
       .map(([, init]) => JSON.parse(String(init?.body)) as { request_key: string });
     expect(runBodies).toHaveLength(2);
     expect(runBodies[0].request_key).toBe(runBodies[1].request_key);
+  });
+
+  it("resets shared parameter fields when the selected schedule Definition changes", async () => {
+    mockControlPlane({ scheduleDefinition: true });
+    await globalThis.fetch("/api/v1/definitions", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "second-schedule-definition",
+        name: "Second maintenance Definition",
+        prompt: "Inspect another scope.",
+        runtime: "codex",
+        allowed_tools: ["git"],
+        timeout_seconds: 600,
+        inputs: { scope: "different default" },
+      }),
+    });
+    window.history.replaceState({}, "", "/automations");
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Create Automation" }));
+    const dialog = screen.getByRole("dialog", { name: "Create Automation" });
+    await user.selectOptions(within(dialog).getByLabelText("Trigger"), "schedule");
+    await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-maintenance");
+    const scope = within(dialog).getByLabelText("scope");
+    await user.type(scope, "temporary override");
+    await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-created");
+
+    expect(within(dialog).getByLabelText("scope")).toHaveValue("");
+  });
+
+  it("does not carry saved parameters when an edited schedule changes Definition", async () => {
+    mockControlPlane({ scheduleDefinition: true });
+    await globalThis.fetch("/api/v1/definitions", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "edit-second-schedule-definition",
+        name: "Edited maintenance Definition",
+        prompt: "Inspect another scope.",
+        runtime: "codex",
+        allowed_tools: ["git"],
+        timeout_seconds: 600,
+        inputs: { scope: "different default" },
+      }),
+    });
+    await globalThis.fetch("/api/v1/automations", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "editable-schedule",
+        title: "Editable maintenance schedule",
+        definition_id: "definition-maintenance",
+        repository_ids: ["repo-factory"],
+        parameters: { scope: "saved override" },
+        concurrency_limit: 1,
+        trigger: { type: "schedule", cron: "0 9 * * 1", timezone: "UTC" },
+      }),
+    });
+    window.history.replaceState({}, "", "/automations");
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: /Editable maintenance schedule/ }));
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Automation" });
+    expect(within(dialog).getByLabelText("scope")).toHaveValue("saved override");
+    await user.selectOptions(within(dialog).getByLabelText("Definition"), "definition-created");
+
+    expect(within(dialog).getByLabelText("scope")).toHaveValue("");
+  });
+
+  it("preserves exact scheduled Definition parameter overrides", async () => {
+    const fetch = mockControlPlane({ scheduleDefinition: true });
+    await globalThis.fetch("/api/v1/automations", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "exact-parameter-schedule",
+        title: "Exact parameter schedule",
+        definition_id: "definition-maintenance",
+        repository_ids: ["repo-factory"],
+        parameters: { scope: "saved override" },
+        concurrency_limit: 1,
+        trigger: { type: "schedule", cron: "0 9 * * 1", timezone: "UTC" },
+      }),
+    });
+    window.history.replaceState({}, "", "/automations");
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: /Exact parameter schedule/ }));
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Automation" });
+    const scope = within(dialog).getByLabelText("scope");
+    await user.clear(scope);
+    await user.type(scope, "  exact value  ");
+    await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    await vi.waitFor(() => {
+      const update = fetch.mock.calls.find(([input, init]) =>
+        String(input).includes("/api/v1/automations/automation-created") && init?.method === "PUT");
+      expect(update).toBeDefined();
+      const body = JSON.parse(String(update?.[1]?.body));
+      expect(body.parameters).toEqual({ scope: "  exact value  " });
+      expect(body).not.toHaveProperty("repository_id");
+    });
+  });
+
+  it("preserves saved schedule parameters when Definitions cannot be loaded", async () => {
+    const fetch = mockControlPlane({ scheduleDefinition: true, definitionListFailure: true });
+    await globalThis.fetch("/api/v1/automations", {
+      method: "POST",
+      body: JSON.stringify({
+        request_key: "unavailable-definition-schedule",
+        title: "Unavailable Definition schedule",
+        definition_id: "definition-maintenance",
+        repository_ids: ["repo-factory"],
+        parameters: { scope: "saved override" },
+        concurrency_limit: 1,
+        trigger: { type: "schedule", cron: "0 9 * * 1", timezone: "UTC" },
+      }),
+    });
+    window.history.replaceState({}, "", "/automations");
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("button", { name: /Unavailable Definition schedule/ }));
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Automation" });
+    await user.clear(within(dialog).getByLabelText("Title"));
+    await user.type(within(dialog).getByLabelText("Title"), "Renamed unavailable Definition schedule");
+    await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    await vi.waitFor(() => {
+      const update = fetch.mock.calls.find(([input, init]) =>
+        String(input).includes("/api/v1/automations/automation-created") && init?.method === "PUT");
+      expect(update).toBeDefined();
+      const body = JSON.parse(String(update?.[1]?.body));
+      expect(body.parameters).toEqual({ scope: "saved override" });
+    });
   });
 
   it("preserves Automation form focus and typed input during background refresh", async () => {
