@@ -237,11 +237,11 @@ func (s *Store) admitDueSchedule(ctx context.Context, automationID string) error
 			if dependencyErr := validateDefinitionScheduleDependencies(
 				ctx, tx, snapshot.definitionID, snapshot.repositoryIDs, snapshot.parameters, true,
 			); dependencyErr != nil {
-				state, diagnostic, skipped = "failed", "schedule_dependency_unavailable", 1
-				var serviceErr *ServiceError
-				if errors.As(dependencyErr, &serviceErr) {
-					diagnostic = serviceErr.Code
+				serviceErr, durable := durableScheduleDependencyFailure(dependencyErr)
+				if !durable {
+					return dependencyErr
 				}
+				state, diagnostic, skipped = "failed", serviceErr.Code, 1
 				healthStatus, healthCode = "blocked", diagnostic
 				healthMessage = "Scheduled occurrence recorded without a Run because its Definition or repository set is unavailable."
 			}
@@ -370,6 +370,14 @@ func (s *Store) RunAutomationNow(
 		return protocol.AutomationDetail{}, unavailable(err)
 	}
 	return s.Automation(ctx, automationID)
+}
+
+func durableScheduleDependencyFailure(err error) (*ServiceError, bool) {
+	var serviceErr *ServiceError
+	if !errors.As(err, &serviceErr) || serviceErr.Status >= 500 {
+		return nil, false
+	}
+	return serviceErr, true
 }
 
 func (s *Store) insertScheduleOccurrence(

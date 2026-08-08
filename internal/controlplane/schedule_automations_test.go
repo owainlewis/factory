@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -635,6 +636,16 @@ func TestScheduleDisabledDependencyCatchUpCountsMissedInstants(t *testing.T) {
 	}
 	if current.Automation.NextDueAt == nil || !current.Automation.NextDueAt.After(now) {
 		t.Fatalf("disabled catch-up cursor = %#v", current.Automation.NextDueAt)
+	}
+}
+
+func TestScheduleDependencyFailureClassificationRetriesStorageErrors(t *testing.T) {
+	if _, durable := durableScheduleDependencyFailure(unavailable(errors.New("temporary database failure"))); durable {
+		t.Fatal("transient storage failure was classified as durable")
+	}
+	serviceErr, durable := durableScheduleDependencyFailure(conflict("definition_archived", "archived"))
+	if !durable || serviceErr.Code != "definition_archived" {
+		t.Fatalf("dependency conflict classification = %#v, durable %t", serviceErr, durable)
 	}
 }
 
