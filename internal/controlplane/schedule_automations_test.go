@@ -400,6 +400,31 @@ func TestLegacyWorkflowScheduleRemainsEditableAfterDefinitionScheduleMigration(t
 	}
 }
 
+func TestDefinitionScheduleCannotBeDowngradedToLegacyWorkflowShape(t *testing.T) {
+	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
+	store, detail := createScheduleAutomationFixture(t, &now, false)
+	workflow := createTestWorkflow(t, store, "schedule-downgrade-workflow", "Legacy workflow", "Do legacy work.")
+	_, err := store.UpdateAutomation(context.Background(), detail.Automation.ID, protocol.UpdateAutomationRequest{
+		ExpectedVersion: detail.Automation.Version,
+		Title:           detail.Automation.Title,
+		WorkflowID:      workflow.Workflow.ID,
+		Context:         "Downgrade the Definition schedule.",
+		TimeoutSeconds:  600,
+		Trigger: protocol.AutomationTrigger{
+			Type: protocol.AutomationTriggerSchedule, Cron: detail.Automation.Trigger.Cron, Timezone: detail.Automation.Trigger.Timezone,
+		},
+	})
+	assertErrorCode(t, err, "definition_required")
+	current, err := store.Automation(context.Background(), detail.Automation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Automation.DefinitionID != detail.Automation.DefinitionID ||
+		len(current.Automation.Repositories) != len(detail.Automation.Repositories) {
+		t.Fatalf("Definition schedule changed after rejected downgrade: %#v", current.Automation)
+	}
+}
+
 func TestDefinitionScheduleFreezesDefinitionAtOccurrenceAdmission(t *testing.T) {
 	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
 	store, detail := createScheduleAutomationFixture(t, &now, false)

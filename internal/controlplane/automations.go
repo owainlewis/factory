@@ -852,6 +852,9 @@ func (s *Store) UpdateAutomation(
 	if currentType != value.Trigger.Type {
 		return protocol.AutomationDetail{}, conflict("automation_trigger_type_immutable", "trigger type is immutable; create a new Automation")
 	}
+	if currentType == protocol.AutomationTriggerSchedule && currentDefinitionID != "" && value.DefinitionID == "" {
+		return protocol.AutomationDetail{}, invalid("definition_required", "definition_id is required for a scheduled Automation")
+	}
 	if (currentType == protocol.AutomationTriggerGitHubIssue && (issueTriggerCount != 1 || pullRequestTriggerCount != 0)) ||
 		(currentType == protocol.AutomationTriggerGitHubPullRequest && (pullRequestTriggerCount != 1 || issueTriggerCount != 0)) ||
 		(currentType == protocol.AutomationTriggerSchedule && (scheduleTriggerCount != 1 || issueTriggerCount != 0 || pullRequestTriggerCount != 0)) ||
