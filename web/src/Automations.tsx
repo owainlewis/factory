@@ -833,9 +833,11 @@ function AutomationForm({
     const repository = current?.repository_id ?? String(form.get("repository_id") ?? "");
     const repositoryIDs = Array.from(repositorySelections);
     const definition = definitionSelection;
-    const parameters = Object.fromEntries(Object.entries(parameterOverrides).filter(([key]) =>
-      Object.hasOwn(selectedDefinition?.inputs ?? {}, key),
-    ));
+    const parameters = selectedDefinition
+      ? Object.fromEntries(Object.entries(parameterOverrides).filter(([key]) =>
+          Object.hasOwn(selectedDefinition.inputs, key),
+        ))
+      : mode === "edit" && definition === current?.definition_id ? parameterOverrides : {};
     const concurrency = Number(form.get("concurrency_limit") || current?.concurrency_limit || 3);
     const context = String(form.get("context") ?? "");
     const timeout = Number(form.get("timeout_seconds"));

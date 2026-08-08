@@ -400,6 +400,58 @@ func TestLegacyWorkflowScheduleRemainsEditableAfterDefinitionScheduleMigration(t
 	}
 }
 
+func TestLegacyWorkflowScheduleCreateReplaySurvivesDefinitionScheduleMigration(t *testing.T) {
+	store := newTestStore(t)
+	workflow := createTestWorkflow(t, store, "legacy-schedule-replay-workflow", "Legacy replay", "Run legacy work.")
+	repository := createManagedTestRepository(t, store, "github.com/owainlewis/legacy-replay")
+	input := protocol.CreateAutomationRequest{
+		RequestKey: "legacy-schedule-replay", Title: "Legacy schedule replay",
+		WorkflowID: workflow.Workflow.ID, RepositoryID: repository.ID,
+		Context: "Preserve the original request.", TimeoutSeconds: 900,
+		Trigger: protocol.AutomationTrigger{Type: protocol.AutomationTriggerSchedule, Cron: "0 9 * * 1", Timezone: "UTC"},
+	}
+	value, titleKey, err := normalizeAutomation(
+		input.RequestKey, input.Title, input.WorkflowID, input.RepositoryID, input.Context,
+		input.TimeoutSeconds, input.Trigger, "", nil, nil, 0, true, true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := legacyAutomationDigest(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := store.now().UnixMilli()
+	if _, err := store.db.Exec(`
+		INSERT INTO automations(
+			id, request_key, request_digest, title, title_key, workflow_id,
+			repository_id, context, timeout_seconds, trigger_type, created_at, updated_at
+		) VALUES ('legacy-schedule', ?, ?, ?, ?, ?, ?, ?, ?, 'schedule', ?, ?)
+	`, value.RequestKey, digest, value.Title, titleKey, value.WorkflowID, value.RepositoryID,
+		value.Context, value.TimeoutSeconds, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`
+		INSERT INTO automation_schedule_triggers(
+			automation_id, cron, timezone, definition_id, parameters_json, concurrency_limit
+		) VALUES ('legacy-schedule', ?, ?, NULL, '{}', 3)
+	`, value.Trigger.Cron, value.Trigger.Timezone); err != nil {
+		t.Fatal(err)
+	}
+	replayed, created, err := store.CreateAutomation(context.Background(), input)
+	if err != nil || created || replayed.Automation.ID != "legacy-schedule" {
+		t.Fatalf("legacy schedule replay: created=%t detail=%#v err=%v", created, replayed.Automation, err)
+	}
+	changed := input
+	changed.Title = "Changed legacy schedule"
+	_, _, err = store.CreateAutomation(context.Background(), changed)
+	assertErrorCode(t, err, "request_key_conflict")
+	newRequest := input
+	newRequest.RequestKey = "new-legacy-schedule"
+	_, _, err = store.CreateAutomation(context.Background(), newRequest)
+	assertErrorCode(t, err, "definition_required")
+}
+
 func TestDefinitionScheduleCannotBeDowngradedToLegacyWorkflowShape(t *testing.T) {
 	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
 	store, detail := createScheduleAutomationFixture(t, &now, false)

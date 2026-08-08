@@ -226,6 +226,7 @@ export function mockControlPlane(
     incrementalEvents?: boolean;
     definitionHeadRefreshGate?: Promise<void>;
     definitionHistoryGate?: Promise<void>;
+    definitionListFailure?: boolean;
     ledgerOnlyMigration?: boolean;
     automationRunWithoutTaskState?: "pending" | "failed" | "skipped" | "task_deleted";
     automationTaskState?: Task["state"];
@@ -498,6 +499,12 @@ export function mockControlPlane(
       return Response.json(existing);
     }
     if (path.startsWith("/api/v1/definitions?")) {
+      if (options.definitionListFailure) {
+        return Response.json(
+          { error: { code: "storage_unavailable", message: "Definitions could not be loaded" } },
+          { status: 503 },
+        );
+      }
       const query = new URL(path, "http://factory.test").searchParams;
       const archived = query.get("archived") === "true";
       if (options.paginatedDefinitions && !archived) {

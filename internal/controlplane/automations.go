@@ -227,6 +227,69 @@ func automationDigest(value normalizedAutomation) ([]byte, error) {
 	return digest[:], nil
 }
 
+func legacyAutomationDigest(value normalizedAutomation) ([]byte, error) {
+	body, err := json.Marshal(struct {
+		RequestKey     string                     `json:"request_key,omitempty"`
+		Title          string                     `json:"name"`
+		WorkflowID     string                     `json:"workflow_id"`
+		RepositoryID   string                     `json:"repository_id,omitempty"`
+		Context        string                     `json:"context"`
+		TimeoutSeconds int                        `json:"timeout_seconds"`
+		Trigger        protocol.AutomationTrigger `json:"trigger"`
+	}{
+		RequestKey: value.RequestKey, Title: value.Title, WorkflowID: value.WorkflowID,
+		RepositoryID: value.RepositoryID, Context: value.Context,
+		TimeoutSeconds: value.TimeoutSeconds, Trigger: value.Trigger,
+	})
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(body)
+	return digest[:], nil
+}
+
+func (s *Store) replayLegacyScheduleAutomation(
+	ctx context.Context,
+	input protocol.CreateAutomationRequest,
+) (protocol.AutomationDetail, bool, error) {
+	requestKey := strings.TrimSpace(input.RequestKey)
+	var existingID, existingType, existingDefinitionID string
+	var existingDigest []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT automation.id, automation.request_digest, automation.trigger_type,
+		       COALESCE(schedule.definition_id, '')
+		FROM automations automation
+		LEFT JOIN automation_schedule_triggers schedule ON schedule.automation_id = automation.id
+		WHERE automation.request_key = ?
+	`, requestKey).Scan(&existingID, &existingDigest, &existingType, &existingDefinitionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.AutomationDetail{}, false, nil
+	}
+	if err != nil {
+		return protocol.AutomationDetail{}, false, unavailable(err)
+	}
+	if existingType != protocol.AutomationTriggerSchedule || existingDefinitionID != "" {
+		return protocol.AutomationDetail{}, false, conflict("request_key_conflict", "request_key was already used for a different Automation")
+	}
+	value, _, err := normalizeAutomation(
+		input.RequestKey, input.Title, input.WorkflowID, input.RepositoryID,
+		input.Context, input.TimeoutSeconds, input.Trigger,
+		input.DefinitionID, input.RepositoryIDs, input.Parameters, input.ConcurrencyLimit, true, true,
+	)
+	if err != nil {
+		return protocol.AutomationDetail{}, false, err
+	}
+	digest, err := legacyAutomationDigest(value)
+	if err != nil {
+		return protocol.AutomationDetail{}, false, unavailable(err)
+	}
+	if !bytes.Equal(existingDigest, digest) {
+		return protocol.AutomationDetail{}, false, conflict("request_key_conflict", "request_key was already used for a different Automation")
+	}
+	detail, err := s.Automation(ctx, existingID)
+	return detail, true, err
+}
+
 func (s *Store) CreateAutomation(
 	ctx context.Context,
 	input protocol.CreateAutomationRequest,
@@ -237,6 +300,12 @@ func (s *Store) CreateAutomation(
 		input.DefinitionID, input.RepositoryIDs, input.Parameters, input.ConcurrencyLimit, true, false,
 	)
 	if err != nil {
+		if strings.TrimSpace(input.Trigger.Type) == protocol.AutomationTriggerSchedule &&
+			strings.TrimSpace(input.DefinitionID) == "" && strings.TrimSpace(input.WorkflowID) != "" {
+			if detail, replayed, replayErr := s.replayLegacyScheduleAutomation(ctx, input); replayed || replayErr != nil {
+				return detail, false, replayErr
+			}
+		}
 		return protocol.AutomationDetail{}, false, err
 	}
 	digest, err := automationDigest(value)
