@@ -515,7 +515,7 @@ func TestDefinitionScheduleFreezesDefinitionAtOccurrenceAdmission(t *testing.T) 
 	}
 }
 
-func TestDefinitionScheduleRejectsManualRunRequestKeyCollision(t *testing.T) {
+func TestDefinitionScheduleReservesRunRequestKey(t *testing.T) {
 	now := time.Date(2026, 8, 1, 7, 0, 0, 0, time.UTC)
 	store, detail := createScheduleAutomationFixture(t, &now, false)
 	enableAutomation(t, store, detail.Automation.ID)
@@ -524,14 +524,15 @@ func TestDefinitionScheduleRejectsManualRunRequestKeyCollision(t *testing.T) {
 		t.Fatalf("admit Run now = %#v, error %v", admitted.Occurrences, err)
 	}
 	occurrence := admitted.Occurrences[0]
-	manual, created, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
+	_, created, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
 		RequestKey: occurrence.TaskRequestKey, DefinitionID: detail.Automation.DefinitionID,
 		RepositoryIDs: []string{detail.Automation.RepositoryID},
 		Parameters:    map[string]string{"scope": "safe"}, ConcurrencyLimit: 2,
 	})
-	if err != nil || !created || manual.Run.SourceKind != "manual" {
-		t.Fatalf("create colliding manual Run = %#v, created %v, error %v", manual.Run, created, err)
+	if created {
+		t.Fatal("manual Run claimed a reserved Automation request key")
 	}
+	assertErrorCode(t, err, "reserved_request_key_prefix")
 	if err := store.dispatchPendingOccurrences(context.Background(), 100); err != nil {
 		t.Fatal(err)
 	}
@@ -539,9 +540,9 @@ func TestDefinitionScheduleRejectsManualRunRequestKeyCollision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Occurrences[0].RunID != "" || current.Occurrences[0].State != "failed" ||
-		current.Occurrences[0].Diagnostic != "request_key_conflict" {
-		t.Fatalf("source collision occurrence = %#v", current.Occurrences[0])
+	if current.Occurrences[0].RunID == "" || current.Occurrences[0].State != "dispatched" ||
+		current.Occurrences[0].Diagnostic != "" {
+		t.Fatalf("reserved-key occurrence = %#v", current.Occurrences[0])
 	}
 }
 

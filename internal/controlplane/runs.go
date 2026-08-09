@@ -156,6 +156,12 @@ func (s *Store) createRun(
 	if !errors.Is(err, sql.ErrNoRows) {
 		return protocol.RunDetail{}, false, unavailable(err)
 	}
+	if sourceKind == "manual" && strings.HasPrefix(value.RequestKey, "automation:") {
+		return protocol.RunDetail{}, false, invalid(
+			"reserved_request_key_prefix",
+			"request_key values beginning with automation: are reserved for control-plane Automations",
+		)
+	}
 
 	var snapshot protocol.DefinitionSnapshot
 	if frozenSnapshot != nil {
