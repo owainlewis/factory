@@ -615,11 +615,22 @@ describe("App", () => {
 
     expect(await screen.findByRole("heading", { name: "Review repository" })).toBeVisible();
     expect(screen.getByText("0 of 2 Jobs complete · concurrency 3", { exact: false })).toBeVisible();
+    const graph = screen.getByRole("group", { name: "Run graph" });
+    expect(within(graph).getByText("Prompt")).toBeVisible();
+    expect(within(graph).getByText("Run outcome")).toBeVisible();
+    expect(within(graph).getByText("0 of 2 Jobs complete")).toBeVisible();
     expect(screen.getByRole("button", { name: "View github.com/example/factory Job" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "View github.com/example/managed Job" }));
     expect(screen.getByRole("button", { name: "View github.com/example/managed Job" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getAllByText("Queued").length).toBeGreaterThan(0);
     expect(screen.getByText("Review this repository and report confirmed bugs.", { selector: ".long-copy" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "List view" }));
+    expect(screen.queryByRole("group", { name: "Run graph" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "List view" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "View github.com/example/managed Job" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "Graph view" }));
+    expect(screen.getByRole("group", { name: "Run graph" })).toBeVisible();
 
     const createCall = vi.mocked(globalThis.fetch).mock.calls.find(([input, init]) =>
       String(input) === "/api/v1/runs" && init?.method === "POST");
@@ -631,6 +642,24 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Confirm cancel" }));
     expect((await screen.findAllByText("Cancelled", { selector: ".status-badge" })).length).toBeGreaterThan(0);
     expect(screen.queryByText("Cancellation requested. The Runner will stop this Job on its next heartbeat.")).not.toBeInTheDocument();
+  });
+
+  it("keeps the graph bounded for large Runs and preserves the selected Job", async () => {
+    window.history.replaceState({}, "", "/runs/run-large?job=job-large-200");
+    mockControlPlane({ largeRunJobs: 200 });
+    const user = userEvent.setup();
+    renderApp();
+
+    const graph = await screen.findByRole("group", { name: "Run graph" });
+    expect(within(graph).getAllByText("Repository Job")).toHaveLength(12);
+    expect(within(graph).getByText("188 more repositories")).toBeVisible();
+    expect(within(graph).getByText("Use List view to inspect every Job.")).toBeVisible();
+    expect(within(graph).getByRole("button", { name: "View github.com/example/repository-200 Job" })).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(screen.getByRole("button", { name: "List view" }));
+    expect(screen.getByRole("heading", { name: "Repositories" })).toBeVisible();
+    expect(screen.getAllByRole("button", { name: /^View github\.com\/example\/repository-\d+ Job$/ })).toHaveLength(200);
+    expect(screen.getByRole("button", { name: "View github.com/example/repository-200 Job" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("submits per-Run Definition input overrides", async () => {

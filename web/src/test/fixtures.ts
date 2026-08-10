@@ -248,6 +248,7 @@ export function mockControlPlane(
     terminalEventFailures?: number;
     terminalTaskAfter?: number;
     terminalRunCancellationFlag?: boolean;
+    largeRunJobs?: number;
     repositoryToggleFailure?: boolean;
     runFailures?: number;
     scheduleDefinition?: boolean;
@@ -329,6 +330,55 @@ export function mockControlPlane(
     updated_at: "2026-08-06T10:00:00Z",
   }] : [];
   let runDetails: RunDetail[] = [];
+  if (options.largeRunJobs) {
+    const admittedAt = "2026-08-06T10:00:00Z";
+    const repositoryRemoteIdentities = Array.from(
+      { length: options.largeRunJobs },
+      (_, index) => `github.com/example/repository-${index + 1}`,
+    );
+    runDetails = [{
+      run: {
+        id: "run-large",
+        request_key: "request-run-large",
+        source_kind: "manual",
+        definition: {
+          id: "definition-large",
+          name: "Review many repositories",
+          prompt: "Review each repository and report confirmed bugs.",
+          runtime: "codex",
+          allowed_tools: ["git"],
+          timeout_seconds: 600,
+          inputs: {},
+          generation: 1,
+        },
+        state: "queued",
+        job_count: options.largeRunJobs,
+        concurrency_limit: 10,
+        repository_remote_identities: repositoryRemoteIdentities,
+        admitted_at: admittedAt,
+        updated_at: admittedAt,
+      },
+      parameters: {},
+      jobs: repositoryRemoteIdentities.map((repositoryRemoteIdentity, index) => ({
+        job: {
+          id: `job-large-${index + 1}`,
+          run_id: "run-large",
+          repository_id: `repo-large-${index + 1}`,
+          repository_remote_identity: repositoryRemoteIdentity,
+          task_id: `task-large-${index + 1}`,
+          execution_id: `execution-large-${index + 1}`,
+          assigned_worker_id: worker.id,
+          required_runtime: "codex",
+          state: "queued",
+          admitted_at: admittedAt,
+          retry_may_repeat_effects: false,
+          cancellation_requested: false,
+        },
+        attempts: null,
+        resolved_prompt: "Review each repository and report confirmed bugs.",
+      })),
+    }];
+  }
 	let productUpgrade: ProductUpgrade = options.productUpgrade ? {
 		id: "definitions-runs-v1",
 		state: options.productUpgrade,

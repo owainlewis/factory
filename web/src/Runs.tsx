@@ -3,6 +3,8 @@ import {
   ArrowLeft,
   ChevronRight,
   Clock3,
+  GitFork,
+  List,
   LoaderCircle,
   Play,
   RefreshCw,
@@ -26,6 +28,8 @@ import {
   StatusBadge,
   ViewHeader,
 } from "./ui";
+
+const maxGraphJobs = 12;
 
 export function RunsView({
   createOpen,
@@ -233,6 +237,7 @@ export function RunDetail({ id, initialJobID = "", onBack }: { id: string; initi
   const interval = useVisibleInterval(2_000);
   const queryClient = useQueryClient();
   const [selectedJobID, setSelectedJobID] = useState(initialJobID);
+  const [repositoryView, setRepositoryView] = useState<"graph" | "list">("graph");
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmRetry, setConfirmRetry] = useState(false);
   const [terminalCatchupAttemptID, setTerminalCatchupAttemptID] = useState<string | null>(null);
@@ -316,6 +321,11 @@ export function RunDetail({ id, initialJobID = "", onBack }: { id: string; initi
     const summary = eventSummary(event);
     return summary ? [{ event, summary }] : [];
   });
+  const selectJob = (jobID: string) => {
+    setSelectedJobID(jobID);
+    setConfirmCancel(false);
+    setConfirmRetry(false);
+  };
   return (
     <div className="page detail-page">
       <button className="back-button" onClick={onBack}><ArrowLeft size={16} /> All Runs</button>
@@ -340,20 +350,40 @@ export function RunDetail({ id, initialJobID = "", onBack }: { id: string; initi
         </dl>
       </section>}
       <section className="panel run-jobs-panel">
-        <PanelHeading title="Repositories" aside={`${terminalJobs}/${data.run.job_count} complete`} />
-        <div className="run-job-list">
-          {data.jobs.map((item) => <button
-            type="button"
-            key={item.job.id}
-            className={item.job.id === job.job.id ? "run-job-card selected" : "run-job-card"}
-            aria-label={`View ${item.job.repository_remote_identity} Job`}
-            aria-pressed={item.job.id === job.job.id}
-            onClick={() => { setSelectedJobID(item.job.id); setConfirmCancel(false); setConfirmRetry(false); }}
-          >
-            <span><strong>{item.job.repository_remote_identity}</strong><small className="mono">{item.job.id}</small></span>
-            <StatusBadge state={item.job.state} />
-          </button>)}
+        <div className="panel-heading run-graph-heading">
+          <h2>Repositories</h2>
+          <div className="run-graph-tools">
+            <span>{terminalJobs}/{data.run.job_count} complete</span>
+            <div className="run-view-switch" role="group" aria-label="Repository view">
+              <button
+                type="button"
+                aria-label="Graph view"
+                aria-pressed={repositoryView === "graph"}
+                onClick={() => setRepositoryView("graph")}
+              >
+                <GitFork size={14} /> Graph
+              </button>
+              <button
+                type="button"
+                aria-label="List view"
+                aria-pressed={repositoryView === "list"}
+                onClick={() => setRepositoryView("list")}
+              >
+                <List size={14} /> List
+              </button>
+            </div>
+          </div>
         </div>
+        {repositoryView === "graph" ? (
+          <RunGraph
+            data={data}
+            selectedJobID={job.job.id}
+            terminalJobs={terminalJobs}
+            onSelectJob={selectJob}
+          />
+        ) : (
+          <RunJobList data={data} selectedJobID={job.job.id} onSelectJob={selectJob} />
+        )}
       </section>
       <div className="detail-grid">
         <section className="panel detail-main"><PanelHeading title="Definition prompt" /><div className="long-copy">{job.resolved_prompt}</div></section>
@@ -369,6 +399,97 @@ export function RunDetail({ id, initialJobID = "", onBack }: { id: string; initi
       {(job.job.result || job.job.failure_reason) && <section className="panel"><PanelHeading title="Result" />{job.job.result && <div className="attempt-output success-output"><strong>Agent result</strong><pre>{job.job.result}</pre></div>}{job.job.failure_reason && <div className="attempt-output error-output"><strong>Failure reason</strong><pre>{job.job.failure_reason}</pre></div>}</section>}
       <section className="panel progress-panel"><PanelHeading title="Agent output" aside={`${progress.length} updates`} />{events.error && <InlineError error={events.error} />}{latestAttempt && events.isPending ? <div className="loading-line" role="status"><LoaderCircle size={16} className="spin" />Loading output</div> : progress.length === 0 ? <div className="quiet-empty">Output will appear after the Runner starts the agent.</div> : <ol className="event-list">{progress.map(({ event, summary }) => <li key={event.sequence}><span className="event-marker" aria-hidden="true" /><div><span className="event-kind">{summary.label}</span><p>{summary.text}</p><time dateTime={event.server_time}>{new Date(event.server_time).toLocaleTimeString()}</time></div></li>)}</ol>}</section>
       {(job.attempts ?? []).length > 0 && <section className="panel attempts-panel"><PanelHeading title="Attempts" aside={`${job.attempts?.length ?? 0} total`} />{[...(job.attempts ?? [])].reverse().map((attempt) => <div className="attempt-row run-attempt" key={attempt.id}><span><strong>Attempt {attempt.attempt_number}</strong><small>{attempt.id}</small></span><StatusBadge state={attempt.state} /><span className="mono muted">{duration(attempt.started_at ?? attempt.created_at, attempt.completed_at)}</span></div>)}</section>}
+    </div>
+  );
+}
+
+function RunGraph({
+  data,
+  selectedJobID,
+  terminalJobs,
+  onSelectJob,
+}: {
+  data: RunDetailType;
+  selectedJobID: string;
+  terminalJobs: number;
+  onSelectJob: (jobID: string) => void;
+}) {
+  const resolvedPrompt = data.jobs[0]?.resolved_prompt ?? data.run.definition.prompt;
+  const visibleJobs = data.jobs.slice(0, maxGraphJobs);
+  const selectedJob = data.jobs.find((item) => item.job.id === selectedJobID);
+  if (selectedJob && !visibleJobs.some((item) => item.job.id === selectedJobID)) {
+    visibleJobs[maxGraphJobs - 1] = selectedJob;
+  }
+  const groupedJobCount = data.jobs.length - visibleJobs.length;
+  return (
+    <div className="run-graph-scroll">
+      <div className="run-graph" role="group" aria-label="Run graph">
+        <div className="run-graph-node run-graph-prompt">
+          <span className="run-graph-node-kind">Prompt</span>
+          <strong>{data.run.definition.name}</strong>
+          <p title={resolvedPrompt}>{resolvedPrompt}</p>
+        </div>
+        <div className="run-graph-jobs" role="list" aria-label="Repository Jobs">
+          {visibleJobs.map((item) => (
+            <div className="run-graph-job" role="listitem" key={item.job.id}>
+              <button
+                type="button"
+                className={item.job.id === selectedJobID ? "run-graph-job-button selected" : "run-graph-job-button"}
+                data-state={item.job.state}
+                aria-label={`View ${item.job.repository_remote_identity} Job`}
+                aria-pressed={item.job.id === selectedJobID}
+                onClick={() => onSelectJob(item.job.id)}
+              >
+                <span className="run-graph-node-kind">Repository Job</span>
+                <strong>{item.job.repository_remote_identity}</strong>
+                <StatusBadge state={item.job.state} />
+              </button>
+            </div>
+          ))}
+          {groupedJobCount > 0 && (
+            <div className="run-graph-job" role="listitem">
+              <div className="run-graph-group-node">
+                <span className="run-graph-node-kind">Repository group</span>
+                <strong>{groupedJobCount} more repositories</strong>
+                <small>Use List view to inspect every Job.</small>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="run-graph-node run-graph-outcome">
+          <span className="run-graph-node-kind">Run outcome</span>
+          <StatusBadge state={data.run.state} />
+          <strong>{terminalJobs} of {data.run.job_count} Jobs complete</strong>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RunJobList({
+  data,
+  selectedJobID,
+  onSelectJob,
+}: {
+  data: RunDetailType;
+  selectedJobID: string;
+  onSelectJob: (jobID: string) => void;
+}) {
+  return (
+    <div className="run-job-list" aria-label="Repository Jobs">
+      {data.jobs.map((item) => (
+        <button
+          type="button"
+          key={item.job.id}
+          className={item.job.id === selectedJobID ? "run-job-card selected" : "run-job-card"}
+          aria-label={`View ${item.job.repository_remote_identity} Job`}
+          aria-pressed={item.job.id === selectedJobID}
+          onClick={() => onSelectJob(item.job.id)}
+        >
+          <span><strong>{item.job.repository_remote_identity}</strong><small className="mono">{item.job.id}</small></span>
+          <StatusBadge state={item.job.state} />
+        </button>
+      ))}
     </div>
   );
 }

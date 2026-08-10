@@ -553,10 +553,23 @@ test("runs one shared Definition across multiple repositories end to end", async
   await dialog.getByRole("button", { name: "Start Run" }).click();
 
   await expect(page.getByRole("heading", { name: "E2E inspect one repository" })).toBeVisible();
-  await expect(page.getByRole("button", { name: `View ${identifiers.realFactoryIdentity} Job` })).toBeVisible();
-  await expect(page.getByText("2 of 2 Jobs complete", { exact: false })).toBeVisible({ timeout: 30_000 });
+  const graph = page.getByRole("group", { name: "Run graph" });
+  await expect(graph).toBeVisible();
+  await expect(graph.getByText("Inspect this repository and create deterministic evidence.")).toBeVisible();
+  const factoryJob = graph.getByRole("button", { name: `View ${identifiers.realFactoryIdentity} Job` });
+  await expect(factoryJob).toBeVisible();
+  await factoryJob.click();
+  await expect(factoryJob).toHaveAttribute("aria-pressed", "true");
+  await expect(graph.getByText("2 of 2 Jobs complete", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(graph.getByText("Succeeded", { exact: true })).toHaveCount(3);
   await expect(page.getByText("Completed by deterministic fake Codex.", { exact: false })).toBeVisible();
   await expect(page.getByText("Created deterministic worktree evidence.", { exact: false })).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("button", { name: "List view" })).toBeVisible();
+  await page.getByRole("button", { name: "List view" }).click();
+  await expect(graph).toBeHidden();
+  await expect(page.getByRole("button", { name: `View ${identifiers.realFactoryIdentity} Job` })).toHaveAttribute("aria-pressed", "true");
 
   const runID = new URL(page.url()).pathname.split("/").at(-1)!;
   const run = await json<{
