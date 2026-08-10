@@ -176,7 +176,7 @@ func loadCredentialFile(path, server string) (string, error) {
 		return "", errors.New("Worker credential is invalid")
 	}
 	if stored.Server != strings.TrimRight(server, "/") {
-		return "", errors.New("Worker credential belongs to a different Factory server; remove worker-credential and enroll this identity explicitly")
+		return "", fmt.Errorf("Worker credential belongs to a different Factory server; remove %s and enroll this identity explicitly", filepath.Base(path))
 	}
 	credential := strings.TrimSpace(stored.Credential)
 	if credential == "" || len(credential) > 1024 || credential != stored.Credential {

@@ -227,6 +227,19 @@ func TestLegacyCredentialAdoptionDoesNotOverwriteWorkerState(t *testing.T) {
 	}
 }
 
+func TestLegacyCredentialAdoptionNamesLegacyFileForDifferentServer(t *testing.T) {
+	directory := t.TempDir()
+	legacyPath := filepath.Join(directory, "runner-credential")
+	if err := writeCredentialFile(legacyPath, "https://old-factory.example.com:7443", "factory_runner_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := adoptLegacyWorkerCredentialFiles(directory, "https://new-factory.example.com:7443")
+	if err == nil || !strings.Contains(err.Error(), "remove runner-credential") {
+		t.Fatalf("adoption error = %v, want recovery instruction for runner-credential", err)
+	}
+}
+
 func TestRemoteClientRetriesTheSamePendingCredentialAfterResponseLoss(t *testing.T) {
 	const enrollment = "factory_enroll_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	requests := 0
