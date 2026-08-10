@@ -84,23 +84,38 @@ func (client *client) enroll(ctx context.Context, workerID, enrollmentToken, cre
 		return err
 	}
 	if credential == "" {
-		body := make([]byte, 32)
-		if _, err := rand.Read(body); err != nil {
-			return fmt.Errorf("generate Worker credential: %w", err)
-		}
-		credential = "factory_worker_" + base64.RawURLEncoding.EncodeToString(body)
-		if err := writeCredentialFile(pendingPath, client.baseURL, credential); err != nil {
+		credential, err = createPendingWorkerCredential(pendingPath, client.baseURL)
+		if err != nil {
 			return err
 		}
 	}
 	var response protocol.WorkerCredential
-	_, err = client.requestWithoutCredential(ctx, http.MethodPost, "/api/v1/worker-enrollments/exchange",
-		protocol.ExchangeWorkerEnrollmentRequest{
-			WorkerID: workerID, EnrollmentToken: enrollmentToken, Credential: credential,
-		}, &response)
+	exchange := func() error {
+		response = protocol.WorkerCredential{}
+		_, requestErr := client.requestWithoutCredential(ctx, http.MethodPost, "/api/v1/worker-enrollments/exchange",
+			protocol.ExchangeWorkerEnrollmentRequest{
+				WorkerID: workerID, EnrollmentToken: enrollmentToken, Credential: credential,
+			}, &response)
+		return requestErr
+	}
+	err = exchange()
+	var apiError *APIError
+	if strings.HasPrefix(credential, "factory_runner_") && errors.As(err, &apiError) &&
+		apiError.Code == "worker_credential_regeneration_required" {
+		if err := os.Remove(pendingPath); err != nil {
+			return fmt.Errorf("remove legacy pending Worker credential: %w", err)
+		}
+		if err := syncDirectory(filepath.Dir(pendingPath)); err != nil {
+			return fmt.Errorf("sync Worker credential directory: %w", err)
+		}
+		credential, err = createPendingWorkerCredential(pendingPath, client.baseURL)
+		if err != nil {
+			return err
+		}
+		err = exchange()
+	}
 	if err != nil {
 		wrapped := fmt.Errorf("enroll remote Worker: %w", err)
-		var apiError *APIError
 		var transportError requestTransportError
 		if errors.As(err, &transportError) || (errors.As(err, &apiError) && apiError.Status >= 500) {
 			return retryableEnrollmentError{error: wrapped}
@@ -121,6 +136,18 @@ func (client *client) enroll(ctx context.Context, workerID, enrollmentToken, cre
 		return fmt.Errorf("sync Worker credential directory: %w", err)
 	}
 	return nil
+}
+
+func createPendingWorkerCredential(path, server string) (string, error) {
+	body := make([]byte, 32)
+	if _, err := rand.Read(body); err != nil {
+		return "", fmt.Errorf("generate Worker credential: %w", err)
+	}
+	credential := "factory_worker_" + base64.RawURLEncoding.EncodeToString(body)
+	if err := writeCredentialFile(path, server, credential); err != nil {
+		return "", err
+	}
+	return credential, nil
 }
 
 func loadCredentialFile(path, server string) (string, error) {

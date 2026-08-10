@@ -90,7 +90,10 @@ func (s *Store) ExchangeWorkerEnrollment(
 		return protocol.WorkerCredential{Credential: credential}, nil
 	}
 	if !strings.HasPrefix(credential, "factory_worker_") {
-		return protocol.WorkerCredential{}, unauthorizedWorker()
+		return protocol.WorkerCredential{}, invalid(
+			"worker_credential_regeneration_required",
+			"the pending Worker credential must be regenerated before this enrollment can be exchanged",
+		)
 	}
 	if expiresAt < now {
 		return protocol.WorkerCredential{}, unauthorizedWorker()

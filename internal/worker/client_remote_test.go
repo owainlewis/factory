@@ -150,6 +150,59 @@ func TestLegacyRemoteWorkerCredentialIsAdoptedOnRestart(t *testing.T) {
 	}
 }
 
+func TestUnusedLegacyPendingCredentialIsRegenerated(t *testing.T) {
+	const enrollment = "factory_enroll_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	const legacyCredential = "factory_runner_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	requests := 0
+	generatedCredential := ""
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var input protocol.ExchangeWorkerEnrollmentRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Error(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			if input.Credential != legacyCredential {
+				t.Errorf("first credential = %q, want legacy pending credential", input.Credential)
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"code":"worker_credential_regeneration_required","message":"regenerate it"}}`)
+			return
+		}
+		if !strings.HasPrefix(input.Credential, "factory_worker_") {
+			t.Errorf("regenerated credential = %q", input.Credential)
+		}
+		generatedCredential = input.Credential
+		_ = json.NewEncoder(w).Encode(protocol.WorkerCredential{Credential: input.Credential})
+	}))
+	t.Cleanup(server.Close)
+
+	directory := t.TempDir()
+	legacyPendingPath := filepath.Join(directory, "runner-credential.pending")
+	if err := writeCredentialFile(legacyPendingPath, server.URL, legacyCredential); err != nil {
+		t.Fatal(err)
+	}
+	if err := adoptLegacyWorkerCredentialFiles(directory, server.URL); err != nil {
+		t.Fatal(err)
+	}
+	credentialPath := filepath.Join(directory, "worker-credential")
+	client := newClient(server.URL, server.Client())
+	if err := client.enroll(context.Background(), "remote-worker", enrollment, credentialPath); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatalf("exchange requests = %d, want 2", requests)
+	}
+	stored, err := loadCredentialFile(credentialPath, server.URL)
+	if err != nil || stored != generatedCredential {
+		t.Fatalf("stored regenerated credential = %q, err %v", stored, err)
+	}
+	if _, err := os.Stat(credentialPath + ".pending"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending credential remains after exchange: %v", err)
+	}
+}
+
 func TestLegacyCredentialAdoptionDoesNotOverwriteWorkerState(t *testing.T) {
 	const legacy = "factory_runner_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const current = "factory_worker_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

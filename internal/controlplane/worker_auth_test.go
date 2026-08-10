@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -179,6 +180,11 @@ func TestLegacyWorkerCredentialCanOnlyReplayMigratedEnrollment(t *testing.T) {
 		context.Background(), "new-worker", fresh.EnrollmentToken, credential,
 	); err == nil {
 		t.Fatal("accepted a legacy credential for a new enrollment")
+	} else {
+		var serviceError *ServiceError
+		if !errors.As(err, &serviceError) || serviceError.Code != "worker_credential_regeneration_required" {
+			t.Fatalf("fresh legacy exchange error = %v", err)
+		}
 	}
 }
 
