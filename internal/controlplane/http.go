@@ -548,24 +548,33 @@ func decodeDefinitionCursor(encoded string) (protocol.DefinitionCursor, error) {
 }
 
 func (a *API) getMetrics(w http.ResponseWriter, r *http.Request) {
-	if len(r.URL.Query()["window"]) > 1 {
+	query := r.URL.Query()
+	if len(query["window"]) > 1 {
 		writeError(w, invalid("invalid_window", "window may be provided once"))
 		return
 	}
 	for _, parameter := range []string{"definition_id", "repository_id", "worker_id", "job_view"} {
-		if len(r.URL.Query()[parameter]) > 1 {
+		if len(query[parameter]) > 1 {
 			writeError(w, invalid("invalid_metrics_filter", parameter+" may be provided once"))
+			return
+		}
+	}
+	for parameter := range query {
+		switch parameter {
+		case "window", "definition_id", "repository_id", "worker_id", "job_view":
+		default:
+			writeError(w, invalid("invalid_metrics_filter", "unsupported metrics filter"))
 			return
 		}
 	}
 	summary, err := a.store.MetricsFiltered(
 		r.Context(),
-		r.URL.Query().Get("window"),
+		query.Get("window"),
 		MetricsFilter{
-			DefinitionID: strings.TrimSpace(r.URL.Query().Get("definition_id")),
-			RepositoryID: strings.TrimSpace(r.URL.Query().Get("repository_id")),
-			WorkerID:     strings.TrimSpace(r.URL.Query().Get("worker_id")),
-			JobView:      strings.TrimSpace(r.URL.Query().Get("job_view")),
+			DefinitionID: strings.TrimSpace(query.Get("definition_id")),
+			RepositoryID: strings.TrimSpace(query.Get("repository_id")),
+			WorkerID:     strings.TrimSpace(query.Get("worker_id")),
+			JobView:      strings.TrimSpace(query.Get("job_view")),
 		},
 	)
 	if err != nil {

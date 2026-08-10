@@ -219,6 +219,15 @@ func TestHTTPMetricsUseABoundedWindowContract(t *testing.T) {
 	if body := decodeResponse[protocol.ErrorBody](t, response); body.Error.Code != "invalid_metrics_filter" {
 		t.Fatalf("duplicate metrics filter error = %#v", body)
 	}
+	response = fixture.request(
+		http.MethodGet,
+		"/api/v1/metrics/summary?runner_id=legacy",
+		"", "", nil,
+	)
+	requireStatus(t, response, http.StatusBadRequest)
+	if body := decodeResponse[protocol.ErrorBody](t, response); body.Error.Code != "invalid_metrics_filter" {
+		t.Fatalf("unsupported metrics filter error = %#v", body)
+	}
 }
 
 func TestHTTPWorkerRegistrationSupportsLegacyAndRuntimeAwareContracts(t *testing.T) {
