@@ -31,7 +31,7 @@ export function Overview({ onRun, upgrade, upgradeError }: {
     refetchInterval: interval,
   });
 
-  if (metrics.isPending) return <LoadingState label="Loading Run health" />;
+  if (metrics.isPending) return <LoadingState label="Loading work health" />;
   if (metrics.error && !metrics.data) {
     return <ErrorState error={metrics.error} onRetry={() => void metrics.refetch()} />;
   }
@@ -81,7 +81,7 @@ function ProductUpgradePanel({ upgrade, error }: { upgrade?: ProductUpgrade; err
 	const draining = upgrade.state === "draining";
 	return <section className="panel product-upgrade" aria-label="Upgrade existing Factory data">
 		<PanelHeading title="Upgrade existing Factory data" aside={draining ? "Legacy writes frozen" : "Preview ready"} />
-		<p>Move compatible schedules to Definitions and Runs while keeping old Tasks, Attempts, Occurrences, and polling configuration as readable history.</p>
+		<p>Move compatible schedules to Definitions and work while keeping old Tasks, Attempts, Occurrences, and polling configuration as readable history.</p>
 		<div className="product-upgrade-counts">
 			<div><strong>{upgrade.counts.compatible_schedules}</strong><span>Schedules to convert</span></div>
 			<div><strong>{upgrade.counts.github_polling_automations}</strong><span>Pollers to retire</span></div>
@@ -134,8 +134,8 @@ function RunMetrics({
   ];
   const visibleJobs = health.jobs.filter((job) => jobMatchesView(job, jobView));
   return (
-    <section className="metrics-dashboard" aria-label="Run health metrics">
-      <div className="metrics-filters" aria-label="Run metric filters">
+    <section className="metrics-dashboard" aria-label="Work health metrics">
+      <div className="metrics-filters" aria-label="Work metric filters">
         <MetricSelect label="Definition" value={filters.definition_id ?? ""} options={health.definitions} onChange={(value) => onFilters({ ...filters, definition_id: value || undefined })} />
         <MetricSelect label="Repository" value={filters.repository_id ?? ""} options={health.repositories} onChange={(value) => onFilters({ ...filters, repository_id: value || undefined })} />
         <MetricSelect label="Worker" value={filters.worker_id ?? ""} options={health.workers} onChange={(value) => onFilters({ ...filters, worker_id: value || undefined })} />

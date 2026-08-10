@@ -214,7 +214,7 @@ export function DefinitionDetail({
       {archive.error && <InlineError error={archive.error} />}
       {confirmArchive && (
         <div className="confirm-action workflow-confirm" role="alert">
-          <span>Archive this Definition? Past Runs will keep their saved snapshot.</span>
+          <span>Archive this Definition? Past work will keep its saved snapshot.</span>
           <button
             className="button button-danger"
             disabled={archive.isPending}

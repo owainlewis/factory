@@ -92,7 +92,7 @@ export function AutomationsView({ legacyReadOnly, onAutomation }: { legacyReadOn
       />
       {query.error && <StaleBanner error={query.error} />}
       <div className="view-toolbar">
-        <p>Run shared agent Definitions on demand, on a schedule, or from signed GitHub events.</p>
+        <p>Start shared agent Definitions on demand, on a schedule, or from signed GitHub events.</p>
         <div className="detail-actions">
           {!legacyReadOnly && <button className="button button-secondary" onClick={() => setMigrationOpen(true)}>
             <DatabaseBackup size={15} /> Migrate legacy poller
@@ -140,7 +140,7 @@ export function AutomationsView({ legacyReadOnly, onAutomation }: { legacyReadOn
       ) : (
         <div className="workflow-list automation-list">
           <div className="automation-table-head">
-            <span>Automation</span><span>Status</span><span>Last run</span><span>Activity</span><span>Next action</span><span />
+            <span>Automation</span><span>Status</span><span>Last work</span><span>Activity</span><span>Next action</span><span />
           </div>
           {visibleItems.map((automation) => {
             const latestRun = automation.latest_run;
@@ -153,13 +153,13 @@ export function AutomationsView({ legacyReadOnly, onAutomation }: { legacyReadOn
                 </span>
                 <span className="automation-list-health"><HealthBadge automation={automation} /><small>{automation.health.message || "No health detail."}</small></span>
                 <span className="automation-list-copy">
-                  <strong>{latestRun ? occurrenceIdentity(latestRun) : automation.latest_task?.title || "No run yet"}</strong>
+                  <strong>{latestRun ? occurrenceIdentity(latestRun) : automation.latest_task?.title || "No work yet"}</strong>
                   <small>{latestRun && latestRunState
                     ? `${latestRunState.label} · ${formatTimestamp(latestRun.created_at)}`
-                    : automation.latest_task ? formatRunState(automation.latest_task.state) : "Waiting for the first run"}</small>
+                    : automation.latest_task ? formatRunState(automation.latest_task.state) : "Waiting for the first work"}</small>
                 </span>
                 <span className="automation-list-copy"><strong>{automation.dispatched_count} dispatched</strong><small>{automation.matched_count} matched · {automation.skipped_count} reused</small></span>
-                <span className="automation-list-copy"><strong>{automation.trigger.type === "github_webhook" ? "Waiting for event" : formatTimestamp(automation.next_due_at ?? automation.next_check_at)}</strong><small>{automation.trigger.type === "schedule" ? "Next run" : automation.trigger.type === "github_webhook" ? "Signed deliveries only" : "Next check"} · last event {formatTimestamp(automation.last_checked_at)}</small></span>
+                <span className="automation-list-copy"><strong>{automation.trigger.type === "github_webhook" ? "Waiting for event" : formatTimestamp(automation.next_due_at ?? automation.next_check_at)}</strong><small>{automation.trigger.type === "schedule" ? "Next start" : automation.trigger.type === "github_webhook" ? "Signed deliveries only" : "Next check"} · last event {formatTimestamp(automation.last_checked_at)}</small></span>
                 <ChevronRight size={15} className="row-chevron" />
               </button>
             );
@@ -341,7 +341,7 @@ export function AutomationDetail({
             <strong>{confirmEnabled ? "Enable this Automation?" : "Disable this Automation?"}</strong>
             <p>{confirmEnabled
               ? `${automation.definition_name ?? automation.workflow_title} · ${automationRepositorySummary(automation)} · ${triggerSummary(automation)}`
-              : "Future checks and pending dispatches stop. Existing runs continue."}</p>
+              : "Future checks and pending dispatches stop. Existing work continues."}</p>
           </div>
           <button
             className={confirmEnabled ? "button button-primary" : "button button-danger"}
@@ -368,10 +368,10 @@ export function AutomationDetail({
           <Metric label={automation.trigger.type === "schedule" ? "Next due" : "Next check"} value={formatTimestamp(automation.next_due_at ?? automation.next_check_at)} />
         </div>
         <div className="automation-latest-task">
-          <span><strong>Latest run</strong><small>{latestRun ? occurrenceIdentity(latestRun) : "No durable run yet."}</small></span>
+          <span><strong>Latest work</strong><small>{latestRun ? occurrenceIdentity(latestRun) : "No durable work yet."}</small></span>
           {latestRun && latestRunState && <>
             <span className={`status-badge status-${latestRunState.style}`}><span className="status-dot" />{latestRunState.label}</span>
-            {latestRun.run_id && <button className="button button-secondary" onClick={() => onRun(latestRun.run_id!)}>Open latest Run</button>}
+            {latestRun.run_id && <button className="button button-secondary" onClick={() => onRun(latestRun.run_id!)}>Open latest work</button>}
             {latestRun.task && <button className="button button-secondary" onClick={() => onTask(latestRun.task!.id)}>Open latest task</button>}
           </>}
         </div>
@@ -380,7 +380,7 @@ export function AutomationDetail({
       {preview && (
         <section className="panel preview-panel" aria-live="polite">
           <PanelHeading title="Test results" aside={preview.next_due_at ? `Next due ${formatTimestamp(preview.next_due_at)}` : `${preview.matches.length} bounded match${preview.matches.length === 1 ? "" : "es"}`} />
-          <p className="muted">Testing creates no task or durable run.</p>
+          <p className="muted">Testing creates no task or durable work.</p>
           {preview.next_due_at ? <p>The next matching UTC instant is <strong>{new Date(preview.next_due_at).toISOString()}</strong>.</p> : preview.matches.length === 0 ? <p>No GitHub items matched.</p> : preview.matches.map((match) => (
             <a key={match.number} href={match.url} target="_blank" rel="noreferrer" className="preview-match">
               <strong>#{match.number} {match.title}</strong>
@@ -446,9 +446,9 @@ export function AutomationDetail({
       </section>}
 
       <section className="panel">
-        <PanelHeading title="Runs" aside={`${occurrenceItems.length} loaded`} />
+        <PanelHeading title="Work" aside={`${occurrenceItems.length} loaded`} />
         {occurrenceItems.length === 0 ? (
-          <p className="muted">No runs yet.</p>
+          <p className="muted">No work yet.</p>
         ) : (
           <div className="occurrence-list">
             {occurrenceItems.map((occurrence) => {
@@ -469,7 +469,7 @@ export function AutomationDetail({
                     )}
                     {occurrence.run_id ? (
                       <button className="button button-secondary" onClick={() => onRun(occurrence.run_id!)}>
-                        Open Run
+                        Open work
                       </button>
                     ) : occurrence.task ? (
                       <button className="button button-secondary" onClick={() => onTask(occurrence.task!.id)}>
@@ -494,7 +494,7 @@ export function AutomationDetail({
                 headCursor: previousOccurrenceHeadCursor.current ?? null,
               })}
             >
-              {loadMoreOccurrences.isPending ? "Loading…" : "Load more runs"}
+              {loadMoreOccurrences.isPending ? "Loading…" : "Load more work"}
             </button>
           </div>
         )}
@@ -667,7 +667,7 @@ function LegacyPollerMigrationDialog({
                 ))}
               </div>
               <div className="migration-actions">
-                <button type="button" className="button button-secondary" onClick={() => { setMigration(undefined); setReviewQueues([]); }}>Run a new Preview</button>
+                <button type="button" className="button button-secondary" onClick={() => { setMigration(undefined); setReviewQueues([]); }}>Create a new preview</button>
                 <button type="submit" className="button button-primary" disabled={hasMissingLedgerQueue || importMigration.isPending}>
                   {importMigration.isPending ? "Importing…" : hasMissingLedgerQueue ? "Restore missing queue before Import" : migration.counts.supported_queues === 0 ? "Continue to archive" : "Import disabled Automations"}
                 </button>
@@ -1001,7 +1001,7 @@ function AutomationForm({
             <section className="automation-form-section">
               <div className="automation-section-heading">
                 <span>2</span>
-                <div><strong>Where should it run?</strong><small>{isSchedule && usesDefinition ? "A Run creates one isolated Job per selected repository." : isWebhook ? "Choose the repository that owns the GitHub event." : "Each task uses one managed Git repository."}</small></div>
+                <div><strong>Where should it run?</strong><small>{isSchedule && usesDefinition ? "Work creates one isolated Job per selected repository." : isWebhook ? "Choose the repository that owns the GitHub event." : "Each task uses one managed Git repository."}</small></div>
               </div>
               {isSchedule && usesDefinition ? <Field label="Repositories" htmlFor={repositoryID} error={errors.repository} hint={`${repositorySelections.size} selected · local and remote Worker routes are supported`}>
                 <select

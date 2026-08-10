@@ -438,7 +438,7 @@ test("filters Run health and drills from a failed Job into its Run", async ({ pa
   await expect(page.getByLabel("Definition filter")).toHaveValue(definition.id);
   await page.getByRole("button", { name: /Failed Jobs/ }).click();
   await page.getByRole("button", { name: /file:\/\/\/tmp\/factory-metrics-dashboard/ }).click();
-  await expect(page).toHaveURL(new RegExp(`/runs/${failed.runID}\\?job=${failed.jobID}$`));
+  await expect(page).toHaveURL(new RegExp(`/work/${failed.runID}\\?job=${failed.jobID}$`));
   await expect(page.getByText("Metric failure", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Overview", exact: true }).click();
   await page.getByRole("button", { name: "30 days" }).click();
@@ -542,15 +542,15 @@ test("runs one shared Definition across multiple repositories end to end", async
     }),
   );
 
-  await page.goto("/runs?new=true");
-  const dialog = page.getByRole("dialog", { name: "Run once" });
+  await page.goto("/work?new=true");
+  const dialog = page.getByRole("dialog", { name: "Start work" });
   await dialog.getByLabel("Definition", { exact: true }).selectOption(definition.id);
   await dialog.getByLabel("Repositories", { exact: true }).selectOption([
     identifiers.realFactoryRepository,
     identifiers.realHandbookRepository,
   ]);
-  await expect(dialog.getByRole("region", { name: "Run preview" })).toContainText("2 Jobs");
-  await dialog.getByRole("button", { name: "Start Run" }).click();
+  await expect(dialog.getByRole("region", { name: "Work preview" })).toContainText("2 Jobs");
+  await dialog.getByRole("button", { name: "Start work" }).click();
 
   await expect(page.getByRole("heading", { name: "E2E inspect one repository" })).toBeVisible();
   await expect(page.getByRole("button", { name: `View ${identifiers.realFactoryIdentity} Job` })).toBeVisible();
@@ -718,18 +718,52 @@ test("cancels active work running in the real worker", async ({ page }) => {
   browser.assertClean();
 });
 
-test("renders every state and saves the desktop Work view", async ({ page }) => {
+test("switches the same work between table, list, and kanban views", async ({ page }) => {
   const browser = observeBrowser(page);
-  await page.goto("/work");
-  await expect(page.getByRole("heading", { name: "Agent work" })).toBeVisible();
+  const api = await request.newContext({ baseURL: "http://127.0.0.1:17437" });
+  const definition = await json<{ id: string }>(await api.post("/api/v1/definitions", { data: {
+    request_key: "e2e-work-views-definition",
+    name: "E2E work views",
+    prompt: "Verify the Work collection views.",
+    runtime: "codex",
+    allowed_tools: [],
+    timeout_seconds: 600,
+    inputs: {},
+  } }));
+  await json(await api.post("/api/v1/runs", { data: {
+    request_key: "e2e-work-views-run",
+    definition_id: definition.id,
+    repository_ids: [identifiers.offlineRepository],
+    concurrency_limit: 1,
+    parameters: {},
+  } }));
+  await api.dispose();
+  await page.goto("/runs");
+  await expect(page.getByRole("heading", { name: "Work", exact: true })).toBeVisible();
+  await expect(page).toHaveURL("/work");
   await expect(page.getByRole("button", { name: "Work", exact: true })).toHaveAttribute(
     "aria-current",
     "page",
   );
-  for (const state of ["Queued", "Running", "Succeeded", "Failed", "Cancelled"]) {
+  await expect(page.getByRole("button", { name: "Runs", exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("work-table")).toBeVisible();
+  await expect(page.getByText("E2E work views")).toBeVisible();
+  await page.getByRole("button", { name: "List" }).click();
+  await expect(page).toHaveURL("/work?view=list");
+  await expect(page.getByTestId("work-list")).toBeVisible();
+  await expect(page.getByText("E2E work views")).toBeVisible();
+  await page.getByText("E2E work views").click();
+  await expect(page.getByRole("heading", { name: "E2E work views" })).toBeVisible();
+  await page.getByRole("button", { name: "All work" }).click();
+  await expect(page).toHaveURL("/work?view=list");
+  await expect(page.getByTestId("work-list")).toBeVisible();
+  await page.getByRole("button", { name: "Kanban" }).click();
+  await expect(page).toHaveURL("/work?view=kanban");
+  await expect(page.getByTestId("work-kanban")).toBeVisible();
+  await expect(page.getByText("E2E work views")).toBeVisible();
+  for (const state of ["Blocked", "Queued", "Running", "Succeeded", "Failed", "Cancelled"]) {
     await expect(page.getByRole("region", { name: new RegExp(`^${state}`) })).toBeVisible();
   }
-  await expect(page.getByText("Long operational title", { exact: false })).toBeVisible();
   await page.screenshot({ path: "test-results/screenshots/work-desktop.png", fullPage: true });
   browser.assertClean();
 });
@@ -863,9 +897,6 @@ test("shows ordered progress and long task detail", async ({ page }) => {
     identifiers.automationRepository,
   );
   const active = await claimAndStart(api, `claim-progress-${fixtureID}`, automationWorker);
-	identifiers.progressTask = running.task.id;
-	identifiers.progressAttempt = active.attempt.id;
-	identifiers.progressToken = active.token;
   const eventsResponse = await api.post(`/api/v1/attempts/${active.attempt.id}/events`, {
     data: {
       lease_token: active.token,
@@ -908,7 +939,6 @@ test("shows ordered progress and long task detail", async ({ page }) => {
     }],
     1,
   );
-  await api.dispose();
   const eventAfters: string[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
@@ -935,6 +965,14 @@ test("shows ordered progress and long task detail", async ({ page }) => {
     has: page.getByRole("heading", { name: "Context", exact: true }),
   });
   await expect(contextPanel.getByText("End of description.")).toBeVisible();
+  await json(await api.post(`/api/v1/attempts/${active.attempt.id}/complete`, {
+    data: {
+      lease_token: active.token,
+      state: "succeeded",
+      result: "Progress rendering verified.",
+    },
+  }));
+  await api.dispose();
   browser.assertClean();
 });
 
@@ -954,9 +992,9 @@ test("supports narrow grouped layouts and saves narrow screenshots", async ({ pa
   await expect(page.getByRole("heading", { name: "Factory overview" })).toBeVisible();
   await page.screenshot({ path: "test-results/screenshots/overview-narrow.png", fullPage: true });
 
-  await page.goto("/work");
+  await page.goto("/work?view=kanban");
   const columns = page.locator(".work-column");
-  await expect(columns).toHaveCount(5);
+  await expect(columns).toHaveCount(6);
   const first = await columns.nth(0).boundingBox();
   const second = await columns.nth(1).boundingBox();
   expect(Math.abs((first?.x ?? 0) - (second?.x ?? 1))).toBeLessThan(2);
@@ -1134,8 +1172,8 @@ test("previews and dispatches one typed GitHub issue Automation without duplicat
 
   await page.getByRole("button", { name: "Test trigger" }).click();
   await expect(page.getByText("#184 Typed Automation browser fixture")).toBeVisible();
-  await expect(page.getByText("Testing creates no task or durable run.")).toBeVisible();
-  await expect(page.getByText("No runs yet.")).toBeVisible();
+  await expect(page.getByText("Testing creates no task or durable work.")).toBeVisible();
+  await expect(page.getByText("No work yet.")).toBeVisible();
 
   await page.getByRole("button", { name: "Enable" }).click();
   await expect(page.getByRole("checkbox", { name: /factory-poller is stopped/ })).toHaveCount(0);
@@ -1198,8 +1236,8 @@ test("previews and dispatches one typed GitHub pull-request Automation without d
 
   await page.getByRole("button", { name: "Test trigger" }).click();
   await expect(page.getByText("#185 Typed pull-request Automation browser fixture")).toBeVisible();
-  await expect(page.getByText("Testing creates no task or durable run.")).toBeVisible();
-  await expect(page.getByText("No runs yet.")).toBeVisible();
+  await expect(page.getByText("Testing creates no task or durable work.")).toBeVisible();
+  await expect(page.getByText("No work yet.")).toBeVisible();
 
   await page.getByRole("button", { name: "Enable" }).click();
   await expect(page.getByRole("checkbox", { name: /factory-poller is stopped/ })).toHaveCount(0);
@@ -1267,7 +1305,7 @@ test("previews, enables, and runs a Definition schedule across repositories", as
 
   await page.getByRole("button", { name: "Test trigger" }).click();
   await expect(page.getByText(/next matching UTC instant/i)).toBeVisible();
-  await expect(page.getByText("No runs yet.")).toBeVisible();
+  await expect(page.getByText("No work yet.")).toBeVisible();
   await page.getByRole("button", { name: "Enable" }).click();
   await expect(page.getByRole("checkbox", { name: /factory-poller is stopped/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Confirm enable" }).click();
@@ -1279,7 +1317,7 @@ test("previews, enables, and runs a Definition schedule across repositories", as
 
   await page.getByRole("button", { name: "Run now" }).click();
   await expect(page.locator(".occurrence-list").getByText("Run now", { exact: true })).toBeVisible({ timeout: 15_000 });
-  const openRun = page.getByRole("button", { name: "Open Run" });
+  const openRun = page.getByRole("button", { name: "Open work" });
   await expect(openRun).toBeVisible({ timeout: 15_000 });
   await expect(page.locator(".automation-latest-task").getByText("Run now", { exact: true })).toBeVisible({ timeout: 15_000 });
   await page.screenshot({ path: "test-results/screenshots/automation-detail-desktop.png", fullPage: true });
@@ -1288,7 +1326,7 @@ test("previews, enables, and runs a Definition schedule across repositories", as
   await page.screenshot({ path: "test-results/screenshots/automation-detail-narrow.png", fullPage: true });
   expect(await page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")).toBe(true);
   await openRun.click();
-  await expect(page).toHaveURL(/\/runs\//);
+  await expect(page).toHaveURL(/\/work\//);
   await expect(page.getByText(/\d of 2 Jobs complete/)).toBeVisible();
   const runID = new URL(page.url()).pathname.split("/").at(-1)!;
   const run = await json<{ run: { source_kind: string; job_count: number }; jobs: unknown[] }>(await api.get(`/api/v1/runs/${runID}`));
@@ -1373,19 +1411,6 @@ test("upgrades existing Factory data and keeps legacy task history browsable", a
 			},
 		}));
 	}
-	if (identifiers.progressTask) {
-		const progress = await json<TaskDetail>(await api.get(`/api/v1/tasks/${identifiers.progressTask}`));
-		if (progress.execution.state === "preparing" || progress.execution.state === "running") {
-			await json(await api.post(`/api/v1/attempts/${identifiers.progressAttempt}/complete`, {
-				data: {
-					lease_token: identifiers.progressToken,
-					state: "succeeded",
-					result: "Completed before the product upgrade browser proof.",
-				},
-			}));
-		}
-	}
-
 	await page.goto("/");
 	const panel = page.getByRole("region", { name: "Upgrade existing Factory data" });
 	await expect(panel).toBeVisible();
@@ -1410,7 +1435,7 @@ test("upgrades existing Factory data and keeps legacy task history browsable", a
 	expect(upgrade.validation.synthetic_runs_created).toBe(0);
 
 	await page.getByRole("button", { name: "Work", exact: true }).click();
-	await expect(page.getByRole("heading", { name: "Legacy task history" })).toBeVisible();
+	await expect(page.getByRole("heading", { name: "Work" })).toBeVisible();
 	await expect(page.getByRole("button", { name: "Delegate", exact: true })).toHaveCount(0);
 	await page.goto(`/tasks/${identifiers.failedTask}`);
 	await expect(page.getByRole("heading", { name: "Repair a failed release check" })).toBeVisible();

@@ -1,5 +1,5 @@
 import { BookOpenText, Bot, Boxes, Gauge, GitBranch, ListChecks, Menu, Play, Plus, Workflow as AutomationIcon, X } from "lucide-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { invalidateControlPlane } from "./controlPlaneQueries";
@@ -10,20 +10,18 @@ import { TaskDetail } from "./TaskDetail";
 import { useVisibleInterval } from "./polling";
 import type { Task, TaskPage, Worker } from "./types";
 import { WorkersView, WorkerDetail } from "./Workers";
-import { WorkView } from "./Work";
 import { WorkflowDetail, WorkflowsView } from "./Workflows";
 import { AutomationDetail, AutomationsView } from "./Automations";
 import { DefinitionDetail, DefinitionsView } from "./Definitions";
-import { RunDetail, RunsView } from "./Runs";
+import { RunDetail, WorkView, type WorkViewMode } from "./Work";
 
 type Route =
   | { page: "overview" }
-  | { page: "work" }
-  | { page: "runs"; create?: boolean }
-  | { page: "run"; id: string; jobID?: string }
+  | { page: "work"; view?: WorkViewMode; create?: boolean }
+  | { page: "run"; id: string; jobID?: string; view?: WorkViewMode }
   | { page: "workers" }
   | { page: "repositories" }
-  | { page: "task"; id: string }
+  | { page: "task"; id: string; view?: WorkViewMode }
   | { page: "worker"; id: string }
   | { page: "repository"; id: string }
   | { page: "definitions"; archived?: boolean }
@@ -35,13 +33,18 @@ type Route =
 
 function readRoute(): Route {
   const parts = window.location.pathname.split("/").filter(Boolean);
-  const archived = new URLSearchParams(window.location.search).get("archived") === "true";
-  const createRun = new URLSearchParams(window.location.search).get("new") === "true";
-  if (parts[0] === "runs" && parts[1]) {
-    return { page: "run", id: parts[1], jobID: new URLSearchParams(window.location.search).get("job") ?? undefined };
+  const search = new URLSearchParams(window.location.search);
+  const archived = search.get("archived") === "true";
+  const createWork = search.get("new") === "true";
+  const view = workViewMode(search.get("view"));
+  if (parts[0] === "work" && parts[1]) {
+    return { page: "run", id: parts[1], jobID: search.get("job") ?? undefined, view };
   }
-  if (parts[0] === "runs") return { page: "runs", create: createRun };
-  if (parts[0] === "tasks" && parts[1]) return { page: "task", id: parts[1] };
+  if (parts[0] === "runs" && parts[1]) {
+    return { page: "run", id: parts[1], jobID: search.get("job") ?? undefined, view };
+  }
+  if (parts[0] === "runs" || parts[0] === "work") return { page: "work", view, create: createWork };
+  if (parts[0] === "tasks" && parts[1]) return { page: "task", id: parts[1], view };
   if (parts[0] === "workers" && parts[1]) return { page: "worker", id: parts[1] };
   if (parts[0] === "definitions" && parts[1]) return { page: "definition", id: parts[1], archived };
   if (parts[0] === "definitions") return { page: "definitions", archived };
@@ -52,14 +55,12 @@ function readRoute(): Route {
   if (parts[0] === "workers") return { page: "workers" };
   if (parts[0] === "repositories" && parts[1]) return { page: "repository", id: parts[1] };
   if (parts[0] === "repositories") return { page: "repositories" };
-  if (parts[0] === "work") return { page: "work" };
   return { page: "overview" };
 }
 
 function routePath(route: Route): string {
-  if (route.page === "task") return `/tasks/${route.id}`;
-  if (route.page === "run") return `/runs/${route.id}${route.jobID ? `?job=${encodeURIComponent(route.jobID)}` : ""}`;
-  if (route.page === "runs") return `/runs${route.create ? "?new=true" : ""}`;
+  if (route.page === "task") return detailPath(`/tasks/${route.id}`, route.view);
+  if (route.page === "run") return detailPath(`/work/${route.id}`, route.view, route.jobID);
   if (route.page === "worker") return `/workers/${route.id}`;
   if (route.page === "definition") return `/definitions/${route.id}${route.archived ? "?archived=true" : ""}`;
   if (route.page === "definitions") return `/definitions${route.archived ? "?archived=true" : ""}`;
@@ -70,18 +71,32 @@ function routePath(route: Route): string {
   if (route.page === "workers") return "/workers";
   if (route.page === "repository") return `/repositories/${route.id}`;
   if (route.page === "repositories") return "/repositories";
-  return route.page === "work" ? "/work" : "/";
+  if (route.page === "work") {
+    const search = new URLSearchParams();
+    if (route.view && route.view !== "table") search.set("view", route.view);
+    if (route.create) search.set("new", "true");
+    const query = search.toString();
+    return `/work${query ? `?${query}` : ""}`;
+  }
+  return "/";
+}
+
+function workViewMode(value: string | null): WorkViewMode {
+  return value === "list" || value === "kanban" ? value : "table";
+}
+
+function detailPath(path: string, view?: WorkViewMode, jobID?: string): string {
+  const search = new URLSearchParams();
+  if (jobID) search.set("job", jobID);
+  if (view && view !== "table") search.set("view", view);
+  const query = search.toString();
+  return `${path}${query ? `?${query}` : ""}`;
 }
 
 export function App() {
   const [route, setRoute] = useState<Route>(readRoute);
   const [delegateRequest, setDelegateRequest] = useState<{ workerID?: string } | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [taskHistory, setTaskHistory] = useState<Task[]>([]);
-  const [taskHistoryCursor, setTaskHistoryCursor] = useState<string | null>();
-  const previousTaskHeadCursor = useRef<string | null | undefined>(undefined);
-  const deletedTaskIDs = useRef(new Set<string>());
-  const workInterval = useVisibleInterval(5_000);
   const workerInterval = useVisibleInterval(10_000);
   const delegateTrigger = useRef<HTMLElement | null>(null);
   const queryClient = useQueryClient();
@@ -98,6 +113,12 @@ export function App() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
+
+  useEffect(() => {
+    if (window.location.pathname === "/runs" || window.location.pathname.startsWith("/runs/")) {
+      window.history.replaceState({}, "", routePath(route));
+    }
+  }, [route]);
 
   const navigate = (next: Route) => {
     window.history.pushState({}, "", routePath(next));
@@ -116,21 +137,6 @@ export function App() {
     window.setTimeout(() => trigger?.focus(), 0);
   };
 
-  const tasks = useQuery({
-    queryKey: ["tasks", "head"],
-    queryFn: async () => withoutDeletedTasks(await api.tasks(), deletedTaskIDs.current),
-    refetchInterval: workInterval,
-  });
-  const loadTaskHistory = useMutation({
-    mutationFn: async ({ cursor }: { cursor: string; headCursor: string | null }) =>
-      withoutDeletedTasks(await api.tasks(cursor), deletedTaskIDs.current),
-    onSuccess: (page, request) => {
-      setTaskHistory((current) => mergeTasks(page.tasks, current));
-      if (previousTaskHeadCursor.current === request.headCursor) {
-        setTaskHistoryCursor(page.next_cursor);
-      }
-    },
-  });
   const workers = useQuery({
     queryKey: ["workers"],
     queryFn: api.workers,
@@ -147,18 +153,6 @@ export function App() {
     return () => document.removeEventListener("visibilitychange", refresh);
   }, [queryClient]);
 
-  useEffect(() => {
-    if (!tasks.data) return;
-    const boundaryChanged = previousTaskHeadCursor.current !== tasks.data.next_cursor;
-    setTaskHistoryCursor((current) => boundaryChanged ? tasks.data.next_cursor : current);
-    previousTaskHeadCursor.current = tasks.data.next_cursor;
-  }, [tasks.data]);
-
-  const taskItems = tasks.data
-    ? mergeTasks(tasks.data.tasks, taskHistory)
-    : taskHistory.length > 0
-      ? taskHistory
-      : undefined;
   const detailWorkerState = delegateRequest?.workerID
     ? queryClient.getQueryState<Worker>(["worker", delegateRequest.workerID])
     : undefined;
@@ -192,14 +186,7 @@ export function App() {
             <Gauge size={17} /> Overview
           </button>
           <button
-            className={`nav-item ${route.page === "runs" || route.page === "run" ? "active" : ""}`}
-            aria-current={route.page === "runs" ? "page" : undefined}
-            onClick={() => navigate({ page: "runs" })}
-          >
-            <Play size={17} /> Runs
-          </button>
-          <button
-            className={`nav-item ${route.page === "work" || route.page === "task" ? "active" : ""}`}
+            className={`nav-item ${route.page === "work" || route.page === "run" || route.page === "task" ? "active" : ""}`}
             aria-current={route.page === "work" ? "page" : undefined}
             onClick={() => navigate({ page: "work" })}
           >
@@ -260,10 +247,9 @@ export function App() {
           <div className="topbar-title">
             {route.page === "overview" && "Overview"}
             {route.page === "work" && "Work"}
-			{route.page === "runs" && "Runs"}
-			{route.page === "run" && "Run detail"}
+			{route.page === "run" && "Work detail"}
 			{route.page === "workers" && "Workers"}
-            {route.page === "task" && "Task detail"}
+			{route.page === "task" && "Work detail"}
 			{route.page === "worker" && "Worker detail"}
             {route.page === "repositories" && "Repositories"}
             {route.page === "repository" && "Repository detail"}
@@ -278,9 +264,9 @@ export function App() {
 			{!legacyReadOnly && <button className="button button-secondary" onClick={() => openDelegate()}>
 				<Plus size={16} /> Delegate task
 			</button>}
-            <button className="button button-primary" onClick={() => navigate({ page: "runs", create: true })}>
-              <Play size={16} /> Run once
-            </button>
+            {route.page !== "work" && <button className="button button-primary" onClick={() => navigate({ page: "work", create: true })}>
+              <Play size={16} /> Start work
+            </button>}
           </div>
         </header>
 
@@ -290,38 +276,18 @@ export function App() {
 				upgrade={productUpgrade.data}
 				upgradeError={productUpgrade.error}
 			/>}
-          {route.page === "runs" && (
-            <RunsView
-              createOpen={Boolean(route.create)}
-              onCreateOpenChange={(create) => navigate({ page: "runs", create })}
-              onRun={(id) => navigate({ page: "run", id })}
-            />
-          )}
-          {route.page === "run" && <RunDetail id={route.id} initialJobID={route.jobID} onBack={() => navigate({ page: "runs" })} />}
           {route.page === "work" && (
             <WorkView
-              tasks={taskItems}
-              workers={workers.data}
-              pending={tasks.isPending}
-              error={tasks.error ?? loadTaskHistory.error}
-              fetching={tasks.isFetching}
-              updatedAt={tasks.dataUpdatedAt}
-              onTask={(id) => navigate({ page: "task", id })}
-              onDelegate={() => openDelegate()}
-              onRefresh={() => void tasks.refetch()}
-              hasMore={Boolean(taskHistoryCursor)}
-              loadingMore={loadTaskHistory.isPending}
-              onLoadMore={() => {
-                if (taskHistoryCursor) {
-                  loadTaskHistory.mutate({
-                    cursor: taskHistoryCursor,
-                    headCursor: previousTaskHeadCursor.current ?? null,
-                  });
-                }
-              }}
-			  legacyReadOnly={legacyReadOnly}
+              view={route.view ?? "table"}
+              createOpen={Boolean(route.create)}
+              onViewChange={(view) => navigate({ page: "work", view })}
+              onCreateOpenChange={(create) => navigate({ page: "work", view: route.view, create })}
+              onRun={(id) => navigate({ page: "run", id, view: route.view })}
+              onTask={(id) => navigate({ page: "task", id, view: route.view })}
+              workers={workers.data ?? []}
             />
           )}
+          {route.page === "run" && <RunDetail id={route.id} initialJobID={route.jobID} onBack={() => navigate({ page: "work", view: route.view })} />}
           {route.page === "workers" && (
             <WorkersView
               workers={workers.data}
@@ -341,16 +307,20 @@ export function App() {
               id={route.id}
               workers={workers.data ?? []}
               legacyReadOnly={legacyReadOnly}
-              onBack={() => navigate({ page: "work" })}
+              onBack={() => navigate({ page: "work", view: route.view })}
               onDeleted={() => {
-                deletedTaskIDs.current.add(route.id);
-                queryClient.setQueryData<TaskPage>(["tasks", "head"], (current) =>
-                  current
-                    ? { ...current, tasks: current.tasks.filter((task) => task.id !== route.id) }
-                    : current
+                queryClient.setQueryData<TaskPage>(["tasks", "head"], (current) => current ? {
+                  ...current,
+                  tasks: current.tasks.filter((task) => task.id !== route.id),
+                } : current);
+                queryClient.setQueryData<{ items: Task[]; cursor?: string | null; headCursor?: string | null }>(
+                  ["work-history", "tasks"],
+                  (current) => current ? {
+                    ...current,
+                    items: current.items.filter((task) => task.id !== route.id),
+                  } : current,
                 );
-                setTaskHistory((current) => current.filter((task) => task.id !== route.id));
-                navigate({ page: "work" });
+                navigate({ page: "work", view: route.view });
               }}
             />
           )}
@@ -425,26 +395,4 @@ export function App() {
       )}
     </div>
   );
-}
-
-function mergeTasks(...groups: Task[][]): Task[] {
-  const unique = new Map<string, Task>();
-  for (const group of groups) {
-    for (const task of group) {
-      if (!unique.has(task.id)) unique.set(task.id, task);
-    }
-  }
-  return [...unique.values()].sort((left, right) => {
-    const created = Date.parse(right.created_at) - Date.parse(left.created_at);
-    if (created !== 0) return created;
-    if (left.id === right.id) return 0;
-    return left.id < right.id ? 1 : -1;
-  });
-}
-
-function withoutDeletedTasks(page: TaskPage, deletedTaskIDs: Set<string>): TaskPage {
-  return {
-    ...page,
-    tasks: page.tasks.filter((task) => !deletedTaskIDs.has(task.id)),
-  };
 }
