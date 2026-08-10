@@ -243,6 +243,7 @@ export function mockControlPlane(
     shiftingWorkflowBoundary?: boolean;
     shiftingTaskBoundary?: boolean;
     staleHistoryAfterDelete?: boolean;
+    staleTaskHeadAfterDelete?: boolean;
     switchAttemptAfter?: number;
     taskDetailFailuresAfter?: number;
     terminalEventFailures?: number;
@@ -276,6 +277,7 @@ export function mockControlPlane(
   let workerListRequests = 0;
   const deletedTaskIDs = new Set<string>();
   let resolveStaleHistory: (() => void) | undefined;
+  let resolveStaleTaskHead: (() => void) | undefined;
   let createdTask: {
     title: string;
     context: string;
@@ -1267,6 +1269,12 @@ export function mockControlPlane(
             : { tasks: [newHead, tasks[0]], next_cursor: "new-boundary" },
         );
       }
+      if (options.staleTaskHeadAfterDelete && taskHeadRequests > 1) {
+        await new Promise<void>((resolve) => {
+          resolveStaleTaskHead = resolve;
+        });
+        return Response.json({ tasks, next_cursor: null });
+      }
       const growingPage =
         options.growingTaskHistory && taskHeadRequests > 1;
       return Response.json({
@@ -1338,7 +1346,10 @@ export function mockControlPlane(
     if (path === "/api/v1/tasks/task-succeeded") {
       if (init?.method === "DELETE") {
         deletedTaskIDs.add("task-succeeded");
-        window.setTimeout(() => resolveStaleHistory?.(), 0);
+        window.setTimeout(() => {
+          resolveStaleHistory?.();
+          resolveStaleTaskHead?.();
+        }, 0);
         return Response.json({ deleted: true });
       }
       return Response.json({

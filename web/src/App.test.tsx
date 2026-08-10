@@ -1552,6 +1552,27 @@ describe("App", () => {
     expect(client.getQueryData<{ items: typeof tasks }>(["work-history", "tasks"])?.items).not.toContainEqual(tasks[2]);
   });
 
+  it("does not restore deleted work from a late task poll", async () => {
+    const fetch = mockControlPlane({ staleTaskHeadAfterDelete: true });
+    const user = userEvent.setup();
+    const { client } = renderApp();
+
+    await screen.findByText("succeeded task");
+    const latePoll = client.refetchQueries({ queryKey: ["tasks", "head"], exact: true });
+    await waitFor(() => expect(fetch.mock.calls.filter(([input]) =>
+      input === "/api/v1/tasks?limit=50"
+    )).toHaveLength(2));
+    await user.click(screen.getByText("succeeded task"));
+    await user.click(await screen.findByRole("button", { name: "Delete history" }));
+    await user.click(screen.getByRole("button", { name: "Confirm delete" }));
+    await latePoll;
+
+    expect(await screen.findByRole("heading", { name: "Work" })).toBeVisible();
+    expect(screen.queryByText("succeeded task")).not.toBeInTheDocument();
+    expect(client.getQueryData<{ tasks: typeof tasks }>(["tasks", "head"])?.tasks).not.toContainEqual(tasks[2]);
+    expect(client.getQueryData<string[]>(["work-history", "deleted-task-ids"])).toContain("task-succeeded");
+  });
+
   it("does not offer history deletion for active work", async () => {
     window.history.replaceState({}, "", "/tasks/task-running");
     mockControlPlane();

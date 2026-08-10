@@ -19,6 +19,7 @@ import { invalidateControlPlane } from "./controlPlaneQueries";
 import { duration, eventSummary, runtimeLabel, stateLabel, timeAgo } from "./format";
 import { useVisibleInterval } from "./polling";
 import type { AttemptEvent, Run, RunDetail as RunDetailType, RunState, Task, TaskState, Worker } from "./types";
+import { deletedWorkTaskIDsKey } from "./workQueries";
 import {
   EmptyState,
   ErrorState,
@@ -89,7 +90,10 @@ export function WorkView({
   });
   const tasks = useQuery({
     queryKey: ["tasks", "head"],
-    queryFn: () => api.tasks(),
+    queryFn: async () => filterDeletedTasks(
+      await api.tasks(),
+      queryClient.getQueryData<string[]>(deletedWorkTaskIDsKey),
+    ),
     refetchInterval: interval,
   });
   const loadRunHistory = useMutation({
@@ -100,7 +104,10 @@ export function WorkView({
     },
   });
   const loadTaskHistory = useMutation({
-    mutationFn: ({ cursor }: { cursor: string; headCursor: string | null }) => api.tasks(cursor),
+    mutationFn: async ({ cursor }: { cursor: string; headCursor: string | null }) => filterDeletedTasks(
+      await api.tasks(cursor),
+      queryClient.getQueryData<string[]>(deletedWorkTaskIDsKey),
+    ),
     onSuccess: (page, request) => {
       setTaskHistory((current) => mergeByID(page.tasks, current));
       if (previousTaskHeadCursor.current === request.headCursor) setTaskHistoryCursor(page.next_cursor);
@@ -248,6 +255,12 @@ function workItemFromRun(run: Run): WorkItem {
     startedAt: run.admitted_at,
     meta: `${run.job_count} ${run.job_count === 1 ? "Job" : "Jobs"}`,
   };
+}
+
+function filterDeletedTasks<T extends { tasks: Task[] }>(page: T, deletedIDs: string[] = []): T {
+  if (deletedIDs.length === 0) return page;
+  const deleted = new Set(deletedIDs);
+  return { ...page, tasks: page.tasks.filter((task) => !deleted.has(task.id)) };
 }
 
 function workItemFromTask(task: Task, worker?: Worker): WorkItem {

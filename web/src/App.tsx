@@ -14,6 +14,7 @@ import { WorkflowDetail, WorkflowsView } from "./Workflows";
 import { AutomationDetail, AutomationsView } from "./Automations";
 import { DefinitionDetail, DefinitionsView } from "./Definitions";
 import { RunDetail, WorkView, type WorkViewMode } from "./Work";
+import { deletedWorkTaskIDsKey } from "./workQueries";
 
 type Route =
   | { page: "overview" }
@@ -309,6 +310,9 @@ export function App() {
               legacyReadOnly={legacyReadOnly}
               onBack={() => navigate({ page: "work", view: route.view })}
               onDeleted={() => {
+                queryClient.setQueryData<string[]>(deletedWorkTaskIDsKey, (current = []) =>
+                  current.includes(route.id) ? current : [...current, route.id]
+                );
                 queryClient.setQueryData<TaskPage>(["tasks", "head"], (current) => current ? {
                   ...current,
                   tasks: current.tasks.filter((task) => task.id !== route.id),
