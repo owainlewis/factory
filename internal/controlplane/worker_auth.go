@@ -53,7 +53,8 @@ func (s *Store) ExchangeWorkerEnrollment(
 	workerID = strings.TrimSpace(workerID)
 	if workerID == "" || len(workerID) > 200 || len(enrollmentToken) < 32 || len(enrollmentToken) > 1024 ||
 		len(credential) < 32 || len(credential) > 1024 || credential != strings.TrimSpace(credential) ||
-		!strings.HasPrefix(credential, "factory_worker_") {
+		(!strings.HasPrefix(credential, "factory_worker_") &&
+			!strings.HasPrefix(credential, "factory_runner_")) {
 		return protocol.WorkerCredential{}, unauthorizedWorker()
 	}
 	now := s.now().UTC().UnixMilli()
@@ -87,6 +88,9 @@ func (s *Store) ExchangeWorkerEnrollment(
 			return protocol.WorkerCredential{}, unavailable(err)
 		}
 		return protocol.WorkerCredential{Credential: credential}, nil
+	}
+	if !strings.HasPrefix(credential, "factory_worker_") {
+		return protocol.WorkerCredential{}, unauthorizedWorker()
 	}
 	if expiresAt < now {
 		return protocol.WorkerCredential{}, unauthorizedWorker()

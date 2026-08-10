@@ -145,6 +145,43 @@ func TestLocalOperatorCreatesBoundEnrollmentWithoutLoggingSecret(t *testing.T) {
 	}
 }
 
+func TestLegacyWorkerCredentialCanOnlyReplayMigratedEnrollment(t *testing.T) {
+	store := newTestStore(t)
+	enrollment, err := store.CreateWorkerEnrollment(context.Background(), "legacy-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const credential = "factory_runner_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	now := store.now().UTC().UnixMilli()
+	if _, err := store.db.Exec(`
+		UPDATE worker_enrollments SET used_at = ? WHERE worker_id = ?
+	`, now, "legacy-worker"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`
+		INSERT INTO remote_worker_credentials(worker_id, token_digest, created_at, last_used_at)
+		VALUES (?, ?, ?, ?)
+	`, "legacy-worker", digestToken(credential), now, now); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := store.ExchangeWorkerEnrollment(
+		context.Background(), "legacy-worker", enrollment.EnrollmentToken, credential,
+	)
+	if err != nil || replayed.Credential != credential {
+		t.Fatalf("replayed legacy credential = %#v, err %v", replayed, err)
+	}
+
+	fresh, err := store.CreateWorkerEnrollment(context.Background(), "new-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ExchangeWorkerEnrollment(
+		context.Background(), "new-worker", fresh.EnrollmentToken, credential,
+	); err == nil {
+		t.Fatal("accepted a legacy credential for a new enrollment")
+	}
+}
+
 func remoteWorkerRequest(
 	t *testing.T,
 	client *http.Client,
