@@ -1302,7 +1302,9 @@ test("previews, enables, and runs a Definition schedule across repositories", as
   expect(await page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")).toBe(true);
   await openRun.click();
   await expect(page).toHaveURL(/\/runs\//);
-  await expect(page.getByText(/\d of 2 Jobs complete/)).toBeVisible();
+  await expect(
+    page.getByRole("group", { name: "Run graph" }).getByText(/^\d of 2 Jobs complete$/),
+  ).toBeVisible();
   const runID = new URL(page.url()).pathname.split("/").at(-1)!;
   const run = await json<{ run: { source_kind: string; job_count: number }; jobs: unknown[] }>(await api.get(`/api/v1/runs/${runID}`));
   expect(run.run.source_kind).toBe("schedule");
