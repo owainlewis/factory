@@ -13,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { api } from "./api";
 import { invalidateControlPlane } from "./controlPlaneQueries";
 import { duration, eventSummary, runtimeLabel, stateLabel, timeAgo } from "./format";
@@ -96,6 +96,22 @@ export function WorkView({
     ),
     refetchInterval: interval,
   });
+  const headRunIDs = new Set(runs.data?.runs.map((run) => run.id) ?? []);
+  const activeHistoricalRunIDs = runHistory
+    .filter((run) => !headRunIDs.has(run.id) && !isTerminalWorkState(run.state))
+    .map((run) => run.id)
+    .sort();
+  const activeHistoricalRuns = useQuery({
+    queryKey: ["work-history", "active-runs", activeHistoricalRunIDs],
+    queryFn: async () => {
+      const refreshed = await Promise.all(activeHistoricalRunIDs.map(async (id) => (await api.run(id)).run));
+      setRunHistory((current) => updateByID(current, refreshed));
+      return refreshed;
+    },
+    enabled: activeHistoricalRunIDs.length > 0,
+    refetchInterval: (query) =>
+      query.state.data?.every((run) => isTerminalWorkState(run.state)) ? false : interval,
+  });
   const loadRunHistory = useMutation({
     mutationFn: ({ cursor }: { cursor: string; headCursor: string | null }) => api.runs(cursor),
     onSuccess: (page, request) => {
@@ -123,13 +139,17 @@ export function WorkView({
     if (previousTaskHeadCursor.current !== tasks.data.next_cursor) setTaskHistoryCursor(tasks.data.next_cursor);
     previousTaskHeadCursor.current = tasks.data.next_cursor;
   }, [tasks.data]);
+  const refreshedRunHistory = useMemo(
+    () => updateByID(runHistory, activeHistoricalRuns.data ?? []),
+    [runHistory, activeHistoricalRuns.data],
+  );
   useEffect(() => {
     queryClient.setQueryData<WorkHistory<Run>>(runHistoryKey, {
-      items: runHistory,
+      items: refreshedRunHistory,
       cursor: runHistoryCursor,
       headCursor: previousRunHeadCursor.current,
     });
-  }, [queryClient, runHistory, runHistoryCursor, runs.data]);
+  }, [queryClient, refreshedRunHistory, runHistoryCursor, runs.data]);
   useEffect(() => {
     queryClient.setQueryData<WorkHistory<Task>>(taskHistoryKey, {
       items: taskHistory,
@@ -139,14 +159,14 @@ export function WorkView({
   }, [queryClient, taskHistory, taskHistoryCursor, tasks.data]);
   if (runs.isPending || tasks.isPending) return <LoadingState label="Loading work" />;
   if (!runs.data && !tasks.data) return <ErrorState error={runs.error ?? tasks.error} onRetry={() => { void runs.refetch(); void tasks.refetch(); }} />;
-  const runItems = mergeByID(runs.data?.runs ?? [], runHistory).map(workItemFromRun);
+  const runItems = mergeByID(runs.data?.runs ?? [], refreshedRunHistory).map(workItemFromRun);
   const workerMap = new Map(workers.map((worker) => [worker.id, worker]));
   const taskItems = mergeByID(tasks.data?.tasks ?? [], taskHistory).map((task) => workItemFromTask(task, workerMap.get(task.worker_id)));
   const items = [...runItems, ...taskItems].sort((left, right) => right.startedAt.localeCompare(left.startedAt));
   const openWork = (item: WorkItem) => item.kind === "run" ? onRun(item.id) : onTask(item.id);
-  const error = runs.error ?? tasks.error ?? loadRunHistory.error ?? loadTaskHistory.error;
-  const fetching = runs.isFetching || tasks.isFetching;
-  const updatedAt = Math.max(runs.dataUpdatedAt, tasks.dataUpdatedAt);
+  const error = runs.error ?? tasks.error ?? activeHistoricalRuns.error ?? loadRunHistory.error ?? loadTaskHistory.error;
+  const fetching = runs.isFetching || tasks.isFetching || activeHistoricalRuns.isFetching;
+  const updatedAt = Math.max(runs.dataUpdatedAt, tasks.dataUpdatedAt, activeHistoricalRuns.dataUpdatedAt);
   return (
     <div className="page page-work">
       <ViewHeader title="Work" fetching={fetching} updatedAt={updatedAt} onRefresh={() => { void runs.refetch(); void tasks.refetch(); }} />
@@ -263,6 +283,10 @@ function filterDeletedTasks<T extends { tasks: Task[] }>(page: T, deletedIDs: st
   return { ...page, tasks: page.tasks.filter((task) => !deleted.has(task.id)) };
 }
 
+function isTerminalWorkState(state: WorkState): boolean {
+  return state === "succeeded" || state === "failed" || state === "cancelled";
+}
+
 function workItemFromTask(task: Task, worker?: Worker): WorkItem {
   const repository = worker?.repositories.find((item) => item.id === task.repository_id)?.remote_identity ?? task.repository_id;
   return {
@@ -283,6 +307,12 @@ function mergeByID<T extends { id: string }>(...groups: T[][]): T[] {
     for (const item of group) if (!unique.has(item.id)) unique.set(item.id, item);
   }
   return [...unique.values()];
+}
+
+function updateByID<T extends { id: string }>(current: T[], updates: T[]): T[] {
+  if (updates.length === 0) return current;
+  const byID = new Map(updates.map((item) => [item.id, item]));
+  return current.map((item) => byID.get(item.id) ?? item);
 }
 
 function RunOnceDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (run: RunDetailType) => void }) {

@@ -816,6 +816,51 @@ describe("App", () => {
     }
   });
 
+  it("refreshes nonterminal historical runs without polling completed pages", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const fetch = mockControlPlane({
+        paginatedRuns: true,
+        activeHistoricalRunCompletesAfterPoll: true,
+      });
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderApp();
+
+      await user.click(await screen.findByRole("button", { name: "Load older work" }));
+      const row = within(screen.getByTestId("work-table")).getByText("Older review").closest("button");
+      const activeRow = within(screen.getByTestId("work-table")).getByText("Long-running review").closest("button");
+      expect(row).not.toBeNull();
+      expect(activeRow).not.toBeNull();
+      expect(within(row!).getByText("Running")).toBeVisible();
+      expect(within(activeRow!).getByText("Running")).toBeVisible();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+
+      await waitFor(() => expect(within(row!).getByText("Succeeded")).toBeVisible());
+      expect(within(activeRow!).getByText("Running")).toBeVisible();
+      let paths = fetch.mock.calls.map(([input]) =>
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
+      );
+      expect(paths.filter((path) => path === "/api/v1/runs?limit=50&cursor=run-history")).toHaveLength(1);
+      expect(paths.filter((path) => path === "/api/v1/runs/run-history")).toHaveLength(2);
+      const activeRequests = paths.filter((path) => path === "/api/v1/runs/run-history-active").length;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+
+      paths = fetch.mock.calls.map(([input]) =>
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
+      );
+      expect(paths.filter((path) => path === "/api/v1/runs/run-history")).toHaveLength(2);
+      expect(paths.filter((path) => path === "/api/v1/runs/run-history-active").length).toBeGreaterThan(activeRequests);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps runbook editor focus during background polling", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

@@ -230,6 +230,7 @@ export function mockControlPlane(
     ledgerOnlyMigration?: boolean;
     automationRunWithoutTaskState?: "pending" | "failed" | "skipped" | "task_deleted";
     automationTaskState?: Task["state"];
+    activeHistoricalRunCompletesAfterPoll?: boolean;
     multiRepositoryAutomations?: boolean;
     paginatedAutomations?: boolean;
     paginatedAutomationOccurrences?: boolean;
@@ -268,6 +269,7 @@ export function mockControlPlane(
   let runCreateFailures = options.runCreateFailures ?? 0;
   let eventRequests = 0;
   let taskHeadRequests = 0;
+  let historicalRunDetailRequests = 0;
   let definitionHeadRequests = 0;
   let workflowHeadRequests = 0;
   let terminalEventFailures = options.terminalEventFailures ?? 0;
@@ -742,7 +744,7 @@ export function mockControlPlane(
     if (path.startsWith("/api/v1/runs?")) {
       if (options.paginatedRuns) {
         const query = new URL(path, "http://factory.test").searchParams;
-        const makeRun = (id: string, name: string, admittedAt: string): Run => ({
+        const makeRun = (id: string, name: string, admittedAt: string, state: Run["state"] = "succeeded"): Run => ({
           id,
           request_key: `request-${id}`,
           source_kind: "manual",
@@ -756,7 +758,7 @@ export function mockControlPlane(
             inputs: {},
             generation: 1,
           },
-          state: "succeeded",
+          state,
           job_count: 1,
           concurrency_limit: 1,
           repository_remote_identities: ["github.com/example/factory"],
@@ -765,7 +767,20 @@ export function mockControlPlane(
         });
         if (query.get("cursor") === "run-history") {
           return Response.json({
-            runs: [makeRun("run-history", "Older review", "2026-08-05T10:00:00Z")],
+            runs: [
+              makeRun(
+                "run-history",
+                "Older review",
+                "2026-08-05T10:00:00Z",
+                options.activeHistoricalRunCompletesAfterPoll ? "running" : "succeeded",
+              ),
+              ...(options.activeHistoricalRunCompletesAfterPoll ? [makeRun(
+                "run-history-active",
+                "Long-running review",
+                "2026-08-04T10:00:00Z",
+                "running",
+              )] : []),
+            ],
             next_cursor: null,
           });
         }
@@ -778,6 +793,37 @@ export function mockControlPlane(
     }
     if (path.startsWith("/api/v1/runs/")) {
       const runID = path.split("/")[4];
+      if ((runID === "run-history" || runID === "run-history-active") && options.activeHistoricalRunCompletesAfterPoll) {
+        if (runID === "run-history") historicalRunDetailRequests += 1;
+        const state: Run["state"] = runID === "run-history" && historicalRunDetailRequests > 1 ? "succeeded" : "running";
+        const historicalActive = runID === "run-history-active";
+        const admittedAt = historicalActive ? "2026-08-04T10:00:00Z" : "2026-08-05T10:00:00Z";
+        return Response.json({
+          run: {
+            id: runID,
+            request_key: `request-${runID}`,
+            source_kind: "manual",
+            definition: {
+              id: `definition-${runID}`,
+              name: historicalActive ? "Long-running review" : "Older review",
+              prompt: "Inspect the configured repository.",
+              runtime: "codex",
+              allowed_tools: ["git"],
+              timeout_seconds: 600,
+              inputs: {},
+              generation: 1,
+            },
+            state,
+            job_count: 1,
+            concurrency_limit: 1,
+            repository_remote_identities: ["github.com/example/factory"],
+            admitted_at: admittedAt,
+            updated_at: admittedAt,
+          },
+          parameters: {},
+          jobs: [],
+        });
+      }
       const detail = runDetails.find((item) => item.run.id === runID);
       return detail
         ? Response.json(detail)
