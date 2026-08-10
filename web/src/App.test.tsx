@@ -60,10 +60,16 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: /Failed Jobs/ }));
     expect(screen.getByRole("heading", { name: "Failed Jobs" })).toBeVisible();
     await user.selectOptions(screen.getByLabelText("Definition filter"), "definition-health");
+    expect(screen.getByRole("button", { name: "Clear" })).toBeVisible();
     await vi.waitFor(() => expect(fetch.mock.calls.some(([input]) =>
       String(input).includes("definition_id=definition-health"))).toBe(true));
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+    expect(screen.getByLabelText("Definition filter")).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled();
+    await user.selectOptions(screen.getByLabelText("Definition filter"), "definition-health");
     const callsBeforeClearing = fetch.mock.calls.length;
     await user.selectOptions(screen.getByLabelText("Definition filter"), "");
+    expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled();
     await vi.waitFor(() => {
       const paths = fetch.mock.calls.slice(callsBeforeClearing).map(([input]) => String(input));
       expect(paths).toContain("/api/v1/metrics/summary?window=30d&job_view=failed");
@@ -72,6 +78,22 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: /github.com\/example\/factory/ }));
     expect(window.location.pathname).toBe("/work/run-health-failed");
     expect(window.location.search).toBe("?job=job-health-failed");
+  });
+
+  it("keeps the Overview mounted while a new metric cohort loads", async () => {
+    window.history.replaceState({}, "", "/");
+    let releaseMetrics: (() => void) | undefined;
+    const metricsRefreshGate = new Promise<void>((resolve) => { releaseMetrics = resolve; });
+    mockControlPlane({ metricsRefreshGate });
+    const user = userEvent.setup();
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: "Factory overview" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "30 days" }));
+    expect(screen.getByRole("heading", { name: "Factory overview" })).toBeVisible();
+    expect(screen.queryByText("Loading work health")).not.toBeInTheDocument();
+
+    await act(async () => releaseMetrics?.());
   });
 
 	it("upgrades existing data and keeps legacy task history browsable", async () => {

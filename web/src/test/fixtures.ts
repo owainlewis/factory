@@ -228,6 +228,7 @@ export function mockControlPlane(
     definitionHistoryGate?: Promise<void>;
     definitionListFailure?: boolean;
     ledgerOnlyMigration?: boolean;
+    metricsRefreshGate?: Promise<void>;
     automationRunWithoutTaskState?: "pending" | "failed" | "skipped" | "task_deleted";
     automationTaskState?: Task["state"];
     activeHistoricalRunCompletesAfterPoll?: boolean;
@@ -467,6 +468,7 @@ export function mockControlPlane(
           : input.url;
     if (path.startsWith("/api/v1/metrics/summary?window=")) {
       const window = new URL(path, "http://factory.test").searchParams.get("window");
+      if (options.metricsRefreshGate && window !== "7d") await options.metricsRefreshGate;
       return Response.json({ ...metrics, window });
     }
 	if (path === "/api/v1/migrations/product-model") {

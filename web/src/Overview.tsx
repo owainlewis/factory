@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { DatabaseBackup, Users } from "lucide-react";
-import { useState } from "react";
+import { ChevronDown, DatabaseBackup, Filter, Inbox, Users, X } from "lucide-react";
+import { useRef, useState, type Ref } from "react";
 import { api } from "./api";
 import { duration, timeAgo } from "./format";
 import { useVisibleInterval } from "./polling";
@@ -28,6 +28,7 @@ export function Overview({ onRun, upgrade, upgradeError }: {
   const metrics = useQuery({
     queryKey: ["metrics", window, filters, jobView],
     queryFn: () => api.metrics(window, filters, jobView),
+    placeholderData: (previousData) => previousData,
     refetchInterval: interval,
   });
 
@@ -46,18 +47,10 @@ export function Overview({ onRun, upgrade, upgradeError }: {
       />
       {metrics.error && <StaleBanner error={metrics.error} />}
 	  <ProductUpgradePanel upgrade={upgrade} error={upgradeError} />
-      <div className="metrics-toolbar">
-        <span>Job admission window</span>
-        <div className="window-picker" aria-label="Metrics window">
-          {windows.map((option) => <button
-            key={option.value}
-            aria-pressed={window === option.value}
-            onClick={() => setWindow(option.value)}
-          >{option.label}</button>)}
-        </div>
-      </div>
       {metrics.data && <RunMetrics
         data={metrics.data}
+        window={window}
+        onWindow={setWindow}
         filters={filters}
         onFilters={setFilters}
         jobView={jobView}
@@ -108,6 +101,8 @@ function ProductUpgradePanel({ upgrade, error }: { upgrade?: ProductUpgrade; err
 
 function RunMetrics({
   data,
+  window,
+  onWindow,
   filters,
   onFilters,
   jobView,
@@ -115,6 +110,8 @@ function RunMetrics({
   onRun,
 }: {
   data: MetricsSummary;
+  window: MetricsWindow;
+  onWindow: (window: MetricsWindow) => void;
   filters: MetricsFilters;
   onFilters: (filters: MetricsFilters) => void;
   jobView: JobView;
@@ -133,19 +130,44 @@ function RunMetrics({
     { label: "Throughput", value: formatNumber(health.throughput), detail: "Terminal Jobs in this cohort", view: "terminal" },
   ];
   const visibleJobs = health.jobs.filter((job) => jobMatchesView(job, jobView));
+  const hasFilters = Object.keys(filters).length > 0;
+  const firstFilterRef = useRef<HTMLSelectElement>(null);
   return (
     <section className="metrics-dashboard" aria-label="Work health metrics">
+      <div className="metrics-toolbar">
+        <div className="metrics-window-label">
+          <span>Reporting window</span>
+          <strong>Jobs admitted in</strong>
+        </div>
+        <div className="window-picker" aria-label="Metrics window">
+          {windows.map((option) => <button
+            key={option.value}
+            aria-pressed={window === option.value}
+            onClick={() => onWindow(option.value)}
+          >{option.label}</button>)}
+        </div>
+        <div className="workers-inline" aria-label={`${data.workers_online} of ${data.workers_total} Workers online`}>
+          <span className={data.workers_online > 0 ? "online-dot" : "online-dot offline"} />
+          <Users size={14} />
+          <span>Workers online</span>
+          <strong>{data.workers_online} / {data.workers_total}</strong>
+        </div>
+      </div>
       <div className="metrics-filters" aria-label="Work metric filters">
-        <MetricSelect label="Definition" value={filters.definition_id ?? ""} options={health.definitions} onChange={(value) => onFilters({ ...filters, definition_id: value || undefined })} />
-        <MetricSelect label="Repository" value={filters.repository_id ?? ""} options={health.repositories} onChange={(value) => onFilters({ ...filters, repository_id: value || undefined })} />
-        <MetricSelect label="Worker" value={filters.worker_id ?? ""} options={health.workers} onChange={(value) => onFilters({ ...filters, worker_id: value || undefined })} />
-        <button className="button button-secondary" disabled={Object.keys(filters).length === 0} onClick={() => onFilters({})}>Clear filters</button>
+        <div className="metrics-filter-heading"><Filter size={15} /><span>Filters</span></div>
+        <MetricSelect selectRef={firstFilterRef} label="Definition" allLabel="All definitions" value={filters.definition_id ?? ""} options={health.definitions} onChange={(value) => onFilters(updateFilter(filters, "definition_id", value))} />
+        <MetricSelect label="Repository" allLabel="All repositories" value={filters.repository_id ?? ""} options={health.repositories} onChange={(value) => onFilters(updateFilter(filters, "repository_id", value))} />
+        <MetricSelect label="Worker" allLabel="All workers" value={filters.worker_id ?? ""} options={health.workers} onChange={(value) => onFilters(updateFilter(filters, "worker_id", value))} />
+        <button className="metrics-clear" disabled={!hasFilters} onClick={() => {
+          onFilters({});
+          firstFilterRef.current?.focus();
+        }}><X size={13} />Clear</button>
       </div>
 
       <div className="primary-metrics run-primary-metrics">
         {cards.map((metric) => <button
           type="button"
-          className="metric-card"
+          className={`metric-card${metric.value === "Not enough data" ? " metric-card-empty" : ""}`}
           key={metric.label}
           aria-pressed={jobView === metric.view}
           onClick={() => onJobView(metric.view)}
@@ -159,7 +181,11 @@ function RunMetrics({
       <section className="panel run-health-jobs">
         <PanelHeading title={jobView === "all" ? "Jobs in this view" : `${jobViewLabel(jobView)} Jobs`} aside={`${visibleJobs.length} shown · ${health.total_jobs} total`} />
         {jobView !== "all" && <button className="button button-secondary" onClick={() => onJobView("all")}>Show all Jobs</button>}
-        {visibleJobs.length === 0 ? <div className="quiet-empty">No Jobs match this metric and filter set.</div> : <div className="run-health-job-list">
+        {visibleJobs.length === 0 ? <div className="run-health-empty">
+          <Inbox size={20} />
+          <strong>No Jobs to show</strong>
+          <span>{hasFilters || jobView !== "all" ? "Try another metric or clear the current filters." : "Jobs will appear here when work is admitted."}</span>
+        </div> : <div className="run-health-job-list">
           {visibleJobs.map((job) => <button key={job.job_id} className="run-health-job" onClick={() => onRun(job.run_id, job.job_id)}>
             <span><strong>{job.repository_remote_identity}</strong><small>{job.definition_name} · {job.worker_name || "No Worker assigned"}</small></span>
             <StatusBadge state={job.state} />
@@ -168,9 +194,6 @@ function RunMetrics({
         </div>}
       </section>
 
-      <section className="metric-panel worker-health-summary" aria-label="Worker health summary">
-        <div><Users size={15} /><span>Workers online</span><strong>{data.workers_online} / {data.workers_total}</strong></div>
-      </section>
       <details className="metrics-formulas">
         <summary>Metric formulas</summary>
         <p>Every metric uses the same cohort: Jobs admitted in the selected window after the current filters are applied. Active is queued, preparing, or running. Success rate excludes cancellations. Queue time ends at the first agent start. Cycle time ends at the terminal outcome. Throughput counts terminal Jobs in the cohort.</p>
@@ -179,13 +202,24 @@ function RunMetrics({
   );
 }
 
-function MetricSelect({ label, value, options, onChange }: {
+function MetricSelect({ label, allLabel, value, options, onChange, selectRef }: {
   label: string;
+  allLabel: string;
   value: string;
   options: Array<{ id: string; name: string }>;
   onChange: (value: string) => void;
+  selectRef?: Ref<HTMLSelectElement>;
 }) {
-  return <label><span>{label}</span><select aria-label={`${label} filter`} value={value} onChange={(event) => onChange(event.target.value)}><option value="">All</option>{options.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}</select></label>;
+  return <label className="metric-select">
+    <span className="metric-select-label">{label}</span>
+    <span className="metric-select-control">
+      <select ref={selectRef} aria-label={`${label} filter`} value={value} onChange={(event) => onChange(event.target.value)}>
+        <option value="">{allLabel}</option>
+        {options.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+      </select>
+      <ChevronDown size={14} aria-hidden="true" />
+    </span>
+  </label>;
 }
 
 function jobMatchesView(job: RunMetricJob, view: JobView): boolean {
@@ -196,6 +230,13 @@ function jobMatchesView(job: RunMetricJob, view: JobView): boolean {
   if (view === "started") return Boolean(job.started_at);
   if (view === "terminal") return Boolean(job.terminal_at);
   return job.state === view;
+}
+
+function updateFilter(filters: MetricsFilters, key: keyof MetricsFilters, value: string): MetricsFilters {
+  const next = { ...filters };
+  if (value) next[key] = value;
+  else delete next[key];
+  return next;
 }
 
 function jobViewLabel(view: JobView): string {
