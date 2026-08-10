@@ -14,7 +14,7 @@ The browser UI provides:
 - task delegation using a title, prompt, repository, and worker.
 
 Factory is local-first. Its browser and operator API accept loopback connections
-only. An optional, separate TLS-authenticated endpoint accepts Runners on remote
+only. An optional, separate TLS-authenticated endpoint accepts Workers on remote
 VMs.
 
 Read the [product vision](docs/software-factory/vision.md), the
@@ -53,9 +53,9 @@ cp examples/worker.toml ~/.factory/worker.toml
 ```
 
 Edit `~/.factory/worker.toml` to select any installed `pi`, `codex`, and
-`claude-code` agents. Runners need no repository list. They probe local `gh`
+`claude-code` agents. Workers need no repository list. They probe local `gh`
 access and acquire centrally managed GitHub repositories on demand. Then start
-the server and Runner:
+the server and Worker:
 
 ```sh
 just run
@@ -68,9 +68,9 @@ legacy poller** before removing their old configuration. Preview, Import, and
 Finalize each verify and lock the same legacy snapshot. Import creates disabled
 typed Automations and Finalize archives copies without deleting the originals.
 
-One Runner has one stable identity, a configurable set of coding-agent
+One Worker has one stable identity, a configurable set of coding-agent
 capabilities, and a pool of independent sessions. The pool defaults to ten
-slots. A single local Runner can advertise Pi, Codex, and Claude Code:
+slots. A single local Worker can advertise Pi, Codex, and Claude Code:
 
 ```sh
 FACTORY_WORKER_CONFIG=~/.factory/worker.toml \
@@ -79,7 +79,7 @@ FACTORY_WORKER_CONFIG=~/.factory/worker.toml \
 
 See the [local guide](docs/local.md) for a complete setup and the
 [worker guide](docs/worker.md) for runtime and worktree behavior. Use the
-[remote VM guide](docs/remote-runners.md) to enroll a Runner outside the server
+[remote VM guide](docs/remote-workers.md) to enroll a Worker outside the server
 host. Tagged binary
 installation, upgrades, compatibility, rollback, and release verification are
 covered by the [release guide](docs/release.md).
@@ -96,7 +96,7 @@ Go control plane
    ^
    | registration, claim, heartbeat, events, completion
    |
-Go Runners
+Go Workers
   one identity + ready runtime capabilities + N agent slots + repository cache
    |
    +-- Pi CLI
@@ -128,7 +128,7 @@ Implemented:
 
 - Go control-plane API and embedded React UI;
 - durable tasks, executions, attempts, leases, events, and cancellation;
-- Pi, Codex, and Claude Code Runner capabilities;
+- Pi, Codex, and Claude Code Worker capabilities;
 - reusable versioned Workflows;
 - disabled-first schedule and signed GitHub webhook Automations backed by
   shared Definitions, plus legacy GitHub polling Automations;

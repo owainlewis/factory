@@ -229,7 +229,7 @@ func TestTaskPersistsCompleteDefinitionSnapshot(t *testing.T) {
 	assertErrorCode(t, err, "definition_archived")
 }
 
-func TestDefinitionRouteSelectsRunnerWithRequiredTools(t *testing.T) {
+func TestDefinitionRouteSelectsWorkerWithRequiredTools(t *testing.T) {
 	store := newTestStore(t)
 	remote := "github.com/example/factory"
 	createManagedTestRepository(t, store, remote)
@@ -249,11 +249,11 @@ func TestDefinitionRouteSelectsRunnerWithRequiredTools(t *testing.T) {
 		t.Fatalf("route Definition task: created=%t err=%v", created, err)
 	}
 	if task.Execution.AssignedWorkerID != ready.ID {
-		t.Fatalf("assigned Runner = %q; want %q", task.Execution.AssignedWorkerID, ready.ID)
+		t.Fatalf("assigned Worker = %q; want %q", task.Execution.AssignedWorkerID, ready.ID)
 	}
 }
 
-func TestDefinitionsMigrationUpgradesRunnerCapabilitiesV17(t *testing.T) {
+func TestDefinitionsMigrationUpgradesWorkerCapabilitiesV17(t *testing.T) {
 	ctx := context.Background()
 	path := t.TempDir() + "/factory.sqlite3"
 	database, err := sql.Open("sqlite", path)
@@ -268,7 +268,7 @@ func TestDefinitionsMigrationUpgradesRunnerCapabilitiesV17(t *testing.T) {
 		"010_github_issue_automations.sql", "011_github_pull_request_automations.sql",
 		"012_schedule_automations.sql", "013_legacy_poller_migration.sql",
 		"014_workflow_automation_titles.sql", "015_codex_weekly_limit.sql",
-		"016_worker_capacity.sql", "017_runner_capabilities.sql",
+		"016_worker_capacity.sql", "017_worker_capabilities.sql",
 	}
 	for index, name := range names {
 		body, readErr := migrations.Files.ReadFile(name)

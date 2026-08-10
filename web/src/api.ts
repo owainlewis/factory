@@ -87,7 +87,7 @@ export const api = {
     const query = new URLSearchParams({ window });
     if (filters.definition_id) query.set("definition_id", filters.definition_id);
     if (filters.repository_id) query.set("repository_id", filters.repository_id);
-    if (filters.runner_id) query.set("runner_id", filters.runner_id);
+    if (filters.worker_id) query.set("worker_id", filters.worker_id);
     if (jobView !== "all") query.set("job_view", jobView);
     return request<MetricsSummary>(`/api/v1/metrics/summary?${query}`);
   },

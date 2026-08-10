@@ -239,7 +239,7 @@ export function DefinitionDetail({
             <div><dt>Created</dt><dd>{new Date(definition.created_at).toLocaleString()}</dd></div>
             <div><dt>Identity</dt><dd className="mono break-anywhere">{definition.id}</dd></div>
           </dl>
-          <p className="metrics-note">Tool names are Runner requirements. They do not sandbox a trusted local agent.</p>
+          <p className="metrics-note">Tool names are Worker requirements. They do not sandbox a trusted local agent.</p>
         </section>
       </div>
       <section className="panel">
@@ -320,7 +320,7 @@ function DefinitionForm({
     else if (new TextEncoder().encode(prompt).length > 64 * 1024) nextErrors.prompt = "Keep the prompt to 64 KiB.";
     if (!["pi", "codex", "claude-code"].includes(runtime)) nextErrors.runtime = "Choose an agent runtime.";
     if (allowedTools.some((tool) => tool !== "git" && tool !== "gh")) {
-      nextErrors.allowed_tools = "Use supported Runner tools: git and gh.";
+      nextErrors.allowed_tools = "Use supported Worker tools: git and gh.";
     }
     if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 28_800) {
       nextErrors.timeout_seconds = "Enter a timeout from 1 to 28,800 seconds.";

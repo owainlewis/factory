@@ -29,7 +29,7 @@ func TestLoadConfigDefaultsMaxConcurrentToTen(t *testing.T) {
 }
 
 func TestLoadConfigAcceptsSeveralCodingAgentRuntimes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "runner.toml")
+	path := filepath.Join(t.TempDir(), "worker.toml")
 	body := "name = \"local\"\nruntime = \"codex\"\nruntimes = [\"pi\", \"codex\", \"claude-code\"]\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -45,7 +45,7 @@ func TestLoadConfigAcceptsSeveralCodingAgentRuntimes(t *testing.T) {
 }
 
 func TestLoadConfigPreservesCodexPrimaryWhenAddingRuntimes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "runner.toml")
+	path := filepath.Join(t.TempDir(), "worker.toml")
 	body := "name = \"local\"\nruntimes = [\"pi\", \"codex\", \"claude-code\"]\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestLoadConfigPreservesCodexPrimaryWhenAddingRuntimes(t *testing.T) {
 	}
 }
 
-func TestLoadConfigAcceptsRemoteRunnerSettings(t *testing.T) {
+func TestLoadConfigAcceptsRemoteWorkerSettings(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "remote.toml")
 	body := "server = \"https://factory.example.com:7443\"\nname = \"build-vm\"\n" +
 		"enrollment_token = \"factory_enroll_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n" +

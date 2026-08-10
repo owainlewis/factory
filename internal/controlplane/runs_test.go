@@ -91,7 +91,7 @@ func TestRunAdmissionSnapshotsOneDefinitionAndOneRepositoryAtomically(t *testing
 	}
 }
 
-func TestRunOnceCanUseARepositoryConfiguredOnALocalRunner(t *testing.T) {
+func TestRunOnceCanUseARepositoryConfiguredOnALocalWorker(t *testing.T) {
 	store := newTestStore(t)
 	definition, created, err := store.CreateDefinition(context.Background(), protocol.CreateDefinitionRequest{
 		RequestKey: "local-run-definition", Name: "Review Local Checkout",
@@ -108,7 +108,7 @@ func TestRunOnceCanUseARepositoryConfiguredOnALocalRunner(t *testing.T) {
 		nil,
 	)
 	if len(worker.Repositories) != 1 {
-		t.Fatalf("local Runner repositories = %#v", worker.Repositories)
+		t.Fatalf("local Worker repositories = %#v", worker.Repositories)
 	}
 	repositories, err := store.RunRepositories(context.Background())
 	if err != nil || len(repositories) != 1 || repositories[0].ID != worker.Repositories[0].ID {
@@ -130,7 +130,7 @@ func TestRunOnceCanUseARepositoryConfiguredOnALocalRunner(t *testing.T) {
 	}
 }
 
-func TestRunOnceRoutesAStaticRepositoryOnlyToItsAdvertisingRunner(t *testing.T) {
+func TestRunOnceRoutesAStaticRepositoryOnlyToItsAdvertisingWorker(t *testing.T) {
 	store := newTestStore(t)
 	definition := createTestDefinition(t, store, "static-route-definition", "Review Static Checkout")
 	staticWorker := registerDefinitionWorker(
@@ -284,7 +284,7 @@ func TestMultiRepositoryRunFansOutAtomicallyWithFrozenTargetsAndBoundedConcurren
 	}
 }
 
-func TestRunLoadsTwoHundredJobSummariesWithoutLiveRunnerMappings(t *testing.T) {
+func TestRunLoadsTwoHundredJobSummariesWithoutLiveWorkerMappings(t *testing.T) {
 	store := newTestStore(t)
 	definition := createTestDefinition(t, store, "large-fleet-definition", "Review Large Fleet")
 	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
@@ -320,7 +320,7 @@ func TestRunLoadsTwoHundredJobSummariesWithoutLiveRunnerMappings(t *testing.T) {
 
 	loaded, err := store.Run(context.Background(), detail.Run.ID)
 	if err != nil || loaded.Run.JobCount != 200 || len(loaded.Jobs) != 200 {
-		t.Fatalf("load 200-Job Run without live Runner mappings: err=%v summary=%#v", err, loaded.Run)
+		t.Fatalf("load 200-Job Run without live Worker mappings: err=%v summary=%#v", err, loaded.Run)
 	}
 	for _, identity := range loaded.Run.RepositoryRemoteIdentities {
 		if !identities[identity] {
@@ -528,7 +528,7 @@ func TestMultiRepositoryMigrationPreservesLegacySingleRepositoryReplay(t *testin
 		"010_github_issue_automations.sql", "011_github_pull_request_automations.sql",
 		"012_schedule_automations.sql", "013_legacy_poller_migration.sql",
 		"014_workflow_automation_titles.sql", "015_codex_weekly_limit.sql",
-		"016_worker_capacity.sql", "017_runner_capabilities.sql", "018_definitions.sql", "019_runs.sql",
+		"016_worker_capacity.sql", "017_worker_capabilities.sql", "018_definitions.sql", "019_runs.sql",
 	}
 	for index, name := range names {
 		body, readErr := migrations.Files.ReadFile(name)
@@ -592,7 +592,7 @@ func TestMultiRepositoryMigrationPreservesLegacySingleRepositoryReplay(t *testin
 			'{"severity":"high"}', 1, 1);
 		INSERT INTO jobs(
 			id, run_id, repository_id, state, blocked_reason, admitted_at, updated_at
-		) VALUES ('job', 'run', 'repository', 'blocked', 'Waiting for a Runner.', 1, 1)
+		) VALUES ('job', 'run', 'repository', 'blocked', 'Waiting for a Worker.', 1, 1)
 	`, legacyDigest, snapshotJSON); err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +654,7 @@ func TestRunOnceTreatsAMalformedGitHubIdentityAsAnAdvertisedStaticRepository(t *
 	}
 }
 
-func TestRunOnceExcludesAnEnabledStaticRepositoryAfterItsRunnerStopsAdvertising(t *testing.T) {
+func TestRunOnceExcludesAnEnabledStaticRepositoryAfterItsWorkerStopsAdvertising(t *testing.T) {
 	store := newTestStore(t)
 	definition := createTestDefinition(t, store, "unavailable-static-definition", "Review Static Checkout")
 	worker := registerDefinitionWorker(
@@ -820,7 +820,7 @@ func TestRunHistoryUsesAStableCursorWithoutDroppingOlderRuns(t *testing.T) {
 	}
 }
 
-func TestBlockedRunRoutesWhenACompatibleRunnerClaims(t *testing.T) {
+func TestBlockedRunRoutesWhenACompatibleWorkerClaims(t *testing.T) {
 	store, definition, repository, _ := setupRunTest(t, false)
 	detail, created, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
 		RequestKey: "blocked-run", DefinitionID: definition.ID, RepositoryID: repository.ID,
@@ -849,7 +849,7 @@ func TestBlockedRunRoutesWhenACompatibleRunnerClaims(t *testing.T) {
 	}
 }
 
-func TestQueuedRunReroutesWhenItsAssignedRunnerGoesOffline(t *testing.T) {
+func TestQueuedRunReroutesWhenItsAssignedWorkerGoesOffline(t *testing.T) {
 	store, definition, repository, assigned := setupRunTest(t, true)
 	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
@@ -933,16 +933,16 @@ func TestOfflineQueuedRunJobDoesNotHoldItsConcurrencySlot(t *testing.T) {
 		[]protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}})
 	active := claimTestTask(t, store, availableWorker, "available-slot-claim", tokenA)
 	if active.Execution.ID == queued.ExecutionID {
-		t.Fatalf("available Runner claimed offline Job execution %q", queued.ExecutionID)
+		t.Fatalf("available Worker claimed offline Job execution %q", queued.ExecutionID)
 	}
 
 	registerDefinitionWorker(t, store, offlineWorker, registrations[offlineWorker], protocol.CapabilityReady,
 		[]protocol.SourceAccess{{Provider: "github", Hostname: "github.com"}})
 	blocked, err := store.Claim(context.Background(), offlineWorker, protocol.ClaimRequest{
-		RequestID: "returned-runner-active-slot", LeaseToken: tokenB,
+		RequestID: "returned-worker-active-slot", LeaseToken: tokenB,
 	})
 	if err != nil || blocked != nil {
-		t.Fatalf("returned Runner bypassed active Run slot: claim=%#v err=%v", blocked, err)
+		t.Fatalf("returned Worker bypassed active Run slot: claim=%#v err=%v", blocked, err)
 	}
 	if _, err := store.StartAttempt(context.Background(), active.Attempt.ID, protocol.StartAttemptRequest{
 		LeaseToken: tokenA, ProcessIdentity: "fake-agent",
@@ -954,9 +954,9 @@ func TestOfflineQueuedRunJobDoesNotHoldItsConcurrencySlot(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	resumed := claimTestTask(t, store, offlineWorker, "returned-runner-free-slot", tokenB)
+	resumed := claimTestTask(t, store, offlineWorker, "returned-worker-free-slot", tokenB)
 	if resumed.Execution.ID != queued.ExecutionID {
-		t.Fatalf("returned Runner claimed execution %q; want queued execution %q",
+		t.Fatalf("returned Worker claimed execution %q; want queued execution %q",
 			resumed.Execution.ID, queued.ExecutionID)
 	}
 }
@@ -1001,7 +1001,7 @@ func TestUnclaimableQueuedRunJobDoesNotHoldItsConcurrencySlot(t *testing.T) {
 	}
 	claim := claimTestTask(t, store, availableWorker, "enabled-slot-claim", tokenA)
 	if claim.Execution.ID == queued.ExecutionID {
-		t.Fatalf("available Runner claimed disabled Job execution %q", queued.ExecutionID)
+		t.Fatalf("available Worker claimed disabled Job execution %q", queued.ExecutionID)
 	}
 	routed, err := store.Run(context.Background(), detail.Run.ID)
 	if err != nil || routed.Run.State != "running" {
@@ -1009,7 +1009,7 @@ func TestUnclaimableQueuedRunJobDoesNotHoldItsConcurrencySlot(t *testing.T) {
 	}
 }
 
-func TestRetryIgnoresQueuedJobAssignedToAnOfflineRunner(t *testing.T) {
+func TestRetryIgnoresQueuedJobAssignedToAnOfflineWorker(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Date(2026, 8, 7, 9, 30, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
@@ -1097,7 +1097,7 @@ func TestRetryIgnoresQueuedJobAssignedToAnOfflineRunner(t *testing.T) {
 		RequestID: "offline-sibling-returned", LeaseToken: tokenA,
 	})
 	if err != nil || blocked != nil {
-		t.Fatalf("returned sibling Runner exceeded retry concurrency: claim=%#v err=%v", blocked, err)
+		t.Fatalf("returned sibling Worker exceeded retry concurrency: claim=%#v err=%v", blocked, err)
 	}
 }
 
@@ -1289,7 +1289,7 @@ func TestQueuedCancellationAfterRetryDoesNotReuseStaleAttemptEvidence(t *testing
 	}
 }
 
-func TestFailedRunRetrySelectsACurrentlyEligibleRunner(t *testing.T) {
+func TestFailedRunRetrySelectsACurrentlyEligibleWorker(t *testing.T) {
 	store, definition, repository, assigned := setupRunTest(t, true)
 	detail, _, err := store.CreateRun(context.Background(), protocol.CreateRunRequest{
 		RequestKey: "reroute-failed-run", DefinitionID: definition.ID, RepositoryID: repository.ID,

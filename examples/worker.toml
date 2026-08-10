@@ -3,12 +3,12 @@ server = "http://127.0.0.1:7337"
 name = "local"
 # The legacy runtime remains the default for clients that do not select one.
 runtime = "codex"
-# One Runner may advertise several installed coding agents. Missing or
+# One Worker may advertise several installed coding agents. Missing or
 # unauthenticated runtimes remain visible without stopping ready runtimes.
 runtimes = ["pi", "codex", "claude-code"]
 # Optional. Defaults to 10 and accepts values from 1 through 100.
 # max_concurrent = 10
-# Optional scheduling and inventory metadata shown on the Runner profile.
+# Optional scheduling and inventory metadata shown on the Worker profile.
 # [labels]
 # environment = "development"
 # host = "laptop"

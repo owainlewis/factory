@@ -2,7 +2,7 @@
 
 Factory's overview reports agent Jobs, not generic process or GitHub activity.
 Every metric uses one cohort: Jobs admitted during the selected time window after
-the Definition, repository, and Runner filters are applied. `All retained` has
+the Definition, repository, and Worker filters are applied. `All retained` has
 no lower time boundary.
 
 | Metric | Formula |

@@ -246,13 +246,13 @@ func (s *Store) createRun(
 			&repositoryIdentity, &repositoryEnabled, &repositoryCentrallyManaged, &repositoryAdvertised,
 		)
 		if errors.Is(err, sql.ErrNoRows) {
-			return protocol.RunDetail{}, false, conflict("repository_not_available", "every repository must be configured on a Runner or enabled for managed acquisition")
+			return protocol.RunDetail{}, false, conflict("repository_not_available", "every repository must be configured on a Worker or enabled for managed acquisition")
 		}
 		if err != nil {
 			return protocol.RunDetail{}, false, unavailable(err)
 		}
 		if !runRepositoryAvailable(repositoryIdentity, repositoryEnabled, repositoryCentrallyManaged, repositoryAdvertised) {
-			return protocol.RunDetail{}, false, conflict("repository_not_available", "every repository must be configured on a Runner or enabled for managed acquisition")
+			return protocol.RunDetail{}, false, conflict("repository_not_available", "every repository must be configured on a Worker or enabled for managed acquisition")
 		}
 		if repositoryCentrallyManaged != 0 {
 			if canonical, normalizeErr := normalizeManagedGitHubRemote(repositoryIdentity); normalizeErr == nil {
@@ -298,7 +298,7 @@ func (s *Store) createRun(
 		var taskID, executionID string
 		if materialized < value.ConcurrencyLimit {
 			selection, routeErr := s.selectRunRoute(ctx, tx, target.id, target.identity, now, "", snapshot.Runtime, snapshot.AllowedTools)
-			blockedReason = "Waiting for a healthy compatible Runner with repository access."
+			blockedReason = "Waiting for a healthy compatible Worker with repository access."
 			if routeErr == nil {
 				taskID, executionID, err = s.insertRunJobExecution(
 					ctx, tx, runID, jobID, snapshot, snapshotJSON, resolvedPrompt, selection, now,
@@ -400,7 +400,7 @@ func (s *Store) selectRunRoute(
 		SELECT remote_identity, enabled, centrally_managed FROM repositories WHERE id = ?
 	`, repositoryID).Scan(&currentIdentity, &enabled, &centrallyManaged)
 	if errors.Is(err, sql.ErrNoRows) {
-		return taskRouteCandidate{}, conflict("repository_not_available", "repository is not configured on a Runner or enabled for managed acquisition")
+		return taskRouteCandidate{}, conflict("repository_not_available", "repository is not configured on a Worker or enabled for managed acquisition")
 	}
 	if err != nil {
 		return taskRouteCandidate{}, unavailable(err)

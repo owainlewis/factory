@@ -25,7 +25,7 @@ github_webhook_secret_file = "/etc/factory/github-webhook-secret"
 ```
 
 All four values are required together. This listener exposes only `GET
-/healthz` and `POST /api/v1/webhooks/github`. The browser, operator, Runner,
+/healthz` and `POST /api/v1/webhooks/github`. The browser, operator, Worker,
 repository, and Run APIs remain unavailable on it.
 
 In the GitHub repository settings, add this payload URL:

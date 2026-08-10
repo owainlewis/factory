@@ -378,7 +378,7 @@ func TestWaitForWorkerRegistrationRequiresAFreshHeartbeat(t *testing.T) {
 	})
 }
 
-func TestHTTPWorkerHeartbeatPreservesRunnerRegistration(t *testing.T) {
+func TestHTTPWorkerHeartbeatPreservesWorkerRegistration(t *testing.T) {
 	fixture := newHTTPFixture(t)
 	worker := registerHTTPWorker(t, fixture, workerA, "factory", "github.com/example/factory", 1)
 	time.Sleep(2 * time.Millisecond)

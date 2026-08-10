@@ -9,7 +9,7 @@ Start with the root [README](../README.md) to run Factory.
 - [Local guide](local.md): build, configure, start, delegate, and troubleshoot.
 - [Worker contract](worker.md): identity, runtimes, claiming, process safety,
   and worktree cleanup.
-- [Remote VM Runners](remote-runners.md): TLS listener, one-time enrollment,
+- [Remote VM Workers](remote-workers.md): TLS listener, one-time enrollment,
   authentication, and reconnect behavior.
 - [Scheduled Automations](scheduled-automations.md): create, preview, enable,
   replay, and inspect Definition Runs across repositories.
@@ -30,7 +30,7 @@ Start with the root [README](../README.md) to run Factory.
 - [Software Factory vision](software-factory/vision.md): product thesis, scope,
   principles, and measures of progress.
 - [Software Factory target architecture](software-factory/design.md): proposed
-  Definitions, Triggers, Runs, Jobs, Attempts, Runners, GitHub admission, and
+  Definitions, Triggers, Runs, Jobs, Attempts, Workers, GitHub admission, and
   migration.
 
 ## Design records and superseded proposals

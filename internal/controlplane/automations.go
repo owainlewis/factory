@@ -624,7 +624,7 @@ func validateDefinitionScheduleDependencies(
 		}
 		if !runRepositoryAvailable(remoteIdentity, enabled, centrallyManaged, advertised) {
 			code := "repository_not_available"
-			message := "every scheduled repository must be configured on a Runner or enabled for managed acquisition"
+			message := "every scheduled repository must be configured on a Worker or enabled for managed acquisition"
 			if requireRunnable {
 				return conflict(code, message)
 			}

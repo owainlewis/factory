@@ -16,7 +16,7 @@ Node.js is not required for normal startup.
 ## Platform support
 
 Factory supports macOS and Linux. The server, worker, and local launcher are
-tested on both Apple Silicon and Intel macOS runners. There are no intentional
+tested on both Apple Silicon and Intel macOS workers. There are no intentional
 macOS feature gaps.
 
 Windows is not supported. The launcher and worker lifecycle depend on Unix
@@ -73,7 +73,7 @@ runtimes = ["pi", "codex", "claude-code"]
 max_concurrent = 10
 ```
 
-One Runner is a pool for its configured coding agent runtimes. Each slot runs
+One Worker is a pool for its configured coding agent runtimes. Each slot runs
 an independent Pi, Codex, or Claude Code session with its own worktree and
 process group. Preparing an attempt also consumes a slot. Choose a lower value
 when local CPU, memory, or provider limits require it.
@@ -81,7 +81,7 @@ when local CPU, memory, or provider limits require it.
 The optional legacy `runtime` field is the default for older clients that do
 not select a runtime. Existing single-runtime files continue to work without a
 `runtimes` field. New configurations can list several runtimes. Factory reports
-each one as ready, missing, unauthenticated, or unhealthy, and the Runner stays
+each one as ready, missing, unauthenticated, or unhealthy, and the Worker stays
 available while Git and at least one configured runtime are ready.
 
 Factory migrates existing SQLite databases to the expanded worker capacity
@@ -105,7 +105,7 @@ base_branch = "release/2026.07"
 
 To run only one coding agent, keep the existing single-runtime form, such as
 `runtime = "claude-code"`. Set `data_directory` only when an explicit relative
-or absolute override is needed; never share one data directory between Runner
+or absolute override is needed; never share one data directory between Worker
 identities.
 
 ## Start
@@ -138,14 +138,14 @@ is already frozen. Posting a repository first discovered from a legacy worker
 promotes it into the enabled central fleet. Reposting a centrally managed
 repository does not override an explicit disable.
 
-To start with a different Runner config:
+To start with a different Worker config:
 
 ```sh
 just run ~/.factory/claude-worker.toml
 ```
 
-To run more than one Runner, start the control plane once and then start each
-additional Runner directly:
+To run more than one Worker, start the control plane once and then start each
+additional Worker directly:
 
 ```sh
 ~/.factory/bin/factory-worker \

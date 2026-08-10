@@ -9,7 +9,7 @@ records why the Run was admitted.
 
 1. Create a Definition with the prompt, runtime, tools, timeout, and optional
    inputs the team wants to share.
-2. Add the target repositories and make sure at least one local or remote Runner
+2. Add the target repositories and make sure at least one local or remote Worker
    can access them.
 3. Open **Automations**, choose **Schedule**, select the Definition and target
    repositories, then choose a frequency, local time, and IANA timezone.
@@ -50,4 +50,4 @@ retryable.
 Schedules are evaluated by the Factory control plane. Agents perform repository
 and GitHub work with their installed tools. Factory does not contain a second
 deterministic GitHub action layer. GitHub webhook triggers are a later trigger
-type and Kubernetes Runners are outside the current local and remote-VM scope.
+type and Kubernetes Workers are outside the current local and remote-VM scope.

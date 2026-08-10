@@ -642,7 +642,7 @@ printf 'provider model\nopenai-codex gpt-5.3-codex\n'
 		t.Fatal(err)
 	}
 	if detail.Execution.State != "queued" || len(detail.Attempts) != 0 {
-		t.Fatalf("Runner claimed while health probe was pending: state=%s attempts=%d",
+		t.Fatalf("Worker claimed while health probe was pending: state=%s attempts=%d",
 			detail.Execution.State, len(detail.Attempts))
 	}
 	if err := os.WriteFile(probeReleasePath, []byte("released\n"), 0o600); err != nil {
@@ -728,7 +728,7 @@ func TestCapacityHandoffHeartbeatRecoversAfterTransientFailure(t *testing.T) {
 	registeredAfterFailure := manager.registered
 	manager.stateMutex.Unlock()
 	if registeredAfterFailure {
-		t.Fatal("failed heartbeat left Runner claimable")
+		t.Fatal("failed heartbeat left Worker claimable")
 	}
 	time.Sleep(2 * time.Millisecond)
 	manager.register(context.Background())

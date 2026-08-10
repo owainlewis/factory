@@ -113,7 +113,7 @@ export function DelegateModal({
     if (!title) nextErrors.title = "Enter a task title.";
     else if (Array.from(title).length > 200) nextErrors.title = "Keep the title to 200 characters.";
     if (!context.trim()) nextErrors.description = "Enter task context.";
-    if (!workerID) nextErrors.worker = "Choose a Runner.";
+    if (!workerID) nextErrors.worker = "Choose a Worker.";
     if (!selectedRuntime) nextErrors.runtime = "Choose a ready coding agent.";
     if (!repositoryID) nextErrors.repository = "Choose a repository.";
     else if (!repository) nextErrors.repository = "Choose an available repository.";
@@ -200,11 +200,11 @@ export function DelegateModal({
                   : `This becomes the ${selectedRuntime ? runtimeLabel(selectedRuntime) : "selected coding agent"} prompt.`
                 : workflowRevisionID
                   ? "Factory combines this with the selected runbook."
-                  : "This becomes the selected Runner prompt."}
+                  : "This becomes the selected Worker prompt."}
             >
               <textarea id={descriptionID} name="description" rows={6} aria-invalid={Boolean(errors.description)} placeholder="Describe the outcome, constraints, and checks…" />
             </Field>
-            <Field label="Runner" htmlFor="delegate-worker" error={errors.worker}>
+            <Field label="Worker" htmlFor="delegate-worker" error={errors.worker}>
               <select
                 id="delegate-worker"
                 value={workerID}
@@ -216,7 +216,7 @@ export function DelegateModal({
                 }}
                 disabled={workersPending || workers.length === 0}
               >
-                <option value="">{workersPending ? "Loading Runners…" : workers.length ? "Choose a Runner" : "No Runners registered"}</option>
+                <option value="">{workersPending ? "Loading Workers…" : workers.length ? "Choose a Worker" : "No Workers registered"}</option>
                 {workers.map((worker) => (
                   <option key={worker.id} value={worker.id}>
                     {worker.name} · {(worker.capabilities ?? [])
@@ -233,19 +233,19 @@ export function DelegateModal({
                 onChange={(event) => setRuntime(event.target.value as Runtime)}
                 disabled={!selectedWorker || availableRuntimes.length === 0}
               >
-                <option value="">{selectedWorker ? "Choose a coding agent" : "Choose a Runner first"}</option>
+                <option value="">{selectedWorker ? "Choose a coding agent" : "Choose a Worker first"}</option>
                 {availableRuntimes.map((value) => <option key={value} value={value}>{runtimeLabel(value)}</option>)}
               </select>
             </Field>
             {selectedWorker && !selectedWorker.online && (
-              <div className="warning-banner compact"><AlertCircle size={16} /> This Runner is offline. The task will queue until it returns.</div>
+              <div className="warning-banner compact"><AlertCircle size={16} /> This Worker is offline. The task will queue until it returns.</div>
             )}
             {selectedWorker?.health === "unhealthy" && (
-              <div className="warning-banner compact"><AlertCircle size={16} /> This Runner is unhealthy and will not claim work until it recovers.</div>
+              <div className="warning-banner compact"><AlertCircle size={16} /> This Worker is unhealthy and will not claim work until it recovers.</div>
             )}
             <Field label="Repository" htmlFor="delegate-repository" error={errors.repository}>
               <select id="delegate-repository" value={repositoryID} onChange={(event) => setRepositoryID(event.target.value)} disabled={!workerID || repositoryOptions.isPending}>
-                <option value="">{workerID ? repositoryOptions.isPending ? "Loading repositories…" : repositoryOptions.data?.length ? "Choose a repository" : "No repositories configured" : "Choose a Runner first"}</option>
+                <option value="">{workerID ? repositoryOptions.isPending ? "Loading repositories…" : repositoryOptions.data?.length ? "Choose a repository" : "No repositories configured" : "Choose a Worker first"}</option>
                 {(repositoryOptions.data ?? []).map((repository) => (
                   <option
                     key={repository.id}

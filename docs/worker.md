@@ -1,6 +1,6 @@
 # Worker contract
 
-A Factory Runner is one stable identity, a set of coding-agent capabilities,
+A Factory Worker is one stable identity, a set of coding-agent capabilities,
 and a pool of independent agent sessions. Its capacity limit controls the number of sessions that may
 prepare or run at once. It can run on a developer machine, VM, or Unix
 container. Workers are cattle: the control plane owns repository scope, and an
@@ -22,7 +22,7 @@ environment = "development"
 host = "laptop"
 ```
 
-`runtimes` lists the coding agents the Runner should discover. Supported values
+`runtimes` lists the coding agents the Worker should discover. Supported values
 are `pi`, `codex`, and `claude-code`. `runtime` remains the primary capability
 and preserves compatibility with existing single-runtime configurations. Each
 task selects one ready capability and launches a fresh runtime process with its
@@ -205,12 +205,12 @@ path.
 
 ## Deployment model
 
-The default control plane accepts loopback Runners only. On one host, run the
-server and one or more Runners as supervised Unix services.
+The default control plane accepts loopback Workers only. On one host, run the
+server and one or more Workers as supervised Unix services.
 
-An optional, separate HTTPS listener accepts authenticated Runners on remote
-VMs. A ten-minute, one-time enrollment creates a per-Runner credential, while
+An optional, separate HTTPS listener accepts authenticated Workers on remote
+VMs. A ten-minute, one-time enrollment creates a per-Worker credential, while
 the browser and operator API remain on loopback. See the [remote VM
-guide](remote-runners.md).
+guide](remote-workers.md).
 
-Kubernetes Runner provisioning is not part of the current product.
+Kubernetes Worker provisioning is not part of the current product.

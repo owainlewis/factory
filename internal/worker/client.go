@@ -43,7 +43,7 @@ type client struct {
 	credential string
 }
 
-type storedRunnerCredential struct {
+type storedWorkerCredential struct {
 	Server     string `json:"server"`
 	Credential string `json:"credential"`
 }
@@ -67,17 +67,17 @@ func (client *client) enroll(ctx context.Context, workerID, enrollmentToken, cre
 	if client.credential != "" {
 		err := os.Remove(pendingPath)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove stale pending Runner credential: %w", err)
+			return fmt.Errorf("remove stale pending Worker credential: %w", err)
 		}
 		if err == nil {
 			if err := syncDirectory(filepath.Dir(pendingPath)); err != nil {
-				return fmt.Errorf("sync Runner credential directory: %w", err)
+				return fmt.Errorf("sync Worker credential directory: %w", err)
 			}
 		}
 		return nil
 	}
 	if enrollmentToken == "" {
-		return errors.New("remote Runner requires enrollment_token until its credential has been saved")
+		return errors.New("remote Worker requires enrollment_token until its credential has been saved")
 	}
 	credential, err := loadCredentialFile(pendingPath, client.baseURL)
 	if err != nil {
@@ -86,20 +86,20 @@ func (client *client) enroll(ctx context.Context, workerID, enrollmentToken, cre
 	if credential == "" {
 		body := make([]byte, 32)
 		if _, err := rand.Read(body); err != nil {
-			return fmt.Errorf("generate Runner credential: %w", err)
+			return fmt.Errorf("generate Worker credential: %w", err)
 		}
-		credential = "factory_runner_" + base64.RawURLEncoding.EncodeToString(body)
+		credential = "factory_worker_" + base64.RawURLEncoding.EncodeToString(body)
 		if err := writeCredentialFile(pendingPath, client.baseURL, credential); err != nil {
 			return err
 		}
 	}
-	var response protocol.RunnerCredential
-	_, err = client.requestWithoutCredential(ctx, http.MethodPost, "/api/v1/runner-enrollments/exchange",
-		protocol.ExchangeRunnerEnrollmentRequest{
+	var response protocol.WorkerCredential
+	_, err = client.requestWithoutCredential(ctx, http.MethodPost, "/api/v1/worker-enrollments/exchange",
+		protocol.ExchangeWorkerEnrollmentRequest{
 			WorkerID: workerID, EnrollmentToken: enrollmentToken, Credential: credential,
 		}, &response)
 	if err != nil {
-		wrapped := fmt.Errorf("enroll remote Runner: %w", err)
+		wrapped := fmt.Errorf("enroll remote Worker: %w", err)
 		var apiError *APIError
 		var transportError requestTransportError
 		if errors.As(err, &transportError) || (errors.As(err, &apiError) && apiError.Status >= 500) {
@@ -108,17 +108,17 @@ func (client *client) enroll(ctx context.Context, workerID, enrollmentToken, cre
 		return wrapped
 	}
 	if response.Credential != credential {
-		return errors.New("enroll remote Runner: server returned an invalid credential")
+		return errors.New("enroll remote Worker: server returned an invalid credential")
 	}
 	if err := writeCredentialFile(credentialPath, client.baseURL, credential); err != nil {
 		return err
 	}
 	client.credential = credential
 	if err := os.Remove(pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove pending Runner credential: %w", err)
+		return fmt.Errorf("remove pending Worker credential: %w", err)
 	}
 	if err := syncDirectory(filepath.Dir(pendingPath)); err != nil {
-		return fmt.Errorf("sync Runner credential directory: %w", err)
+		return fmt.Errorf("sync Worker credential directory: %w", err)
 	}
 	return nil
 }
@@ -129,45 +129,87 @@ func loadCredentialFile(path, server string) (string, error) {
 		return "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("inspect Runner credential: %w", err)
+		return "", fmt.Errorf("inspect Worker credential: %w", err)
 	}
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 {
-		return "", errors.New("Runner credential must be a regular non-symlink file readable only by its owner")
+		return "", errors.New("Worker credential must be a regular non-symlink file readable only by its owner")
 	}
 	body, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("read Runner credential: %w", err)
+		return "", fmt.Errorf("read Worker credential: %w", err)
 	}
-	var stored storedRunnerCredential
+	var stored storedWorkerCredential
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&stored); err != nil {
-		return "", errors.New("Runner credential is invalid")
+		return "", errors.New("Worker credential is invalid")
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return "", errors.New("Runner credential is invalid")
+		return "", errors.New("Worker credential is invalid")
 	}
 	if stored.Server != strings.TrimRight(server, "/") {
-		return "", errors.New("Runner credential belongs to a different Factory server; remove runner-credential and enroll this identity explicitly")
+		return "", errors.New("Worker credential belongs to a different Factory server; remove worker-credential and enroll this identity explicitly")
 	}
 	credential := strings.TrimSpace(stored.Credential)
 	if credential == "" || len(credential) > 1024 || credential != stored.Credential {
-		return "", errors.New("Runner credential is invalid")
+		return "", errors.New("Worker credential is invalid")
 	}
 	return credential, nil
+}
+
+func adoptLegacyWorkerCredentialFiles(directory, server string) error {
+	for _, name := range []string{"", ".pending"} {
+		legacyPath := filepath.Join(directory, "runner-credential"+name)
+		workerPath := filepath.Join(directory, "worker-credential"+name)
+		if err := adoptLegacyWorkerCredentialFile(legacyPath, workerPath, server); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func adoptLegacyWorkerCredentialFile(legacyPath, workerPath, server string) error {
+	if _, err := os.Lstat(workerPath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect Worker credential destination: %w", err)
+	}
+	credential, err := loadCredentialFile(legacyPath, server)
+	if err != nil {
+		return fmt.Errorf("validate legacy Worker credential: %w", err)
+	}
+	if credential == "" {
+		return nil
+	}
+	if err := os.Link(legacyPath, workerPath); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil
+		}
+		return fmt.Errorf("adopt legacy Worker credential: %w", err)
+	}
+	if err := syncDirectory(filepath.Dir(workerPath)); err != nil {
+		return fmt.Errorf("sync adopted Worker credential: %w", err)
+	}
+	if err := os.Remove(legacyPath); err != nil {
+		return fmt.Errorf("remove legacy Worker credential: %w", err)
+	}
+	if err := syncDirectory(filepath.Dir(workerPath)); err != nil {
+		return fmt.Errorf("sync Worker credential directory: %w", err)
+	}
+	return nil
 }
 
 func writeCredentialFile(path, server, credential string) error {
 	directory := filepath.Dir(path)
 	file, err := os.CreateTemp(directory, "."+filepath.Base(path)+".tmp-")
 	if err != nil {
-		return fmt.Errorf("create temporary Runner credential: %w", err)
+		return fmt.Errorf("create temporary Worker credential: %w", err)
 	}
 	temporaryPath := file.Name()
 	defer func() { _ = os.Remove(temporaryPath) }()
 	writeErr := error(nil)
-	if err := json.NewEncoder(file).Encode(storedRunnerCredential{
+	if err := json.NewEncoder(file).Encode(storedWorkerCredential{
 		Server: strings.TrimRight(server, "/"), Credential: credential,
 	}); err != nil {
 		writeErr = err
@@ -178,16 +220,16 @@ func writeCredentialFile(path, server, credential string) error {
 		writeErr = err
 	}
 	if writeErr != nil {
-		return fmt.Errorf("write Runner credential: %w", writeErr)
+		return fmt.Errorf("write Worker credential: %w", writeErr)
 	}
 	if err := os.Link(temporaryPath, path); err != nil {
-		return fmt.Errorf("install Runner credential: %w", err)
+		return fmt.Errorf("install Worker credential: %w", err)
 	}
 	if err := os.Remove(temporaryPath); err != nil {
-		return fmt.Errorf("remove temporary Runner credential: %w", err)
+		return fmt.Errorf("remove temporary Worker credential: %w", err)
 	}
 	if err := syncDirectory(directory); err != nil {
-		return fmt.Errorf("sync Runner credential directory: %w", err)
+		return fmt.Errorf("sync Worker credential directory: %w", err)
 	}
 	return nil
 }

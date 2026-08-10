@@ -5,30 +5,30 @@
 ## 1. Executive summary
 
 Factory is an orchestration system for software-engineering agents. A user
-configures a Runner, adds Git repositories, saves a prompt as a Definition, and
+configures a Worker, adds Git repositories, saves a prompt as a Definition, and
 runs that Definition against one or many repositories. Factory starts the
 agents, tracks their lifecycle, and reports the outcome.
 
 The current product has separate Workflow, revision, Automation, Occurrence,
 Task, Execution, Attempt, and worker concepts. The target product has five
-concepts: **Definition**, **Trigger**, **Run**, **Job**, and **Runner**.
+concepts: **Definition**, **Trigger**, **Run**, **Job**, and **Worker**.
 
 V1 is local-first. It supports manual and scheduled Runs on local agent
-Runners, repository fan-out, and operational metrics. Pi, Codex, and Claude
-Code are initial runtime examples. Remote VM Runners are the next scaling step.
-GitHub webhook Triggers follow later. Kubernetes is a possible future Runner
+Workers, repository fan-out, and operational metrics. Pi, Codex, and Claude
+Code are initial runtime examples. Remote VM Workers are the next scaling step.
+GitHub webhook Triggers follow later. Kubernetes is a possible future Worker
 target, but it is not on the active roadmap.
 
 The built-in SQLite orchestration path remains the first-class V1 backend. A
 later production deployment may select Temporal or a similar durable workflow
-engine behind the same product model. Definitions and the Runner-facing product
+engine behind the same product model. Definitions and the Worker-facing product
 contract must not depend on that choice. The architecture decision, history
 migration, and same-Definition prototype remain tracked in
 [#259](https://github.com/owainlewis/factory/issues/259); they are not part of
 this V1 implementation.
 
 The main tradeoff is trust. The agent uses the tools and credentials available
-on its Runner, including authenticated `gh`. Factory does not intermediate
+on its Worker, including authenticated `gh`. Factory does not intermediate
 comments, branches, issues, or pull requests and cannot promise exactly-once
 external side effects.
 
@@ -37,7 +37,7 @@ external side effects.
 The current [architecture](../../ARCHITECTURE.md) already has useful execution
 machinery: durable tasks, isolated worktrees, leases, events, cancellation,
 cleanup, runtime supervision, and a repository catalog. It also already lets an
-agent use authenticated `gh` from the Runner host.
+agent use authenticated `gh` from the Worker host.
 
 The problem is the product model. A user who wants to run one prompt must
 understand Workflows, revisions, Tasks, and workers. Scheduled work adds
@@ -45,7 +45,7 @@ Automations and Occurrences. Running the same prompt across five repositories
 is not one visible operation.
 
 This revision keeps the reliable execution machinery and simplifies the
-operator experience. It covers the V1 journey and the boundaries later Runner
+operator experience. It covers the V1 journey and the boundaries later Worker
 and Trigger types must preserve. It does not design a generic automation
 platform or a deterministic GitHub action gateway.
 
@@ -58,7 +58,7 @@ flowchart LR
     D --> R
     R --> J1["Job: repository A"]
     R --> J2["Job: repository B"]
-    J1 --> RN["Runner"]
+    J1 --> RN["Worker"]
     J2 --> RN
     RN --> A["Pi, Codex, Claude Code, or another coding agent"]
     A --> G["Git and GitHub CLI"]
@@ -66,8 +66,8 @@ flowchart LR
     J2 --> M
 ```
 
-Factory owns Definitions, Triggers, Runs, Jobs, Runner coordination, repository
-targets, lifecycle events, results, and metrics. The Runner owns the execution
+Factory owns Definitions, Triggers, Runs, Jobs, Worker coordination, repository
+targets, lifecycle events, results, and metrics. The Worker owns the execution
 environment, worktree, agent process, and available tools. The agent owns the
 engineering work it performs with those tools. GitHub remains the source of
 issues, pull requests, reviews, and repository state.
@@ -76,17 +76,17 @@ issues, pull requests, reviews, and repository state.
 
 ### V1 user journey
 
-#### Configure a local Runner
+#### Configure a local Worker
 
-As an operator, I want to connect a local agent Runner so Factory can run Pi,
+As an operator, I want to connect a local agent Worker so Factory can run Pi,
 Codex, Claude Code, or another supported coding agent on my machine.
 
-One local launcher command starts the control plane and a local Runner process.
-On first start, the Runner creates a durable random identity at
-`~/.factory/runner/id`, then registers with the control plane. Restarting the
+One local launcher command starts the control plane and a local Worker process.
+On first start, the Worker creates a durable random identity at
+`~/.factory/worker/id`, then registers with the control plane. Restarting the
 launcher reuses that identity.
 
-The Runner performs bounded, non-interactive health checks for Git,
+The Worker performs bounded, non-interactive health checks for Git,
 authenticated `gh`, and installed agent runtimes such as Pi, Codex, and Claude
 Code. The setup screen shows each capability as ready, missing,
 unauthenticated, or unhealthy. One host may advertise several runtimes. A
@@ -99,7 +99,7 @@ third-party CLIs for the user.
 As an operator, I want to add the GitHub repositories my team works on so I can
 choose where a Definition runs.
 
-Factory stores canonical repository identities and enabled state. Runners
+Factory stores canonical repository identities and enabled state. Workers
 acquire a configured repository on demand and never clone a URL supplied by a
 prompt or webhook payload.
 
@@ -140,8 +140,8 @@ how long work takes so I can understand the factory rather than inspect process
 logs.
 
 V1 reports queued and running Jobs, success and failure counts, queue time,
-cycle time, throughput, and Runner health. Metrics can be filtered by
-Definition, repository, Runner, and time window.
+cycle time, throughput, and Worker health. Metrics can be filtered by
+Definition, repository, Worker, and time window.
 
 Queue time runs from `admitted_at` to `started_at`. Cycle time runs from
 `admitted_at` to `terminal_at`. Throughput is the number of Jobs with a
@@ -160,25 +160,25 @@ issues or pull requests as instructed.
 
 ### Later user journeys
 
-An operator can add a Runner on a remote VM without changing a Definition. This
+An operator can add a Worker on a remote VM without changing a Definition. This
 is the first scaling path beyond the local machine. A later GitHub webhook
 Trigger creates a Run when an issue or pull request event arrives,
 such as running a shared `Review pull request` Definition when a pull request is
 opened.
 
-Kubernetes and other execution targets may be added through the same Runner
+Kubernetes and other execution targets may be added through the same Worker
 contract later. They are not active roadmap milestones.
 
 These paths must create the same Run and Job records. They are not different
 automation products.
 
-After the local and VM Runner experience is stable, a production-scale
+After the local and VM Worker experience is stable, a production-scale
 orchestration backend may move durable timers, retries, cancellation, fan-out,
 and recovery to Temporal. Factory remains the product and API boundary. The
 selected backend is an operational choice, not a Definition authoring choice.
-The detailed design must decide whether Runners continue to use Factory's
+The detailed design must decide whether Workers continue to use Factory's
 lifecycle API or consume backend task queues directly while preserving
-outbound-only connections and the existing trust model. Internal Runner
+outbound-only connections and the existing trust model. Internal Worker
 transport and configuration may vary, but identity, capability, capacity,
 lifecycle, and trust semantics remain stable.
 
@@ -189,8 +189,8 @@ directly by a developer. Factory does not define typed comment, branch, issue,
 or pull-request actions. It does not publish patches or reconcile provider
 side effects.
 
-For a trusted local or VM Runner, the agent uses the Runner user's authenticated
-`gh`. A later managed Runner profile may inject a short-lived,
+For a trusted local or VM Worker, the agent uses the Worker user's authenticated
+`gh`. A later managed Worker profile may inject a short-lived,
 repository-scoped `GH_TOKEN` for the Job. The token disappears when the agent
 process ends.
 
@@ -206,7 +206,7 @@ The control plane owns saved configuration, admission, target snapshots,
 scheduling, leases, results, and metrics. It never runs an agent process and
 does not interpret prompt output as commands.
 
-The Runner owns runtime discovery, repository preparation, process supervision,
+The Worker owns runtime discovery, repository preparation, process supervision,
 events, cancellation, and cleanup. It does not decide which repositories a Run
 targets.
 
@@ -215,14 +215,14 @@ not reproduce tools already available to Pi, Codex, Claude Code, or another
 configured coding agent.
 
 The browser and future CLI use the same API. The primary navigation is
-Overview, Definitions, Runs, Repositories, and Runners. A Job is viewed inside
+Overview, Definitions, Runs, Repositories, and Workers. A Job is viewed inside
 its Run. Triggers are configured on a Definition.
 
 ### Decisions
 
 #### Five product concepts
 
-Definition, Trigger, Run, Job, and Runner are sufficient. Attempt remains Job
+Definition, Trigger, Run, Job, and Worker are sufficient. Attempt remains Job
 history, Repository remains configured infrastructure, and GitHub connection
 details remain settings. We reject separate Runbook, Workflow revision,
 Automation, Occurrence, and Provider Action product resources.
@@ -239,7 +239,7 @@ records. A Trigger decides when to admit work. It does not execute an agent.
 
 #### Agents use their tools
 
-The Runner gives the agent a prepared repository and its configured tools.
+The Worker gives the agent a prepared repository and its configured tools.
 Factory does not become a GitHub client on behalf of the agent. This preserves
 the capability of the underlying agent and avoids a second action language.
 
@@ -269,7 +269,7 @@ runs one unchanged Definition on both backends.
 4. Editing a Definition or Trigger never changes an existing Run.
 5. Replaying one admission identity creates no duplicate Run or Job.
 6. One active Attempt lease owns one agent process.
-7. Runner loss cannot erase Job history or a retained recovery artifact.
+7. Worker loss cannot erase Job history or a retained recovery artifact.
 8. One large Run cannot prevent an unrelated compatible Run from progressing.
 9. Factory never claims exactly-once external effects performed by an agent.
 
@@ -284,7 +284,7 @@ runs one unchanged Definition on both backends.
   warned retry.
 - Retrying any Job after its agent started warns that external effects may
   already have happened.
-- A Job waiting for a compatible Runner stays visible as blocked.
+- A Job waiting for a compatible Worker stays visible as blocked.
 - Dashboard aggregates never hide the underlying Jobs.
 
 ## 6. Interfaces and data
@@ -294,20 +294,20 @@ runs one unchanged Definition on both backends.
 | Definition | name, prompt, runtime and tool requirements, timeout, defaults, generation |
 | Trigger | Definition, kind, enabled state, schedule or later event rule, target repositories, context, timeout override |
 | Run | source identity, Definition snapshot, parameters, frozen target set, aggregate state |
-| Job | Run, repository, ref or work item, Runner requirement, state, timestamps, result, metrics |
-| Runner | stable identity, runtime and tool capabilities, capacity, health |
+| Job | Run, repository, ref or work item, Worker requirement, state, timestamps, result, metrics |
+| Worker | stable identity, runtime and tool capabilities, capacity, health |
 
 Attempt records remain behind Job and store leases, process identity, events,
 timestamps, outcomes, and recovery state.
 
-The control plane owns Job state. A Runner reports preparation, process start,
+The control plane owns Job state. A Worker reports preparation, process start,
 events, and completion under its Attempt lease; the control plane validates the
 lease before applying a transition.
 
 - `pending`: admitted but held by the Run concurrency limit.
-- `blocked`: no healthy Runner satisfies the runtime, tools, or repository.
-- `queued`: eligible for a compatible Runner to claim.
-- `preparing`: claimed while the Runner prepares the repository and process.
+- `blocked`: no healthy Worker satisfies the runtime, tools, or repository.
+- `queued`: eligible for a compatible Worker to claim.
+- `preparing`: claimed while the Worker prepares the repository and process.
 - `running`: the agent process has started.
 - `succeeded`, `failed`, `cancelled`, and `skipped`: terminal outcomes.
 
@@ -319,18 +319,18 @@ if any Job failed, `cancelled` if none failed and any Job was cancelled, and
 otherwise `succeeded`. Per-state Job counts remain visible for mixed outcomes.
 
 Every Job stores `admitted_at`, optional `started_at`, and `terminal_at` when it
-finishes. A Runner is online when its last valid registration is no more than 30
+finishes. A Worker is online when its last valid registration is no more than 30
 seconds old. It is degraded when online but none of its enabled runtimes is
 healthy, and offline after 30 seconds without registration.
 
-IDs are random UUIDs. A Runner ID persists on its host. A manual or API Run uses
+IDs are random UUIDs. A Worker ID persists on its host. A manual or API Run uses
 a caller request key. A scheduled Run uses `(Trigger ID, scheduled UTC instant)`.
 A later webhook Run uses `(Trigger ID, delivery ID)`.
 
 Existing Workflow current content maps to Definition prompt. A Workflow revision
 maps to the snapshot already stored on historical work. Automation schedule
 configuration maps to a Trigger. The Task execution contract informs the new Job
-contract, and worker maps to Runner.
+contract, and worker maps to Worker.
 
 Historical Tasks, Executions, Attempts, events, and linked Occurrences remain in
 a clearly labelled read-only **Legacy history** view. Their existing URLs and
@@ -342,8 +342,8 @@ project them as Jobs because they never belonged to a Run.
 Run admission stores the Definition snapshot, complete target set, and Jobs in
 one transaction. A selector failure stores nothing.
 
-If no compatible Runner is online, the Job remains blocked with a reason. If a
-Runner disappears before its agent process starts, its lease expires and the
+If no compatible Worker is online, the Job remains blocked with a reason. If a
+Worker disappears before its agent process starts, its lease expires and the
 Job may follow its bounded infrastructure retry policy. Loss after process
 start fails the Attempt and requires an explicit warned retry because the agent
 may already have changed GitHub. Cancelling a Run cancels undispatched Jobs and
@@ -382,31 +382,31 @@ prompt as a security boundary.
 Factory instance. V1 has no user identity, remote browser access, or per-user
 authorization. Authenticated team access requires a later design.
 
-Remote VM Runners use a separate TLS listener containing only enrollment and
-the Runner lifecycle. A ten-minute, one-time token bound to the stable Runner
-identity creates a per-Runner credential. Agent and provider credentials remain
-host-managed trusted inputs. Future Runner targets must preserve these
+Remote VM Workers use a separate TLS listener containing only enrollment and
+the Worker lifecycle. A ten-minute, one-time token bound to the stable Worker
+identity creates a per-Worker credential. Agent and provider credentials remain
+host-managed trusted inputs. Future Worker targets must preserve these
 boundaries.
 
 A later public webhook listener exposes only signed, bounded delivery routes.
 Webhook payloads and repository content are untrusted agent context and cannot
-choose clone URLs, Runner credentials, or Definition instructions.
+choose clone URLs, Worker credentials, or Definition instructions.
 
-Each Runner advertises hard capacity. Runs have target, concurrency, timeout,
+Each Worker advertises hard capacity. Runs have target, concurrency, timeout,
 event, output, and retained-work limits. Reaching a limit produces a visible
 blocked or failed Job rather than silently dropping work.
 
 ## 9. Acceptance criteria
 
-- A new user can configure a local Pi, Codex, or Claude Code Runner and run a
+- A new user can configure a local Pi, Codex, or Claude Code Worker and run a
   prompt against one repository.
-- One launcher command starts the local instance, reuses its Runner identity,
+- One launcher command starts the local instance, reuses its Worker identity,
   and reports Git, `gh`, and each configured agent runtime separately.
 - A team can save and reuse one Definition without selecting revisions.
 - One manual Run can execute the same Definition against five repositories and
   show independent Job outcomes.
 - The dashboard reports failures, success rate, queue time, cycle time,
-  throughput, active Jobs, and Runner health.
+  throughput, active Jobs, and Worker health.
 - A schedule creates the same Run and Jobs as manual **Run once**.
 - An agent can use authenticated `gh` to comment, create an issue, push a branch,
   or open a pull request without Factory publishing the action.
@@ -417,7 +417,7 @@ blocked or failed Job rather than silently dropping work.
   Legacy history without synthetic Runs or Jobs.
 - Migration preserves every schedule Automation field and requires an explicit
   retirement decision for each unsupported GitHub polling Automation.
-- Definitions run unchanged on local and remote VM Runners and when webhook
+- Definitions run unchanged on local and remote VM Workers and when webhook
   support is added later.
 
 ## 10. Test approach
@@ -425,15 +425,15 @@ blocked or failed Job rather than silently dropping work.
 Store and API tests prove Definition snapshots, atomic target creation,
 idempotent admission, aggregate state, cancellation, retry, and bounded
 pagination. State tests prove every Job transition, derived Run state, timestamp,
-metric denominator, and 30-second Runner health boundary. Scheduler tests prove
+metric denominator, and 30-second Worker health boundary. Scheduler tests prove
 capacity, blocked routing, per-Run concurrency, and fair progress.
 
-Runner integration tests use fake Pi, Codex, Claude Code, and `gh` executables
+Worker integration tests use fake Pi, Codex, Claude Code, and `gh` executables
 to prove first-run identity creation, restart reuse, discovery, authentication
 health, process cleanup, result capture, and stable Factory environment IDs. No
 test uses live provider credentials.
 
-Browser tests cover the complete V1 journey: configure a Runner, add
+Browser tests cover the complete V1 journey: configure a Worker, add
 repositories, save a Definition, run one repository, run five repositories,
 inspect mixed outcomes and metrics, retry one Job, and create a schedule.
 
@@ -450,15 +450,15 @@ and an Occurrence-linked Task through their preserved URLs and Legacy history.
   risk visible without building a second execution engine.
 - A 500-repository Run can consume the fleet. Per-Run concurrency and fair
   scheduling bound its effect.
-- Shared host credentials are broad. V1 labels local Runners as trusted, while
-  later managed Runners use narrower temporary credentials.
+- Shared host credentials are broad. V1 labels local Workers as trusted, while
+  later managed Workers use narrower temporary credentials.
 - The compatibility window exposes old and new names. Keep it short and make
   all new creation use the target model.
 
 ## 12. Open questions
 
 No question blocks V1. Remote credentials and public webhook deployment require
-focused designs before those later milestones start. Any future Runner target,
+focused designs before those later milestones start. Any future Worker target,
 including Kubernetes, requires its own accepted design before implementation.
 The optional production orchestration backend is deliberately unresolved until
 [#259](https://github.com/owainlewis/factory/issues/259) defines ownership,

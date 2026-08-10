@@ -52,9 +52,9 @@ func run() (returnErr error) {
 	}
 	listen := flag.String("listen", defaultListen, "loopback HTTP listen address")
 	database := flag.String("database", selectedDatabase, "Factory SQLite database path")
-	runnerListen := flag.String("runner-listen", bootstrap.RunnerListen, "optional remote Runner HTTPS listen address")
-	runnerTLSCert := flag.String("runner-tls-cert", bootstrap.RunnerTLSCert, "remote Runner TLS certificate path")
-	runnerTLSKey := flag.String("runner-tls-key", bootstrap.RunnerTLSKey, "remote Runner TLS private key path")
+	workerListen := flag.String("worker-listen", bootstrap.WorkerListen, "optional remote Worker HTTPS listen address")
+	workerTLSCert := flag.String("worker-tls-cert", bootstrap.WorkerTLSCert, "remote Worker TLS certificate path")
+	workerTLSKey := flag.String("worker-tls-key", bootstrap.WorkerTLSKey, "remote Worker TLS private key path")
 	webhookListen := flag.String("webhook-listen", bootstrap.WebhookListen, "optional GitHub webhook HTTPS listen address")
 	webhookTLSCert := flag.String("webhook-tls-cert", bootstrap.WebhookTLSCert, "GitHub webhook TLS certificate path")
 	webhookTLSKey := flag.String("webhook-tls-key", bootstrap.WebhookTLSKey, "GitHub webhook TLS private key path")
@@ -63,7 +63,7 @@ func run() (returnErr error) {
 	restore := flag.String("restore", "", "restore a validated backup into the selected fresh database and exit")
 	printListen := flag.Bool("print-listen", false, "print the resolved listen address and exit")
 	flag.Parse()
-	if err := validateRunnerTLSConfig(*runnerListen, *runnerTLSCert, *runnerTLSKey); err != nil {
+	if err := validateWorkerTLSConfig(*workerListen, *workerTLSCert, *workerTLSKey); err != nil {
 		return err
 	}
 	if err := validateWebhookTLSConfig(*webhookListen, *webhookTLSCert, *webhookTLSKey, *githubWebhookSecretFile); err != nil {
@@ -203,17 +203,17 @@ func run() (returnErr error) {
 		)
 		serverErrors <- server.Serve(listener)
 	}()
-	var runnerServer *http.Server
-	if *runnerListen != "" {
-		runnerListener, err := net.Listen("tcp", *runnerListen)
+	var workerServer *http.Server
+	if *workerListen != "" {
+		workerListener, err := net.Listen("tcp", *workerListen)
 		if err != nil {
-			return fmt.Errorf("listen for remote Runners: %w", err)
+			return fmt.Errorf("listen for remote Workers: %w", err)
 		}
-		runnerServer = controlplane.NewHTTPServer(*runnerListen, controlplane.NewRemoteRunnerHandler(store, logger))
+		workerServer = controlplane.NewHTTPServer(*workerListen, controlplane.NewRemoteWorkerHandler(store, logger))
 		serverCount++
 		go func() {
-			logger.Info("runner_server_started", "address", runnerListener.Addr().String())
-			serverErrors <- runnerServer.ServeTLS(runnerListener, *runnerTLSCert, *runnerTLSKey)
+			logger.Info("worker_server_started", "address", workerListener.Addr().String())
+			serverErrors <- workerServer.ServeTLS(workerListener, *workerTLSCert, *workerTLSKey)
 		}()
 	}
 	var webhookServer *http.Server
@@ -249,9 +249,9 @@ func run() (returnErr error) {
 	if err := server.Shutdown(shutdown); err != nil && serveErr == nil {
 		serveErr = fmt.Errorf("shut down HTTP server: %w", err)
 	}
-	if runnerServer != nil {
-		if err := runnerServer.Shutdown(shutdown); err != nil && serveErr == nil {
-			serveErr = fmt.Errorf("shut down remote Runner server: %w", err)
+	if workerServer != nil {
+		if err := workerServer.Shutdown(shutdown); err != nil && serveErr == nil {
+			serveErr = fmt.Errorf("shut down remote Worker server: %w", err)
 		}
 	}
 	if webhookServer != nil {
@@ -275,7 +275,7 @@ func run() (returnErr error) {
 	return nil
 }
 
-func validateRunnerTLSConfig(listen, certificate, key string) error {
+func validateWorkerTLSConfig(listen, certificate, key string) error {
 	configured := 0
 	for _, value := range []string{listen, certificate, key} {
 		if strings.TrimSpace(value) != "" {
@@ -283,11 +283,11 @@ func validateRunnerTLSConfig(listen, certificate, key string) error {
 		}
 	}
 	if configured != 0 && configured != 3 {
-		return errors.New("runner-listen, runner-tls-cert, and runner-tls-key must be configured together")
+		return errors.New("worker-listen, worker-tls-cert, and worker-tls-key must be configured together")
 	}
 	if configured == 3 {
 		if _, _, err := net.SplitHostPort(listen); err != nil {
-			return fmt.Errorf("remote Runner listen address must include host and port: %w", err)
+			return fmt.Errorf("remote Worker listen address must include host and port: %w", err)
 		}
 	}
 	return nil

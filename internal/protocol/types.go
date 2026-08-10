@@ -189,23 +189,23 @@ type Worker struct {
 	LastHeartbeat              time.Time          `json:"last_heartbeat"`
 }
 
-type RunnerEnrollment struct {
+type WorkerEnrollment struct {
 	WorkerID        string    `json:"worker_id"`
 	EnrollmentToken string    `json:"enrollment_token"`
 	ExpiresAt       time.Time `json:"expires_at"`
 }
 
-type CreateRunnerEnrollmentRequest struct {
+type CreateWorkerEnrollmentRequest struct {
 	WorkerID string `json:"worker_id"`
 }
 
-type ExchangeRunnerEnrollmentRequest struct {
+type ExchangeWorkerEnrollmentRequest struct {
 	WorkerID        string `json:"worker_id"`
 	EnrollmentToken string `json:"enrollment_token"`
 	Credential      string `json:"credential"`
 }
 
-type RunnerCredential struct {
+type WorkerCredential struct {
 	Credential string `json:"credential"`
 }
 
@@ -1042,8 +1042,8 @@ type RunMetricJob struct {
 	DefinitionName           string     `json:"definition_name"`
 	RepositoryID             string     `json:"repository_id"`
 	RepositoryRemoteIdentity string     `json:"repository_remote_identity"`
-	RunnerID                 string     `json:"runner_id,omitempty"`
-	RunnerName               string     `json:"runner_name,omitempty"`
+	WorkerID                 string     `json:"worker_id,omitempty"`
+	WorkerName               string     `json:"worker_name,omitempty"`
 	State                    string     `json:"state"`
 	AdmittedAt               time.Time  `json:"admitted_at"`
 	StartedAt                *time.Time `json:"started_at,omitempty"`
@@ -1064,7 +1064,7 @@ type RunHealthMetrics struct {
 	Jobs                    []RunMetricJob       `json:"jobs"`
 	Definitions             []MetricFilterOption `json:"definitions"`
 	Repositories            []MetricFilterOption `json:"repositories"`
-	Runners                 []MetricFilterOption `json:"runners"`
+	Workers                 []MetricFilterOption `json:"workers"`
 }
 
 type ClaimRequest struct {

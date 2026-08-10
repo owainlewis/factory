@@ -12,7 +12,7 @@
 The current implementation uses one embedded SQLite orchestration path. The
 longer-term direction is to keep that path as the first-class local default and
 allow production installations to select a durable backend such as Temporal
-without changing Definitions or the Runner-facing product model. No such
+without changing Definitions or the Worker-facing product model. No such
 backend abstraction exists today. Its decision record, ownership boundary,
 migration plan, and prototype are tracked in
 [#259](https://github.com/owainlewis/factory/issues/259).
@@ -39,7 +39,7 @@ and timeout. The control plane snapshots one resolved prompt in the existing
 task description field before creating the task. Callers may name the
 assignment directly, constrain a routed assignment to one cattle worker, or
 ask the control-plane scheduler to choose from all eligible cattle workers. The
-operator access is limited to a trusted user and loopback HTTP. Runners may use
+operator access is limited to a trusted user and loopback HTTP. Workers may use
 that local endpoint or a separate authenticated HTTPS endpoint from remote VMs.
 
 Workflow, Workflow Revision, Automation, Occurrence, Task, Execution, Attempt,
@@ -71,15 +71,15 @@ factory-worker (one identity, several runtime capabilities, N agent slots)
 
 Workers initiate every connection. The server does not connect to workers, and
 the system does not use WebSockets. A remote VM uses a narrow HTTPS surface for
-enrollment and the same Runner lifecycle shown above.
+enrollment and the same Worker lifecycle shown above.
 
 ## 3. Architectural invariants
 
-1. One Runner identity advertises its configured `pi`, `codex`, and
+1. One Worker identity advertises its configured `pi`, `codex`, and
    `claude-code` capabilities and runs independent sessions up to its configured
    capacity. Each execution freezes one ready runtime.
-2. Every task freezes one Runner, one runtime, and one control-plane repository.
-   Routed work may select a cattle Runner before that repository exists in its
+2. Every task freezes one Worker, one runtime, and one control-plane repository.
+   Routed work may select a cattle Worker before that repository exists in its
    local cache.
 3. Only a healthy, recently registered worker with free capacity can claim its
    queued work.
@@ -92,9 +92,9 @@ enrollment and the same Runner lifecycle shown above.
    or Git worktree identity cannot be proved.
 7. Existing worktrees with unpublished, dirty, failed, cancelled, lost, or
    uncertain work are retained for inspection.
-8. Plain HTTP remains loopback-only. Remote Runners require the separate TLS
+8. Plain HTTP remains loopback-only. Remote Workers require the separate TLS
    listener, a one-time enrollment bound to their stable identity, and their
-   stored per-Runner bearer credential.
+   stored per-Worker bearer credential.
 9. Operator builds embed the committed `web/dist` assets and do not require
    Node.js.
 10. Automation evaluation is read-only. An Automation and provider identity
@@ -118,7 +118,7 @@ enrollment and the same Runner lifecycle shown above.
 
 - validates and binds a loopback address, `127.0.0.1:7337` by default;
 - optionally binds a separate TLS listener containing only enrollment and
-  authenticated Runner lifecycle routes;
+  authenticated Worker lifecycle routes;
 - optionally binds another TLS listener containing only health and the signed
   GitHub webhook delivery route;
 - opens the SQLite store and applies embedded migrations;
@@ -514,7 +514,7 @@ task list.
 
 | Contract | Limit |
 | --- | ---: |
-| Worker concurrency | 1 to 4 |
+| Worker concurrency | 1 to 100, default 10 |
 | Task description | 64 KiB |
 | Workflow instructions | 48 KiB |
 | Resolved prompt | 64 KiB |
@@ -587,7 +587,7 @@ relative worker data paths and optional legacy repository paths are resolved
 from the directory that contains the worker TOML; explicit absolute worker data
 paths are unchanged. Managed repositories, Workflows, Automations, and
 evaluation state are configured in SQLite through the control-plane API. Only
-the local listen address, database path, optional remote Runner TLS listener,
+the local listen address, database path, optional remote Worker TLS listener,
 and optional GitHub webhook TLS listener and secret path belong in `config.toml`
 because the server needs them before SQLite opens. Managed repositories are
 cached below the worker data directory.
@@ -598,12 +598,12 @@ The operator trust boundary is one trusted user on the control-plane host:
 
 - the browser and operator API bind only to loopback and validate request host
   resolution. There is no operator login or tenant boundary;
-- the optional remote Runner API uses TLS, exposes no operator routes, and
-  authorizes worker and attempt paths against a hashed per-Runner credential;
-- the optional webhook API uses TLS, exposes no operator or Runner routes, and
+- the optional remote Worker API uses TLS, exposes no operator routes, and
+  authorizes worker and attempt paths against a hashed per-Worker credential;
+- the optional webhook API uses TLS, exposes no operator or Worker routes, and
   authenticates bounded raw deliveries with an owner-only HMAC secret;
 - ten-minute enrollment tokens are bound to one worker ID and consumed once;
-  long-lived Runner credentials are returned only over TLS, stored in an
+  long-lived Worker credentials are returned only over TLS, stored in an
   owner-only file bound to the exact server origin, never logged, and stored
   server-side only as SHA-256 digests;
 - worker IDs identify stable local state but are not secrets;
@@ -702,7 +702,7 @@ The contributor check set is documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## 10. Known limitations
 
-- Remote VM Runners require operator-provided VMs, TLS certificates, network
+- Remote VM Workers require operator-provided VMs, TLS certificates, network
   policy, agent credentials, and GitHub credentials. Factory does not provision
   or manage those resources.
 - Windows workers are unsupported.

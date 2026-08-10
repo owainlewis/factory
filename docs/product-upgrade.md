@@ -1,7 +1,7 @@
 # Upgrade existing Factory data
 
 Factory keeps existing Task, Attempt, Runbook, Automation, and Occurrence history
-when an installation moves to the Definition, Run, Job, and Runner product
+when an installation moves to the Definition, Run, Job, and Worker product
 model. The Overview page shows an upgrade preview only when legacy records are
 present.
 

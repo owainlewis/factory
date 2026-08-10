@@ -507,8 +507,8 @@ export interface RunMetricJob {
   definition_name: string;
   repository_id: string;
   repository_remote_identity: string;
-  runner_id?: string;
-  runner_name?: string;
+  worker_id?: string;
+  worker_name?: string;
   state: JobState;
   admitted_at: string;
   started_at?: string;
@@ -529,13 +529,13 @@ export interface RunHealthMetrics {
   jobs: RunMetricJob[];
   definitions: MetricFilterOption[];
   repositories: MetricFilterOption[];
-  runners: MetricFilterOption[];
+  workers: MetricFilterOption[];
 }
 
 export interface MetricsFilters {
   definition_id?: string;
   repository_id?: string;
-  runner_id?: string;
+  worker_id?: string;
 }
 
 export interface AttemptEvent {

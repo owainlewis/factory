@@ -215,7 +215,7 @@ function RunOnceDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
           </section>}
           {(definitions.error || repositories.error || create.error) && <InlineError error={definitions.error ?? repositories.error ?? create.error} />}
           {!definitions.isPending && definitions.data?.definitions.length === 0 && <p className="form-help">Create an active Definition before starting a Run.</p>}
-          {!repositories.isPending && availableRepositories.length === 0 && <p className="form-help">Configure a repository on a Runner or enable managed acquisition before starting a Run.</p>}
+          {!repositories.isPending && availableRepositories.length === 0 && <p className="form-help">Configure a repository on a Worker or enable managed acquisition before starting a Run.</p>}
           <div className="modal-actions">
             <button type="button" className="button button-secondary" onClick={onClose}>Cancel</button>
             <button className="button button-primary" disabled={create.isPending || !definition || selectedRepositories.length === 0 || concurrencyLimit < 1 || concurrencyLimit > 100}>
@@ -329,7 +329,7 @@ export function RunDetail({ id, initialJobID = "", onBack }: { id: string; initi
       {confirmCancel && <div className="confirm-action" role="alert"><span>Cancel this Job?</span><button className="button button-danger" onClick={() => cancel.mutate()} disabled={cancel.isPending}>{cancel.isPending ? "Cancelling…" : "Confirm cancel"}</button><button className="button button-secondary" onClick={() => setConfirmCancel(false)}>Keep running</button></div>}
       {confirmRetry && <div className="warning-banner" role="alert"><AlertCircle size={17} /><span>{job.job.retry_may_repeat_effects ? "The first agent process started and may already have changed GitHub. Retrying can repeat external effects." : "Retry this failed Job?"}</span><button className="button button-primary" onClick={() => retry.mutate()} disabled={retry.isPending}>{retry.isPending ? "Retrying…" : "Confirm retry"}</button><button className="button button-secondary" onClick={() => setConfirmRetry(false)}>Cancel</button></div>}
       {(detail.error || cancel.error || retry.error) && <InlineError error={detail.error ?? cancel.error ?? retry.error} />}
-      {jobIsActive && job.job.cancellation_requested && <div className="warning-banner"><Clock3 size={17} /> Cancellation requested. The Runner will stop this Job on its next heartbeat.</div>}
+      {jobIsActive && job.job.cancellation_requested && <div className="warning-banner"><Clock3 size={17} /> Cancellation requested. The Worker will stop this Job on its next heartbeat.</div>}
       {job.job.blocked_reason && <div className="warning-banner"><Clock3 size={17} /> {job.job.blocked_reason}</div>}
       {data.run.source_kind === "webhook" && <section className="panel">
         <PanelHeading title="GitHub webhook" aside={`${data.run.event} · ${data.run.action}`} />
@@ -360,14 +360,14 @@ export function RunDetail({ id, initialJobID = "", onBack }: { id: string; initi
         <section className="panel"><PanelHeading title="Job" /><dl className="metadata">
           <div><dt>State</dt><dd><StatusBadge state={job.job.state} /></dd></div>
           <div><dt>Repository</dt><dd className="break-anywhere">{job.job.repository_remote_identity}</dd></div>
-          <div><dt>Runner</dt><dd>{job.job.assigned_worker_id ?? "Waiting for a compatible Runner"}</dd></div>
+          <div><dt>Worker</dt><dd>{job.job.assigned_worker_id ?? "Waiting for a compatible Worker"}</dd></div>
           <div><dt>Runtime</dt><dd>{runtimeLabel(job.job.required_runtime)}</dd></div>
           <div><dt>Duration</dt><dd>{duration(job.job.admitted_at, job.job.terminal_at)}</dd></div>
           <div><dt>Job ID</dt><dd className="mono break-anywhere">{job.job.id}</dd></div>
         </dl></section>
       </div>
       {(job.job.result || job.job.failure_reason) && <section className="panel"><PanelHeading title="Result" />{job.job.result && <div className="attempt-output success-output"><strong>Agent result</strong><pre>{job.job.result}</pre></div>}{job.job.failure_reason && <div className="attempt-output error-output"><strong>Failure reason</strong><pre>{job.job.failure_reason}</pre></div>}</section>}
-      <section className="panel progress-panel"><PanelHeading title="Agent output" aside={`${progress.length} updates`} />{events.error && <InlineError error={events.error} />}{latestAttempt && events.isPending ? <div className="loading-line" role="status"><LoaderCircle size={16} className="spin" />Loading output</div> : progress.length === 0 ? <div className="quiet-empty">Output will appear after the Runner starts the agent.</div> : <ol className="event-list">{progress.map(({ event, summary }) => <li key={event.sequence}><span className="event-marker" aria-hidden="true" /><div><span className="event-kind">{summary.label}</span><p>{summary.text}</p><time dateTime={event.server_time}>{new Date(event.server_time).toLocaleTimeString()}</time></div></li>)}</ol>}</section>
+      <section className="panel progress-panel"><PanelHeading title="Agent output" aside={`${progress.length} updates`} />{events.error && <InlineError error={events.error} />}{latestAttempt && events.isPending ? <div className="loading-line" role="status"><LoaderCircle size={16} className="spin" />Loading output</div> : progress.length === 0 ? <div className="quiet-empty">Output will appear after the Worker starts the agent.</div> : <ol className="event-list">{progress.map(({ event, summary }) => <li key={event.sequence}><span className="event-marker" aria-hidden="true" /><div><span className="event-kind">{summary.label}</span><p>{summary.text}</p><time dateTime={event.server_time}>{new Date(event.server_time).toLocaleTimeString()}</time></div></li>)}</ol>}</section>
       {(job.attempts ?? []).length > 0 && <section className="panel attempts-panel"><PanelHeading title="Attempts" aside={`${job.attempts?.length ?? 0} total`} />{[...(job.attempts ?? [])].reverse().map((attempt) => <div className="attempt-row run-attempt" key={attempt.id}><span><strong>Attempt {attempt.attempt_number}</strong><small>{attempt.id}</small></span><StatusBadge state={attempt.state} /><span className="mono muted">{duration(attempt.started_at ?? attempt.created_at, attempt.completed_at)}</span></div>)}</section>}
     </div>
   );

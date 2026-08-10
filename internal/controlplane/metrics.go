@@ -25,7 +25,7 @@ type metricsQuerier interface {
 type MetricsFilter struct {
 	DefinitionID string
 	RepositoryID string
-	RunnerID     string
+	WorkerID     string
 	JobView      string
 }
 

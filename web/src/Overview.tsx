@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { DatabaseBackup, Gauge, Users } from "lucide-react";
+import { DatabaseBackup, Users } from "lucide-react";
 import { useState } from "react";
 import { api } from "./api";
 import { duration, timeAgo } from "./format";
@@ -124,7 +124,7 @@ function RunMetrics({
   const health = data.run_health;
   const cards: Array<{ label: string; value: string; detail: string; view: JobView }> = [
     { label: "Active Jobs", value: formatNumber(health.active), detail: "Queued, preparing, or running", view: "active" },
-    { label: "Blocked Jobs", value: formatNumber(health.blocked), detail: "Waiting for capacity or a Runner", view: "blocked" },
+    { label: "Blocked Jobs", value: formatNumber(health.blocked), detail: "Waiting for capacity or a Worker", view: "blocked" },
     { label: "Succeeded Jobs", value: formatNumber(health.succeeded), detail: "Terminal successful Jobs", view: "succeeded" },
     { label: "Failed Jobs", value: formatNumber(health.failed), detail: "Terminal failed Jobs", view: "failed" },
     { label: "Success rate", value: formatRate(health.success_rate), detail: "Succeeded ÷ succeeded and failed", view: "finished" },
@@ -138,7 +138,7 @@ function RunMetrics({
       <div className="metrics-filters" aria-label="Run metric filters">
         <MetricSelect label="Definition" value={filters.definition_id ?? ""} options={health.definitions} onChange={(value) => onFilters({ ...filters, definition_id: value || undefined })} />
         <MetricSelect label="Repository" value={filters.repository_id ?? ""} options={health.repositories} onChange={(value) => onFilters({ ...filters, repository_id: value || undefined })} />
-        <MetricSelect label="Runner" value={filters.runner_id ?? ""} options={health.runners} onChange={(value) => onFilters({ ...filters, runner_id: value || undefined })} />
+        <MetricSelect label="Worker" value={filters.worker_id ?? ""} options={health.workers} onChange={(value) => onFilters({ ...filters, worker_id: value || undefined })} />
         <button className="button button-secondary" disabled={Object.keys(filters).length === 0} onClick={() => onFilters({})}>Clear filters</button>
       </div>
 
@@ -161,16 +161,15 @@ function RunMetrics({
         {jobView !== "all" && <button className="button button-secondary" onClick={() => onJobView("all")}>Show all Jobs</button>}
         {visibleJobs.length === 0 ? <div className="quiet-empty">No Jobs match this metric and filter set.</div> : <div className="run-health-job-list">
           {visibleJobs.map((job) => <button key={job.job_id} className="run-health-job" onClick={() => onRun(job.run_id, job.job_id)}>
-            <span><strong>{job.repository_remote_identity}</strong><small>{job.definition_name} · {job.runner_name || "No Runner assigned"}</small></span>
+            <span><strong>{job.repository_remote_identity}</strong><small>{job.definition_name} · {job.worker_name || "No Worker assigned"}</small></span>
             <StatusBadge state={job.state} />
             <span className="mono muted">{job.terminal_at ? duration(job.admitted_at, job.terminal_at) : timeAgo(job.admitted_at)}</span>
           </button>)}
         </div>}
       </section>
 
-      <section className="metric-panel runner-health-summary" aria-label="Runner health summary">
-        <div><Gauge size={15} /><span>Codex weekly limit</span><strong>{data.weekly_limit ? `${100 - data.weekly_limit.used_percent}% left` : "Unavailable"}</strong></div>
-        <div><Users size={15} /><span>Runners online</span><strong>{data.workers_online} / {data.workers_total}</strong></div>
+      <section className="metric-panel worker-health-summary" aria-label="Worker health summary">
+        <div><Users size={15} /><span>Workers online</span><strong>{data.workers_online} / {data.workers_total}</strong></div>
       </section>
       <details className="metrics-formulas">
         <summary>Metric formulas</summary>

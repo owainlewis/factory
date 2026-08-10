@@ -766,7 +766,7 @@ func (s *Store) RetryExecution(ctx context.Context, executionID string) (protoco
 	}
 	if !toolCapabilitiesReady(capabilities, requiredTools) {
 		return protocol.TaskDetail{}, conflict(
-			"retry_tools_unavailable", "a required tool is no longer ready on the assigned Runner",
+			"retry_tools_unavailable", "a required tool is no longer ready on the assigned Worker",
 		)
 	}
 	var dynamic, advertised int

@@ -29,9 +29,9 @@ func runMetricsFilter(
 		clauses = append(clauses, "job.repository_id = ?")
 		args = append(args, filter.RepositoryID)
 	}
-	if filter.RunnerID != "" {
+	if filter.WorkerID != "" {
 		clauses = append(clauses, "execution.assigned_worker_id = ?")
-		args = append(args, filter.RunnerID)
+		args = append(args, filter.WorkerID)
 	}
 	return strings.Join(clauses, " AND "), args
 }
@@ -43,8 +43,8 @@ func runMetricFactsQuery(where string, suffix string) string {
 			       json_extract(run.definition_snapshot, '$.name') AS definition_name,
 			       job.repository_id,
 			       CASE WHEN job.repository_identity = '' THEN repository.remote_identity ELSE job.repository_identity END AS repository_identity,
-			       COALESCE(execution.assigned_worker_id, '') AS runner_id,
-			       COALESCE(worker.name, '') AS runner_name,
+			       COALESCE(execution.assigned_worker_id, '') AS worker_id,
+			       COALESCE(worker.name, '') AS worker_name,
 			       COALESCE(execution.state, job.state) AS effective_state,
 			       job.admitted_at,
 			       (SELECT MIN(attempt.started_at) FROM attempts attempt
@@ -116,7 +116,7 @@ func (s *Store) loadRunHealthMetrics(
 	}
 	rows, err := query.QueryContext(ctx, runMetricFactsQuery(where, `
 		SELECT job_id, run_id, definition_id, definition_name,
-		       repository_id, repository_identity, runner_id, runner_name,
+		       repository_id, repository_identity, worker_id, worker_name,
 		       effective_state, admitted_at, first_started_at, terminal_at
 		FROM facts
 		`+jobViewWhere+`
@@ -134,7 +134,7 @@ func (s *Store) loadRunHealthMetrics(
 		var startedAt, terminalAt sql.NullInt64
 		if err := rows.Scan(
 			&job.JobID, &job.RunID, &job.DefinitionID, &job.DefinitionName,
-			&job.RepositoryID, &job.RepositoryRemoteIdentity, &job.RunnerID, &job.RunnerName,
+			&job.RepositoryID, &job.RepositoryRemoteIdentity, &job.WorkerID, &job.WorkerName,
 			&job.State, &admittedAt, &startedAt, &terminalAt,
 		); err != nil {
 			return err
@@ -212,7 +212,7 @@ func loadRunMetricOptions(
 			WHERE identity_rank = 1
 			ORDER BY repository_identity, repository_id
 		`},
-		{&metrics.Runners, `
+		{&metrics.Workers, `
 			SELECT DISTINCT worker.id, worker.name
 			FROM jobs job
 			JOIN executions execution ON execution.id = job.execution_id

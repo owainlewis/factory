@@ -231,7 +231,7 @@ export function App() {
             aria-current={route.page === "workers" ? "page" : undefined}
             onClick={() => navigate({ page: "workers" })}
           >
-			<Bot size={17} /> Runners
+			<Bot size={17} /> Workers
           </button>
           <button
             className={`nav-item ${route.page === "repositories" || route.page === "repository" ? "active" : ""}`}
@@ -262,9 +262,9 @@ export function App() {
             {route.page === "work" && "Work"}
 			{route.page === "runs" && "Runs"}
 			{route.page === "run" && "Run detail"}
-			{route.page === "workers" && "Runners"}
+			{route.page === "workers" && "Workers"}
             {route.page === "task" && "Task detail"}
-			{route.page === "worker" && "Runner detail"}
+			{route.page === "worker" && "Worker detail"}
             {route.page === "repositories" && "Repositories"}
             {route.page === "repository" && "Repository detail"}
             {route.page === "definitions" && "Definitions"}

@@ -1003,7 +1003,7 @@ function AutomationForm({
                 <span>2</span>
                 <div><strong>Where should it run?</strong><small>{isSchedule && usesDefinition ? "A Run creates one isolated Job per selected repository." : isWebhook ? "Choose the repository that owns the GitHub event." : "Each task uses one managed Git repository."}</small></div>
               </div>
-              {isSchedule && usesDefinition ? <Field label="Repositories" htmlFor={repositoryID} error={errors.repository} hint={`${repositorySelections.size} selected · local and remote Runner routes are supported`}>
+              {isSchedule && usesDefinition ? <Field label="Repositories" htmlFor={repositoryID} error={errors.repository} hint={`${repositorySelections.size} selected · local and remote Worker routes are supported`}>
                 <select
                   id={repositoryID}
                   multiple

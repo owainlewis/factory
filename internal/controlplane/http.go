@@ -75,7 +75,7 @@ func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *Au
 	api := &API{store: store, logger: logger, automations: automations}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", api.health)
-	mux.HandleFunc("POST /api/v1/runner-enrollments", api.createRunnerEnrollment)
+	mux.HandleFunc("POST /api/v1/worker-enrollments", api.createWorkerEnrollment)
 	mux.HandleFunc("PUT /api/v1/workers/{worker_id}", api.registerWorker)
 	mux.HandleFunc("PUT /api/v1/workers/{worker_id}/heartbeat", api.heartbeatWorker)
 	mux.HandleFunc("POST /api/v1/workers/{worker_id}/claims", api.claim)
@@ -138,16 +138,16 @@ func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *Au
 	return api.requestLog(mux, true)
 }
 
-// NewRemoteRunnerHandler exposes only the Runner lifecycle over the optional
+// NewRemoteWorkerHandler exposes only the Worker lifecycle over the optional
 // TLS listener. Operator, repository, Definition, and Run APIs remain local.
-func NewRemoteRunnerHandler(store *Store, logger *slog.Logger) http.Handler {
+func NewRemoteWorkerHandler(store *Store, logger *slog.Logger) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	api := &API{store: store, logger: logger}
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", api.requireTLS(http.HandlerFunc(api.health)))
-	mux.Handle("POST /api/v1/runner-enrollments/exchange", api.requireTLS(http.HandlerFunc(api.exchangeRunnerEnrollment)))
+	mux.Handle("POST /api/v1/worker-enrollments/exchange", api.requireTLS(http.HandlerFunc(api.exchangeWorkerEnrollment)))
 	mux.Handle("PUT /api/v1/workers/{worker_id}", api.remoteWorkerAuth(http.HandlerFunc(api.registerWorker)))
 	mux.Handle("PUT /api/v1/workers/{worker_id}/heartbeat", api.remoteWorkerAuth(http.HandlerFunc(api.heartbeatWorker)))
 	mux.Handle("POST /api/v1/workers/{worker_id}/claims", api.remoteWorkerAuth(http.HandlerFunc(api.claim)))
@@ -159,15 +159,15 @@ func NewRemoteRunnerHandler(store *Store, logger *slog.Logger) http.Handler {
 	return api.requestLog(mux, false)
 }
 
-func (a *API) createRunnerEnrollment(w http.ResponseWriter, r *http.Request) {
+func (a *API) createWorkerEnrollment(w http.ResponseWriter, r *http.Request) {
 	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
 		return
 	}
-	var input protocol.CreateRunnerEnrollmentRequest
+	var input protocol.CreateWorkerEnrollmentRequest
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	enrollment, err := a.store.CreateRunnerEnrollment(r.Context(), input.WorkerID)
+	enrollment, err := a.store.CreateWorkerEnrollment(r.Context(), input.WorkerID)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -175,15 +175,15 @@ func (a *API) createRunnerEnrollment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, enrollment)
 }
 
-func (a *API) exchangeRunnerEnrollment(w http.ResponseWriter, r *http.Request) {
+func (a *API) exchangeWorkerEnrollment(w http.ResponseWriter, r *http.Request) {
 	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
 		return
 	}
-	var input protocol.ExchangeRunnerEnrollmentRequest
+	var input protocol.ExchangeWorkerEnrollmentRequest
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	credential, err := a.store.ExchangeRunnerEnrollment(r.Context(), input.WorkerID, input.EnrollmentToken, input.Credential)
+	credential, err := a.store.ExchangeWorkerEnrollment(r.Context(), input.WorkerID, input.EnrollmentToken, input.Credential)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -194,25 +194,25 @@ func (a *API) exchangeRunnerEnrollment(w http.ResponseWriter, r *http.Request) {
 func (a *API) requireTLS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil {
-			writeError(w, &ServiceError{Code: "tls_required", Message: "the remote Runner API requires TLS", Status: http.StatusUpgradeRequired})
+			writeError(w, &ServiceError{Code: "tls_required", Message: "the remote Worker API requires TLS", Status: http.StatusUpgradeRequired})
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-func (a *API) authenticateRemoteRunner(w http.ResponseWriter, r *http.Request) (string, bool) {
+func (a *API) authenticateRemoteWorker(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if r.TLS == nil {
-		writeError(w, &ServiceError{Code: "tls_required", Message: "the remote Runner API requires TLS", Status: http.StatusUpgradeRequired})
+		writeError(w, &ServiceError{Code: "tls_required", Message: "the remote Worker API requires TLS", Status: http.StatusUpgradeRequired})
 		return "", false
 	}
 	parts := strings.Fields(r.Header.Get("Authorization"))
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 		w.Header().Set("WWW-Authenticate", "Bearer")
-		writeError(w, unauthorizedRunner())
+		writeError(w, unauthorizedWorker())
 		return "", false
 	}
-	workerID, err := a.store.AuthenticateRunnerCredential(r.Context(), parts[1])
+	workerID, err := a.store.AuthenticateWorkerCredential(r.Context(), parts[1])
 	if err != nil {
 		var service *ServiceError
 		if errors.As(err, &service) && service.Status == http.StatusUnauthorized {
@@ -226,12 +226,12 @@ func (a *API) authenticateRemoteRunner(w http.ResponseWriter, r *http.Request) (
 
 func (a *API) remoteWorkerAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		workerID, ok := a.authenticateRemoteRunner(w, r)
+		workerID, ok := a.authenticateRemoteWorker(w, r)
 		if !ok {
 			return
 		}
 		if workerID != r.PathValue("worker_id") {
-			writeError(w, &ServiceError{Code: "runner_forbidden", Message: "Runner credential does not own this resource", Status: http.StatusForbidden})
+			writeError(w, &ServiceError{Code: "worker_forbidden", Message: "Worker credential does not own this resource", Status: http.StatusForbidden})
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -240,7 +240,7 @@ func (a *API) remoteWorkerAuth(next http.Handler) http.Handler {
 
 func (a *API) remoteAttemptAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		workerID, ok := a.authenticateRemoteRunner(w, r)
+		workerID, ok := a.authenticateRemoteWorker(w, r)
 		if !ok {
 			return
 		}
@@ -250,7 +250,7 @@ func (a *API) remoteAttemptAuth(next http.Handler) http.Handler {
 				writeError(w, err)
 				return
 			}
-			writeError(w, &ServiceError{Code: "runner_forbidden", Message: "Runner credential does not own this resource", Status: http.StatusForbidden})
+			writeError(w, &ServiceError{Code: "worker_forbidden", Message: "Worker credential does not own this resource", Status: http.StatusForbidden})
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -552,7 +552,7 @@ func (a *API) getMetrics(w http.ResponseWriter, r *http.Request) {
 		writeError(w, invalid("invalid_window", "window may be provided once"))
 		return
 	}
-	for _, parameter := range []string{"definition_id", "repository_id", "runner_id", "job_view"} {
+	for _, parameter := range []string{"definition_id", "repository_id", "worker_id", "job_view"} {
 		if len(r.URL.Query()[parameter]) > 1 {
 			writeError(w, invalid("invalid_metrics_filter", parameter+" may be provided once"))
 			return
@@ -564,7 +564,7 @@ func (a *API) getMetrics(w http.ResponseWriter, r *http.Request) {
 		MetricsFilter{
 			DefinitionID: strings.TrimSpace(r.URL.Query().Get("definition_id")),
 			RepositoryID: strings.TrimSpace(r.URL.Query().Get("repository_id")),
-			RunnerID:     strings.TrimSpace(r.URL.Query().Get("runner_id")),
+			WorkerID:     strings.TrimSpace(r.URL.Query().Get("worker_id")),
 			JobView:      strings.TrimSpace(r.URL.Query().Get("job_view")),
 		},
 	)
@@ -777,7 +777,7 @@ func waitForWorkerRegistration(
 func workerConnectionError(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return &ServiceError{
-			Code: "worker_connection_timeout", Message: "Runner did not send a fresh registration", Status: http.StatusGatewayTimeout,
+			Code: "worker_connection_timeout", Message: "Worker did not send a fresh registration", Status: http.StatusGatewayTimeout,
 		}
 	}
 	return unavailable(err)

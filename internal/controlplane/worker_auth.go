@@ -12,9 +12,9 @@ import (
 	"github.com/owainlewis/factory/internal/protocol"
 )
 
-const RunnerEnrollmentLifetime = 10 * time.Minute
+const WorkerEnrollmentLifetime = 10 * time.Minute
 
-func randomRunnerSecret(prefix string) (string, error) {
+func randomWorkerSecret(prefix string) (string, error) {
 	body := make([]byte, 32)
 	if _, err := rand.Read(body); err != nil {
 		return "", err
@@ -22,125 +22,125 @@ func randomRunnerSecret(prefix string) (string, error) {
 	return prefix + base64.RawURLEncoding.EncodeToString(body), nil
 }
 
-func (s *Store) CreateRunnerEnrollment(ctx context.Context, workerID string) (protocol.RunnerEnrollment, error) {
+func (s *Store) CreateWorkerEnrollment(ctx context.Context, workerID string) (protocol.WorkerEnrollment, error) {
 	workerID = strings.TrimSpace(workerID)
 	if workerID == "" || len(workerID) > 200 {
-		return protocol.RunnerEnrollment{}, invalid("invalid_worker_id", "worker_id is required and must be at most 200 bytes")
+		return protocol.WorkerEnrollment{}, invalid("invalid_worker_id", "worker_id is required and must be at most 200 bytes")
 	}
-	token, err := randomRunnerSecret("factory_enroll_")
+	token, err := randomWorkerSecret("factory_enroll_")
 	if err != nil {
-		return protocol.RunnerEnrollment{}, unavailable(err)
+		return protocol.WorkerEnrollment{}, unavailable(err)
 	}
 	id, err := newID()
 	if err != nil {
-		return protocol.RunnerEnrollment{}, unavailable(err)
+		return protocol.WorkerEnrollment{}, unavailable(err)
 	}
 	now := s.now().UTC()
-	expiresAt := now.Add(RunnerEnrollmentLifetime)
+	expiresAt := now.Add(WorkerEnrollmentLifetime)
 	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO runner_enrollments(id, worker_id, token_digest, expires_at, created_at)
+		INSERT INTO worker_enrollments(id, worker_id, token_digest, expires_at, created_at)
 		VALUES (?, ?, ?, ?, ?)
 	`, id, workerID, digestToken(token), expiresAt.UnixMilli(), now.UnixMilli()); err != nil {
-		return protocol.RunnerEnrollment{}, unavailable(err)
+		return protocol.WorkerEnrollment{}, unavailable(err)
 	}
-	return protocol.RunnerEnrollment{WorkerID: workerID, EnrollmentToken: token, ExpiresAt: expiresAt}, nil
+	return protocol.WorkerEnrollment{WorkerID: workerID, EnrollmentToken: token, ExpiresAt: expiresAt}, nil
 }
 
-func (s *Store) ExchangeRunnerEnrollment(
+func (s *Store) ExchangeWorkerEnrollment(
 	ctx context.Context,
 	workerID, enrollmentToken, credential string,
-) (protocol.RunnerCredential, error) {
+) (protocol.WorkerCredential, error) {
 	workerID = strings.TrimSpace(workerID)
 	if workerID == "" || len(workerID) > 200 || len(enrollmentToken) < 32 || len(enrollmentToken) > 1024 ||
 		len(credential) < 32 || len(credential) > 1024 || credential != strings.TrimSpace(credential) ||
-		!strings.HasPrefix(credential, "factory_runner_") {
-		return protocol.RunnerCredential{}, unauthorizedRunner()
+		!strings.HasPrefix(credential, "factory_worker_") {
+		return protocol.WorkerCredential{}, unauthorizedWorker()
 	}
 	now := s.now().UTC().UnixMilli()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return protocol.RunnerCredential{}, unavailable(err)
+		return protocol.WorkerCredential{}, unavailable(err)
 	}
 	defer tx.Rollback()
 	var enrollmentID string
 	var usedAt sql.NullInt64
 	var expiresAt int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, used_at, expires_at FROM runner_enrollments
+		SELECT id, used_at, expires_at FROM worker_enrollments
 		WHERE worker_id = ? AND token_digest = ?
 	`, workerID, digestToken(enrollmentToken)).Scan(&enrollmentID, &usedAt, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return protocol.RunnerCredential{}, unauthorizedRunner()
+		return protocol.WorkerCredential{}, unauthorizedWorker()
 	}
 	if err != nil {
-		return protocol.RunnerCredential{}, unavailable(err)
+		return protocol.WorkerCredential{}, unavailable(err)
 	}
 	if usedAt.Valid {
 		var storedDigest []byte
 		err = tx.QueryRowContext(ctx, `
-			SELECT token_digest FROM remote_runner_credentials WHERE worker_id = ?
+			SELECT token_digest FROM remote_worker_credentials WHERE worker_id = ?
 		`, workerID).Scan(&storedDigest)
 		if err != nil || !equalDigest(storedDigest, digestToken(credential)) {
-			return protocol.RunnerCredential{}, unauthorizedRunner()
+			return protocol.WorkerCredential{}, unauthorizedWorker()
 		}
 		if err := tx.Commit(); err != nil {
-			return protocol.RunnerCredential{}, unavailable(err)
+			return protocol.WorkerCredential{}, unavailable(err)
 		}
-		return protocol.RunnerCredential{Credential: credential}, nil
+		return protocol.WorkerCredential{Credential: credential}, nil
 	}
 	if expiresAt < now {
-		return protocol.RunnerCredential{}, unauthorizedRunner()
+		return protocol.WorkerCredential{}, unauthorizedWorker()
 	}
 	result, err := tx.ExecContext(ctx, `
-		UPDATE runner_enrollments SET used_at = ?
+		UPDATE worker_enrollments SET used_at = ?
 		WHERE id = ? AND used_at IS NULL AND expires_at >= ?
 	`, now, enrollmentID, now)
 	if err != nil {
-		return protocol.RunnerCredential{}, unavailable(err)
+		return protocol.WorkerCredential{}, unavailable(err)
 	}
 	if count, err := result.RowsAffected(); err != nil {
-		return protocol.RunnerCredential{}, unavailable(err)
+		return protocol.WorkerCredential{}, unavailable(err)
 	} else if count != 1 {
-		return protocol.RunnerCredential{}, unauthorizedRunner()
+		return protocol.WorkerCredential{}, unauthorizedWorker()
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO remote_runner_credentials(worker_id, token_digest, created_at, last_used_at)
+		INSERT INTO remote_worker_credentials(worker_id, token_digest, created_at, last_used_at)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(worker_id) DO UPDATE SET
 			token_digest = excluded.token_digest,
 			created_at = excluded.created_at,
 			last_used_at = excluded.last_used_at
 	`, workerID, digestToken(credential), now, now); err != nil {
-		return protocol.RunnerCredential{}, unavailable(err)
+		return protocol.WorkerCredential{}, unavailable(err)
 	}
 	if err := tx.Commit(); err != nil {
-		return protocol.RunnerCredential{}, unavailable(err)
+		return protocol.WorkerCredential{}, unavailable(err)
 	}
-	return protocol.RunnerCredential{Credential: credential}, nil
+	return protocol.WorkerCredential{Credential: credential}, nil
 }
 
-func (s *Store) AuthenticateRunnerCredential(ctx context.Context, credential string) (string, error) {
+func (s *Store) AuthenticateWorkerCredential(ctx context.Context, credential string) (string, error) {
 	if len(credential) < 32 || len(credential) > 1024 {
-		return "", unauthorizedRunner()
+		return "", unauthorizedWorker()
 	}
 	var workerID string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT worker_id FROM remote_runner_credentials WHERE token_digest = ?
+		SELECT worker_id FROM remote_worker_credentials WHERE token_digest = ?
 	`, digestToken(credential)).Scan(&workerID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", unauthorizedRunner()
+		return "", unauthorizedWorker()
 	}
 	if err != nil {
 		return "", unavailable(err)
 	}
 	if _, err := s.db.ExecContext(ctx, `
-		UPDATE remote_runner_credentials SET last_used_at = ? WHERE worker_id = ?
+		UPDATE remote_worker_credentials SET last_used_at = ? WHERE worker_id = ?
 	`, s.now().UTC().UnixMilli(), workerID); err != nil {
 		return "", unavailable(err)
 	}
 	return workerID, nil
 }
 
-func unauthorizedRunner() error {
-	return &ServiceError{Code: "runner_unauthorized", Message: "valid Runner credentials are required", Status: 401}
+func unauthorizedWorker() error {
+	return &ServiceError{Code: "worker_unauthorized", Message: "valid Worker credentials are required", Status: 401}
 }

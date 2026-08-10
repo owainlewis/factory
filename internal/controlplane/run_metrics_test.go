@@ -19,7 +19,7 @@ func TestRunHealthMetricsUseOneFilteredJobCohort(t *testing.T) {
 	definitionA := createTestDefinition(t, store, "metrics-definition-a", "Metrics A")
 	definitionB := createTestDefinition(t, store, "metrics-definition-b", "Metrics B")
 	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-		Name: "Metrics Runner", WorkerVersion: "test", Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
+		Name: "Metrics Worker", WorkerVersion: "test", Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
 		Capabilities: []protocol.Capability{
 			{Kind: protocol.CapabilityKindTool, Name: "git", Status: protocol.CapabilityReady},
 			{Kind: protocol.CapabilityKindTool, Name: "gh", Status: protocol.CapabilityReady},
@@ -86,7 +86,7 @@ func TestRunHealthMetricsUseOneFilteredJobCohort(t *testing.T) {
 	requireRunMetric(t, "average queue", metrics.AverageQueueTimeSeconds, 20*time.Minute.Seconds())
 	requireRunMetric(t, "average cycle", metrics.AverageCycleTimeSeconds, 75*time.Minute.Seconds())
 	if len(metrics.Jobs) != 5 || len(metrics.Definitions) != 2 || len(metrics.Repositories) != 3 ||
-		len(metrics.Runners) != 1 || metrics.Runners[0].Name != "Metrics Runner" {
+		len(metrics.Workers) != 1 || metrics.Workers[0].Name != "Metrics Worker" {
 		t.Fatalf("Run health drill-down/options = %#v", metrics)
 	}
 
@@ -103,14 +103,14 @@ func TestRunHealthMetricsUseOneFilteredJobCohort(t *testing.T) {
 	if err != nil || repositoryFiltered.RunHealth.TotalJobs != 1 || repositoryFiltered.RunHealth.Failed != 1 {
 		t.Fatalf("repository filter: err=%v metrics=%#v", err, repositoryFiltered.RunHealth)
 	}
-	runnerFiltered, err := store.MetricsFiltered(context.Background(), metricsWindow24Hours, MetricsFilter{
-		RunnerID: worker.ID,
+	workerFiltered, err := store.MetricsFiltered(context.Background(), metricsWindow24Hours, MetricsFilter{
+		WorkerID: worker.ID,
 	})
-	if err != nil || runnerFiltered.RunHealth.TotalJobs != 4 || runnerFiltered.RunHealth.Blocked != 0 {
-		t.Fatalf("Runner filter: err=%v metrics=%#v", err, runnerFiltered.RunHealth)
+	if err != nil || workerFiltered.RunHealth.TotalJobs != 4 || workerFiltered.RunHealth.Blocked != 0 {
+		t.Fatalf("Worker filter: err=%v metrics=%#v", err, workerFiltered.RunHealth)
 	}
-	if len(runnerFiltered.RunHealth.Definitions) != 2 || len(runnerFiltered.RunHealth.Repositories) != 3 {
-		t.Fatalf("filter options changed with cohort filter: %#v", runnerFiltered.RunHealth)
+	if len(workerFiltered.RunHealth.Definitions) != 2 || len(workerFiltered.RunHealth.Repositories) != 3 {
+		t.Fatalf("filter options changed with cohort filter: %#v", workerFiltered.RunHealth)
 	}
 
 	updatedDefinition, changed, err := store.UpdateDefinition(context.Background(), definitionB.ID, protocol.UpdateDefinitionRequest{
@@ -186,7 +186,7 @@ func seedRunMetricOutcome(
 func registerRunMetricWorker(t *testing.T, store *Store, repository protocol.ManagedRepository) protocol.Worker {
 	t.Helper()
 	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-		Name: "Metrics Runner", WorkerVersion: "test", Runtime: protocol.RuntimeCodex,
+		Name: "Metrics Worker", WorkerVersion: "test", Runtime: protocol.RuntimeCodex,
 		RuntimeVersion: "codex-test", Capacity: 10, Health: "healthy",
 		Capabilities: []protocol.Capability{
 			{Kind: protocol.CapabilityKindTool, Name: "git", Status: protocol.CapabilityReady},

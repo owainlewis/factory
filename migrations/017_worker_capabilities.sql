@@ -1,7 +1,7 @@
 -- factory: foreign-keys-off
 
 -- Keep the legacy primary runtime columns for older workers and clients while
--- adding the capability list used by multi-runtime local Runners.
+-- adding the capability list used by multi-runtime local Workers.
 CREATE TABLE workers_v17 (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,

@@ -14,9 +14,9 @@ import (
 type serverBootstrapConfig struct {
 	Listen                  string `toml:"listen"`
 	Database                string `toml:"database"`
-	RunnerListen            string `toml:"runner_listen"`
-	RunnerTLSCert           string `toml:"runner_tls_cert"`
-	RunnerTLSKey            string `toml:"runner_tls_key"`
+	WorkerListen            string `toml:"worker_listen"`
+	WorkerTLSCert           string `toml:"worker_tls_cert"`
+	WorkerTLSKey            string `toml:"worker_tls_key"`
 	WebhookListen           string `toml:"webhook_listen"`
 	WebhookTLSCert          string `toml:"webhook_tls_cert"`
 	WebhookTLSKey           string `toml:"webhook_tls_key"`
@@ -66,9 +66,9 @@ func loadServerBootstrapConfig(dataRoot string) (serverBootstrapConfig, error) {
 	config.path = absolute
 	config.Listen = strings.TrimSpace(config.Listen)
 	config.Database = strings.TrimSpace(config.Database)
-	config.RunnerListen = strings.TrimSpace(config.RunnerListen)
-	config.RunnerTLSCert = resolveConfigPath(absolute, config.RunnerTLSCert)
-	config.RunnerTLSKey = resolveConfigPath(absolute, config.RunnerTLSKey)
+	config.WorkerListen = strings.TrimSpace(config.WorkerListen)
+	config.WorkerTLSCert = resolveConfigPath(absolute, config.WorkerTLSCert)
+	config.WorkerTLSKey = resolveConfigPath(absolute, config.WorkerTLSKey)
 	config.WebhookListen = strings.TrimSpace(config.WebhookListen)
 	config.WebhookTLSCert = resolveConfigPath(absolute, config.WebhookTLSCert)
 	config.WebhookTLSKey = resolveConfigPath(absolute, config.WebhookTLSKey)

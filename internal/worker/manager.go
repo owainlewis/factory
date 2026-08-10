@@ -135,13 +135,16 @@ func New(config Config, options Options, logger *slog.Logger) (*Manager, error) 
 	if logger == nil {
 		logger = slog.Default()
 	}
-	httpClient, err := runnerHTTPClient(config, options.HTTPClient)
+	httpClient, err := workerHTTPClient(config, options.HTTPClient)
 	if err != nil {
 		return nil, err
 	}
-	runnerClient := newClient(config.Server, httpClient)
-	credentialPath := filepath.Join(dataDirectory, "runner-credential")
-	runnerClient.credential, err = loadCredentialFile(credentialPath, config.Server)
+	workerClient := newClient(config.Server, httpClient)
+	credentialPath := filepath.Join(dataDirectory, "worker-credential")
+	if err := adoptLegacyWorkerCredentialFiles(dataDirectory, config.Server); err != nil {
+		return nil, err
+	}
+	workerClient.credential, err = loadCredentialFile(credentialPath, config.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +162,7 @@ func New(config Config, options Options, logger *slog.Logger) (*Manager, error) 
 		lock:                          lock,
 		repositories:                  repositories,
 		repositoriesByKey:             byKey,
-		client:                        runnerClient,
+		client:                        workerClient,
 		manifests:                     newManifestStore(dataDirectory, id),
 		slots:                         make(chan struct{}, config.MaxConcurrent),
 		health:                        health{State: "unhealthy"},
@@ -174,7 +177,7 @@ func New(config Config, options Options, logger *slog.Logger) (*Manager, error) 
 	}, nil
 }
 
-func runnerHTTPClient(config Config, provided *http.Client) (*http.Client, error) {
+func workerHTTPClient(config Config, provided *http.Client) (*http.Client, error) {
 	if provided != nil || config.CACertificate == "" {
 		return provided, nil
 	}
@@ -288,7 +291,7 @@ func (manager *Manager) Run(ctx context.Context) error {
 	enrollmentBackoff := manager.options.TransportBackoffMin
 	for {
 		err := manager.client.enroll(ctx, manager.id, manager.config.EnrollmentToken,
-			filepath.Join(manager.dataDirectory, "runner-credential"))
+			filepath.Join(manager.dataDirectory, "worker-credential"))
 		if err == nil {
 			break
 		}
@@ -296,7 +299,7 @@ func (manager *Manager) Run(ctx context.Context) error {
 		if !errors.As(err, &retryable) {
 			return err
 		}
-		manager.logger.Warn("runner_enrollment_retry", "error_class", "transient", "error", err)
+		manager.logger.Warn("worker_enrollment_retry", "error_class", "transient", "error", err)
 		timer := time.NewTimer(enrollmentBackoff)
 		select {
 		case <-ctx.Done():

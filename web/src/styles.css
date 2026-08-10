@@ -1295,10 +1295,10 @@ button { color: inherit; }
 .run-health-job strong, .run-health-job small { display: block; overflow-wrap: anywhere; }
 .run-health-job strong { font-size: 13px; font-weight: 500; }
 .run-health-job small { margin-top: 3px; color: var(--fg-3); font-size: 11px; }
-.runner-health-summary { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 1px; padding: 0; overflow: hidden; background: var(--line); }
-.runner-health-summary > div { padding: 12px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; background: var(--panel); }
-.runner-health-summary span { color: var(--fg-3); font-size: 12px; }
-.runner-health-summary strong { font-size: 13px; font-weight: 500; }
+.worker-health-summary { margin-top: 12px; display: grid; grid-template-columns: 1fr; gap: 1px; padding: 0; overflow: hidden; background: var(--line); }
+.worker-health-summary > div { padding: 12px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; background: var(--panel); }
+.worker-health-summary span { color: var(--fg-3); font-size: 12px; }
+.worker-health-summary strong { font-size: 13px; font-weight: 500; }
 .metrics-formulas { margin-top: 12px; color: var(--fg-3); font-size: 12px; line-height: 1.6; }
 .metrics-formulas summary { cursor: pointer; color: var(--fg-2); }
 .metrics-formulas p { max-width: 900px; }

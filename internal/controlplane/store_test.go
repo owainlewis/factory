@@ -1169,10 +1169,10 @@ func TestWorkerRuntimeDeterminesExecutionAndCannotChange(t *testing.T) {
 	assertErrorCode(t, err, "worker_runtime_changed")
 }
 
-func TestRunnerCapabilitiesSelectAndClaimPiRuntime(t *testing.T) {
+func TestWorkerCapabilitiesSelectAndClaimPiRuntime(t *testing.T) {
 	store := newTestStore(t)
 	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-		Name: "multi-runtime-runner", WorkerVersion: "test",
+		Name: "multi-runtime-worker", WorkerVersion: "test",
 		Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
 		Capabilities: []protocol.Capability{
 			{Kind: protocol.CapabilityKindTool, Name: "git", Status: protocol.CapabilityReady, Version: "git-test"},
@@ -1208,13 +1208,13 @@ func TestRunnerCapabilitiesSelectAndClaimPiRuntime(t *testing.T) {
 	}
 }
 
-func TestRetryRejectsFrozenRuntimeThatRunnerNoLongerAdvertises(t *testing.T) {
+func TestRetryRejectsFrozenRuntimeThatWorkerNoLongerAdvertises(t *testing.T) {
 	store := newTestStore(t)
 	repository := protocol.RepositoryRegistration{
 		Key: "factory", RemoteIdentity: "github.com/example/factory",
 	}
 	registration := protocol.WorkerRegistration{
-		Name: "multi-runtime-runner", WorkerVersion: "test",
+		Name: "multi-runtime-worker", WorkerVersion: "test",
 		Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
 		Capabilities: []protocol.Capability{
 			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
@@ -1262,7 +1262,7 @@ func TestStaleMultiRuntimeRegistrationCannotRouteFrozenRuntime(t *testing.T) {
 	}
 	createManagedTestRepository(t, store, repository.RemoteIdentity)
 	if _, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-		Name: "multi-runtime-runner", WorkerVersion: "test",
+		Name: "multi-runtime-worker", WorkerVersion: "test",
 		Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
 		Capabilities: []protocol.Capability{
 			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityReady},
@@ -1276,7 +1276,7 @@ func TestStaleMultiRuntimeRegistrationCannotRouteFrozenRuntime(t *testing.T) {
 	clock = clock.Add(protocol.WorkerOnlineWindow + time.Millisecond)
 	_, _, err := store.CreateTask(context.Background(), protocol.CreateTaskRequest{
 		RequestKey: "stale-pi-route", Title: "Do not route stale Pi work",
-		Description: "The Runner has not refreshed its capability evidence.",
+		Description: "The Worker has not refreshed its capability evidence.",
 		Route: &protocol.TaskRoute{
 			RepositoryRemoteIdentity: repository.RemoteIdentity,
 			SourceAccess:             access,
@@ -1286,10 +1286,10 @@ func TestStaleMultiRuntimeRegistrationCannotRouteFrozenRuntime(t *testing.T) {
 	assertErrorCode(t, err, "no_eligible_worker")
 }
 
-func TestDirectTaskDefaultsToAReadyRunnerCapability(t *testing.T) {
+func TestDirectTaskDefaultsToAReadyWorkerCapability(t *testing.T) {
 	store := newTestStore(t)
 	worker, err := store.RegisterWorker(context.Background(), workerA, protocol.WorkerRegistration{
-		Name: "fallback-runtime-runner", WorkerVersion: "test",
+		Name: "fallback-runtime-worker", WorkerVersion: "test",
 		Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test",
 		Capabilities: []protocol.Capability{
 			{Kind: protocol.CapabilityKindRuntime, Name: protocol.RuntimeCodex, Status: protocol.CapabilityUnauthenticated},

@@ -79,7 +79,7 @@ func TestUnchangedHealthCheckPreservesPendingClaim(t *testing.T) {
 	claimContext, cancel, eligible := manager.beginClaim(context.Background(), "claim-1")
 	defer cancel()
 	if !eligible {
-		t.Fatal("healthy registered Runner did not begin claim")
+		t.Fatal("healthy registered Worker did not begin claim")
 	}
 	if !manager.beginHealthCheck() {
 		t.Fatal("health check did not start")
@@ -108,7 +108,7 @@ func TestUnchangedHealthCheckPreservesPendingClaim(t *testing.T) {
 	default:
 	}
 	if !manager.isHealthy() {
-		t.Fatal("Runner did not become claimable after unchanged healthy evidence")
+		t.Fatal("Worker did not become claimable after unchanged healthy evidence")
 	}
 }
 
@@ -132,7 +132,7 @@ func TestUnrelatedRuntimeHealthChangePreservesPendingClaimForValidation(t *testi
 	claimContext, cancel, eligible := manager.beginClaim(context.Background(), "claim-1")
 	defer cancel()
 	if !eligible || !manager.beginHealthCheck() {
-		t.Fatal("healthy registered Runner did not begin claim and health check")
+		t.Fatal("healthy registered Worker did not begin claim and health check")
 	}
 	result := make(chan bool, 1)
 	go func() {
@@ -173,7 +173,7 @@ func TestUnhealthyHealthCheckInvalidatesPendingClaim(t *testing.T) {
 	claimContext, cancel, eligible := manager.beginClaim(context.Background(), "claim-1")
 	defer cancel()
 	if !eligible || !manager.beginHealthCheck() {
-		t.Fatal("healthy registered Runner did not begin claim and health check")
+		t.Fatal("healthy registered Worker did not begin claim and health check")
 	}
 	result := make(chan bool, 1)
 	go func() {
@@ -188,9 +188,9 @@ func TestUnhealthyHealthCheckInvalidatesPendingClaim(t *testing.T) {
 	select {
 	case eligible := <-result:
 		if eligible {
-			t.Fatal("claim became eligible after the Runner became unhealthy")
+			t.Fatal("claim became eligible after the Worker became unhealthy")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("claim did not finish after the Runner became unhealthy")
+		t.Fatal("claim did not finish after the Worker became unhealthy")
 	}
 }

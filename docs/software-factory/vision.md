@@ -25,7 +25,7 @@ Examples include:
 - inspect a codebase for bugs, security concerns, or policy drift;
 - apply dependency, configuration, or CI changes across a repository fleet;
 - let agents create issues, comments, branches, and pull requests with the tools
-  available on their Runner;
+  available on their Worker;
 - run scheduled maintenance and react to GitHub events.
 
 Every use case becomes the same execution primitive. A **Job** runs one agent
@@ -69,7 +69,7 @@ Job Definition
        +---------+---------+
                  |
                  v
- Runner on a local host or VM
+ Worker on a local host or VM
        |
        v
  Pi, Codex, Claude Code, or another coding agent
@@ -88,11 +88,11 @@ separate Occurrence concept.
 3. A Run freezes its complete definition, parameters, and target set.
 4. Saved definitions edit in place. Historical Runs retain their snapshots.
 5. Triggers admit work but never execute agents.
-6. Runners supply compute. Runtimes such as Pi, Codex, and Claude Code supply
+6. Workers supply compute. Runtimes such as Pi, Codex, and Claude Code supply
    agent behavior.
 7. Provider payloads and repository content are untrusted inputs. Definition
    instructions are trusted operator configuration.
-8. Agents use the tools and credentials available on their Runner. Factory does
+8. Agents use the tools and credentials available on their Worker. Factory does
    not intermediate GitHub comments, branches, issues, or pull requests.
 9. Fleet-wide work is bounded, fair, observable, and retryable per target.
 10. Product concepts must earn their place through operator behavior, not
@@ -105,7 +105,7 @@ Factory focuses on software delivery execution:
 - Git repository fleets and work-item targets;
 - isolated worktrees, branches, commits, and pull requests;
 - reliable agent scheduling, leases, attempts, and recovery;
-- local and VM capacity, with more Runner targets added when needed;
+- local and VM capacity, with more Worker targets added when needed;
 - reusable engineering procedures;
 - manual, scheduled, event, and API admission;
 - throughput, reliability, cost, and outcome visibility.
@@ -119,36 +119,36 @@ requests, reviews, and repository state.
 
 V1 is a local software factory. An operator can:
 
-- configure a local agent Runner using Pi, Codex, or Claude Code;
+- configure a local agent Worker using Pi, Codex, or Claude Code;
 - add the team's Git repositories;
 - save a shared prompt as a Definition;
 - press **Run once** for one repository or a selected repository fleet;
-- see every Job, failure, cycle time, throughput, and Runner health;
+- see every Job, failure, cycle time, throughput, and Worker health;
 - attach a schedule to repeat the same Run automatically.
 
-Remote VM Runners are the next scaling step after this local manual and
+Remote VM Workers are the next scaling step after this local manual and
 scheduled path works end to end. GitHub webhook Triggers follow later.
-Kubernetes and other execution targets remain possible future Runner types,
+Kubernetes and other execution targets remain possible future Worker types,
 but they are not on the active roadmap.
 
 The built-in SQLite control plane remains a first-class deployment for local
 use and small teams. For larger production installations, the intended
 direction is an optional durable orchestration backend such as Temporal. That
 backend may own timers, retries, cancellation, fan-out, and recovery, but it
-must not change the Definition, Trigger, Run, Job, or Runner experience. The
+must not change the Definition, Trigger, Run, Job, or Worker experience. The
 full boundary and migration design is tracked in
 [#259](https://github.com/owainlewis/factory/issues/259) and follows the stable
-local and VM Runner experience.
+local and VM Worker experience.
 
 ## Measures of progress
 
 The product is moving toward this vision when a team can:
 
-- connect a repository fleet without configuring each runner per repository;
+- connect a repository fleet without configuring each worker per repository;
 - run one procedure across at least hundreds of frozen targets;
 - react to a GitHub delivery without duplicate Jobs;
 - add or remove local and VM capacity without changing a Job Definition;
-- identify the exact instructions, input, runtime, runner, and outcome for every
+- identify the exact instructions, input, runtime, worker, and outcome for every
   Job;
 - recover or retry one failed target without replaying successful work;
 - measure useful engineering outcomes rather than only process completion.

@@ -119,8 +119,8 @@ export const metrics: MetricsSummary = {
         definition_name: "Find confirmed bugs",
         repository_id: "repo-factory",
         repository_remote_identity: "github.com/example/factory",
-        runner_id: "worker-online",
-        runner_name: "Mac Studio",
+        worker_id: "worker-online",
+        worker_name: "Mac Studio",
         state: "failed",
         admitted_at: "2026-08-06T09:00:00Z",
         started_at: "2026-08-06T09:01:30Z",
@@ -133,8 +133,8 @@ export const metrics: MetricsSummary = {
         definition_name: "Find confirmed bugs",
         repository_id: "repo-managed",
         repository_remote_identity: "github.com/example/managed",
-        runner_id: "worker-online",
-        runner_name: "Mac Studio",
+        worker_id: "worker-online",
+        worker_name: "Mac Studio",
         state: "succeeded",
         admitted_at: "2026-08-06T08:00:00Z",
         started_at: "2026-08-06T08:00:30Z",
@@ -146,7 +146,7 @@ export const metrics: MetricsSummary = {
       { id: "repo-factory", name: "github.com/example/factory" },
       { id: "repo-managed", name: "github.com/example/managed" },
     ],
-    runners: [{ id: "worker-online", name: "Mac Studio" }],
+    workers: [{ id: "worker-online", name: "Mac Studio" }],
   },
 };
 
@@ -1569,7 +1569,7 @@ export function mockControlPlane(
       workerDetailRequests += 1;
       if (options.workerDetailFailuresAfter !== undefined && workerDetailRequests > options.workerDetailFailuresAfter) {
         return Response.json(
-          { error: { code: "worker_unavailable", message: "Runner connection failed" } },
+          { error: { code: "worker_unavailable", message: "Worker connection failed" } },
           { status: 503 },
         );
       }
@@ -1590,7 +1590,7 @@ export function mockControlPlane(
       workerConnectionTests += 1;
       if (workerConnectionTests > 1) {
         return Response.json(
-          { error: { code: "worker_connection_timeout", message: "Runner did not send a fresh registration" } },
+          { error: { code: "worker_connection_timeout", message: "Worker did not send a fresh registration" } },
           { status: 504 },
         );
       }

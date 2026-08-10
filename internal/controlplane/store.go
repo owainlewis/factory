@@ -1328,7 +1328,7 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	if input.Name == "" || len(input.Name) > 200 {
 		return protocol.Worker{}, invalid("invalid_worker", "worker name is required and must be at most 200 bytes")
 	}
-	labels, err := normalizeRunnerLabels(input.Labels)
+	labels, err := normalizeWorkerLabels(input.Labels)
 	if err != nil {
 		return protocol.Worker{}, err
 	}
@@ -1502,7 +1502,7 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	}
 	labelsJSON, err := json.Marshal(input.Labels)
 	if err != nil {
-		return protocol.Worker{}, invalid("invalid_labels", "Runner labels could not be encoded")
+		return protocol.Worker{}, invalid("invalid_labels", "Worker labels could not be encoded")
 	}
 	var weeklyLimitUsedPercent, weeklyLimitResetsAt any
 	if input.WeeklyLimit != nil {
@@ -1786,16 +1786,16 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	return s.Worker(ctx, workerID)
 }
 
-func normalizeRunnerLabels(input map[string]string) (map[string]string, error) {
+func normalizeWorkerLabels(input map[string]string) (map[string]string, error) {
 	if len(input) > 20 {
-		return nil, invalid("invalid_labels", "a Runner may advertise at most 20 labels")
+		return nil, invalid("invalid_labels", "a Worker may advertise at most 20 labels")
 	}
 	labels := make(map[string]string, len(input))
 	for key, value := range input {
 		trimmedKey := strings.TrimSpace(key)
 		trimmedValue := strings.TrimSpace(value)
 		if trimmedKey == "" || trimmedKey != key || len(trimmedKey) > 100 || len(trimmedValue) > 200 {
-			return nil, invalid("invalid_labels", "Runner label keys must be trimmed and at most 100 bytes; values must be at most 200 bytes")
+			return nil, invalid("invalid_labels", "Worker label keys must be trimmed and at most 100 bytes; values must be at most 200 bytes")
 		}
 		labels[trimmedKey] = trimmedValue
 	}
@@ -2523,7 +2523,7 @@ func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest
 		}
 		if !toolCapabilitiesReady(capabilities, requiredTools) {
 			return protocol.TaskDetail{}, false, conflict(
-				"tools_unavailable", "the selected Runner does not have every required tool ready",
+				"tools_unavailable", "the selected Worker does not have every required tool ready",
 			)
 		}
 	}
