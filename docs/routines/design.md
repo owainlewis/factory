@@ -382,8 +382,12 @@ block the frozen migration.
    retained-worktree link. Never create one Routine per historical Task.
 7. Block completion if any remaining Task cannot be reconstructed exactly,
    active legacy executions, enabled provider-driven Automations, unfinished
-   Workflow-backed schedule triggers, ambiguous snapshots, orphan lifecycle
-   rows, or foreign-key violations remain.
+   Workflow-backed schedule triggers, deleted-Task occurrence tombstones,
+   ambiguous snapshots, orphan lifecycle rows, or foreign-key violations
+   remain. A `task_deleted` occurrence has deliberately discarded its prompt
+   and lifecycle rows, so it cannot become truthful Work. Report every blocked
+   occurrence and its retained Task ID snapshot instead of silently dropping or
+   relabelling that audit identity.
 8. Validate counts, identifiers, terminal outcomes, Attempt events, and
    retained-worktree links.
 9. Drop Definition, Workflow, Automation, Occurrence, Run, Job, and Task
@@ -446,8 +450,13 @@ retry rather than admitting a backlog. After a process crash the scheduler
 resumes pending retries first, then scans overdue Routines in bounded batches.
 
 Editing a Routine while Work is active affects only later Work. Disabling its
-schedule leaves active Work unchanged. Archiving disables the schedule and
-blocks Run now, but keeps history. Shutdown stops new admission, returns
+schedule leaves active Work unchanged. If an occurrence is already pending,
+disable or archive keeps its due instant and frozen snapshot as a durable paused
+occurrence. Recovery never admits pending Work while the schedule is disabled
+or the Routine is archived. Re-enabling resumes that exact occurrence before
+calculating later cadence; the operator may instead use **Discard occurrence**
+while it is paused. Archiving disables the schedule and blocks Run now, but
+keeps history. Shutdown stops new admission, returns
 unclaimed Targets to a claimable state, asks active Worker processes to stop,
 and relies on existing leases for crash recovery.
 
