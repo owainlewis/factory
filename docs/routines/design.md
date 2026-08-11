@@ -221,6 +221,9 @@ stated goal is to avoid naming debt.
 - A Routine can be saved as a draft with zero repositories, but Run now and
   schedule enablement require at least one enabled managed Repository.
 - Routine names are unique after case folding and whitespace normalization.
+- Routine names are limited to 200 Unicode characters. Legacy source names
+  were limited to 100, so the bounded migration suffix always fits without
+  truncating operator text.
 - A Routine edit uses an expected generation and returns a conflict on stale
   writes.
 - Run now defaults to all configured repositories and has no repository picker.
@@ -358,6 +361,8 @@ so valid cross-model name collisions never block the frozen migration.
    Before conversion, block any schedule or frozen pending occurrence whose
    repository scope exceeds 100. Report the Automation or occurrence ID and
    repository count so the operator can reduce its scope.
+   When no unadmitted occurrence exists, copy the exact legacy
+   `automation_schedule_triggers.next_due_at` cursor to the Routine.
 4. Convert each legacy schedule's unadmitted scheduled occurrence
    into the pending fields on its mapped Routine. Copy `scheduled_at` to
    `pending_due_at`, copy `retry_at` to `schedule_retry_at`, initialize
@@ -365,9 +370,10 @@ so valid cross-model name collisions never block the frozen migration.
    count, and copy its frozen Definition, parameter, repository, runtime, tool,
    timeout, concurrency, and schedule identity into `pending_snapshot_json`.
    Derive `next_due_at` from the first cron instant after the pending
-   occurrence. A failed occurrence with no `retry_at` becomes a blocked pending
-   occurrence with its diagnostic intact; it remains visible and explicitly
-   discardable rather than becoming an unreachable retry. If one legacy
+   occurrence. Every occurrence whose legacy state is `failed` becomes a
+   blocked pending occurrence with its diagnostic intact, even when the legacy
+   row has a retry cursor; it remains visible and explicitly discardable rather
+   than becoming an unreachable retry. If one legacy
    schedule has more than one unadmitted pending
    occurrence, or a frozen snapshot is incomplete, block migration and report
    every occurrence ID rather than dropping or relabelling it. Also block and
