@@ -290,11 +290,12 @@ precedence:
 4. Otherwise, Queued when at least one nonterminal Target is Queued.
 
 A separate `needs_attention` field is true whenever active Work has a Blocked
-Target. The discard-occurrence mutation requires a blocked pending occurrence,
-is idempotent for the same frozen occurrence token, clears only its pending and
-retry fields, records the discarded due instant for audit, and recalculates the
-first cron instant strictly after the current time. A stale token conflicts so
-an operator cannot discard a newer occurrence accidentally.
+Target. The discard-occurrence mutation requires a blocked pending occurrence
+or a durably paused pending occurrence on a disabled Routine. It is idempotent
+for the same frozen occurrence token, clears only its pending and retry fields,
+records the discarded due instant for audit, and recalculates the first cron
+instant strictly after the current time. A stale token conflicts so an operator
+cannot discard a newer occurrence accidentally.
 
 The final SQLite model uses these primary tables:
 
@@ -352,14 +353,17 @@ block the frozen migration.
    every schedule with different parameters or execution settings becomes a
    separately named Routine whose configuration contains those resolved
    values. Record every split in the migration report.
-4. Convert each legacy schedule's unadmitted retryable scheduled occurrence
+4. Convert each legacy schedule's unadmitted scheduled occurrence
    into the pending fields on its mapped Routine. Copy `scheduled_at` to
    `pending_due_at`, copy `retry_at` to `schedule_retry_at`, initialize
    `schedule_retry_count` to zero because the legacy schema did not store a
    count, and copy its frozen Definition, parameter, repository, runtime, tool,
    timeout, concurrency, and schedule identity into `pending_snapshot_json`.
    Derive `next_due_at` from the first cron instant after the pending
-   occurrence. If one legacy schedule has more than one unadmitted pending
+   occurrence. A failed occurrence with no `retry_at` becomes a blocked pending
+   occurrence with its diagnostic intact; it remains visible and explicitly
+   discardable rather than becoming an unreachable retry. If one legacy
+   schedule has more than one unadmitted pending
    occurrence, or a frozen snapshot is incomplete, block migration and report
    every occurrence ID rather than dropping or relabelling it. Also block and
    report every unadmitted schedule `run_now` occurrence whose `scheduled_at`
@@ -383,7 +387,11 @@ block the frozen migration.
    through disabled provider occurrences use `provider_history`; other Tasks
    use manual Work. Copy every Execution, Attempt, event, result, failure, and
    retained-worktree link. Never create one Routine per historical Task.
-7. Block completion if any remaining Task cannot be reconstructed exactly,
+7. Before creating Routines, preflight the post-split operator Routine count:
+   one Routine for each Definition plus one for each schedule that cannot merge
+   under step 3. Block migration and report the source and proposed split IDs
+   when that exact count would exceed 500. Also block completion if any
+   remaining Task cannot be reconstructed exactly,
    active legacy executions, enabled provider-driven Automations, unfinished
    Workflow-backed schedule triggers, deleted-Task occurrence tombstones,
    taskless provider occurrences, oversized folded prompts, ambiguous
