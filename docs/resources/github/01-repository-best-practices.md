@@ -41,14 +41,16 @@ Handle the discovered state as follows:
    Never replace a non-GitHub `origin` or add a second remote without approval.
 3. If there is no project code or manifest, do not scaffold an application or
    invent commands and architecture.
-4. If there is no commit history, the complete initial setup may be committed
-   and pushed directly to `main` because no protected default branch exists.
-   Inspect every file for secrets, local configuration, generated output, and
-   large binaries before including it.
-5. If local history exists but GitHub does not, publish the existing default
-   branch without rewriting it, then make setup changes on a focused branch.
-   Rename an unpublished branch to `main` only when no configuration depends on
-   its current name.
+4. If there is no local commit history and no remote default branch, the
+   complete initial setup may be committed and pushed directly to `main`
+   because no protected default branch exists. Inspect every file for secrets,
+   local configuration, generated output, and large binaries before including
+   it. If a remote default branch exists, follow step 6 instead.
+5. If local history exists and there is no remote default branch, create the
+   GitHub repository when needed, publish the existing default branch without
+   rewriting it, then make setup changes on a focused branch. Rename an
+   unpublished branch to `main` only when no configuration depends on its
+   current name.
 6. If the remote default branch exists, fetch it and compare histories. Base the
    setup branch on `origin/DEFAULT_BRANCH`, not an arbitrary current branch. If
    local work prevents a clean switch, use an isolated worktree from the remote

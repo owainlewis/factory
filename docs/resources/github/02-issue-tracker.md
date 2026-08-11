@@ -1,9 +1,10 @@
 # Set up the issue tracker
 
 Set up a focused GitHub issue tracker for the repository in the current working
-directory. Configure useful issue intake, a compact label taxonomy, and one
-GitHub Project that shows delivery flow. Perform the work, verify it, and report
-the result. Do not merely return instructions.
+directory. Configure useful issue intake, a compact label taxonomy, and, when
+the repository maintains a backlog, one GitHub Project that shows delivery
+flow. Perform the work, verify it, and report the result. Do not merely return
+instructions.
 
 This prompt requires a GitHub `origin` with an initialized default branch. If
 either is missing, stop and run the repository best-practices setup first. This
@@ -13,9 +14,7 @@ branch rules, security features, releases, deployments, or production access.
 ## Inspect before changing
 
 Resolve the repository and its default branch from `origin`. Verify GitHub CLI
-authentication and ensure the token has the `project` scope plus repository
-access. If needed, stop and give the exact `gh auth refresh -s project` command
-before making mutations.
+authentication and repository access before making mutations.
 
 Fetch the remote default branch. Create the issue-form branch from
 `origin/DEFAULT_BRANCH`, not an arbitrary current branch. If local work prevents
@@ -23,10 +22,9 @@ a clean switch, use an isolated worktree or stop and explain the conflict.
 
 Inspect:
 
-- whether Issues and Projects are enabled;
+- whether Issues are enabled;
 - issue forms and issue-template configuration on the default branch;
 - every label and its use on open and closed issues and pull requests;
-- linked Projects, fields, views, workflows, and current items;
 - repository and external automation that depends on exact label names;
 - contribution and security files defining support or vulnerability routes.
 
@@ -34,9 +32,14 @@ Build a concise table with: area, current state, proposed change, reason, and
 blocked decision. Preserve useful structures. Never delete, rename, or merge
 labels until all references and automation are understood.
 
-If there is no continuing backlog, stop and recommend skipping a Project. If a
-new Project's owner cannot be inferred from the repository, ask once for it. Do
-not guess Project visibility when it could expose private work.
+If there is no continuing backlog, continue with issue forms and labels but
+skip all Project inspection, authorization, setup, and verification, then
+report the board as not applicable. If there is a continuing backlog, ensure
+the token has the `project` scope, using `gh auth refresh -s project` when
+needed, and inspect whether Projects are enabled plus any linked Projects,
+fields, views, workflows, and current items. If a new Project's owner cannot be
+inferred from the repository, ask once for it. Do not guess Project visibility
+when it could expose private work.
 
 ## Create issue intake
 
@@ -131,27 +134,30 @@ Validate YAML and inspect the exact diff and commit range. Commit the issue
 forms on the focused branch, push it, and open a pull request without merging
 it. Verify through GitHub:
 
-- Issues and Projects settings;
+- Issues settings;
 - label names, colors, descriptions, and migrated references;
 - issue-form syntax and whether each form is proposed or live;
 - Project owner, visibility, repository link, fields, option order, existing
-  items, views, filters, sorting, and workflows;
+  items, views, filters, sorting, and workflows when a Project is applicable;
 - a test issue's auto-add and Status behavior only when a disposable test is
   explicitly authorized. Otherwise inspect configuration without adding noise.
 
 Return:
 
-1. `Created or changed`: issue forms, labels, Project fields, views, workflows,
-   and imported items.
+1. `Created or changed`: issue forms and labels, plus applicable Project fields,
+   views, workflows, and imported items.
 2. `Verified`: YAML checks and API-backed settings.
 3. `Migrated`: old-to-new mappings, or `not applicable`.
 4. `Gaps`: forms awaiting merge, unavailable features, missing decisions, or
    failed checks, each with the next action.
-5. `Links`: repository Issues, Project, pull request, and relevant settings.
+5. `Links`: repository Issues, pull request, relevant settings, and the Project
+   when applicable.
 
-Do not claim the tracker is ready until the Project is linked and its fields,
-views, existing items, and workflows are verified. Do not claim issue forms are
-live while their pull request remains unmerged.
+For a repository with a continuing backlog, do not claim the tracker is ready
+until the Project is linked and its fields, views, existing items, and workflows
+are verified. Without a continuing backlog, verify forms and labels and report
+the Project as not applicable. Do not claim issue forms are live while their
+pull request remains unmerged.
 
 ## Boundaries
 
