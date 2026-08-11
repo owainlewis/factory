@@ -25,9 +25,10 @@ Start with the root [README](../README.md) to run Factory.
 
 ## Project operations
 
-- [GitHub repository bootstrap](github-repository-bootstrap.md): reusable agent
-  prompt for repository files, collaboration, CI, security, rules, projects,
-  releases, and verification.
+- [Repository best-practices setup](resources/github/01-repository-best-practices.md):
+  pasteable prompt for a safe, documented, agent-ready GitHub repository.
+- [Issue-tracker setup](resources/github/02-issue-tracker.md): pasteable prompt
+  for issue forms, labels, and a GitHub Project delivery board.
 
 ## Active design work
 
