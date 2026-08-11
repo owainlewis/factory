@@ -10,6 +10,8 @@ import (
 	"github.com/owainlewis/factory/internal/protocol"
 )
 
+const runHealthRecentJobsLimit = 3
+
 func runMetricsFilter(
 	start *time.Time,
 	end time.Time,
@@ -121,8 +123,8 @@ func (s *Store) loadRunHealthMetrics(
 		FROM facts
 		`+jobViewWhere+`
 		ORDER BY admitted_at DESC, job_id DESC
-		LIMIT 100
-	`), args...)
+		LIMIT ?
+	`), append(args, runHealthRecentJobsLimit)...)
 	if err != nil {
 		return err
 	}

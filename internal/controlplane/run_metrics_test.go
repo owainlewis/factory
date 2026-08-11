@@ -85,9 +85,19 @@ func TestRunHealthMetricsUseOneFilteredJobCohort(t *testing.T) {
 	requireRunMetric(t, "success rate", metrics.SuccessRate, 0.5)
 	requireRunMetric(t, "average queue", metrics.AverageQueueTimeSeconds, 20*time.Minute.Seconds())
 	requireRunMetric(t, "average cycle", metrics.AverageCycleTimeSeconds, 75*time.Minute.Seconds())
-	if len(metrics.Jobs) != 5 || len(metrics.Definitions) != 2 || len(metrics.Repositories) != 3 ||
+	if len(metrics.Jobs) != 3 || len(metrics.Definitions) != 2 || len(metrics.Repositories) != 3 ||
 		len(metrics.Workers) != 1 || metrics.Workers[0].Name != "Metrics Worker" {
 		t.Fatalf("Run health drill-down/options = %#v", metrics)
+	}
+	wantRecentAdmissions := []time.Time{
+		now.Add(-30 * time.Minute),
+		now.Add(-45 * time.Minute),
+		now.Add(-time.Hour),
+	}
+	for index, want := range wantRecentAdmissions {
+		if !metrics.Jobs[index].AdmittedAt.Equal(want) {
+			t.Fatalf("recent Job %d admitted at %s, want %s", index, metrics.Jobs[index].AdmittedAt, want)
+		}
 	}
 
 	definitionFiltered, err := store.MetricsFiltered(context.Background(), metricsWindow24Hours, MetricsFilter{
