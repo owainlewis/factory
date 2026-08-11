@@ -62,8 +62,9 @@ flowchart LR
 The control plane owns Routines, schedule admission, Work and Target state,
 repository selection, Worker assignment, and lifecycle history. A Worker owns
 repository preparation, the isolated worktree, the agent process, and cleanup.
-The coding agent owns the engineering actions it performs with its available
-tools. A managed Repository remains infrastructure and never becomes a second
+The coding agent owns the engineering actions it performs. Tool availability
+is configured on each Worker and is not part of a Routine. A managed
+Repository remains infrastructure and never becomes a second
 Routine or Work identity.
 
 ## 4. Proposed design
@@ -100,8 +101,9 @@ duration. It does not show a repository filter or one row per repository.
 Repository detail appears after opening the Work.
 
 Active means at least one Target is nonterminal. Needs attention means active
-Work has a Blocked Target, or Work reached Failed or Partial in the last 24
-hours. Completed counts Work that became terminal in the same rolling window.
+Work has an actionable Blocked Target, or Work reached Failed or Partial in the
+last 24 hours. Routine concurrency throttling is not actionable. Completed
+counts Work that became terminal in the same rolling window.
 These are fixed operational definitions, not user-selectable reporting
 cohorts.
 
@@ -227,7 +229,7 @@ stated goal is to avoid naming debt.
 - A Routine edit uses an expected generation and returns a conflict on stale
   writes.
 - Run now defaults to all configured repositories and has no repository picker.
-- A Routine has one runtime, allowed tool set, timeout, and concurrency limit.
+- A Routine has one runtime, timeout, and concurrency limit.
 - Creating or editing a Routine whose resulting schedule is enabled validates
   the fully resolved scheduled prompt, including occurrence metadata, against
   the 64 KiB resolved-prompt limit. A manual-only Routine may use the full
@@ -267,8 +269,8 @@ GET    /api/v1/overview
 `discard-occurrence` requires the exact pending UTC instant as
 `pending_due_at`; that instant is its idempotency token.
 
-Routine responses contain stable identity, name, prompt, runtime, allowed
-tools, timeout, concurrency limit, generation, archive state, ordered
+Routine responses contain stable identity, name, prompt, runtime, timeout,
+concurrency limit, generation, archive state, ordered
 repositories, optional schedule, next due time, and timestamps. The list omits
 the full prompt and includes repository count, last Work state, and next due
 time. Migration-only history containers are excluded from Routine collection
@@ -277,7 +279,7 @@ responses and cannot be opened, edited, scheduled, copied, or run.
 Work collection responses contain stable identity, Routine ID and name, source
 `manual`, `schedule`, or read-only `provider_history`, optional scheduled time,
 aggregate state, Target counts, admission time, update time, and terminal time.
-They omit prompts, tool lists, repository identities, and provider snapshots.
+They omit prompts, repository identities, and provider snapshots.
 Work detail adds the complete immutable Routine snapshot, optional historical
 provider snapshot, ordered Target details, and Attempt summaries. New Work can
 use only `manual` or `schedule`; `provider_history` is migration-only. The
@@ -296,8 +298,11 @@ precedence:
 3. Otherwise, Blocked when every nonterminal Target is Blocked.
 4. Otherwise, Queued when at least one nonterminal Target is Queued.
 
-A separate `needs_attention` field is true whenever active Work has a Blocked
-Target. The discard-occurrence mutation requires a blocked pending occurrence
+A separate `needs_attention` field uses the same Overview predicate: it is true
+when active Work has an actionable Blocked Target, or when Work reached Failed
+or Partial in the last 24 hours. Targets waiting only for a Routine concurrency
+slot are normal throttling and do not need attention. The discard-occurrence
+mutation requires a blocked pending occurrence
 or a durably paused pending occurrence on a disabled Routine. It is idempotent
 for the same frozen occurrence token, clears only its pending and retry fields,
 records the discarded due instant for audit, and recalculates the first cron
@@ -321,16 +326,22 @@ worker_repositories
 
 `routines` stores schedule fields directly: `schedule_enabled`, `cron`,
 `timezone`, `next_due_at`, `pending_due_at`, `schedule_retry_at`,
-`schedule_retry_count`, `pending_snapshot_json`, `schedule_health_status`,
-`schedule_health_code`, and `schedule_health_message`. `next_due_at` is the next
-unclaimed cron occurrence; `pending_due_at` is the original occurrence
-currently awaiting successful admission; `schedule_retry_at` is only its
-backoff cursor. `pending_snapshot_json` freezes the prompt, repositories,
-runtime, tools, timeout, concurrency, generation, and schedule identity used by
-that occurrence, so later Routine edits and migrated retries cannot change it.
+`schedule_retry_count`, `pending_snapshot_json`, `last_discarded_due_at`,
+`schedule_health_status`, `schedule_health_code`, and
+`schedule_health_message`. `next_due_at` is the next unclaimed cron occurrence;
+`pending_due_at` is the original occurrence currently awaiting successful
+admission; `schedule_retry_at` is only its backoff cursor.
+`last_discarded_due_at` durably stores the discarded occurrence token, serves
+as its audit record, and makes a repeated discard of that token return the
+already-committed result after a lost response. `pending_snapshot_json` freezes
+the prompt, repositories, runtime, timeout, concurrency, generation, and
+schedule identity used by that occurrence, so later Routine edits and migrated
+retries cannot change it.
 `routines.migration_only` identifies a fixed set of archived history containers
 created only during conversion. They satisfy historical Work foreign keys but
 are never authoring resources.
+`routines.read_only` durably marks archived Workflow revision history. These
+Routines remain inspectable but cannot be edited, restored, scheduled, or run.
 `routine_repositories` stores an explicit position and unique Routine and
 Repository pair. `work` stores the Routine snapshot as validated JSON.
 `work_targets` stores the repository ID and canonical identity snapshot,
@@ -350,57 +361,87 @@ so valid cross-model name collisions never block the frozen migration.
    length and block every Definition whose folded prompt exceeds the Routine
    64 KiB limit. Report its Definition ID, base prompt size, input size, and
    folded size so the operator can shorten it. A Definition with no known scope
-   becomes a draft Routine with no repositories.
-3. Merge a Definition-backed schedule into its Routine only when it is that
-   Definition's sole schedule, the Routine does not already own a schedule, and
-   its resolved prompt, repository scope, runtime, allowed tools, timeout, and
-   concurrency all equal the migrated Routine. Every additional cadence and
-   every schedule with different parameters or execution settings becomes a
-   separately named Routine whose configuration contains those resolved
-   values. Record every split in the migration report.
+   becomes a draft Routine with no repositories. An archived Definition remains
+   archived as a Routine and cannot start Work until explicitly restored.
+3. Convert every legacy schedule to its own separately named Routine. A legacy
+   Definition has no repository scope, so inferring that its sole schedule is
+   also the Definition's canonical scope would change the draft Definition.
+   The schedule Routine contains its fully resolved prompt, repository scope,
+   runtime, timeout, concurrency, and cadence. Legacy tool restrictions are
+   intentionally not converted because Worker setup owns tool availability.
+   Record every mapping in the migration report.
+   Copy the schedule's enabled flag exactly. A disabled schedule remains
+   disabled while retaining its cron and timezone.
+   A schedule whose source Definition is archived becomes an archived Routine
+   with scheduling disabled and its cron and timezone retained. Migration must
+   not make a cadence executable when its dependency was unavailable before the
+   upgrade.
+   Before folding parameters, block and report every schedule whose override
+   keys are no longer declared by its current Definition. For every remaining
+   schedule, resolve the current defaults and overrides and append the maximum
+   scheduled-occurrence metadata used by admission. Block and report every
+   final prompt over 64 KiB.
    Before conversion, block any schedule or frozen pending occurrence whose
    repository scope exceeds 100. Report the Automation or occurrence ID and
    repository count so the operator can reduce its scope.
    When no unadmitted occurrence exists, copy the exact legacy
    `automation_schedule_triggers.next_due_at` cursor to the Routine.
-4. Convert each legacy schedule's unadmitted scheduled occurrence
+4. Convert every Workflow revision into a zero-repository Routine, including
+   revisions that never produced a Task or Automation. Use
+   `<title> · workflow N · revision R` and the revision ID, preserve the exact
+   instructions and summary as labelled prompt sections, keep the current
+   revision as the editable draft, and archive every older revision as
+   read-only history. All
+   revisions of a disabled Workflow are archived. Because Workflows had no
+   runtime settings, use the Routine defaults: Codex, a two-hour timeout, and
+   concurrency 10. Historical Tasks continue to preserve their exact revision
+   identity in immutable Work snapshots.
+5. Convert each legacy schedule's unadmitted scheduled occurrence
    into the pending fields on its mapped Routine. Copy `scheduled_at` to
    `pending_due_at`, copy `retry_at` to `schedule_retry_at`, initialize
    `schedule_retry_count` to zero because the legacy schema did not store a
-   count, and copy its frozen Definition, parameter, repository, runtime, tool,
+   count, and copy its frozen Definition, parameters, repositories, runtime,
    timeout, concurrency, and schedule identity into `pending_snapshot_json`.
    Derive `next_due_at` from the first cron instant after the pending
    occurrence. Every occurrence whose legacy state is `failed` becomes a
    blocked pending occurrence with its diagnostic intact, even when the legacy
    row has a retry cursor; it remains visible and explicitly discardable rather
-   than becoming an unreachable retry. If one legacy
-   schedule has more than one unadmitted pending
-   occurrence, or a frozen snapshot is incomplete, block migration and report
-   every occurrence ID rather than dropping or relabelling it. Also block and
-   report every unadmitted schedule `run_now` occurrence whose `scheduled_at`
-   is null and `run_request_key` is set; it cannot be represented by scheduled
-   pending fields and has no admitted Work to convert.
+   than becoming an unreachable retry. If one legacy schedule has more than one
+   unadmitted occurrence across the legacy `pending`, `dispatching`, and
+   `failed` states, or a frozen snapshot is incomplete, block migration and
+   report every occurrence ID rather than dropping or relabelling it. Also
+   block and report every unadmitted schedule `run_now` occurrence whose
+   `scheduled_at` is null and `run_request_key` is set; it cannot be represented
+   by scheduled pending fields and has no admitted Work to convert.
    A schedule trigger whose `definition_id` is null and whose Automation still
    points at a Workflow represents an unfinished prior product-model upgrade.
    Block migration and report its Automation and Workflow IDs. The operator
    must complete that existing upgrade before this migration can safely resolve
    and freeze its prompt. Never drop or silently disable that cadence.
-5. Convert Runs to Work and Jobs plus linked Tasks to Work Targets. Copy the
-   resolved prompt and all lifecycle links. Preserve `webhook` and other
-   provider Run provenance as a `provider_history` source with its immutable
-   provider kind and occurrence snapshot.
-6. Convert every remaining reconstructable Task before dropping legacy tables.
+6. Convert Runs to Work and Jobs plus linked Tasks to Work Targets. Copy the
+   resolved prompt and all lifecycle links. For an admitted schedule, also copy
+   the occurrence ID, kind, scheduled instant or run-now request identity,
+   cron, and timezone into the immutable Work snapshot. Preserve `webhook` and
+   other provider Run provenance as a `provider_history` source with its immutable
+   provider kind and occurrence snapshot. Normalize the legacy Run concurrency
+   block reason to the canonical Routine concurrency reason so migrated normal
+   throttling does not become an attention alert. A missing block reason remains
+   actionable in both Work detail and Overview.
+7. Convert every remaining reconstructable Task before dropping legacy tables.
    Create at most three deterministic, archived, migration-only history
    containers for workflow, direct-manual, and provider Task history. Point
    each converted Work at the matching container, but keep its exact prompt,
-   repositories, runtime, tools, timeout, concurrency, legacy source identity,
-   and provider occurrence solely in the immutable Work snapshot. Tasks linked
+   repositories, runtime, timeout, concurrency, legacy source identity, and
+   provider occurrence solely in the immutable Work snapshot. Preserve legacy
+   tool restrictions only as read-only audit metadata on migrated Work. Tasks
+   linked
    through disabled provider occurrences use `provider_history`; other Tasks
    use manual Work. Copy every Execution, Attempt, event, result, failure, and
    retained-worktree link. Never create one Routine per historical Task.
-7. Before creating Routines, preflight the post-split operator Routine count:
-   one Routine for each Definition plus one for each schedule that cannot merge
-   under step 3. Block migration and report the source and proposed split IDs
+8. Before creating Routines, preflight the editable Routine count: one Routine
+   for each Definition, schedule, and current Workflow revision. Archived
+   read-only Workflow revision history does not consume this cap. Block
+   migration and report the source and proposed Routine IDs
    when that exact count would exceed 500. Also block completion if any
    remaining Task cannot be reconstructed exactly,
    active legacy executions, enabled provider-driven Automations, unfinished
@@ -413,12 +454,12 @@ so valid cross-model name collisions never block the frozen migration.
    but no truthful Work lifecycle. Report every blocked occurrence, retained
    Task ID snapshot, external identity, and diagnostic instead of silently
    dropping or relabelling that audit identity.
-8. Validate counts, identifiers, terminal outcomes, Attempt events, and
+9. Validate counts, identifiers, terminal outcomes, Attempt events, and
    retained-worktree links.
-9. Drop Definition, Workflow, Automation, Occurrence, Run, Job, and Task
+10. Drop Definition, Workflow, Automation, Occurrence, Run, Job, and Task
    tables, indexes, triggers, and mutation ledgers. Rename no legacy table into
    a compatibility alias.
-10. Commit the migration and retain the backup path in the completion report.
+11. Commit the migration and retain the backup path in the completion report.
 
 Provider-driven Automation configuration is not silently converted into a
 schedule. An enabled provider Automation blocks migration. A disabled one is
@@ -507,8 +548,9 @@ sensitive source or operator data. List APIs omit full prompts. Detail APIs are
 available only on the operator listener. Logs must use IDs and sizes rather
 than prompt bodies.
 
-Existing limits remain unless renamed. Operator-authored Routines are capped at
-500; the fixed migration-only history containers do not count toward that cap.
+Existing limits remain unless renamed. Editable Routines are capped at 500;
+archived read-only Workflow revisions and the fixed migration-only history
+containers do not count toward that cap.
 Repository scope is capped at 100 per Routine, prompt size at 64 KiB, timeout
 at 8 hours, and concurrency at 1 to 100 with default 10. Overview returns at
 most ten recent Work rows and five upcoming Routines. Scheduler recovery
@@ -520,7 +562,8 @@ SQLite.
 - `AC-1`: Primary navigation contains Overview, Work, Routines, Workers, and
   Repositories only.
 - `AC-2`: An operator can create one Routine with a prompt and N repositories,
-  then Run now without creating another resource.
+  then Run now without creating another resource. A Routine has no tool list;
+  tool availability comes only from manual Worker setup.
 - `AC-3`: Enabling a schedule on that Routine creates the same Work and Target
   shape as Run now.
 - `AC-4`: Work table, list, and kanban views show the same records and open one
@@ -535,8 +578,10 @@ SQLite.
 - `AC-9`: The final database contains no Definition, Workflow, Automation,
   Occurrence, Run, Job, or Task tables, columns, indexes, triggers, or
   foreign-key names.
-- `AC-10`: The public API and emitted operator text contain no Definition,
-  Runbook, Automation, Run, Job, or Task resource names.
+- `AC-10`: After migration, the public API and normal emitted operator text
+  contain no Definition, Runbook, Automation, Run, Job, or Task resource names.
+  Migration previews, blockers, and completion reports may name legacy
+  resources when required to identify the exact source record.
 - `AC-11`: A migration either preserves all compatible history and completes
   atomically or leaves the original database unchanged with actionable
   blockers.
