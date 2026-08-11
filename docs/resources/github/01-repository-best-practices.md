@@ -21,8 +21,8 @@ Inspect the current directory, including hidden files. Determine:
 
 - Git initialization, commits, branches, worktrees, uncommitted changes, and
   ignored and untracked files;
-- whether `origin` exists, whether it points to GitHub, and whether that GitHub
-  repository exists;
+- all configured remotes, which one targets the intended GitHub repository,
+  and whether that GitHub repository exists;
 - the remote default branch and whether local history has diverged from it;
 - the authenticated GitHub account and scopes from `gh auth status`;
 - project purpose, stack, manifests, lockfiles, task runners, generated files,
@@ -40,32 +40,39 @@ Handle the discovered state as follows:
    is a GitHub URL, preserve its exact `OWNER/REPO` target even when that
    repository does not exist. If there is no GitHub remote, use the directory
    name as the proposed repository name and the authenticated GitHub user as
-   the proposed owner. Never replace a non-GitHub `origin` or add a second
-   remote without approval.
+   the proposed owner. If `origin` is not a GitHub remote, preserve it and ask
+   whether to add GitHub under a distinct remote name or replace `origin`.
+   Never make either remote change without approval.
+   Record the resolved local name as `GITHUB_REMOTE`; use it for every GitHub
+   fetch, push, comparison, tracking branch, and remote URL verification.
 3. If there is no project code or manifest, do not scaffold an application or
    invent commands and architecture.
 4. If there is no local commit history and no remote default branch, the
-   complete initial setup may be committed and pushed directly to `main`
-   because no protected default branch exists. Inspect every file for secrets,
-   local configuration, generated output, and large binaries before including
-   it. If a remote default branch exists, follow step 6 instead.
+   complete initial setup may be committed and pushed directly to `main` on
+   `GITHUB_REMOTE` because no protected default branch exists. Inspect every
+   file for secrets, local configuration, generated output, and large binaries
+   before including it. If a remote default branch exists, follow step 6
+   instead.
 5. If local history exists and there is no remote default branch, create the
-   GitHub repository when needed, publish the existing default branch without
-   rewriting it, then make setup changes on a focused branch. Rename an
-   unpublished branch to `main` only when no configuration depends on its
-   current name.
-6. If the remote default branch exists, fetch it and compare histories. Base the
-   setup branch on `origin/DEFAULT_BRANCH`, not an arbitrary current branch. If
-   local work prevents a clean switch, use an isolated worktree from the remote
-   default branch or stop and explain the conflict. Before publication, confirm
-   that the pull request contains no unrelated commits.
+   GitHub repository when needed, publish the existing default branch to
+   `GITHUB_REMOTE` without rewriting it, then make setup changes on a focused
+   branch. Rename an unpublished branch to `main` only when no configuration
+   depends on its current name.
+6. If the remote default branch exists, fetch it from `GITHUB_REMOTE` and compare
+   histories. Base the setup branch on `GITHUB_REMOTE/DEFAULT_BRANCH`, not an
+   arbitrary current branch. If local work prevents a clean switch, use an
+   isolated worktree from the remote default branch or stop and explain the
+   conflict. Before publication, confirm that the pull request contains no
+   unrelated commits.
 
 Infer facts before asking questions. Ask once, in one compact message, only for:
 
 - a one-sentence purpose when neither code nor docs establish one;
 - the intended GitHub owner, and repository name when needed, if no existing
   GitHub remote or local evidence resolves the target;
-- public or private visibility before creating a GitHub repository;
+- the remote-name plan when `origin` points somewhere other than GitHub;
+- public, private, or internal visibility before creating a GitHub repository;
+  offer internal only when the resolved owner supports it;
 - an open-source license when a public repository is intended to be open
   source;
 - maintainers when code ownership or mandatory reviews depend on them.
@@ -77,11 +84,13 @@ guess legal terms or make a repository public.
 When the GitHub repository is missing, create the exact resolved `OWNER/REPO`
 from the local source with `gh repo create` after resolving visibility. If a
 matching GitHub `origin` already exists, preserve it and do not pass
-`--remote`; otherwise add the created repository as `origin`. Do not rely on
-the source directory name when an existing remote specifies a different
-repository name. Do not ask GitHub to generate a README, license, or
-`.gitignore` that could conflict with local files. Review local files and
-verify the final remote URL before the first push.
+`--remote`, then record `origin` as `GITHUB_REMOTE`. If no `origin` exists, add
+the created repository as `origin` and record it. If a non-GitHub `origin`
+exists, follow the approved remote-name plan, record the chosen name, and never
+overwrite it implicitly. Do not rely on the source directory name when an
+existing remote specifies a different repository name. Do not ask GitHub to
+generate a README, license, or `.gitignore` that could conflict with local
+files. Review local files and verify `GITHUB_REMOTE` before the first push.
 
 ## Operating rules
 

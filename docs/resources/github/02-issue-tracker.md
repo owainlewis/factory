@@ -16,9 +16,10 @@ branch rules, security features, releases, deployments, or production access.
 Resolve the repository and its default branch from `origin`. Verify GitHub CLI
 authentication and repository access before making mutations.
 
-Fetch the remote default branch. Create the issue-form branch from
-`origin/DEFAULT_BRANCH`, not an arbitrary current branch. If local work prevents
-a clean switch, use an isolated worktree or stop and explain the conflict.
+Fetch and inspect the remote default branch. If committed issue-form changes
+are needed, create their focused branch from `origin/DEFAULT_BRANCH`, not an
+arbitrary current branch. If local work prevents a clean switch, use an
+isolated worktree or stop and explain the conflict.
 
 Inspect:
 
@@ -50,8 +51,8 @@ post-merge action. If Issues are already enabled, do not disable them. Create
 or improve YAML issue forms under `.github/ISSUE_TEMPLATE/`:
 
 - `bug_report.yml`: problem, expected behavior, minimal reproduction, version,
-  environment, sanitized evidence, duplicate search, and a reminder to use the
-  private security route;
+  environment, sanitized evidence, duplicate search, and, only when one exists,
+  a reminder to use the verified private security route;
 - `feature_request.yml`: user or operational problem, observable outcome,
   constraints, possible approach, alternatives, and sanitized context;
 - `task.yml`: outcome, context, acceptance criteria, proof or checks,
@@ -133,9 +134,11 @@ criteria, checks, dependencies, and what is out of scope.
 
 ## Verify and hand off
 
-Validate YAML and inspect the exact diff and commit range. Commit the issue
-forms on the focused branch, push it, and open a pull request without merging
-it. Verify through GitHub:
+Validate YAML and inspect the exact diff and commit range. When issue-form files
+changed, commit them on the focused branch, push it, and open a pull request
+without merging it. When the supported forms are already correct on the
+default branch, do not create an empty commit, branch, or pull request; report
+those steps as not applicable. Verify through GitHub:
 
 - Issues settings;
 - label names, colors, descriptions, and migrated references;
