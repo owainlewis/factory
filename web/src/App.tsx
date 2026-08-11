@@ -70,19 +70,25 @@ export function App() {
   const activeWorkMode = route.page === "work" || route.page === "work-detail" ? route.mode : "table";
   return <div className="app-shell">
     <aside className={`sidebar ${mobileNavOpen ? "sidebar-open" : ""}`}>
-      <div className="brand"><div className="brand-mark"><Boxes size={18} strokeWidth={2.2} /></div><div><span className="brand-name">Factory</span><span className="brand-subtitle">control plane</span></div></div>
+      <div className="brand"><div className="brand-mark" aria-hidden="true"><Boxes size={18} strokeWidth={2.2} /></div><div><span className="brand-name">Factory</span><span className="brand-subtitle">control plane</span></div></div>
       <nav aria-label="Primary navigation">
-        <Nav active={route.page === "overview"} icon={<Gauge size={17} />} label="Overview" onClick={() => navigate({ page: "overview" })} />
-        <Nav active={route.page === "routines"} icon={<Repeat2 size={17} />} label="Routines" onClick={() => navigate({ page: "routines" })} />
-        <Nav active={route.page === "work" || route.page === "work-detail"} icon={<ListChecks size={17} />} label="Work" onClick={() => navigate({ page: "work", mode: activeWorkMode })} />
-        <div className="nav-section-label">INFRASTRUCTURE</div>
-        <Nav active={route.page === "workers" || route.page === "worker"} icon={<Bot size={17} />} label="Workers" onClick={() => navigate({ page: "workers" })} />
-        <Nav active={route.page === "repositories" || route.page === "repository"} icon={<GitBranch size={17} />} label="Repositories" onClick={() => navigate({ page: "repositories" })} />
+        <div className="nav-items">
+          <Nav active={route.page === "overview"} icon={<Gauge size={17} />} label="Overview" onClick={() => navigate({ page: "overview" })} />
+          <Nav active={route.page === "routines"} icon={<Repeat2 size={17} />} label="Routines" onClick={() => navigate({ page: "routines" })} />
+          <Nav active={route.page === "work" || route.page === "work-detail"} icon={<ListChecks size={17} />} label="Work" onClick={() => navigate({ page: "work", mode: activeWorkMode })} />
+        </div>
+        <div className="nav-section" role="group" aria-labelledby="infrastructure-nav-label">
+          <div className="nav-section-label" id="infrastructure-nav-label">Infrastructure</div>
+          <div className="nav-items">
+            <Nav active={route.page === "workers" || route.page === "worker"} icon={<Bot size={17} />} label="Workers" onClick={() => navigate({ page: "workers" })} />
+            <Nav active={route.page === "repositories" || route.page === "repository"} icon={<GitBranch size={17} />} label="Repositories" onClick={() => navigate({ page: "repositories" })} />
+          </div>
+        </div>
       </nav>
-      <div className="sidebar-foot"><span className="local-dot" /> Local control plane</div>
+      <div className="sidebar-foot"><span className="local-dot" aria-hidden="true" /> Local control plane</div>
     </aside>
     <div className="main-shell">
-      <header className="topbar"><button className="icon-button mobile-menu" aria-label="Toggle navigation" onClick={() => setMobileNavOpen((open) => !open)}>{mobileNavOpen ? <X size={19} /> : <Menu size={19} />}</button><div className="topbar-title">{pageTitle(route)}</div><button className="button button-primary" onClick={() => navigate({ page: "routines", create: true })}><Plus size={15} /> New Routine</button></header>
+      <header className="topbar"><button className="icon-button mobile-menu" aria-label="Toggle navigation" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen((open) => !open)}>{mobileNavOpen ? <X size={19} /> : <Menu size={19} />}</button><div className="topbar-title">{pageTitle(route)}</div><button className="button button-primary" onClick={() => navigate({ page: "routines", create: true })}><Plus size={15} /> New Routine</button></header>
       <main>
         {route.page === "overview" && <RoutineOverview onWork={(id) => navigate({ page: "work-detail", id, mode: "table" })} onRoutine={(id) => navigate({ page: "routines", id })} />}
         {route.page === "routines" && <RoutinesView key={`${route.id ?? "list"}:${route.create ?? false}`} initialID={route.id} createOpen={route.create} onWork={(id) => navigate({ page: "work-detail", id, mode: "table" })} />}

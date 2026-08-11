@@ -64,6 +64,20 @@ test("keeps Overview operational and the product navigation small", async ({ pag
   await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
   await expect(page.getByText("Active work", { exact: true })).toBeVisible();
   await expect(page.getByText("Completed · 24h", { exact: true })).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "Primary navigation" }).getByRole("button")).toHaveCount(5);
+  const navigation = page.getByRole("navigation", { name: "Primary navigation" });
+  await expect(navigation.getByRole("button")).toHaveCount(5);
+  await expect(navigation.getByRole("group", { name: "Infrastructure" }).getByRole("button")).toHaveText([
+    "Workers",
+    "Repositories",
+  ]);
   await expect(page.getByText(routineName, { exact: true })).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 560 });
+  await expect(navigation.getByRole("button", { name: "Overview", exact: true })).toBeHidden();
+  await page.keyboard.press("Tab");
+  const mobileMenu = page.getByRole("button", { name: "Toggle navigation" });
+  await expect(mobileMenu).toBeFocused();
+  await mobileMenu.click();
+  await expect(mobileMenu).toHaveAttribute("aria-expanded", "true");
+  await expect(navigation.getByRole("button", { name: "Overview", exact: true })).toBeVisible();
 });
