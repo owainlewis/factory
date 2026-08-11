@@ -34,11 +34,25 @@ describe("RoutinesView", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Run now" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("The response was lost.");
+    await userEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(runRoutine).toHaveBeenCalledTimes(2);
+    expect(runRoutine.mock.calls[1][1]).toBe(runRoutine.mock.calls[0][1]);
+  });
+
+  it("uses a new Run request key after the Routine generation changes", async () => {
+    const runnable = { ...routine, repository_count: 1 };
+    vi.spyOn(api, "routines").mockResolvedValue([runnable]);
+    const runRoutine = vi.spyOn(api, "runRoutine").mockRejectedValue(new Error("The response was lost."));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><RoutinesView onWork={() => undefined} /></QueryClientProvider>);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Run now" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The response was lost.");
     client.setQueryData(["routines", false], [{ ...runnable, name: "Updated Routine", generation: runnable.generation + 1 }]);
     expect(await screen.findByText("Updated Routine")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Run now" }));
     expect(runRoutine).toHaveBeenCalledTimes(2);
-    expect(runRoutine.mock.calls[1][1]).toBe(runRoutine.mock.calls[0][1]);
+    expect(runRoutine.mock.calls[1][1]).not.toBe(runRoutine.mock.calls[0][1]);
   });
 
   it("keeps the editor open and shows archive failures", async () => {

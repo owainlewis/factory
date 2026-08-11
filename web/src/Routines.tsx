@@ -10,10 +10,10 @@ export function RoutinesView({ initialID, createOpen, onWork }: { initialID?: st
   const client = useQueryClient();
   const [editing, setEditing] = useState<Routine | "new" | null>(createOpen ? "new" : null);
   const [showArchived, setShowArchived] = useState(false);
-  const runRequests = useRef(new Map<string, string>());
+  const runRequests = useRef(new Map<string, { generation: number; requestKey: string }>());
   const query = useQuery({ queryKey: ["routines", showArchived], queryFn: () => api.routines(showArchived) });
   const run = useMutation({
-    mutationFn: ({ id, requestKey }: { id: string; requestKey: string }) => api.runRoutine(id, requestKey),
+    mutationFn: ({ id, requestKey }: { id: string; generation: number; requestKey: string }) => api.runRoutine(id, requestKey),
     onSuccess: (detail, request) => {
       runRequests.current.delete(request.id);
       void client.invalidateQueries({ queryKey: ["overview"] });
@@ -65,9 +65,10 @@ export function RoutinesView({ initialID, createOpen, onWork }: { initialID?: st
           <div className="routine-actions">
             <button className="icon-button" aria-label={`${routine.read_only ? "View" : "Edit"} ${routine.name}`} onClick={() => openRoutine(routine.id)}>{routine.read_only ? <Eye size={15} /> : <Pencil size={15} />}</button>
             <button className="button button-secondary" title={routine.repository_count === 0 ? "Add a repository before running" : undefined} disabled={routine.read_only || routine.archived || routine.repository_count === 0 || run.isPending} onClick={() => {
-              const requestKey = runRequests.current.get(routine.id) ?? crypto.randomUUID();
-              runRequests.current.set(routine.id, requestKey);
-              run.mutate({ id: routine.id, requestKey });
+              const previous = runRequests.current.get(routine.id);
+              const requestKey = previous?.generation === routine.generation ? previous.requestKey : crypto.randomUUID();
+              runRequests.current.set(routine.id, { generation: routine.generation, requestKey });
+              run.mutate({ id: routine.id, generation: routine.generation, requestKey });
             }}><Play size={14} /> Run now</button>
           </div>
         </article>)}
