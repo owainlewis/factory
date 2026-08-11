@@ -246,6 +246,7 @@ GET    /api/v1/routines/{routine_id}
 PUT    /api/v1/routines/{routine_id}
 PUT    /api/v1/routines/{routine_id}/archived
 POST   /api/v1/routines/{routine_id}/run
+POST   /api/v1/routines/{routine_id}/discard-occurrence
 
 GET    /api/v1/work
 GET    /api/v1/work/{work_id}
@@ -256,6 +257,9 @@ POST   /api/v1/work/{work_id}/targets/{target_id}/cancel
 GET    /api/v1/overview
 ```
 
+`discard-occurrence` requires the exact pending UTC instant as
+`pending_due_at`; that instant is its idempotency token.
+
 Routine responses contain stable identity, name, prompt, runtime, allowed
 tools, timeout, concurrency limit, generation, archive state, ordered
 repositories, optional schedule, next due time, and timestamps. The list omits
@@ -263,23 +267,34 @@ the full prompt and includes repository count, last Work state, and next due
 time. Migration-only history containers are excluded from Routine collection
 responses and cannot be opened, edited, scheduled, copied, or run.
 
-Work responses contain stable identity, Routine ID, complete Routine snapshot,
-source `manual`, `schedule`, or read-only `provider_history`, optional scheduled
-time, optional historical provider snapshot, aggregate state, Target counts,
-admission time, update time, and terminal time. New Work can use only `manual`
-or `schedule`; `provider_history` is migration-only. Work detail contains
-ordered Target details and Attempt summaries. The Routine foreign key may be
-nullable only after a future hard-delete feature; V1 archives Routines instead.
+Work collection responses contain stable identity, Routine ID and name, source
+`manual`, `schedule`, or read-only `provider_history`, optional scheduled time,
+aggregate state, Target counts, admission time, update time, and terminal time.
+They omit prompts, tool lists, repository identities, and provider snapshots.
+Work detail adds the complete immutable Routine snapshot, optional historical
+provider snapshot, ordered Target details, and Attempt summaries. New Work can
+use only `manual` or `schedule`; `provider_history` is migration-only. The
+Routine foreign key may be nullable only after a future hard-delete feature;
+V1 archives Routines instead.
 
 Target state is one of Blocked, Queued, Preparing, Running, Succeeded, Failed,
-or Cancelled. Work state is derived rather than updated independently. Work is
-Queued before any Target starts when at least one Target is Queued. It is
-Blocked when every nonterminal Target is Blocked. It is Running when any Target
-is Preparing or Running, or when terminal and nonterminal Targets coexist. It
-is Succeeded when all Targets succeeded, Cancelled when all Targets were
-cancelled, Failed when no Target succeeded and at least one failed, and Partial
-for every other mix of terminal outcomes. A separate `needs_attention` field
-is true whenever an active Work has a Blocked Target.
+or Cancelled. Work state is derived with this ordered, mutually exclusive
+precedence:
+
+1. When no Target is nonterminal: Succeeded when all succeeded, Cancelled when
+   all were cancelled, Failed when none succeeded and at least one failed, and
+   Partial for every other terminal mix.
+2. Otherwise, Running when any Target is Preparing or Running, or when any
+   terminal and nonterminal Targets coexist.
+3. Otherwise, Blocked when every nonterminal Target is Blocked.
+4. Otherwise, Queued when at least one nonterminal Target is Queued.
+
+A separate `needs_attention` field is true whenever active Work has a Blocked
+Target. The discard-occurrence mutation requires a blocked pending occurrence,
+is idempotent for the same frozen occurrence token, clears only its pending and
+retry fields, records the discarded due instant for audit, and recalculates the
+first cron instant strictly after the current time. A stale token conflicts so
+an operator cannot discard a newer occurrence accidentally.
 
 The final SQLite model uses these primary tables:
 
