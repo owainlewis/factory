@@ -1261,6 +1261,12 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	if input.Name == "" || len(input.Name) > 200 {
 		return protocol.Worker{}, invalid("invalid_worker", "worker name is required and must be at most 200 bytes")
 	}
+	if input.WorkClaimProtocolVersion != protocol.WorkClaimProtocolVersion {
+		return protocol.Worker{}, conflict(
+			"worker_upgrade_required",
+			"the Worker uses an incompatible Work claim protocol; upgrade it before reconnecting",
+		)
+	}
 	labels, err := normalizeWorkerLabels(input.Labels)
 	if err != nil {
 		return protocol.Worker{}, err
@@ -1481,15 +1487,18 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO workers(
-			id, name, labels_json, worker_version, runtime, runtime_version, capacity, active_count,
+			id, name, labels_json, worker_version, work_claim_protocol_version,
+			runtime, runtime_version, capacity, active_count,
 			health, capabilities_json, source_access_json, accepts_managed_repositories,
 			managed_repository_ids_json, retained_worktrees_json,
 			weekly_limit_used_percent, weekly_limit_resets_at, registered_at, last_heartbeat
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name=excluded.name, labels_json=excluded.labels_json,
-			worker_version=excluded.worker_version, runtime_version=excluded.runtime_version,
+			worker_version=excluded.worker_version,
+			work_claim_protocol_version=excluded.work_claim_protocol_version,
+			runtime_version=excluded.runtime_version,
 			capacity=excluded.capacity, active_count=excluded.active_count, health=excluded.health,
 			capabilities_json=excluded.capabilities_json,
 			source_access_json=excluded.source_access_json,
@@ -1499,7 +1508,8 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 			weekly_limit_used_percent=excluded.weekly_limit_used_percent,
 			weekly_limit_resets_at=excluded.weekly_limit_resets_at,
 			last_heartbeat=excluded.last_heartbeat
-	`, workerID, input.Name, labelsJSON, input.WorkerVersion, input.Runtime, input.RuntimeVersion,
+	`, workerID, input.Name, labelsJSON, input.WorkerVersion, input.WorkClaimProtocolVersion,
+		input.Runtime, input.RuntimeVersion,
 		input.Capacity, input.ActiveCount, input.Health, capabilitiesJSON, sourceAccessJSON,
 		input.AcceptsManagedRepositories, managedRepositoryIDsJSON, retained,
 		weeklyLimitUsedPercent, weeklyLimitResetsAt, now, now)
@@ -2078,6 +2088,7 @@ func (s *Store) selectWorkRoute(
 		LEFT JOIN worker_repositories wr
 		  ON wr.worker_id = w.id AND wr.repository_id = ?
 		WHERE w.health = 'healthy'
+		  AND w.work_claim_protocol_version = ?
 		  AND w.last_heartbeat >= ?
 		  AND (? = '' OR w.id = ?)
 		  AND (? = 0 OR COALESCE(wr.advertised, 0) = 1)
@@ -2135,7 +2146,8 @@ func (s *Store) selectWorkRoute(
 		        AND terminal_attempt.capacity_acknowledged = 0
 		  ) < ?
 		ORDER BY w.id
-	`, repositoryID, now-protocol.WorkerOnlineWindow.Milliseconds(), workerID, workerID,
+	`, repositoryID, protocol.WorkClaimProtocolVersion,
+		now-protocol.WorkerOnlineWindow.Milliseconds(), workerID, workerID,
 		requireAdvertisedRepository,
 		workerRepositoryIdentity, repositoryID,
 		repositoryID, protocol.MaxRepositoryCacheEntries,

@@ -1,23 +1,87 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft, Columns3, List, RotateCcw, Rows3, StopCircle } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { duration, eventSummary, timeAgo } from "./format";
 import type { Attempt, AttemptEvent, WorkItem, WorkState, WorkTarget } from "./types";
-import { EmptyState, ErrorState, InlineError, LoadingState, StatusBadge, ViewHeader } from "./ui";
+import { EmptyState, ErrorState, InlineError, LoadingState, StaleBanner, StatusBadge, ViewHeader } from "./ui";
 
 export type WorkViewMode = "table" | "list" | "kanban";
 
+interface WorkHistory {
+  items: WorkItem[];
+  cursor: string | null;
+  headCursor: string | null;
+}
+
+const workHistoryKey = ["work-history"] as const;
+
 export function RoutineWorkView({ mode, onMode, onWork }: { mode: WorkViewMode; onMode: (mode: WorkViewMode) => void; onWork: (id: string) => void }) {
-  const query = useQuery({ queryKey: ["work"], queryFn: () => api.workItems(), refetchInterval: 5_000 });
+  const client = useQueryClient();
+  const cachedHistory = client.getQueryData<WorkHistory>(workHistoryKey);
+  const [history, setHistory] = useState<WorkItem[]>(cachedHistory?.items ?? []);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(cachedHistory?.cursor ?? null);
+  const previousHeadCursor = useRef<string | null>(cachedHistory?.headCursor ?? null);
+  const query = useQuery({ queryKey: ["work", "head"], queryFn: () => api.workItems(), refetchInterval: 5_000 });
+  const headIDs = new Set(query.data?.work.map((work) => work.id) ?? []);
+  const activeHistoricalIDs = history
+    .filter((work) => !headIDs.has(work.id) && activeWorkState(work.state))
+    .map((work) => work.id)
+    .sort();
+  const activeHistory = useQuery({
+    queryKey: ["work-history", "active", activeHistoricalIDs],
+    queryFn: async () => Promise.all(activeHistoricalIDs.map(async (id) => (await api.workItem(id)).work)),
+    enabled: activeHistoricalIDs.length > 0,
+    refetchInterval: (activeQuery) => activeQuery.state.data?.every((work) => !activeWorkState(work.state)) ? false : 5_000,
+  });
+  const refreshedHistory = useMemo(
+    () => updateWorkItems(history, activeHistory.data ?? []),
+    [activeHistory.data, history],
+  );
+  const loadHistory = useMutation({
+    mutationFn: ({ cursor }: { cursor: string; headCursor: string | null }) => api.workItems(cursor),
+    onSuccess: (page, request) => {
+      setHistory((current) => mergeWorkItems(page.work, updateWorkItems(current, activeHistory.data ?? [])));
+      if (previousHeadCursor.current === request.headCursor) setHistoryCursor(page.next_cursor);
+    },
+  });
+  useEffect(() => {
+    if (!query.data) return;
+    if (previousHeadCursor.current !== query.data.next_cursor) setHistoryCursor(query.data.next_cursor);
+    previousHeadCursor.current = query.data.next_cursor;
+  }, [query.data]);
+  useEffect(() => {
+    client.setQueryData<WorkHistory>(workHistoryKey, {
+      items: refreshedHistory,
+      cursor: historyCursor,
+      headCursor: previousHeadCursor.current,
+    });
+  }, [client, historyCursor, query.data, refreshedHistory]);
   if (query.isPending) return <LoadingState label="Loading Work" />;
   if (query.isError) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
-  const items = query.data?.work ?? [];
+  const items = mergeWorkItems(query.data?.work ?? [], refreshedHistory);
+  const error = loadHistory.error ?? activeHistory.error;
   return <div className="page page-work">
-    <ViewHeader title="Work" fetching={query.isFetching} updatedAt={query.dataUpdatedAt} onRefresh={() => void query.refetch()} />
+    <ViewHeader title="Work" fetching={query.isFetching || activeHistory.isFetching || loadHistory.isPending} updatedAt={Math.max(query.dataUpdatedAt, activeHistory.dataUpdatedAt)} onRefresh={() => void query.refetch()} />
+    {error && <StaleBanner error={error} />}
     <div className="view-toolbar"><p>Every Routine invocation, grouped across its repository targets.</p><ViewSwitch mode={mode} onMode={onMode} /></div>
     {!items.length ? <EmptyState icon={<Rows3 size={22} />} title="No Work yet" description="Run a Routine now or wait for its next schedule." /> : mode === "table" ? <WorkTable items={items} onWork={onWork} /> : mode === "list" ? <WorkList items={items} onWork={onWork} /> : <WorkBoard items={items} onWork={onWork} />}
+    {historyCursor && <div className="load-more-row"><button className="button button-secondary" disabled={loadHistory.isPending} onClick={() => loadHistory.mutate({ cursor: historyCursor, headCursor: previousHeadCursor.current })}>{loadHistory.isPending ? "Loading…" : "Load more Work"}</button></div>}
   </div>;
+}
+
+function activeWorkState(state: WorkState): boolean {
+  return state === "blocked" || state === "queued" || state === "running";
+}
+
+function mergeWorkItems(primary: WorkItem[], secondary: WorkItem[]): WorkItem[] {
+  const primaryIDs = new Set(primary.map((work) => work.id));
+  return [...primary, ...secondary.filter((work) => !primaryIDs.has(work.id))];
+}
+
+function updateWorkItems(current: WorkItem[], updates: WorkItem[]): WorkItem[] {
+  const byID = new Map(updates.map((work) => [work.id, work]));
+  return current.map((work) => byID.get(work.id) ?? work);
 }
 
 function ViewSwitch({ mode, onMode }: { mode: WorkViewMode; onMode: (mode: WorkViewMode) => void }) {
@@ -76,9 +140,11 @@ function TargetRow({ target, onRetry, onCancel }: { target: WorkTarget; onRetry:
 
 function AttemptStream({ attempt }: { attempt: Attempt }) {
   const active = attempt.state === "preparing" || attempt.state === "running";
+  const client = useQueryClient();
+  const eventKey = ["attempt-events", attempt.id] as const;
   const query = useQuery({
-    queryKey: ["attempt-events", attempt.id],
-    queryFn: () => loadAttemptEvents(attempt.id),
+    queryKey: eventKey,
+    queryFn: () => loadAttemptEvents(attempt.id, client.getQueryData<AttemptEvent[]>(eventKey) ?? []),
     refetchInterval: active ? 2_000 : false,
   });
   const events = (query.data ?? []).flatMap((event) => {
@@ -88,9 +154,9 @@ function AttemptStream({ attempt }: { attempt: Attempt }) {
   return <section className="attempt-stream"><header><strong>Attempt {attempt.attempt_number}</strong><StatusBadge state={attempt.state} /></header>{query.error && <InlineError error={query.error} />}{query.isPending ? <p className="quiet-empty">Loading attempt output…</p> : events.length === 0 ? <p className="quiet-empty">No runtime output recorded.</p> : <ol className="attempt-events">{events.map(({ event, summary }) => <li key={event.sequence}><span><strong>{summary.label}</strong><time dateTime={event.server_time}>{new Date(event.server_time).toLocaleTimeString()}</time></span><p>{summary.text}</p></li>)}</ol>}</section>;
 }
 
-async function loadAttemptEvents(attemptID: string): Promise<AttemptEvent[]> {
-  const events: AttemptEvent[] = [];
-  let after = -1;
+async function loadAttemptEvents(attemptID: string, current: AttemptEvent[]): Promise<AttemptEvent[]> {
+  const events = [...current];
+  let after = events.at(-1)?.sequence ?? -1;
   for (;;) {
     const requestedAfter = after;
     const page = await api.events(attemptID, after);

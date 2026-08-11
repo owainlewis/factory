@@ -34,6 +34,7 @@ const (
 	MaxEventPageSize          = 500
 	MinWorkerCapacity         = 1
 	MaxWorkerCapacity         = 100
+	WorkClaimProtocolVersion  = 1
 )
 
 func SupportedRuntime(value string) bool {
@@ -80,6 +81,7 @@ type WorkerRegistration struct {
 	Name                       string                   `json:"name"`
 	Labels                     map[string]string        `json:"labels,omitempty"`
 	WorkerVersion              string                   `json:"worker_version"`
+	WorkClaimProtocolVersion   int                      `json:"work_claim_protocol_version,omitempty"`
 	Runtime                    string                   `json:"runtime"`
 	RuntimeVersion             string                   `json:"runtime_version"`
 	Capabilities               []Capability             `json:"capabilities,omitempty"`

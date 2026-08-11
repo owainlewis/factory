@@ -72,16 +72,23 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		return nil, unavailable(err)
 	}
 
-	var capacity, healthy int
+	var capacity, healthy, workClaimProtocolVersion int
 	var lastHeartbeat int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT capacity, health = 'healthy', last_heartbeat FROM workers WHERE id = ?
-	`, workerID).Scan(&capacity, &healthy, &lastHeartbeat)
+		SELECT capacity, health = 'healthy', last_heartbeat, work_claim_protocol_version
+		FROM workers WHERE id = ?
+	`, workerID).Scan(&capacity, &healthy, &lastHeartbeat, &workClaimProtocolVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, unavailable(err)
+	}
+	if workClaimProtocolVersion != protocol.WorkClaimProtocolVersion {
+		return nil, conflict(
+			"worker_upgrade_required",
+			"the Worker uses an incompatible Work claim protocol; upgrade it before claiming Work",
+		)
 	}
 	var active int
 	if err := tx.QueryRowContext(ctx, `

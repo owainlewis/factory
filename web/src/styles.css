@@ -229,6 +229,7 @@ button { color: inherit; }
   margin-bottom: 16px;
 }
 .view-toolbar p { margin: 0; color: var(--fg-3); font-size: 13px; }
+.load-more-row { display: flex; justify-content: center; padding: 16px 0 0; }
 .work-toolbar-actions { display: flex; align-items: center; gap: 10px; }
 .work-view-switcher { display: inline-flex; border: 1px solid var(--line-2); border-radius: var(--radius); overflow: hidden; }
 .work-view-switcher button {

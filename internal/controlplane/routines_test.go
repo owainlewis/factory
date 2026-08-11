@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -437,7 +438,7 @@ func TestOverviewDoesNotFlagFailuresOlderThanOneDay(t *testing.T) {
 	}
 }
 
-func TestEditingRoutinePreservesBlockedPendingOccurrence(t *testing.T) {
+func TestEditingAndReenablingRoutinePreservesBlockedPendingOccurrence(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Date(2026, time.August, 10, 8, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
@@ -478,10 +479,186 @@ func TestEditingRoutinePreservesBlockedPendingOccurrence(t *testing.T) {
 		updated.Schedule.PendingDueAt == nil || !updated.Schedule.PendingDueAt.Equal(due) {
 		t.Fatalf("edited blocked Routine = %#v", updated)
 	}
+	paused, err := store.UpdateRoutine(context.Background(), routine.ID, protocol.SaveRoutineRequest{
+		Name: updated.Name, Prompt: updated.Prompt, Runtime: updated.Runtime,
+		TimeoutSeconds: updated.TimeoutSeconds, ConcurrencyLimit: updated.ConcurrencyLimit,
+		RepositoryIDs: []string{worker.Repositories[0].ID}, ExpectedGeneration: updated.Generation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paused.Schedule.Enabled || paused.Schedule.HealthStatus != "disabled" ||
+		paused.Schedule.HealthCode != "routine_repository_missing" || paused.Schedule.PendingDueAt == nil {
+		t.Fatalf("paused blocked Routine = %#v", paused)
+	}
+	resumed, err := store.UpdateRoutine(context.Background(), routine.ID, protocol.SaveRoutineRequest{
+		Name: paused.Name, Prompt: paused.Prompt, Runtime: paused.Runtime,
+		TimeoutSeconds: paused.TimeoutSeconds, ConcurrencyLimit: paused.ConcurrencyLimit,
+		RepositoryIDs: []string{worker.Repositories[0].ID}, ExpectedGeneration: paused.Generation,
+		Schedule: protocol.RoutineSchedule{Enabled: true, Cron: "0 9 * * *", Timezone: "UTC"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Schedule.HealthStatus != "blocked" || resumed.Schedule.HealthCode != "routine_repository_missing" ||
+		resumed.Schedule.PendingDueAt == nil || !resumed.Schedule.PendingDueAt.Equal(due) {
+		t.Fatalf("resumed blocked Routine = %#v", resumed)
+	}
 	if _, err := store.DiscardRoutineOccurrence(context.Background(), routine.ID,
 		protocol.DiscardRoutineOccurrenceRequest{PendingDueAt: due}); err != nil {
-		t.Fatalf("discard edited blocked occurrence: %v", err)
+		t.Fatalf("discard resumed blocked occurrence: %v", err)
 	}
+}
+
+func TestIncompatibleWorkerCannotReceiveOrClaimRoutineWork(t *testing.T) {
+	store := newTestStore(t)
+	_, err := store.RegisterWorker(context.Background(), "legacy-worker", protocol.WorkerRegistration{
+		Name: "Legacy Worker", WorkerVersion: "legacy", Runtime: protocol.RuntimeCodex,
+		RuntimeVersion: "codex-legacy", Capacity: 1, Health: "healthy",
+	})
+	if !serviceErrorCode(err, "worker_upgrade_required") {
+		t.Fatalf("legacy registration error = %v", err)
+	}
+	worker := registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	if _, err := store.db.ExecContext(context.Background(), `
+		UPDATE workers SET work_claim_protocol_version = 0 WHERE id = ?
+	`, worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	routine, err := store.CreateRoutine(context.Background(), protocol.SaveRoutineRequest{
+		Name: "Protocol fence", Prompt: "Review.", Runtime: protocol.RuntimeCodex,
+		RepositoryIDs: []string{worker.Repositories[0].ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{
+		RequestKey: "protocol-fence",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Targets[0].State != protocol.WorkTargetBlocked || detail.Targets[0].AssignedWorkerID != "" {
+		t.Fatalf("Work routed to incompatible Worker = %#v", detail.Targets[0])
+	}
+	if _, err := store.Claim(context.Background(), worker.ID, protocol.ClaimRequest{
+		RequestID: "legacy-claim", LeaseToken: tokenA,
+	}); !serviceErrorCode(err, "worker_upgrade_required") {
+		t.Fatalf("legacy claim error = %v", err)
+	}
+}
+
+func TestClaimScansPastFiftyIncompatibleBlockedTargets(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 100, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	targetIDs := createQueuedRoutineTargets(t, store, worker, 51)
+	if _, err := store.db.ExecContext(context.Background(), `DELETE FROM executions`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `
+		UPDATE work_targets
+		SET state = 'blocked', blocked_reason = 'No compatible Worker.',
+		    assigned_worker_id = NULL, required_runtime = ?
+	`, protocol.RuntimeClaudeCode); err != nil {
+		t.Fatal(err)
+	}
+	wantTarget := targetIDs[len(targetIDs)-1]
+	if _, err := store.db.ExecContext(context.Background(), `
+		UPDATE work_targets SET required_runtime = ? WHERE id = ?
+	`, protocol.RuntimeCodex, wantTarget); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.Claim(context.Background(), worker.ID, protocol.ClaimRequest{
+		RequestID: "paged-blocked-claim", LeaseToken: tokenA,
+	})
+	if err != nil || claim == nil || claim.Target.ID != wantTarget {
+		t.Fatalf("claim after incompatible prefix = %#v, err %v, want target %s", claim, err, wantTarget)
+	}
+}
+
+func TestClaimScansPastFiftyHealthyQueuedAssignmentsToReroute(t *testing.T) {
+	store := newTestStore(t)
+	repository := protocol.RepositoryRegistration{Key: "factory", RemoteIdentity: "github.com/owainlewis/factory"}
+	claimingWorker := registerTestWorker(t, store, workerA, 100, repository)
+	healthyWorker := registerTestWorker(t, store, "worker-b", 100, repository)
+	offlineWorker := registerTestWorker(t, store, "worker-c", 100, repository)
+	targetIDs := createQueuedRoutineTargets(t, store, claimingWorker, 51)
+	if _, err := store.db.ExecContext(context.Background(), `
+		UPDATE executions SET assigned_worker_id = ?
+	`, healthyWorker.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `
+		UPDATE work_targets SET assigned_worker_id = ?
+	`, healthyWorker.ID); err != nil {
+		t.Fatal(err)
+	}
+	wantTarget := targetIDs[len(targetIDs)-1]
+	if _, err := store.db.ExecContext(context.Background(), `
+		UPDATE executions SET assigned_worker_id = ? WHERE work_target_id = ?
+	`, offlineWorker.ID, wantTarget); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `
+		UPDATE work_targets SET assigned_worker_id = ? WHERE id = ?
+	`, offlineWorker.ID, wantTarget); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `
+		UPDATE workers SET last_heartbeat = 0 WHERE id = ?
+	`, offlineWorker.ID); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.Claim(context.Background(), claimingWorker.ID, protocol.ClaimRequest{
+		RequestID: "paged-reroute-claim", LeaseToken: tokenA,
+	})
+	if err != nil || claim == nil || claim.Target.ID != wantTarget {
+		t.Fatalf("claim after healthy assignment prefix = %#v, err %v, want target %s", claim, err, wantTarget)
+	}
+}
+
+func createQueuedRoutineTargets(t *testing.T, store *Store, worker protocol.Worker, count int) []string {
+	t.Helper()
+	routine, err := store.CreateRoutine(context.Background(), protocol.SaveRoutineRequest{
+		Name: "Paged claim fixture", Prompt: "Review.", Runtime: protocol.RuntimeCodex,
+		RepositoryIDs: []string{worker.Repositories[0].ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < count; index++ {
+		if _, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{
+			RequestKey: fmt.Sprintf("paged-claim-%03d", index),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := store.db.QueryContext(context.Background(), `
+		SELECT id FROM work_targets ORDER BY admitted_at, id
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != count {
+		t.Fatalf("created %d targets, want %d", len(ids), count)
+	}
+	return ids
 }
 
 func TestFrozenOccurrenceRechecksPausedRoutineBeforeAdmission(t *testing.T) {

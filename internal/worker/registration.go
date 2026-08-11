@@ -114,6 +114,7 @@ func (manager *Manager) registrationLocked() protocol.WorkerRegistration {
 		Name:                       strings.TrimSpace(manager.config.Name),
 		Labels:                     manager.config.Labels,
 		WorkerVersion:              manager.options.WorkerVersion,
+		WorkClaimProtocolVersion:   protocol.WorkClaimProtocolVersion,
 		Runtime:                    manager.config.Runtime,
 		RuntimeVersion:             manager.health.RuntimeVersion,
 		Capabilities:               append([]protocol.Capability(nil), manager.health.Capabilities...),

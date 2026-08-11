@@ -222,9 +222,14 @@ func (s *Store) UpdateRoutine(ctx context.Context, id string, input protocol.Sav
 		return protocol.Routine{}, err
 	}
 	var archived, migrationOnly, readOnly int
-	var pendingDue sql.NullInt64
-	err = tx.QueryRowContext(ctx, `SELECT archived, migration_only, read_only, pending_due_at FROM routines WHERE id = ?`, id).
-		Scan(&archived, &migrationOnly, &readOnly, &pendingDue)
+	var pendingDue, scheduleRetry sql.NullInt64
+	var scheduleHealthStatus, scheduleHealthCode string
+	err = tx.QueryRowContext(ctx, `
+		SELECT archived, migration_only, read_only, pending_due_at, schedule_retry_at,
+		       schedule_health_status, schedule_health_code
+		FROM routines WHERE id = ?
+	`, id).Scan(&archived, &migrationOnly, &readOnly, &pendingDue, &scheduleRetry,
+		&scheduleHealthStatus, &scheduleHealthCode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.Routine{}, ErrNotFound
 	}
@@ -245,6 +250,8 @@ func (s *Store) UpdateRoutine(ctx context.Context, id string, input protocol.Sav
 	if value.scheduleEnabled && value.nextDueAt != nil && !pendingDue.Valid {
 		next = value.nextDueAt.UnixMilli()
 	}
+	preserveBlockedOccurrence := pendingDue.Valid && !scheduleRetry.Valid &&
+		(scheduleHealthStatus == "blocked" || scheduleHealthCode != "")
 	result, err := tx.ExecContext(ctx, `
 		UPDATE routines SET
 			name = ?, name_key = ?, prompt = ?, runtime = ?, timeout_seconds = ?,
@@ -253,21 +260,21 @@ func (s *Store) UpdateRoutine(ctx context.Context, id string, input protocol.Sav
 			timezone = CASE WHEN pending_due_at IS NOT NULL AND ? = 0 THEN timezone ELSE ? END,
 			next_due_at = CASE WHEN pending_due_at IS NULL THEN ? ELSE next_due_at END,
 			schedule_health_status = CASE
-				WHEN ? = 1 AND pending_due_at IS NOT NULL AND schedule_health_status = 'blocked' THEN 'blocked'
+				WHEN ? = 1 AND ? = 1 THEN 'blocked'
 				WHEN ? = 1 THEN 'healthy' ELSE 'disabled' END,
 			schedule_health_code = CASE
-				WHEN ? = 1 AND pending_due_at IS NOT NULL AND schedule_health_status = 'blocked' THEN schedule_health_code
+				WHEN ? = 1 THEN schedule_health_code
 				ELSE '' END,
 			schedule_health_message = CASE
-				WHEN ? = 1 AND pending_due_at IS NOT NULL AND schedule_health_status = 'blocked' THEN schedule_health_message
+				WHEN ? = 1 THEN schedule_health_message
 				ELSE '' END,
 			updated_at = ?
 		WHERE id = ? AND generation = ?
 	`, value.name, value.nameKey, value.prompt, value.runtime, value.timeoutSeconds,
 		value.concurrencyLimit, value.scheduleEnabled, value.scheduleEnabled, nullableString(value.cron),
 		value.scheduleEnabled, nullableString(value.timezone),
-		next, value.scheduleEnabled, value.scheduleEnabled, value.scheduleEnabled,
-		value.scheduleEnabled, now, id, input.ExpectedGeneration)
+		next, value.scheduleEnabled, preserveBlockedOccurrence, value.scheduleEnabled,
+		preserveBlockedOccurrence, preserveBlockedOccurrence, now, id, input.ExpectedGeneration)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return protocol.Routine{}, conflict("routine_name_conflict", "a Routine with this name already exists")

@@ -7,7 +7,6 @@ import type {
   RoutineOverview,
   SaveRoutineInput,
   WorkDetailV2,
-  WorkItem,
   WorkPageV2,
   Worker,
 } from "./types";
@@ -75,17 +74,11 @@ export const api = {
   discardRoutineOccurrence: (id: string, pendingDueAt: string) => request<Routine>(`/api/v1/routines/${encodeURIComponent(id)}/discard-occurrence`, {
     method: "POST", body: JSON.stringify({ pending_due_at: pendingDueAt }),
   }),
-  workItems: async () => {
-    const work: WorkItem[] = [];
-    let cursor = "";
-    do {
-      const query = new URLSearchParams({ limit: "200" });
-      if (cursor) query.set("cursor", cursor);
-      const page = await request<WorkPageV2>(`/api/v1/work?${query}`);
-      work.push(...(page.work ?? []));
-      cursor = page.next_cursor ?? "";
-    } while (cursor);
-    return { work };
+  workItems: async (cursor = "") => {
+    const query = new URLSearchParams({ limit: "50" });
+    if (cursor) query.set("cursor", cursor);
+    const page = await request<WorkPageV2>(`/api/v1/work?${query}`);
+    return { work: page.work ?? [], next_cursor: page.next_cursor ?? null };
   },
   workItem: (id: string) => request<WorkDetailV2>(`/api/v1/work/${encodeURIComponent(id)}`),
   cancelWork: (id: string) => request<WorkDetailV2>(`/api/v1/work/${encodeURIComponent(id)}/cancel`, {
