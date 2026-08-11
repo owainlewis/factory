@@ -87,16 +87,17 @@ undecided, mark it as `[NEEDS: decision]` and complete independent work. Never
 guess legal terms or make a repository public.
 
 When the GitHub repository is missing, create the exact resolved `OWNER/REPO`
-from the local source with `gh repo create` after resolving visibility. If any
-existing remote already matches that target, preserve it, record its name as
-`GITHUB_REMOTE`, and do not pass `--remote`. If no matching remote or `origin`
-exists, add the created repository as `origin` and record it. If no matching
-remote exists and a non-GitHub `origin` does, follow the approved remote-name
-plan, record the chosen name, and never overwrite `origin` implicitly. Do not
-rely on the source directory name when an existing remote specifies a
-different repository name. Do not ask GitHub to generate a README, license, or
-`.gitignore` that could conflict with local files. Review local files and
-verify `GITHUB_REMOTE` before the first push.
+with `gh repo create` after resolving visibility. If an existing remote already
+matches that target, preserve it, record its name as `GITHUB_REMOTE`, and create
+the repository without `--source` or `--remote`; then push through the preserved
+remote. If no matching remote or `origin` exists, create from the local source
+with `--source . --remote origin` and record `origin`. If no matching remote
+exists and a non-GitHub `origin` does, follow the approved remote-name plan and
+pass the chosen distinct name with `--source . --remote <chosen-name>`. Never
+overwrite `origin` implicitly. Do not rely on the source directory name when an
+existing remote specifies a different repository name. Do not ask GitHub to
+generate a README, license, or `.gitignore` that could conflict with local
+files. Review local files and verify `GITHUB_REMOTE` before the first push.
 
 ## Operating rules
 
