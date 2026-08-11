@@ -225,6 +225,9 @@ stated goal is to avoid naming debt.
   writes.
 - Run now defaults to all configured repositories and has no repository picker.
 - A Routine has one runtime, allowed tool set, timeout, and concurrency limit.
+- Enabling a schedule validates the fully resolved scheduled prompt, including
+  occurrence metadata, against the 64 KiB resolved-prompt limit. A manual-only
+  Routine may use the full base-prompt limit.
 - Work supports the existing table, list, and kanban views over the same API
   records. The selected view remains in the URL.
 - A Work detail page shows aggregate progress before Target detail.
