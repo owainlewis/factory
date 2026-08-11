@@ -15,6 +15,15 @@ import (
 	"github.com/owainlewis/factory/migrations"
 )
 
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
 // BackupDatabase writes a consistent, standalone snapshot of an existing
 // Factory database without creating or migrating the source.
 func BackupDatabase(ctx context.Context, source, destination string) error {

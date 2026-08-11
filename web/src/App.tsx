@@ -1,402 +1,110 @@
-import { BookOpenText, Bot, Boxes, Gauge, GitBranch, ListChecks, Menu, Play, Plus, Workflow as AutomationIcon, X } from "lucide-react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { Bot, Boxes, Gauge, GitBranch, ListChecks, Menu, Plus, Repeat2, X } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { api } from "./api";
-import { invalidateControlPlane } from "./controlPlaneQueries";
-import { DelegateModal } from "./DelegateModal";
-import { Overview } from "./Overview";
 import { RepositoriesView, RepositoryDetail } from "./Repositories";
-import { TaskDetail } from "./TaskDetail";
-import { useVisibleInterval } from "./polling";
-import type { Task, TaskPage, Worker } from "./types";
+import { RoutineOverview } from "./RoutineOverview";
+import { RoutinesView } from "./Routines";
+import { RoutineWorkDetail, RoutineWorkView, type WorkViewMode } from "./RoutineWork";
 import { WorkersView, WorkerDetail } from "./Workers";
-import { WorkflowDetail, WorkflowsView } from "./Workflows";
-import { AutomationDetail, AutomationsView } from "./Automations";
-import { DefinitionDetail, DefinitionsView } from "./Definitions";
-import { RunDetail, WorkView, type WorkViewMode } from "./Work";
-import { deletedWorkTaskIDsKey } from "./workQueries";
+import { useVisibleInterval } from "./polling";
 
 type Route =
   | { page: "overview" }
-  | { page: "work"; view?: WorkViewMode; create?: boolean }
-  | { page: "run"; id: string; jobID?: string; view?: WorkViewMode }
+  | { page: "routines"; id?: string; create?: boolean }
+  | { page: "work"; mode: WorkViewMode }
+  | { page: "work-detail"; id: string; mode: WorkViewMode }
   | { page: "workers" }
-  | { page: "repositories" }
-  | { page: "task"; id: string; view?: WorkViewMode }
   | { page: "worker"; id: string }
-  | { page: "repository"; id: string }
-  | { page: "definitions"; archived?: boolean }
-  | { page: "definition"; id: string; archived?: boolean }
-  | { page: "workflows" }
-  | { page: "workflow"; id: string }
-  | { page: "automations" }
-  | { page: "automation"; id: string };
+  | { page: "repositories" }
+  | { page: "repository"; id: string };
 
 function readRoute(): Route {
   const parts = window.location.pathname.split("/").filter(Boolean);
   const search = new URLSearchParams(window.location.search);
-  const archived = search.get("archived") === "true";
-  const createWork = search.get("new") === "true";
-  const view = workViewMode(search.get("view"));
-  if (parts[0] === "work" && parts[1]) {
-    return { page: "run", id: parts[1], jobID: search.get("job") ?? undefined, view };
-  }
-  if (parts[0] === "runs" && parts[1]) {
-    return { page: "run", id: parts[1], jobID: search.get("job") ?? undefined, view };
-  }
-  if (parts[0] === "runs" || parts[0] === "work") return { page: "work", view, create: createWork };
-  if (parts[0] === "tasks" && parts[1]) return { page: "task", id: parts[1], view };
+  const mode = workMode(search.get("view"));
+  if (parts[0] === "routines") return { page: "routines", id: parts[1], create: search.get("new") === "true" };
+  if (parts[0] === "work" && parts[1]) return { page: "work-detail", id: parts[1], mode };
+  if (parts[0] === "work") return { page: "work", mode };
   if (parts[0] === "workers" && parts[1]) return { page: "worker", id: parts[1] };
-  if (parts[0] === "definitions" && parts[1]) return { page: "definition", id: parts[1], archived };
-  if (parts[0] === "definitions") return { page: "definitions", archived };
-  if (parts[0] === "workflows" && parts[1]) return { page: "workflow", id: parts[1] };
-  if (parts[0] === "workflows") return { page: "workflows" };
-  if (parts[0] === "automations" && parts[1]) return { page: "automation", id: parts[1] };
-  if (parts[0] === "automations") return { page: "automations" };
   if (parts[0] === "workers") return { page: "workers" };
   if (parts[0] === "repositories" && parts[1]) return { page: "repository", id: parts[1] };
   if (parts[0] === "repositories") return { page: "repositories" };
   return { page: "overview" };
 }
 
-function routePath(route: Route): string {
-  if (route.page === "task") return detailPath(`/tasks/${route.id}`, route.view);
-  if (route.page === "run") return detailPath(`/work/${route.id}`, route.view, route.jobID);
-  if (route.page === "worker") return `/workers/${route.id}`;
-  if (route.page === "definition") return `/definitions/${route.id}${route.archived ? "?archived=true" : ""}`;
-  if (route.page === "definitions") return `/definitions${route.archived ? "?archived=true" : ""}`;
-  if (route.page === "workflow") return `/workflows/${route.id}`;
-  if (route.page === "workflows") return "/workflows";
-  if (route.page === "automation") return `/automations/${route.id}`;
-  if (route.page === "automations") return "/automations";
-  if (route.page === "workers") return "/workers";
-  if (route.page === "repository") return `/repositories/${route.id}`;
-  if (route.page === "repositories") return "/repositories";
-  if (route.page === "work") {
-    const search = new URLSearchParams();
-    if (route.view && route.view !== "table") search.set("view", route.view);
-    if (route.create) search.set("new", "true");
-    const query = search.toString();
-    return `/work${query ? `?${query}` : ""}`;
-  }
-  return "/";
-}
-
-function workViewMode(value: string | null): WorkViewMode {
+function workMode(value: string | null): WorkViewMode {
   return value === "list" || value === "kanban" ? value : "table";
 }
 
-function detailPath(path: string, view?: WorkViewMode, jobID?: string): string {
-  const search = new URLSearchParams();
-  if (jobID) search.set("job", jobID);
-  if (view && view !== "table") search.set("view", view);
-  const query = search.toString();
-  return `${path}${query ? `?${query}` : ""}`;
+function routePath(route: Route): string {
+  switch (route.page) {
+    case "routines": return `/routines${route.id ? `/${route.id}` : ""}${route.create ? "?new=true" : ""}`;
+    case "work": return `/work${route.mode === "table" ? "" : `?view=${route.mode}`}`;
+    case "work-detail": return `/work/${route.id}${route.mode === "table" ? "" : `?view=${route.mode}`}`;
+    case "workers": return "/workers";
+    case "worker": return `/workers/${route.id}`;
+    case "repositories": return "/repositories";
+    case "repository": return `/repositories/${route.id}`;
+    default: return "/";
+  }
 }
 
 export function App() {
   const [route, setRoute] = useState<Route>(readRoute);
-  const [delegateRequest, setDelegateRequest] = useState<{ workerID?: string } | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const workerInterval = useVisibleInterval(10_000);
-  const delegateTrigger = useRef<HTMLElement | null>(null);
-  const queryClient = useQueryClient();
-	const productUpgrade = useQuery({
-		queryKey: ["product-upgrade"],
-		queryFn: api.productUpgrade,
-		staleTime: 30_000,
-		refetchInterval: (query) => query.state.data && query.state.data.state !== "completed" ? 2_000 : false,
-	});
-	const legacyReadOnly = Boolean(productUpgrade.data?.legacy_read_only);
-
+  const workers = useQuery({ queryKey: ["workers"], queryFn: api.workers, refetchInterval: workerInterval });
   useEffect(() => {
     const onPopState = () => setRoute(readRoute());
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
-
-  useEffect(() => {
-    if (window.location.pathname === "/runs" || window.location.pathname.startsWith("/runs/")) {
-      window.history.replaceState({}, "", routePath(route));
-    }
-  }, [route]);
-
   const navigate = (next: Route) => {
     window.history.pushState({}, "", routePath(next));
     setRoute(next);
     setMobileNavOpen(false);
     window.scrollTo({ top: 0, behavior: "instant" });
   };
-  const openDelegate = (workerID?: string) => {
-    delegateTrigger.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setDelegateRequest({ workerID });
-  };
-  const closeDelegate = () => {
-    const trigger = delegateTrigger.current;
-    setDelegateRequest(null);
-    window.setTimeout(() => trigger?.focus(), 0);
-  };
-
-  const workers = useQuery({
-    queryKey: ["workers"],
-    queryFn: api.workers,
-    refetchInterval: workerInterval,
-  });
-
-  useEffect(() => {
-    const refresh = () => {
-      if (document.visibilityState === "visible") {
-        void invalidateControlPlane(queryClient);
-      }
-    };
-    document.addEventListener("visibilitychange", refresh);
-    return () => document.removeEventListener("visibilitychange", refresh);
-  }, [queryClient]);
-
-  const detailWorkerState = delegateRequest?.workerID
-    ? queryClient.getQueryState<Worker>(["worker", delegateRequest.workerID])
-    : undefined;
-  const detailWorker = detailWorkerState?.data;
-  const fleetWorker = detailWorker
-    ? (workers.data ?? []).find((worker) => worker.id === detailWorker.id)
-    : undefined;
-  const detailWorkerIsFresh = detailWorker && (!fleetWorker || (detailWorkerState?.dataUpdatedAt ?? 0) >= workers.dataUpdatedAt);
-  const delegateWorkers = detailWorkerIsFresh
-    ? [detailWorker, ...(workers.data ?? []).filter((worker) => worker.id !== detailWorker.id)]
-    : workers.data ?? [];
-
-  return (
-    <div className="app-shell">
-      <aside className={`sidebar ${mobileNavOpen ? "sidebar-open" : ""}`}>
-        <div className="brand">
-          <div className="brand-mark" aria-hidden="true">
-            <Boxes size={18} strokeWidth={2.2} />
-          </div>
-          <div>
-            <span className="brand-name">Factory</span>
-            <span className="brand-subtitle">control plane</span>
-          </div>
-        </div>
-        <nav aria-label="Primary navigation">
-          <button
-            className={`nav-item ${route.page === "overview" ? "active" : ""}`}
-            aria-current={route.page === "overview" ? "page" : undefined}
-            onClick={() => navigate({ page: "overview" })}
-          >
-            <Gauge size={17} /> Overview
-          </button>
-          <button
-            className={`nav-item ${route.page === "work" || route.page === "run" || route.page === "task" ? "active" : ""}`}
-            aria-current={route.page === "work" ? "page" : undefined}
-            onClick={() => navigate({ page: "work" })}
-          >
-            <ListChecks size={17} /> Work
-          </button>
-          <button
-            className={`nav-item ${route.page === "definitions" || route.page === "definition" ? "active" : ""}`}
-            aria-current={route.page === "definitions" ? "page" : undefined}
-            onClick={() => navigate({ page: "definitions" })}
-          >
-            <BookOpenText size={17} /> Definitions
-          </button>
-          <button
-            className={`nav-item ${route.page === "workflows" || route.page === "workflow" ? "active" : ""}`}
-            aria-current={route.page === "workflows" ? "page" : undefined}
-            onClick={() => navigate({ page: "workflows" })}
-          >
-            <BookOpenText size={17} /> Runbooks
-          </button>
-          <button
-            className={`nav-item ${route.page === "automations" || route.page === "automation" ? "active" : ""}`}
-            aria-current={route.page === "automations" ? "page" : undefined}
-            onClick={() => navigate({ page: "automations" })}
-          >
-            <AutomationIcon size={17} /> Automations
-          </button>
-          <button
-            className={`nav-item ${route.page === "workers" || route.page === "worker" ? "active" : ""}`}
-            aria-current={route.page === "workers" ? "page" : undefined}
-            onClick={() => navigate({ page: "workers" })}
-          >
-			<Bot size={17} /> Workers
-          </button>
-          <button
-            className={`nav-item ${route.page === "repositories" || route.page === "repository" ? "active" : ""}`}
-            aria-current={route.page === "repositories" ? "page" : undefined}
-            onClick={() => navigate({ page: "repositories" })}
-          >
-            <GitBranch size={17} /> Repositories
-          </button>
-        </nav>
-        <div className="sidebar-foot">
-          <span className="local-dot" aria-hidden="true" />
-          Local control plane
-        </div>
-      </aside>
-
-      <div className="main-shell">
-        <header className="topbar">
-          <button
-            className="icon-button mobile-menu"
-            aria-label="Toggle navigation"
-            aria-expanded={mobileNavOpen}
-            onClick={() => setMobileNavOpen((open) => !open)}
-          >
-            {mobileNavOpen ? <X size={19} /> : <Menu size={19} />}
-          </button>
-          <div className="topbar-title">
-            {route.page === "overview" && "Overview"}
-            {route.page === "work" && "Work"}
-			{route.page === "run" && "Work detail"}
-			{route.page === "workers" && "Workers"}
-			{route.page === "task" && "Work detail"}
-			{route.page === "worker" && "Worker detail"}
-            {route.page === "repositories" && "Repositories"}
-            {route.page === "repository" && "Repository detail"}
-            {route.page === "definitions" && "Definitions"}
-            {route.page === "definition" && "Definition detail"}
-            {route.page === "workflows" && "Runbooks"}
-            {route.page === "workflow" && "Runbook detail"}
-            {route.page === "automations" && "Automations"}
-            {route.page === "automation" && "Automation detail"}
-          </div>
-          <div className="detail-actions">
-			{!legacyReadOnly && <button className="button button-secondary" onClick={() => openDelegate()}>
-				<Plus size={16} /> Delegate task
-			</button>}
-            {route.page !== "work" && <button className="button button-primary" onClick={() => navigate({ page: "work", create: true })}>
-              <Play size={16} /> Start work
-            </button>}
-          </div>
-        </header>
-
-        <main>
-			{route.page === "overview" && <Overview
-				onRun={(id, jobID) => navigate({ page: "run", id, jobID })}
-				upgrade={productUpgrade.data}
-				upgradeError={productUpgrade.error}
-			/>}
-          {route.page === "work" && (
-            <WorkView
-              view={route.view ?? "table"}
-              createOpen={Boolean(route.create)}
-              onViewChange={(view) => navigate({ page: "work", view })}
-              onCreateOpenChange={(create) => navigate({ page: "work", view: route.view, create })}
-              onRun={(id) => navigate({ page: "run", id, view: route.view })}
-              onTask={(id) => navigate({ page: "task", id, view: route.view })}
-              workers={workers.data ?? []}
-            />
-          )}
-          {route.page === "run" && <RunDetail id={route.id} initialJobID={route.jobID} onBack={() => navigate({ page: "work", view: route.view })} />}
-          {route.page === "workers" && (
-            <WorkersView
-              workers={workers.data}
-              pending={workers.isPending}
-              error={workers.error}
-              fetching={workers.isFetching}
-              updatedAt={workers.dataUpdatedAt}
-              onWorker={(id) => navigate({ page: "worker", id })}
-              onRefresh={() => void workers.refetch()}
-            />
-          )}
-          {route.page === "repositories" && (
-            <RepositoriesView onRepository={(id) => navigate({ page: "repository", id })} />
-          )}
-          {route.page === "task" && (
-            <TaskDetail
-              id={route.id}
-              workers={workers.data ?? []}
-              legacyReadOnly={legacyReadOnly}
-              onBack={() => navigate({ page: "work", view: route.view })}
-              onDeleted={() => {
-                queryClient.setQueryData<string[]>(deletedWorkTaskIDsKey, (current = []) =>
-                  current.includes(route.id) ? current : [...current, route.id]
-                );
-                queryClient.setQueryData<TaskPage>(["tasks", "head"], (current) => current ? {
-                  ...current,
-                  tasks: current.tasks.filter((task) => task.id !== route.id),
-                } : current);
-                queryClient.setQueryData<{ items: Task[]; cursor?: string | null; headCursor?: string | null }>(
-                  ["work-history", "tasks"],
-                  (current) => current ? {
-                    ...current,
-                    items: current.items.filter((task) => task.id !== route.id),
-                  } : current,
-                );
-                navigate({ page: "work", view: route.view });
-              }}
-            />
-          )}
-          {route.page === "worker" && (
-            <WorkerDetail
-              id={route.id}
-              legacyReadOnly={legacyReadOnly}
-              onBack={() => navigate({ page: "workers" })}
-              onDelegate={() => openDelegate(route.id)}
-            />
-          )}
-          {route.page === "repository" && (
-            <RepositoryDetail
-              id={route.id}
-              onBack={() => navigate({ page: "repositories" })}
-            />
-          )}
-          {route.page === "definitions" && (
-            <DefinitionsView
-              key={route.archived ? "archived" : "active"}
-              archived={Boolean(route.archived)}
-              onArchivedChange={(archived) => navigate({ page: "definitions", archived })}
-              onDefinition={(id) => navigate({ page: "definition", id, archived: route.archived })}
-            />
-          )}
-          {route.page === "definition" && (
-            <DefinitionDetail
-              id={route.id}
-              onBack={() => navigate({ page: "definitions", archived: route.archived })}
-              onStateChanged={() => navigate({ page: "definitions" })}
-            />
-          )}
-          {route.page === "workflows" && (
-            <WorkflowsView legacyReadOnly={legacyReadOnly} onWorkflow={(id) => navigate({ page: "workflow", id })} />
-          )}
-          {route.page === "workflow" && (
-            <WorkflowDetail id={route.id} legacyReadOnly={legacyReadOnly} onBack={() => navigate({ page: "workflows" })} />
-          )}
-          {route.page === "automations" && (
-            <AutomationsView legacyReadOnly={legacyReadOnly} onAutomation={(id) => navigate({ page: "automation", id })} />
-          )}
-          {route.page === "automation" && (
-            <AutomationDetail
-              id={route.id}
-              legacyReadOnly={legacyReadOnly}
-              onBack={() => navigate({ page: "automations" })}
-              onTask={(taskID) => navigate({ page: "task", id: taskID })}
-              onRun={(runID) => navigate({ page: "run", id: runID })}
-            />
-          )}
-        </main>
-      </div>
-
-      {mobileNavOpen && (
-        <button
-          className="nav-scrim"
-          aria-label="Close navigation"
-          onClick={() => setMobileNavOpen(false)}
-        />
-      )}
-      {delegateRequest && !legacyReadOnly && (
-        <DelegateModal
-          workers={delegateWorkers}
-          workersPending={workers.isPending && delegateWorkers.length === 0}
-          initialWorkerID={delegateRequest.workerID}
-          onClose={closeDelegate}
-          onCreated={(id) => {
-            setDelegateRequest(null);
-            navigate({ page: "task", id });
-          }}
-        />
-      )}
+  const activeWorkMode = route.page === "work" || route.page === "work-detail" ? route.mode : "table";
+  return <div className="app-shell">
+    <aside className={`sidebar ${mobileNavOpen ? "sidebar-open" : ""}`}>
+      <div className="brand"><div className="brand-mark"><Boxes size={18} strokeWidth={2.2} /></div><div><span className="brand-name">Factory</span><span className="brand-subtitle">control plane</span></div></div>
+      <nav aria-label="Primary navigation">
+        <Nav active={route.page === "overview"} icon={<Gauge size={17} />} label="Overview" onClick={() => navigate({ page: "overview" })} />
+        <Nav active={route.page === "routines"} icon={<Repeat2 size={17} />} label="Routines" onClick={() => navigate({ page: "routines" })} />
+        <Nav active={route.page === "work" || route.page === "work-detail"} icon={<ListChecks size={17} />} label="Work" onClick={() => navigate({ page: "work", mode: activeWorkMode })} />
+        <div className="nav-section-label">INFRASTRUCTURE</div>
+        <Nav active={route.page === "workers" || route.page === "worker"} icon={<Bot size={17} />} label="Workers" onClick={() => navigate({ page: "workers" })} />
+        <Nav active={route.page === "repositories" || route.page === "repository"} icon={<GitBranch size={17} />} label="Repositories" onClick={() => navigate({ page: "repositories" })} />
+      </nav>
+      <div className="sidebar-foot"><span className="local-dot" /> Local control plane</div>
+    </aside>
+    <div className="main-shell">
+      <header className="topbar"><button className="icon-button mobile-menu" aria-label="Toggle navigation" onClick={() => setMobileNavOpen((open) => !open)}>{mobileNavOpen ? <X size={19} /> : <Menu size={19} />}</button><div className="topbar-title">{pageTitle(route)}</div><button className="button button-primary" onClick={() => navigate({ page: "routines", create: true })}><Plus size={15} /> New Routine</button></header>
+      <main>
+        {route.page === "overview" && <RoutineOverview onWork={(id) => navigate({ page: "work-detail", id, mode: "table" })} onRoutine={(id) => navigate({ page: "routines", id })} />}
+        {route.page === "routines" && <RoutinesView key={`${route.id ?? "list"}:${route.create ?? false}`} initialID={route.id} createOpen={route.create} onWork={(id) => navigate({ page: "work-detail", id, mode: "table" })} />}
+        {route.page === "work" && <RoutineWorkView mode={route.mode} onMode={(mode) => navigate({ page: "work", mode })} onWork={(id) => navigate({ page: "work-detail", id, mode: route.mode })} />}
+        {route.page === "work-detail" && <RoutineWorkDetail id={route.id} onBack={() => navigate({ page: "work", mode: route.mode })} />}
+        {route.page === "workers" && <WorkersView workers={workers.data} pending={workers.isPending} error={workers.error} fetching={workers.isFetching} updatedAt={workers.dataUpdatedAt} onWorker={(id) => navigate({ page: "worker", id })} onRefresh={() => void workers.refetch()} />}
+        {route.page === "worker" && <WorkerDetail id={route.id} legacyReadOnly onBack={() => navigate({ page: "workers" })} onDelegate={() => {}} />}
+        {route.page === "repositories" && <RepositoriesView onRepository={(id) => navigate({ page: "repository", id })} />}
+        {route.page === "repository" && <RepositoryDetail id={route.id} onBack={() => navigate({ page: "repositories" })} />}
+      </main>
     </div>
-  );
+    {mobileNavOpen && <button className="nav-scrim" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)} />}
+  </div>;
+}
+
+function Nav({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {
+  return <button className={`nav-item ${active ? "active" : ""}`} aria-current={active ? "page" : undefined} onClick={onClick}>{icon}{label}</button>;
+}
+
+function pageTitle(route: Route): string {
+  if (route.page === "work-detail") return "Work detail";
+  if (route.page === "worker") return "Worker detail";
+  if (route.page === "repository") return "Repository detail";
+  return route.page[0].toUpperCase() + route.page.slice(1);
 }

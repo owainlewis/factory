@@ -81,12 +81,6 @@ func (locks *repositoryLockSet) poison(key string, cause error) {
 	}
 }
 
-func (locks *repositoryLockSet) count() int {
-	locks.mutex.Lock()
-	defer locks.mutex.Unlock()
-	return len(locks.entries)
-}
-
 func managedRepositoryCoordinationKey(repositoryID string) string {
 	return "managed:" + repositoryID
 }

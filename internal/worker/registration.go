@@ -82,12 +82,6 @@ func (manager *Manager) finishHealthCheckLocked() {
 	manager.healthCheckDone = nil
 }
 
-func (manager *Manager) registration() protocol.WorkerRegistration {
-	manager.stateMutex.Lock()
-	defer manager.stateMutex.Unlock()
-	return manager.registrationLocked()
-}
-
 func (manager *Manager) registrationSnapshot() (protocol.WorkerRegistration, uint64) {
 	manager.stateMutex.Lock()
 	defer manager.stateMutex.Unlock()

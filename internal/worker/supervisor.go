@@ -35,8 +35,8 @@ type supervisorInit struct {
 	ResultPath        string `json:"result_path"`
 	Prompt            string `json:"prompt"`
 	TimeoutSeconds    int    `json:"timeout_seconds"`
-	RunID             string `json:"run_id,omitempty"`
-	JobID             string `json:"job_id,omitempty"`
+	WorkID            string `json:"work_id,omitempty"`
+	WorkTargetID      string `json:"work_target_id,omitempty"`
 }
 
 type supervisorMessage struct {
@@ -94,8 +94,8 @@ func RunSupervisor(control *os.File, input io.Reader, output, errorOutput io.Wri
 		init.Worktree == "" || init.ResultPath == "" || init.TimeoutSeconds < 1 {
 		return errors.New("supervisor input is incomplete")
 	}
-	if (init.RunID == "") != (init.JobID == "") {
-		return errors.New("supervisor Run and Job identities must be supplied together")
+	if (init.WorkID == "") != (init.WorkTargetID == "") {
+		return errors.New("supervisor Work and target identities must be supplied together")
 	}
 	if init.TimeoutSeconds > int(protocol.MaxTimeout/time.Second) {
 		return errors.New("supervisor timeout exceeds eight hours")
@@ -179,7 +179,7 @@ func RunSupervisor(control *os.File, input io.Reader, output, errorOutput io.Wri
 			case "timeout":
 				_ = stopStartedSupervisorGroup(anchor, anchorIdentity, terminationGrace)
 				_ = anchor.Wait()
-				return writer.send(supervisorMessage{Type: "exit", Reason: "timeout", Error: "task timeout reached"})
+				return writer.send(supervisorMessage{Type: "exit", Reason: "timeout", Error: "Work timeout reached"})
 			case "start":
 				return superviseRuntime(init, anchor, anchorIdentity, groupID, commands, controlErrors, leaseTimer, writer)
 			}
@@ -231,7 +231,7 @@ func superviseRuntime(
 	displayName := runtimeDisplayName(init.Runtime)
 	command := exec.Command(init.RuntimeExecutable, arguments...)
 	command.Dir = init.Worktree
-	command.Env = runtimeEnvironment(init.RunID, init.JobID)
+	command.Env = runtimeEnvironment(init.WorkID, init.WorkTargetID)
 	configureExistingProcessGroup(command, groupID)
 	stdin, err := command.StdinPipe()
 	if err != nil {
@@ -287,8 +287,8 @@ func superviseRuntime(
 	go func() {
 		wait <- command.Wait()
 	}()
-	taskTimer := time.NewTimer(time.Duration(init.TimeoutSeconds) * time.Second)
-	defer taskTimer.Stop()
+	workTimer := time.NewTimer(time.Duration(init.TimeoutSeconds) * time.Second)
+	defer workTimer.Stop()
 
 	reason := "exited"
 	var waitErr error
@@ -329,7 +329,7 @@ func superviseRuntime(
 		case <-leaseTimer.C:
 			reason = "lease_lost"
 			running = false
-		case <-taskTimer.C:
+		case <-workTimer.C:
 			reason = "timeout"
 			running = false
 		case waitErr = <-wait:
@@ -409,7 +409,7 @@ func superviseRuntime(
 			"cancelled":        "attempt cancelled",
 			"parent_lost":      "worker parent process exited",
 			"lease_lost":       "control-plane lease renewal deadline passed",
-			"timeout":          "task timeout reached",
+			"timeout":          "Work timeout reached",
 			"supervisor_error": "attempt supervisor failed",
 		}[reason]
 	}
@@ -426,16 +426,16 @@ func superviseRuntime(
 	return writer.send(message)
 }
 
-func runtimeEnvironment(runID, jobID string) []string {
+func runtimeEnvironment(workID, workTargetID string) []string {
 	environment := make([]string, 0, len(os.Environ())+2)
 	for _, value := range os.Environ() {
 		key, _, _ := strings.Cut(value, "=")
-		if key != "FACTORY_RUN_ID" && key != "FACTORY_JOB_ID" {
+		if key != "FACTORY_WORK_ID" && key != "FACTORY_WORK_TARGET_ID" {
 			environment = append(environment, value)
 		}
 	}
-	if runID != "" {
-		environment = append(environment, "FACTORY_RUN_ID="+runID, "FACTORY_JOB_ID="+jobID)
+	if workID != "" {
+		environment = append(environment, "FACTORY_WORK_ID="+workID, "FACTORY_WORK_TARGET_ID="+workTargetID)
 	}
 	return environment
 }

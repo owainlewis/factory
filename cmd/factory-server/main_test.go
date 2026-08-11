@@ -127,6 +127,28 @@ func TestServerBootstrapConfigRejectsUnknownFieldsAndSymlinks(t *testing.T) {
 	}
 }
 
+func TestServerBootstrapConfigAcceptsRetiredWebhookFieldsDuringUpgrade(t *testing.T) {
+	dataRoot := t.TempDir()
+	path := filepath.Join(dataRoot, "config.toml")
+	t.Setenv("FACTORY_SERVER_CONFIG", path)
+	if err := os.WriteFile(path, []byte(`
+listen = "127.0.0.1:7337"
+webhook_listen = "0.0.0.0:7444"
+webhook_tls_cert = "/etc/factory/webhook.crt"
+webhook_tls_key = "/etc/factory/webhook.key"
+github_webhook_secret_file = "/etc/factory/webhook.secret"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := loadServerBootstrapConfig(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Listen != "127.0.0.1:7337" {
+		t.Fatalf("loaded config = %#v", config)
+	}
+}
+
 func TestRemoteWorkerTLSConfigurationIsAllOrNothing(t *testing.T) {
 	for _, values := range [][3]string{
 		{"0.0.0.0:7443", "", ""},
@@ -139,29 +161,6 @@ func TestRemoteWorkerTLSConfigurationIsAllOrNothing(t *testing.T) {
 	}
 	if err := validateWorkerTLSConfig("0.0.0.0:7443", "server.crt", "server.key"); err != nil {
 		t.Fatalf("complete remote TLS configuration rejected: %v", err)
-	}
-}
-
-func TestGitHubWebhookConfigurationAndSecretAreLockedDown(t *testing.T) {
-	if err := validateWebhookTLSConfig("0.0.0.0:7444", "server.crt", "server.key", ""); err == nil {
-		t.Fatal("accepted webhook listener without a secret")
-	}
-	if err := validateWebhookTLSConfig("0.0.0.0:7444", "server.crt", "server.key", "secret"); err != nil {
-		t.Fatalf("complete webhook configuration rejected: %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "webhook-secret")
-	if err := os.WriteFile(path, []byte(strings.Repeat("s", 32)+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	secret, err := loadGitHubWebhookSecret(path)
-	if err != nil || string(secret) != strings.Repeat("s", 32) {
-		t.Fatalf("load webhook secret = %q, %v", secret, err)
-	}
-	if err := os.Chmod(path, 0o640); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadGitHubWebhookSecret(path); err == nil || !strings.Contains(err.Error(), "only by its owner") {
-		t.Fatalf("permissive secret error = %v", err)
 	}
 }
 

@@ -13,8 +13,6 @@ Start with the root [README](../README.md) to run Factory.
   authentication, and reconnect behavior.
 - [Scheduled Automations](scheduled-automations.md): create, preview, enable,
   replay, and inspect Definition Runs across repositories.
-- [GitHub webhook Automations](github-webhooks.md): configure signed
-  pull-request events that start ordinary Definition Runs.
 - [Product model upgrade](product-upgrade.md): freeze legacy writes, convert
   compatible schedules, and retain existing history without synthetic Runs.
 - [Release guide](release.md): install, verify, upgrade, roll back, reproduce,
@@ -42,6 +40,8 @@ Start with the root [README](../README.md) to run Factory.
 
 - [External GitHub ingest](github-ingest/design.md): replaced by control-plane
   typed Automations, then superseded by the target architecture.
+- [Retired GitHub webhook settings](github-webhooks.md): upgrade note for the
+  webhook listener removed with Definitions and Automations.
 - [Reusable workflows and automations](workflows/design.md): design record for
   the implemented Workflow and typed Automation slices; superseded by Routines
   and Work.

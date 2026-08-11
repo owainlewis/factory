@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { eventSummary } from "./format";
+import { eventSummary, timeUntil } from "./format";
 import type { AttemptEvent } from "./types";
 
 function event(payload: unknown, kind = "codex"): AttemptEvent {
@@ -122,5 +122,14 @@ describe("eventSummary", () => {
       label: "Progress",
       text: "Task completed",
     });
+  });
+});
+
+describe("timeUntil", () => {
+  it("formats upcoming instants as future times", () => {
+    const now = Date.parse("2026-08-11T12:00:00Z");
+    expect(timeUntil("2026-08-11T12:05:00Z", now)).toBe("in 5m");
+    expect(timeUntil("2026-08-12T12:00:00Z", now)).toBe("in 1d");
+    expect(timeUntil("2026-08-11T11:55:00Z", now)).toBe("5m ago");
   });
 });

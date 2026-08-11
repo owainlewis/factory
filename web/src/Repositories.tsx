@@ -249,7 +249,7 @@ export function RepositoryDetail({
           </strong>
           <span>
             {!data.enabled
-              ? "New routed tasks are rejected until this repository is enabled."
+              ? "New Work cannot be routed until this repository is enabled."
               : "The control plane applies the same current worker, reservation, cache, and retention facts used for routing."}
           </span>
         </div>

@@ -8,7 +8,6 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 
 const root = resolve(import.meta.dirname, "../..");
 const temporary = await mkdtemp(join(tmpdir(), "factory-ui-e2e-"));
@@ -18,9 +17,6 @@ const database = join(temporary, "server", "factory.sqlite3");
 const workerData = join(temporary, "worker");
 const workerConfig = join(temporary, "worker.toml");
 const fakeBin = join(temporary, "bin");
-const legacyRoot = resolve(import.meta.dirname, "../test-results/legacy-poller");
-const legacyConfig = join(legacyRoot, "poller.toml");
-const legacyLedger = join(legacyRoot, "poller", "poller.sqlite3");
 const workerID = "11111111-1111-4111-8111-111111111111";
 
 function run(command, args, options = {}) {
@@ -152,81 +148,11 @@ exit 2
   await chmod(executable, 0o755);
 }
 
-async function createLegacyPollerFixture() {
-  await rm(legacyRoot, { recursive: true, force: true });
-  await mkdir(join(legacyRoot, "poller"), { recursive: true });
-  await writeFile(
-    legacyConfig,
-    `server = "http://127.0.0.1:17437"
-poll_every = "30s"
-data_directory = "poller"
-
-[[queues]]
-name = "browser-ready"
-source = "github"
-project = "example/automation-fixture"
-status = "open"
-labels = ["needs-agent"]
-prompt = "Implement the issue and open a reviewed pull request."
-timeout_seconds = 3600
-`,
-    { mode: 0o600 },
-  );
-  const queueID = createHash("sha256")
-    .update(["browser-ready", "github", "example/automation-fixture"].join("\0"))
-    .digest("hex")
-    .slice(0, 48);
-  const requestBody = JSON.stringify({
-    request_key: "legacy-browser-request-187",
-    title: "Work on github ticket #187",
-    description: "Resume the exact imported browser migration request.",
-    timeout_seconds: 3600,
-    route: {
-      repository_remote_identity: "github.com/example/automation-fixture",
-      source_access: { provider: "github", hostname: "github.com" },
-    },
-  });
-  const helper = join(temporary, "create-legacy-ledger.go");
-  await writeFile(helper, `package main
-
-import (
-  "database/sql"
-  "os"
-  _ "modernc.org/sqlite"
-)
-
-func main() {
-  database, err := sql.Open("sqlite", os.Args[1])
-  if err != nil { panic(err) }
-  defer database.Close()
-  _, err = database.Exec(\`CREATE TABLE observations (
-    queue_id TEXT NOT NULL,
-    issue_key TEXT NOT NULL,
-    request_key TEXT NOT NULL UNIQUE,
-    request_json BLOB NOT NULL,
-    task_id TEXT NOT NULL DEFAULT '',
-    state TEXT NOT NULL CHECK (state IN ('pending', 'submitted')),
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    PRIMARY KEY (queue_id, issue_key)
-  );
-  CREATE INDEX observations_pending ON observations(state, created_at, queue_id, issue_key);\`)
-  if err != nil { panic(err) }
-  _, err = database.Exec(\`INSERT INTO observations(
-    queue_id, issue_key, request_key, request_json, task_id, state, created_at, updated_at
-  ) VALUES (?, '#187', ?, ?, '', 'pending', 1, 1)\`, os.Args[2], os.Args[3], []byte(os.Args[4]))
-  if err != nil { panic(err) }
-}
-`);
-  await run("go", ["run", helper, legacyLedger, queueID, "legacy-browser-request-187", requestBody]);
-}
-
 await Promise.all([
   run("go", ["build", "-o", serverBinary, "./cmd/factory-server"]),
   run("go", ["build", "-o", workerBinary, "./cmd/factory-worker"]),
   createFakeCodex(),
   createFakeGH(),
-  createLegacyPollerFixture(),
 ]);
 const [factoryRepository, handbookRepository] = await Promise.all([
   createRepository("factory-demo"),
@@ -294,7 +220,6 @@ async function stop(signal = "SIGTERM", exitCode = 0) {
   await stopChild(worker, signal);
   await stopChild(server, signal);
   await rm(temporary, { recursive: true, force: true });
-  await rm(legacyRoot, { recursive: true, force: true });
   process.exit(exitCode);
 }
 

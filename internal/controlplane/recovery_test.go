@@ -27,8 +27,22 @@ func TestBackupAndRestorePreserveDurableControlPlaneState(t *testing.T) {
 	worker := registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{
 		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
-	task := createTestTask(t, store, "recovery-task", worker.ID, worker.Repositories[0].ID)
-	claim := claimTestTask(t, store, worker.ID, "recovery-claim", tokenA)
+	routine, err := store.CreateRoutine(ctx, protocol.SaveRoutineRequest{
+		Name: "Recovery routine", Prompt: "Preserve this Work.", Runtime: protocol.RuntimeCodex,
+		TimeoutSeconds: 3600, ConcurrencyLimit: 1,
+		RepositoryIDs: []string{worker.Repositories[0].ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, _, err := store.RunRoutine(ctx, routine.ID, protocol.RunRoutineRequest{RequestKey: "recovery-work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.Claim(ctx, worker.ID, protocol.ClaimRequest{RequestID: "recovery-claim", LeaseToken: tokenA})
+	if err != nil || claim == nil {
+		t.Fatalf("claim = %#v, err %v", claim, err)
+	}
 	if err := store.AppendEvents(ctx, claim.Attempt.ID, protocol.EventBatchRequest{
 		LeaseToken: tokenA,
 		Events: []protocol.AttemptEvent{{
@@ -37,21 +51,6 @@ func TestBackupAndRestorePreserveDurableControlPlaneState(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	workflow := createTestWorkflow(t, store, "recovery-workflow", "Recovery workflow", "Restore this workflow.")
-	managedRepository := createManagedTestRepository(t, store, "github.com/owainlewis/factory-recovery")
-	automation, created, err := store.CreateAutomation(ctx, protocol.CreateAutomationRequest{
-		RequestKey: "recovery-automation", Title: "Recovery automation",
-		WorkflowID: workflow.Workflow.ID, RepositoryID: managedRepository.ID,
-		Context: "Preserve this automation.", TimeoutSeconds: 3600,
-		Trigger: protocol.AutomationTrigger{
-			Type: protocol.AutomationTriggerGitHubIssue, State: "open",
-			RequiredLabels: []string{"needs-agent"}, PollIntervalSeconds: 60,
-		},
-	})
-	if err != nil || !created {
-		t.Fatalf("create automation = created %v, error %v", created, err)
-	}
-
 	backupPath := filepath.Join(root, "backups", "factory.sqlite3")
 	if err := BackupDatabase(ctx, sourcePath, backupPath); err != nil {
 		t.Fatal(err)
@@ -84,12 +83,13 @@ func TestBackupAndRestorePreserveDurableControlPlaneState(t *testing.T) {
 		t.Fatalf("run restored server startup sweep: %v", err)
 	}
 
-	restoredTask, err := restored.Task(ctx, task.Task.ID)
+	restoredWork, err := restored.Work(ctx, work.Work.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(restoredTask.Attempts) != 1 || restoredTask.Attempts[0].ID != claim.Attempt.ID {
-		t.Fatalf("restored attempts = %#v", restoredTask.Attempts)
+	if len(restoredWork.Targets) != 1 || len(restoredWork.Targets[0].Attempts) != 1 ||
+		restoredWork.Targets[0].Attempts[0].ID != claim.Attempt.ID {
+		t.Fatalf("restored Work = %#v", restoredWork)
 	}
 	events, err := restored.Events(ctx, claim.Attempt.ID, -1, 100)
 	if err != nil {
@@ -98,11 +98,8 @@ func TestBackupAndRestorePreserveDurableControlPlaneState(t *testing.T) {
 	if len(events.Events) != 1 || string(events.Events[0].Payload) != `{"text":"durable recovery event"}` {
 		t.Fatalf("restored events = %#v", events.Events)
 	}
-	if _, err := restored.Workflow(ctx, workflow.Workflow.ID); err != nil {
-		t.Fatalf("restore workflow: %v", err)
-	}
-	if _, err := restored.Automation(ctx, automation.Automation.ID); err != nil {
-		t.Fatalf("restore automation: %v", err)
+	if _, err := restored.Routine(ctx, routine.ID); err != nil {
+		t.Fatalf("restore Routine: %v", err)
 	}
 }
 

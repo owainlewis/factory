@@ -12,16 +12,16 @@ import (
 )
 
 type serverBootstrapConfig struct {
-	Listen                  string `toml:"listen"`
-	Database                string `toml:"database"`
-	WorkerListen            string `toml:"worker_listen"`
-	WorkerTLSCert           string `toml:"worker_tls_cert"`
-	WorkerTLSKey            string `toml:"worker_tls_key"`
-	WebhookListen           string `toml:"webhook_listen"`
-	WebhookTLSCert          string `toml:"webhook_tls_cert"`
-	WebhookTLSKey           string `toml:"webhook_tls_key"`
-	GitHubWebhookSecretFile string `toml:"github_webhook_secret_file"`
-	path                    string
+	Listen                         string `toml:"listen"`
+	Database                       string `toml:"database"`
+	WorkerListen                   string `toml:"worker_listen"`
+	WorkerTLSCert                  string `toml:"worker_tls_cert"`
+	WorkerTLSKey                   string `toml:"worker_tls_key"`
+	RetiredWebhookListen           string `toml:"webhook_listen"`
+	RetiredWebhookTLSCert          string `toml:"webhook_tls_cert"`
+	RetiredWebhookTLSKey           string `toml:"webhook_tls_key"`
+	RetiredGitHubWebhookSecretFile string `toml:"github_webhook_secret_file"`
+	path                           string
 }
 
 func loadServerBootstrapConfig(dataRoot string) (serverBootstrapConfig, error) {
@@ -69,10 +69,6 @@ func loadServerBootstrapConfig(dataRoot string) (serverBootstrapConfig, error) {
 	config.WorkerListen = strings.TrimSpace(config.WorkerListen)
 	config.WorkerTLSCert = resolveConfigPath(absolute, config.WorkerTLSCert)
 	config.WorkerTLSKey = resolveConfigPath(absolute, config.WorkerTLSKey)
-	config.WebhookListen = strings.TrimSpace(config.WebhookListen)
-	config.WebhookTLSCert = resolveConfigPath(absolute, config.WebhookTLSCert)
-	config.WebhookTLSKey = resolveConfigPath(absolute, config.WebhookTLSKey)
-	config.GitHubWebhookSecretFile = resolveConfigPath(absolute, config.GitHubWebhookSecretFile)
 	if config.Database != "" && !filepath.IsAbs(config.Database) {
 		config.Database = filepath.Join(filepath.Dir(absolute), config.Database)
 	}

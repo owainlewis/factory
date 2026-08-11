@@ -239,20 +239,9 @@ func sameRemoteIdentity(left, right string) bool {
 	return remoteIdentityComparisonKey(left) == remoteIdentityComparisonKey(right)
 }
 
-func createWorktree(ctx context.Context, gitExecutable, root string, repository Repository, taskID, attemptID string) (worktree, error) {
-	value, err := prepareWorktree(ctx, gitExecutable, root, repository, taskID, attemptID)
-	if err != nil {
-		return value, err
-	}
-	if err := addPreparedWorktree(ctx, gitExecutable, repository, value); err != nil {
-		return value, err
-	}
-	return value, nil
-}
-
-func prepareWorktree(ctx context.Context, gitExecutable, root string, repository Repository, taskID, attemptID string) (worktree, error) {
-	if !uuidPattern.MatchString(taskID) || !uuidPattern.MatchString(attemptID) {
-		return worktree{}, errors.New("server returned an invalid task or attempt ID")
+func prepareWorktree(ctx context.Context, gitExecutable, root string, repository Repository, workTargetID, attemptID string) (worktree, error) {
+	if !uuidPattern.MatchString(workTargetID) || !uuidPattern.MatchString(attemptID) {
+		return worktree{}, errors.New("server returned an invalid Work target or attempt ID")
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return worktree{}, fmt.Errorf("create worktree root: %w", err)
@@ -281,7 +270,7 @@ func prepareWorktree(ctx context.Context, gitExecutable, root string, repository
 	} else if baseBranch == "" || !commitPattern.MatchString(base) {
 		return worktree{}, errors.New("pre-resolved repository base must include a branch and full commit ID")
 	}
-	branch := "factory/" + taskID[:12] + "-" + attemptID[:12]
+	branch := "factory/" + workTargetID[:12] + "-" + attemptID[:12]
 	value := worktree{
 		Path: path, Branch: branch, BaseBranch: baseBranch,
 		BaseCommit: base, HeadCommit: base,

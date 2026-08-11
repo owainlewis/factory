@@ -50,11 +50,11 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 	}()
 	go manager.heartbeatAttempt(handle, claim.Attempt.ID, token)
 
-	taskDeadline := claim.Attempt.CreatedAt.Add(time.Duration(claim.Task.TimeoutSeconds) * time.Second)
-	taskTimer := time.AfterFunc(time.Until(taskDeadline), func() {
+	workDeadline := claim.Attempt.CreatedAt.Add(time.Duration(claim.Target.TimeoutSeconds) * time.Second)
+	workTimer := time.AfterFunc(time.Until(workDeadline), func() {
 		handle.stop("timeout")
 	})
-	defer taskTimer.Stop()
+	defer workTimer.Stop()
 	if err := manager.validateClaim(claim); err != nil {
 		manager.finishWithoutWorktree(claim, token, handle, "failed", err)
 		return
@@ -72,14 +72,14 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 	}
 	worktreeRoot := filepath.Join(manager.dataDirectory, "worktrees")
 	value, err := prepareWorktree(handle.context, manager.options.GitExecutable, worktreeRoot,
-		repository, claim.Task.ID, claim.Attempt.ID)
+		repository, claim.Target.ID, claim.Attempt.ID)
 	if err != nil {
 		releaseRepository()
 		manager.finishWithoutWorktree(claim, token, handle, terminalForStop(handle), stoppedAttemptError(handle, err))
 		return
 	}
 	manifest := attemptManifest{
-		TaskID: claim.Task.ID, ExecutionID: claim.Execution.ID, AttemptID: claim.Attempt.ID,
+		WorkTargetID: claim.Target.ID, ExecutionID: claim.Execution.ID, AttemptID: claim.Attempt.ID,
 		RepositoryID: claim.Repository.ID, RepositoryKey: repository.Key,
 		RepositoryPath: repository.Path, RemoteIdentity: repository.RemoteIdentity,
 		BaseBranch: value.BaseBranch, BaseCommit: value.BaseCommit,
@@ -162,9 +162,9 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		Worktree:          value.Path,
 		ResultPath:        path,
 		Prompt:            prompt,
-		TimeoutSeconds:    remainingTimeoutSeconds(taskDeadline),
-		RunID:             claim.RunID,
-		JobID:             claim.JobID,
+		TimeoutSeconds:    remainingTimeoutSeconds(workDeadline),
+		WorkID:            claim.Target.WorkID,
+		WorkTargetID:      claim.Target.ID,
 	}, os.Stderr)
 	if err != nil {
 		manager.finishWithWorktree(claim, token, handle, repository, value, "failed", "", err.Error())
@@ -207,7 +207,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		message := manager.waitForSupervisor(process)
 		errorText := err.Error()
 		if reason == "timeout" {
-			errorText = "task timeout reached"
+			errorText = "Work timeout reached"
 		}
 		manager.finishWithWorktree(claim, token, handle, repository, value,
 			terminalState(message), message.Result, firstNonEmpty(errorText, message.Error))
@@ -242,7 +242,8 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 }
 
 func (manager *Manager) validateClaim(claim protocol.Claim) error {
-	if !uuidPattern.MatchString(claim.Attempt.ID) || !uuidPattern.MatchString(claim.Task.ID) {
+	if !uuidPattern.MatchString(claim.Attempt.ID) || !uuidPattern.MatchString(claim.Target.ID) ||
+		!uuidPattern.MatchString(claim.Target.WorkID) {
 		return errors.New("claim contains invalid IDs")
 	}
 	if claim.Attempt.WorkerID != manager.id || claim.Execution.AssignedWorkerID != manager.id {
@@ -251,20 +252,14 @@ func (manager *Manager) validateClaim(claim protocol.Claim) error {
 	if !manager.supportsRuntime(claim.Execution.RequiredRuntime) {
 		return errors.New("claim requires a runtime that is not ready on this worker")
 	}
-	if claim.Task.RepositoryID != claim.Repository.ID {
+	if claim.Target.RepositoryID != claim.Repository.ID {
 		return errors.New("claim repository IDs do not match")
 	}
-	if claim.Task.TimeoutSeconds < 1 || claim.Task.TimeoutSeconds > int(protocol.MaxTimeout/time.Second) {
+	if claim.Target.TimeoutSeconds < 1 || claim.Target.TimeoutSeconds > int(protocol.MaxTimeout/time.Second) {
 		return errors.New("claim timeout is outside the supported range")
 	}
-	if !protocol.AgentPromptFits(claim.Task.Title, claim.Repository.RemoteIdentity, claim.Task.Description) {
+	if !protocol.AgentPromptFits(claim.Target.RoutineName, claim.Repository.RemoteIdentity, claim.Target.Prompt) {
 		return errors.New("claim agent prompt exceeds 72 KiB")
-	}
-	if (claim.RunID == "") != (claim.JobID == "") {
-		return errors.New("claim Run and Job identities must be supplied together")
-	}
-	if claim.RunID != "" && (!uuidPattern.MatchString(claim.RunID) || !uuidPattern.MatchString(claim.JobID)) {
-		return errors.New("claim Run or Job identity is invalid")
 	}
 	return nil
 }
@@ -672,7 +667,7 @@ func stoppedAttemptError(handle *attemptHandle, fallback error) error {
 	case "cancelled":
 		return errors.New("attempt cancelled")
 	case "timeout":
-		return errors.New("task timeout reached")
+		return errors.New("Work timeout reached")
 	case "lease_lost":
 		return errors.New("control-plane lease was lost")
 	default:
@@ -692,11 +687,11 @@ func terminalState(message supervisorMessage) string {
 
 func buildPrompt(claim protocol.Claim, value worktree) string {
 	return protocol.FormatAgentPrompt(
-		claim.Task.Title,
+		claim.Target.RoutineName,
 		claim.Repository.RemoteIdentity,
 		value.Branch,
 		value.BaseBranch,
-		claim.Task.Description,
+		claim.Target.Prompt,
 	)
 }
 

@@ -1,12 +1,4 @@
-import type { AttemptEvent, TaskState } from "./types";
-
-export const taskStates: TaskState[] = [
-  "queued",
-  "running",
-  "succeeded",
-  "failed",
-  "cancelled",
-];
+import type { AttemptEvent } from "./types";
 
 export function stateLabel(state: string): string {
   return state.charAt(0).toUpperCase() + state.slice(1);
@@ -26,6 +18,19 @@ export function timeAgo(value: string, now = Date.now()): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
+}
+
+export function timeUntil(value: string, now = Date.now()): string {
+  const target = new Date(value).getTime();
+  if (target <= now) return timeAgo(value, now);
+  const seconds = Math.ceil((target - now) / 1000);
+  if (seconds < 10) return "in a few seconds";
+  if (seconds < 60) return `in ${seconds}s`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.ceil(minutes / 60);
+  if (hours < 24) return `in ${hours}h`;
+  return `in ${Math.ceil(hours / 24)}d`;
 }
 
 export function duration(start: string, end?: string, now = Date.now()): string {

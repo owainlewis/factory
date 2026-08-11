@@ -3,7 +3,6 @@ package controlplane
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,9 +20,8 @@ import (
 )
 
 type API struct {
-	store       *Store
-	logger      *slog.Logger
-	automations *AutomationService
+	store  *Store
+	logger *slog.Logger
 }
 
 const workerConnectionTimeout = 12 * time.Second
@@ -59,20 +57,16 @@ type legacyWorkerResponse struct {
 	Online            bool                        `json:"online"`
 	Repositories      []protocol.Repository       `json:"repositories"`
 	RetainedWorktrees []protocol.RetainedWorktree `json:"retained_worktrees"`
-	CurrentTaskTitle  string                      `json:"current_task_title,omitempty"`
+	CurrentWorkTitle  string                      `json:"current_work_title,omitempty"`
 	RegisteredAt      time.Time                   `json:"registered_at"`
 	LastHeartbeat     time.Time                   `json:"last_heartbeat"`
 }
 
 func NewHandler(store *Store, logger *slog.Logger) http.Handler {
-	return NewHandlerWithAutomation(store, logger, NewAutomationService(store, logger))
-}
-
-func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *AutomationService) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	api := &API{store: store, logger: logger, automations: automations}
+	api := &API{store: store, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", api.health)
 	mux.HandleFunc("POST /api/v1/worker-enrollments", api.createWorkerEnrollment)
@@ -88,47 +82,19 @@ func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *Au
 	mux.HandleFunc("GET /api/v1/repositories/{repository_id}", api.getManagedRepository)
 	mux.HandleFunc("GET /api/v1/repositories/{repository_id}/readiness", api.getManagedRepositoryReadiness)
 	mux.HandleFunc("PUT /api/v1/repositories/{repository_id}/enabled", api.setManagedRepositoryEnabled)
-	mux.HandleFunc("GET /api/v1/definitions", api.listDefinitions)
-	mux.HandleFunc("POST /api/v1/definitions", api.createDefinition)
-	mux.HandleFunc("GET /api/v1/definitions/{definition_id}", api.getDefinition)
-	mux.HandleFunc("PUT /api/v1/definitions/{definition_id}", api.updateDefinition)
-	mux.HandleFunc("PUT /api/v1/definitions/{definition_id}/archived", api.setDefinitionArchived)
-	mux.HandleFunc("GET /api/v1/run-repositories", api.listRunRepositories)
-	mux.HandleFunc("GET /api/v1/runs", api.listRuns)
-	mux.HandleFunc("POST /api/v1/runs", api.createRun)
-	mux.HandleFunc("GET /api/v1/runs/{run_id}", api.getRun)
-	mux.HandleFunc("POST /api/v1/jobs/{job_id}/cancel", api.cancelJob)
-	mux.HandleFunc("POST /api/v1/jobs/{job_id}/retry", api.retryJob)
-	mux.HandleFunc("GET /api/v1/workflows", api.listWorkflows)
-	mux.HandleFunc("POST /api/v1/workflows", api.createWorkflow)
-	mux.HandleFunc("GET /api/v1/workflows/{workflow_id}", api.getWorkflow)
-	mux.HandleFunc("POST /api/v1/workflows/{workflow_id}/revisions", api.createWorkflowRevision)
-	mux.HandleFunc("PUT /api/v1/workflows/{workflow_id}/enabled", api.setWorkflowEnabled)
-	mux.HandleFunc("GET /api/v1/automations", api.listAutomations)
-	mux.HandleFunc("POST /api/v1/automations", api.createAutomation)
-	mux.HandleFunc("GET /api/v1/automations/{automation_id}", api.getAutomation)
-	mux.HandleFunc("PUT /api/v1/automations/{automation_id}", api.updateAutomation)
-	mux.HandleFunc("PUT /api/v1/automations/{automation_id}/enabled", api.setAutomationEnabled)
-	mux.HandleFunc("POST /api/v1/automations/{automation_id}/test", api.testAutomation)
-	mux.HandleFunc("POST /api/v1/automations/{automation_id}/check", api.checkAutomation)
-	mux.HandleFunc("POST /api/v1/automations/{automation_id}/run", api.runAutomation)
-	mux.HandleFunc("GET /api/v1/automations/{automation_id}/occurrences", api.listAutomationOccurrences)
-	mux.HandleFunc("POST /api/v1/migrations/legacy-poller/preview", api.previewLegacyPoller)
-	mux.HandleFunc("POST /api/v1/migrations/legacy-poller/import", api.importLegacyPoller)
-	mux.HandleFunc("GET /api/v1/migrations/legacy-poller/active", api.activeLegacyPollerMigration)
-	mux.HandleFunc("GET /api/v1/migrations/legacy-poller/{migration_id}", api.getLegacyPollerMigration)
-	mux.HandleFunc("POST /api/v1/migrations/legacy-poller/{migration_id}/finalize", api.finalizeLegacyPoller)
-	mux.HandleFunc("GET /api/v1/migrations/product-model", api.getProductUpgrade)
-	mux.HandleFunc("POST /api/v1/migrations/product-model/apply", api.applyProductUpgrade)
-	mux.HandleFunc("POST /api/v1/occurrences/{occurrence_id}/resume", api.resumeLegacyPollerOccurrence)
-	mux.HandleFunc("POST /api/v1/occurrences/{occurrence_id}/skip", api.skipLegacyPollerOccurrence)
-	mux.HandleFunc("GET /api/v1/metrics/summary", api.getMetrics)
-	mux.HandleFunc("GET /api/v1/tasks", api.listTasks)
-	mux.HandleFunc("POST /api/v1/tasks", api.createTask)
-	mux.HandleFunc("GET /api/v1/tasks/{task_id}", api.getTask)
-	mux.HandleFunc("DELETE /api/v1/tasks/{task_id}", api.deleteTask)
-	mux.HandleFunc("POST /api/v1/tasks/{task_id}/cancel", api.cancelTask)
-	mux.HandleFunc("POST /api/v1/executions/{execution_id}/retry", api.retryExecution)
+	mux.HandleFunc("GET /api/v1/routines", api.listRoutines)
+	mux.HandleFunc("POST /api/v1/routines", api.createRoutine)
+	mux.HandleFunc("GET /api/v1/routines/{routine_id}", api.getRoutine)
+	mux.HandleFunc("PUT /api/v1/routines/{routine_id}", api.updateRoutine)
+	mux.HandleFunc("PUT /api/v1/routines/{routine_id}/archived", api.setRoutineArchived)
+	mux.HandleFunc("POST /api/v1/routines/{routine_id}/run", api.runRoutine)
+	mux.HandleFunc("POST /api/v1/routines/{routine_id}/discard-occurrence", api.discardRoutineOccurrence)
+	mux.HandleFunc("GET /api/v1/work", api.listWork)
+	mux.HandleFunc("GET /api/v1/work/{work_id}", api.getWork)
+	mux.HandleFunc("POST /api/v1/work/{work_id}/cancel", api.cancelWork)
+	mux.HandleFunc("POST /api/v1/work/{work_id}/targets/{target_id}/cancel", api.cancelWorkTarget)
+	mux.HandleFunc("POST /api/v1/work/{work_id}/targets/{target_id}/retry", api.retryWorkTarget)
+	mux.HandleFunc("GET /api/v1/overview", api.getOverview)
 	mux.HandleFunc("GET /api/v1/attempts/{attempt_id}", api.getAttempt)
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/start", api.startAttempt)
 	mux.HandleFunc("PUT /api/v1/attempts/{attempt_id}/heartbeat", api.heartbeat)
@@ -139,7 +105,7 @@ func NewHandlerWithAutomation(store *Store, logger *slog.Logger, automations *Au
 }
 
 // NewRemoteWorkerHandler exposes only the Worker lifecycle over the optional
-// TLS listener. Operator, repository, Definition, and Run APIs remain local.
+// TLS listener. Operator, repository, Routine, and Work APIs remain local.
 func NewRemoteWorkerHandler(store *Store, logger *slog.Logger) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
@@ -257,333 +223,6 @@ func (a *API) remoteAttemptAuth(next http.Handler) http.Handler {
 	})
 }
 
-func (a *API) listDefinitions(w http.ResponseWriter, r *http.Request) {
-	if len(r.URL.Query()["cursor"]) > 1 || len(r.URL.Query()["limit"]) > 1 ||
-		len(r.URL.Query()["archived"]) > 1 {
-		writeError(w, invalid("invalid_query", "Definition query parameters may be provided once"))
-		return
-	}
-	for key := range r.URL.Query() {
-		if key != "cursor" && key != "limit" && key != "archived" {
-			writeError(w, invalid("invalid_query", "unsupported Definition query parameter"))
-			return
-		}
-	}
-	limit, err := pageLimit(r, protocol.DefaultDefinitionPageSize, protocol.MaxDefinitionPageSize)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	var cursor *protocol.DefinitionCursor
-	if encoded := r.URL.Query().Get("cursor"); encoded != "" {
-		decoded, err := decodeDefinitionCursor(encoded)
-		if err != nil {
-			writeError(w, invalid("invalid_cursor", "cursor is invalid"))
-			return
-		}
-		cursor = &decoded
-	}
-	archived := false
-	if encoded := r.URL.Query().Get("archived"); encoded != "" {
-		archived, err = strconv.ParseBool(encoded)
-		if err != nil {
-			writeError(w, invalid("invalid_archived", "archived must be true or false"))
-			return
-		}
-	}
-	page, err := a.store.Definitions(r.Context(), protocol.DefinitionPageRequest{
-		Limit: limit, Cursor: cursor, Archived: archived,
-	})
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	var nextCursor *string
-	if page.NextCursor != nil {
-		value, err := encodeDefinitionCursor(*page.NextCursor)
-		if err != nil {
-			writeError(w, unavailable(err))
-			return
-		}
-		nextCursor = &value
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"definitions": page.Definitions, "next_cursor": nextCursor})
-}
-
-func (a *API) createDefinition(w http.ResponseWriter, r *http.Request) {
-	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
-		return
-	}
-	var input protocol.CreateDefinitionRequest
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	definition, created, err := a.store.CreateDefinition(r.Context(), input)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	status := http.StatusOK
-	if created {
-		status = http.StatusCreated
-	}
-	writeJSON(w, status, definition)
-}
-
-func (a *API) getDefinition(w http.ResponseWriter, r *http.Request) {
-	definition, err := a.store.Definition(r.Context(), r.PathValue("definition_id"))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, definition)
-}
-
-func (a *API) updateDefinition(w http.ResponseWriter, r *http.Request) {
-	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
-		return
-	}
-	var input protocol.UpdateDefinitionRequest
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	definition, _, err := a.store.UpdateDefinition(r.Context(), r.PathValue("definition_id"), input)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, definition)
-}
-
-func (a *API) setDefinitionArchived(w http.ResponseWriter, r *http.Request) {
-	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
-		return
-	}
-	var input protocol.SetDefinitionArchivedRequest
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	if input.Archived == nil {
-		writeError(w, invalid("invalid_definition_archived", "archived is required"))
-		return
-	}
-	definition, err := a.store.SetDefinitionArchived(
-		r.Context(), r.PathValue("definition_id"), *input.Archived, input.ExpectedGeneration,
-	)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, definition)
-}
-
-func (a *API) listWorkflows(w http.ResponseWriter, r *http.Request) {
-	if _, retired := r.URL.Query()["name"]; retired {
-		writeError(w, invalid("invalid_query", "workflow filtering uses title, not name"))
-		return
-	}
-	limit, err := pageLimit(r, protocol.DefaultWorkflowPageSize, protocol.MaxWorkflowPageSize)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	var cursor *protocol.WorkflowCursor
-	if encoded := r.URL.Query().Get("cursor"); encoded != "" {
-		decoded, err := decodeWorkflowCursor(encoded)
-		if err != nil {
-			writeError(w, invalid("invalid_cursor", "cursor is invalid"))
-			return
-		}
-		cursor = &decoded
-	}
-	var enabled *bool
-	if values, exists := r.URL.Query()["enabled"]; exists {
-		if len(values) != 1 {
-			writeError(w, invalid("invalid_enabled", "enabled may be provided once"))
-			return
-		}
-		value, err := strconv.ParseBool(values[0])
-		if err != nil {
-			writeError(w, invalid("invalid_enabled", "enabled must be true or false"))
-			return
-		}
-		enabled = &value
-	}
-	if len(r.URL.Query()["title"]) > 1 || len(r.URL.Query()["cursor"]) > 1 || len(r.URL.Query()["limit"]) > 1 {
-		writeError(w, invalid("invalid_query", "workflow query parameters may be provided once"))
-		return
-	}
-	page, err := a.store.Workflows(r.Context(), protocol.WorkflowPageRequest{
-		Limit: limit, Cursor: cursor, Title: r.URL.Query().Get("title"), Enabled: enabled,
-	})
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	var nextCursor *string
-	if page.NextCursor != nil {
-		value, err := encodeWorkflowCursor(*page.NextCursor)
-		if err != nil {
-			writeError(w, unavailable(err))
-			return
-		}
-		nextCursor = &value
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"workflows": page.Workflows, "next_cursor": nextCursor})
-}
-
-func (a *API) createWorkflow(w http.ResponseWriter, r *http.Request) {
-	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
-		return
-	}
-	var input protocol.CreateWorkflowRequest
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	detail, created, err := a.store.CreateWorkflow(r.Context(), input)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	status := http.StatusOK
-	if created {
-		status = http.StatusCreated
-	}
-	writeJSON(w, status, detail)
-}
-
-func (a *API) getWorkflow(w http.ResponseWriter, r *http.Request) {
-	detail, err := a.store.Workflow(r.Context(), r.PathValue("workflow_id"))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, detail)
-}
-
-func (a *API) createWorkflowRevision(w http.ResponseWriter, r *http.Request) {
-	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
-		return
-	}
-	var input protocol.CreateWorkflowRevisionRequest
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	detail, created, err := a.store.CreateWorkflowRevision(r.Context(), r.PathValue("workflow_id"), input)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	status := http.StatusOK
-	if created {
-		status = http.StatusCreated
-	}
-	writeJSON(w, status, detail)
-}
-
-func (a *API) setWorkflowEnabled(w http.ResponseWriter, r *http.Request) {
-	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
-		return
-	}
-	var input protocol.SetWorkflowEnabledRequest
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	if input.Enabled == nil {
-		writeError(w, invalid("invalid_workflow_enabled", "enabled is required"))
-		return
-	}
-	detail, err := a.store.SetWorkflowEnabled(r.Context(), r.PathValue("workflow_id"), *input.Enabled)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, detail)
-}
-
-func encodeWorkflowCursor(cursor protocol.WorkflowCursor) (string, error) {
-	body, err := json.Marshal(cursor)
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(body), nil
-}
-
-func decodeWorkflowCursor(encoded string) (protocol.WorkflowCursor, error) {
-	var cursor protocol.WorkflowCursor
-	body, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil {
-		return cursor, err
-	}
-	if err := json.Unmarshal(body, &cursor); err != nil {
-		return cursor, err
-	}
-	if cursor.UpdatedAtMillis <= 0 || strings.TrimSpace(cursor.ID) == "" {
-		return cursor, errors.New("invalid workflow cursor")
-	}
-	return cursor, nil
-}
-
-func encodeDefinitionCursor(cursor protocol.DefinitionCursor) (string, error) {
-	body, err := json.Marshal(cursor)
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(body), nil
-}
-
-func decodeDefinitionCursor(encoded string) (protocol.DefinitionCursor, error) {
-	var cursor protocol.DefinitionCursor
-	body, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil {
-		return cursor, err
-	}
-	if err := json.Unmarshal(body, &cursor); err != nil {
-		return cursor, err
-	}
-	if cursor.UpdatedAtMillis <= 0 || strings.TrimSpace(cursor.ID) == "" {
-		return cursor, errors.New("invalid Definition cursor")
-	}
-	return cursor, nil
-}
-
-func (a *API) getMetrics(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query()
-	if len(query["window"]) > 1 {
-		writeError(w, invalid("invalid_window", "window may be provided once"))
-		return
-	}
-	for _, parameter := range []string{"definition_id", "repository_id", "worker_id", "job_view"} {
-		if len(query[parameter]) > 1 {
-			writeError(w, invalid("invalid_metrics_filter", parameter+" may be provided once"))
-			return
-		}
-	}
-	for parameter := range query {
-		switch parameter {
-		case "window", "definition_id", "repository_id", "worker_id", "job_view":
-		default:
-			writeError(w, invalid("invalid_metrics_filter", "unsupported metrics filter"))
-			return
-		}
-	}
-	summary, err := a.store.MetricsFiltered(
-		r.Context(),
-		query.Get("window"),
-		MetricsFilter{
-			DefinitionID: strings.TrimSpace(query.Get("definition_id")),
-			RepositoryID: strings.TrimSpace(query.Get("repository_id")),
-			WorkerID:     strings.TrimSpace(query.Get("worker_id")),
-			JobView:      strings.TrimSpace(query.Get("job_view")),
-		},
-	)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, summary)
-}
-
 type responseRecorder struct {
 	http.ResponseWriter
 	status     int
@@ -675,7 +314,7 @@ func (a *API) registerWorker(w http.ResponseWriter, r *http.Request) {
 			CodexVersion: worker.RuntimeVersion, Capacity: worker.Capacity,
 			ActiveCount: worker.ActiveCount, Health: worker.Health, Online: worker.Online,
 			Repositories: worker.Repositories, RetainedWorktrees: worker.RetainedWorktrees,
-			CurrentTaskTitle: worker.CurrentTaskTitle, RegisteredAt: worker.RegisteredAt,
+			CurrentWorkTitle: worker.CurrentWorkTitle, RegisteredAt: worker.RegisteredAt,
 			LastHeartbeat: worker.LastHeartbeat,
 		})
 		return
@@ -876,113 +515,6 @@ func (a *API) setManagedRepositoryEnabled(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, repository)
 }
 
-func (a *API) listTasks(w http.ResponseWriter, r *http.Request) {
-	limit, err := pageLimit(r, protocol.DefaultTaskPageSize, protocol.MaxTaskPageSize)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	cursor, err := decodeTaskCursor(r.URL.Query().Get("cursor"))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	page, err := a.store.Tasks(r.Context(), protocol.TaskPageRequest{Limit: limit, Cursor: cursor})
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	var nextCursor *string
-	if page.NextCursor != nil {
-		encoded, err := encodeTaskCursor(*page.NextCursor)
-		if err != nil {
-			writeError(w, unavailable(err))
-			return
-		}
-		nextCursor = &encoded
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"tasks": page.Tasks, "next_cursor": nextCursor})
-}
-
-func (a *API) createTask(w http.ResponseWriter, r *http.Request) {
-	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
-		return
-	}
-	var input protocol.CreateTaskRequest
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	task, created, err := a.store.CreateTask(r.Context(), input)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	status := http.StatusOK
-	if created {
-		status = http.StatusCreated
-		a.logStateChange("execution", task.Execution.ID, task.Execution.State, "task_id", task.Task.ID)
-	}
-	writeJSON(w, status, task)
-}
-
-func (a *API) getTask(w http.ResponseWriter, r *http.Request) {
-	task, err := a.store.Task(r.Context(), r.PathValue("task_id"))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, task)
-}
-
-func (a *API) deleteTask(w http.ResponseWriter, r *http.Request) {
-	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
-		return
-	}
-	if !decodeEmptyJSON(w, r) {
-		return
-	}
-	taskID := r.PathValue("task_id")
-	if err := a.store.DeleteTask(r.Context(), taskID); err != nil {
-		writeError(w, err)
-		return
-	}
-	a.logger.Info("task_history_deleted", "task_id", taskID)
-	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
-}
-
-func (a *API) cancelTask(w http.ResponseWriter, r *http.Request) {
-	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
-		return
-	}
-	if !decodeEmptyJSON(w, r) {
-		return
-	}
-	task, err := a.store.CancelTask(r.Context(), r.PathValue("task_id"))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	a.logStateChange("execution", task.Execution.ID, task.Execution.State,
-		"task_id", task.Task.ID, "cancellation_requested", task.Execution.CancellationRequested)
-	writeJSON(w, http.StatusOK, task)
-}
-
-func (a *API) retryExecution(w http.ResponseWriter, r *http.Request) {
-	if !prepareMutation(w, r, protocol.MaxBodyBytes) {
-		return
-	}
-	if !decodeEmptyJSON(w, r) {
-		return
-	}
-	task, err := a.store.RetryExecution(r.Context(), r.PathValue("execution_id"))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	a.logStateChange("execution", task.Execution.ID, task.Execution.State, "task_id", task.Task.ID)
-	writeJSON(w, http.StatusOK, task)
-}
-
 func (a *API) getAttempt(w http.ResponseWriter, r *http.Request) {
 	attempt, err := a.store.Attempt(r.Context(), r.PathValue("attempt_id"))
 	if err != nil {
@@ -1084,40 +616,6 @@ func pageLimit(r *http.Request, defaultLimit, maxLimit int) (int, error) {
 		return 0, invalid("invalid_limit", fmt.Sprintf("limit must be an integer between 1 and %d", maxLimit))
 	}
 	return limit, nil
-}
-
-func decodeTaskCursor(raw string) (*protocol.TaskCursor, error) {
-	if raw == "" {
-		return nil, nil
-	}
-	encoded, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil {
-		return nil, invalid("invalid_cursor", "cursor is invalid")
-	}
-	var value struct {
-		CreatedAtMillis int64  `json:"created_at"`
-		ID              string `json:"id"`
-	}
-	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&value); err != nil || value.CreatedAtMillis < 0 || value.ID == "" || len(value.ID) > 200 {
-		return nil, invalid("invalid_cursor", "cursor is invalid")
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return nil, invalid("invalid_cursor", "cursor is invalid")
-	}
-	return &protocol.TaskCursor{CreatedAtMillis: value.CreatedAtMillis, ID: value.ID}, nil
-}
-
-func encodeTaskCursor(cursor protocol.TaskCursor) (string, error) {
-	value, err := json.Marshal(struct {
-		CreatedAtMillis int64  `json:"created_at"`
-		ID              string `json:"id"`
-	}{CreatedAtMillis: cursor.CreatedAtMillis, ID: cursor.ID})
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(value), nil
 }
 
 func (a *API) completeAttempt(w http.ResponseWriter, r *http.Request) {

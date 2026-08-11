@@ -1,17 +1,16 @@
 # Factory
 
-Factory is infrastructure for building a software factory. It runs repeatable
-software-engineering agent jobs across Git repositories and compute. Its Go
-control plane stores work, shows the worker fleet, and delegates tasks. Each Go
-worker currently owns one agent runtime, Codex or Claude Code.
+Factory runs repeatable software-engineering Work across Git repositories and
+compute. Operators save prompts as Routines, run them now, or schedule them
+across one or more repositories. Its Go control plane coordinates Work and a
+fleet of Workers that provide Pi, Codex, or Claude Code runtimes.
 
 The browser UI provides:
 
-- an overview of execution throughput, reliability, cycle time, queue depth, and
-  worker health;
-- a work queue and task details;
+- an operational overview of active, completed, and attention-needed Work;
+- Routines with prompts, repositories, runtime settings, and optional schedules;
+- table, list, and board views of Work, with per-repository Target details;
 - registered worker and repository status;
-- task delegation using a title, prompt, repository, and worker.
 
 Factory is local-first. Its browser and operator API accept loopback connections
 only. An optional, separate TLS-authenticated endpoint accepts Workers on remote
@@ -36,10 +35,10 @@ Requirements:
 Node.js is only needed when changing the UI. Normal builds use the committed,
 embedded UI assets.
 
-GitHub Automations and on-demand worker checkout depend on the GitHub CLI,
-`gh`. Factory does not include a separate GitHub API client. Install and
-authenticate [`gh`](https://cli.github.com/) on the control-plane host and each
-eligible worker host before enabling a GitHub Automation:
+Managed GitHub repository checkout and Routines that allow the `gh` tool depend
+on the GitHub CLI. Factory does not include a separate GitHub API client.
+Install and authenticate [`gh`](https://cli.github.com/) on the control-plane
+host and each eligible Worker host:
 
 ```sh
 gh --version
@@ -63,10 +62,10 @@ just run
 
 Open [http://127.0.0.1:7337](http://127.0.0.1:7337).
 
-Existing `factory-poller` users must stop it and use **Automations → Migrate
-legacy poller** before removing their old configuration. Preview, Import, and
-Finalize each verify and lock the same legacy snapshot. Import creates disabled
-typed Automations and Finalize archives copies without deleting the originals.
+Database migration 27 converts supported pre-launch Definitions, schedules,
+and execution history into Routines and Work after the database is backed up.
+Unsupported legacy provider admission is blocked and reported instead of being
+silently discarded.
 
 One Worker has one stable identity, a configurable set of coding-agent
 capabilities, and a pool of independent sessions. The pool defaults to ten
@@ -92,7 +91,7 @@ Browser
    | HTTP + JSON
    v
 Go control plane
-  SQLite, scheduler, typed Automation evaluators, embedded UI
+  SQLite, Routine scheduler, Work admission, embedded UI
    ^
    | registration, claim, heartbeat, events, completion
    |
@@ -127,11 +126,12 @@ security boundaries.
 Implemented:
 
 - Go control-plane API and embedded React UI;
-- durable tasks, executions, attempts, leases, events, and cancellation;
+- durable Routines, Work, Targets, executions, attempts, leases, events, and
+  cancellation;
 - Pi, Codex, and Claude Code Worker capabilities;
-- reusable versioned Workflows;
-- disabled-first schedule and signed GitHub webhook Automations backed by
-  shared Definitions, plus legacy GitHub polling Automations;
+- manual and scheduled Routine admission across one or more repositories;
+- versioned Routine prompts, execution settings, repository scope, and optional
+  schedules;
 - a central managed-repository catalog, bounded worker caches, and isolated Git
   worktrees;
 - bounded list APIs and retained-data metrics;

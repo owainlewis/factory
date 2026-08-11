@@ -1,5 +1,139 @@
-export type TaskState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type Runtime = "pi" | "codex" | "claude-code";
+export type WorkTargetState = "blocked" | "queued" | "preparing" | "running" | "succeeded" | "failed" | "cancelled";
+export type WorkState = "blocked" | "queued" | "running" | "succeeded" | "failed" | "partial" | "cancelled";
+
+export interface RoutineRepository {
+  id: string;
+  remote_identity: string;
+}
+
+export interface RoutineSchedule {
+  enabled: boolean;
+  cron?: string;
+  timezone?: string;
+  next_due_at?: string;
+  pending_due_at?: string;
+  health_status: "disabled" | "healthy" | "blocked" | "error";
+  health_code?: string;
+  health_message?: string;
+}
+
+export interface Routine {
+  id: string;
+  name: string;
+  prompt: string;
+  prompt_preview?: string;
+  runtime: Runtime;
+  timeout_seconds: number;
+  concurrency_limit: number;
+  generation: number;
+  archived: boolean;
+  read_only: boolean;
+  repositories: RoutineRepository[] | null;
+  repository_count: number;
+  schedule: RoutineSchedule;
+  last_work_state?: WorkState;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SaveRoutineInput {
+  name: string;
+  prompt: string;
+  runtime: Runtime;
+  timeout_seconds: number;
+  concurrency_limit: number;
+  repository_ids: string[];
+  schedule: { enabled: boolean; cron?: string; timezone?: string };
+  expected_generation?: number;
+}
+
+export interface RoutineSnapshot {
+  id: string;
+  name: string;
+  prompt: string;
+  runtime: Runtime;
+  timeout_seconds: number;
+  concurrency_limit: number;
+  generation: number;
+  repositories: RoutineRepository[] | null;
+  cron?: string;
+  timezone?: string;
+}
+
+export interface Attempt {
+  id: string;
+  execution_id: string;
+  worker_id: string;
+  attempt_number: number;
+  state: "preparing" | "running" | "succeeded" | "failed" | "cancelled" | "lost";
+  lease_expires_at: string;
+  result?: string;
+  error?: string;
+  started_at?: string;
+  completed_at?: string;
+  created_at: string;
+}
+
+export interface WorkTarget {
+  id: string;
+  work_id: string;
+  repository_id: string;
+  repository_identity: string;
+  resolved_prompt?: string;
+  required_runtime: Runtime;
+  timeout_seconds: number;
+  state: WorkTargetState;
+  blocked_reason?: string;
+  assigned_worker_id?: string;
+  cancellation_requested: boolean;
+  retry_may_repeat_effects: boolean;
+  admitted_at: string;
+  started_at?: string;
+  terminal_at?: string;
+  result?: string;
+  failure_reason?: string;
+  attempts?: Attempt[] | null;
+}
+
+export interface WorkItem {
+  id: string;
+  routine_id: string;
+  routine: RoutineSnapshot;
+  source: "manual" | "schedule" | "provider_history";
+  scheduled_at?: string;
+  state: WorkState;
+  needs_attention: boolean;
+  target_count: number;
+  succeeded_count: number;
+  failed_count: number;
+  cancelled_count: number;
+  active_count: number;
+  admitted_at: string;
+  updated_at: string;
+  terminal_at?: string;
+}
+
+export interface WorkDetailV2 {
+  work: WorkItem;
+  targets: WorkTarget[] | null;
+}
+
+export interface WorkPageV2 {
+  work: WorkItem[] | null;
+  next_cursor?: string;
+}
+
+export interface RoutineOverview {
+  active_work: number;
+  needs_attention: number;
+  completed_last_24h: number;
+  workers_online: number;
+  workers_total: number;
+  recent_work: WorkItem[] | null;
+  upcoming_routines: Routine[] | null;
+  generated_at: string;
+}
 
 export interface Capability {
   kind: "tool" | "runtime";
@@ -43,7 +177,7 @@ export interface Worker {
   retained_worktrees: RetainedWorktree[];
   registered_at: string;
   last_heartbeat: string;
-  current_task_title?: string;
+  current_work_title?: string;
 }
 
 export interface ManagedRepository {
@@ -68,476 +202,6 @@ export interface ManagedRepositoryReadiness {
   workers: ManagedRepositoryWorkerReadiness[];
 }
 
-export interface WorkerRepositoryOption {
-  id: string;
-  key?: string;
-  remote_identity: string;
-  enabled: boolean;
-  cached: boolean;
-  advertised: boolean;
-  ready: boolean;
-  reason: string;
-}
-
-export interface Task {
-  id: string;
-  request_key: string;
-  title: string;
-  description?: string;
-  worker_id: string;
-  repository_id: string;
-  required_runtime: Runtime;
-  timeout_seconds: number;
-  state: TaskState;
-  created_at: string;
-}
-
-export interface TaskPage {
-  tasks: Task[];
-  next_cursor: string | null;
-}
-
-export interface Execution {
-  id: string;
-  task_id: string;
-  assigned_worker_id: string;
-  required_runtime: Runtime;
-  state: "queued" | "preparing" | "running" | "succeeded" | "failed" | "cancelled";
-  cancellation_requested: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface Attempt {
-  id: string;
-  execution_id: string;
-  worker_id: string;
-  attempt_number: number;
-  state: "preparing" | "running" | "succeeded" | "failed" | "cancelled" | "lost";
-  lease_expires_at: string;
-  result?: string;
-  error?: string;
-  started_at?: string;
-  completed_at?: string;
-  created_at: string;
-}
-
-export interface TaskDetail {
-  task: Task & { description: string };
-  context: string;
-  execution: Execution;
-  repository: Repository;
-  repository_available: boolean;
-  attempts: Attempt[] | null;
-  workflow?: TaskWorkflowSnapshot;
-  definition?: DefinitionSnapshot;
-  resolved_prompt: string;
-}
-
-export interface TaskWorkflowSnapshot {
-  id: string;
-  revision_id: string;
-  title: string;
-  revision_number: number;
-}
-
-export interface WorkflowRevision {
-  id: string;
-  workflow_id: string;
-  revision_number: number;
-  title: string;
-  summary: string;
-  instructions?: string;
-  created_at: string;
-}
-
-export interface Workflow {
-  id: string;
-  enabled: boolean;
-  current_revision: WorkflowRevision;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WorkflowDetail {
-  workflow: Workflow;
-  revisions: WorkflowRevision[];
-}
-
-export interface WorkflowPage {
-  workflows: Workflow[];
-  next_cursor: string | null;
-}
-
-export interface Definition {
-  id: string;
-  name: string;
-  prompt: string;
-  runtime: Runtime;
-  allowed_tools: string[];
-  timeout_seconds: number;
-  inputs: Record<string, string>;
-  generation: number;
-  archived: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
-export type DefinitionSnapshot = Omit<Definition, "archived" | "created_at" | "updated_at">;
-
-export interface DefinitionPage {
-  definitions: Definition[];
-  next_cursor: string | null;
-}
-
-export type RunState = "blocked" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
-export type JobState = RunState | "preparing";
-
-export interface Run {
-  id: string;
-  request_key: string;
-  source_kind: "manual" | "schedule" | "webhook";
-  definition: DefinitionSnapshot;
-  state: RunState;
-  job_count: number;
-  concurrency_limit: number;
-  repository_remote_identities: string[];
-  delivery_id?: string;
-  event?: string;
-  action?: string;
-  pull_request_number?: number;
-  pull_request_url?: string;
-  observed_head_commit?: string;
-  admitted_at: string;
-  updated_at: string;
-}
-
-export interface Job {
-  id: string;
-  run_id: string;
-  repository_id: string;
-  repository_remote_identity: string;
-  task_id?: string;
-  execution_id?: string;
-  assigned_worker_id?: string;
-  required_runtime: Runtime;
-  state: JobState;
-  blocked_reason?: string;
-  admitted_at: string;
-  started_at?: string;
-  terminal_at?: string;
-  result?: string;
-  failure_reason?: string;
-  retry_may_repeat_effects: boolean;
-  cancellation_requested: boolean;
-}
-
-export interface JobDetail {
-  job: Job;
-  attempts: Attempt[] | null;
-  resolved_prompt: string;
-}
-
-export interface RunDetail {
-  run: Run;
-  parameters: Record<string, string>;
-  jobs: JobDetail[];
-}
-
-export interface RunPage {
-  runs: Run[];
-  next_cursor: string | null;
-}
-
-export interface RunRepository {
-  id: string;
-  remote_identity: string;
-}
-
-export interface CreateRunInput {
-  request_key: string;
-  definition_id: string;
-  repository_ids: string[];
-  concurrency_limit: number;
-  parameters?: Record<string, string>;
-}
-
-export interface GitHubIssueTrigger {
-	type: "github_issue";
-	state: "open" | "closed";
-	required_labels: string[];
-	poll_interval_seconds: number;
-}
-
-export interface GitHubPullRequestTrigger {
-	type: "github_pull_request";
-	state: "open" | "closed" | "merged";
-	include_drafts: boolean;
-	required_labels: string[];
-	base_branches: string[];
-	poll_interval_seconds: number;
-}
-
-export interface ScheduleTrigger {
-	type: "schedule";
-	cron: string;
-	timezone: string;
-}
-
-export interface GitHubWebhookTrigger {
-	type: "github_webhook";
-	actions: Array<"opened" | "synchronize">;
-}
-
-export type AutomationTrigger = GitHubIssueTrigger | GitHubPullRequestTrigger | ScheduleTrigger | GitHubWebhookTrigger;
-
-export interface AutomationTaskSummary {
-	id: string;
-	title: string;
-	state: string;
-}
-
-export interface AutomationHealth {
-	status: "disabled" | "pending" | "checking" | "healthy" | "blocked" | "error";
-	code?: string;
-	message?: string;
-}
-
-export interface Automation {
-	id: string;
-	title: string;
-	workflow_id?: string;
-	workflow_title?: string;
-	workflow_revision?: number;
-	definition_id?: string;
-	definition_name?: string;
-	definition_generation?: number;
-	repositories?: RunRepository[];
-	parameters?: Record<string, string>;
-	concurrency_limit?: number;
-	repository_id: string;
-	repository_identity: string;
-	context: string;
-	timeout_seconds: number;
-	enabled: boolean;
-	version: number;
-	trigger: AutomationTrigger;
-	health: AutomationHealth;
-	last_checked_at?: string;
-	next_check_at?: string;
-	next_due_at?: string;
-	matched_count: number;
-	skipped_count: number;
-	dispatched_count: number;
-	latest_task?: AutomationTaskSummary;
-	latest_run?: AutomationOccurrence;
-	created_at: string;
-	updated_at: string;
-}
-
-export interface AutomationOccurrence {
-	id: string;
-	automation_id: string;
-	automation_version: number;
-	state: "pending" | "dispatching" | "dispatched" | "failed" | "task_deleted" | "skipped";
-	issue_number?: number;
-	issue_url?: string;
-	issue_title?: string;
-	observed_state?: string;
-	observed_labels?: string[];
-	pull_request_number?: number;
-	pull_request_url?: string;
-	pull_request_title?: string;
-	observed_draft?: boolean;
-	observed_base_branch?: string;
-	observed_head_commit?: string;
-	delivery_id?: string;
-	event?: string;
-	action?: string;
-	kind?: "scheduled" | "run_now";
-	scheduled_at?: string;
-	run_request_key?: string;
-	cron?: string;
-	timezone?: string;
-	run_id?: string;
-	run_state?: RunState;
-	task_request_key: string;
-	task?: AutomationTaskSummary;
-	task_id_snapshot?: string;
-	diagnostic?: string;
-	created_at: string;
-	updated_at: string;
-}
-
-export interface LegacyPollerSelection {
-	config_path?: string;
-	data_home?: string;
-	working_directory?: string;
-	confirm_stopped: boolean;
-}
-
-export interface LegacyPollerQueue {
-	queue_id: string;
-	name: string;
-	source: string;
-	project: string;
-	state: string;
-	required_labels: string[];
-	poll_interval_seconds: number;
-	timeout_seconds: number;
-	repository_id?: string;
-	repository_identity?: string;
-	workflow_title: string;
-	automation_title: string;
-	pending_observations: number;
-	submitted_observations: number;
-	supported: boolean;
-	blocking: boolean;
-	errors: string[];
-}
-
-export interface LegacyPollerMigration {
-	id: string;
-	snapshot_digest: string;
-	status: "previewed" | "imported" | "finalized";
-	config_path: string;
-	data_home: string;
-	working_directory: string;
-	data_directory: string;
-	ledger_path: string;
-	archive_root: string;
-	archive_path?: string;
-	counts: {
-		queues: number;
-		supported_queues: number;
-		unsupported_queues: number;
-		pending_observations: number;
-		submitted_observations: number;
-	};
-	queues: LegacyPollerQueue[];
-	automations: Automation[];
-	occurrences: AutomationOccurrence[];
-	errors: string[];
-	created_at: string;
-	updated_at: string;
-}
-
-export interface AutomationDetail {
-	automation: Automation;
-	occurrences: AutomationOccurrence[];
-}
-
-export interface AutomationPage {
-	automations: Automation[];
-	next_cursor: string | null;
-}
-
-export interface AutomationOccurrencePage {
-	occurrences: AutomationOccurrence[];
-	next_cursor: string | null;
-}
-
-export interface CreateAutomationInput {
-	request_key: string;
-	title: string;
-	workflow_id?: string;
-	repository_id?: string;
-	definition_id?: string;
-	repository_ids?: string[];
-	parameters?: Record<string, string>;
-	concurrency_limit?: number;
-	context?: string;
-	timeout_seconds?: number;
-	trigger: AutomationTrigger;
-}
-
-export interface UpdateAutomationInput extends Omit<CreateAutomationInput, "request_key" | "repository_id"> {
-	expected_version: number;
-}
-
-export interface TestAutomationResult {
-	matches: Array<{
-		number: number;
-		title: string;
-		url: string;
-		state: string;
-		labels: string[];
-		is_draft?: boolean;
-		base_branch?: string;
-		head_commit?: string;
-	}>;
-	next_due_at?: string;
-}
-
-export type MetricsWindow = "24h" | "7d" | "30d" | "all";
-
-export interface WeeklyLimit {
-  used_percent: number;
-  resets_at: string;
-}
-
-export interface MetricsSummary {
-  window: MetricsWindow;
-  generated_at: string;
-  executions_created: number;
-  executions_completed: number;
-  succeeded: number;
-  failed: number;
-  cancelled: number;
-  queued: number;
-  running: number;
-  success_rate: number | null;
-  retry_rate: number | null;
-  median_cycle_time_seconds: number | null;
-  workers_online: number;
-  workers_total: number;
-  weekly_limit?: WeeklyLimit;
-  run_health: RunHealthMetrics;
-}
-
-export interface MetricFilterOption {
-  id: string;
-  name: string;
-}
-
-export interface RunMetricJob {
-  job_id: string;
-  run_id: string;
-  definition_id: string;
-  definition_name: string;
-  repository_id: string;
-  repository_remote_identity: string;
-  worker_id?: string;
-  worker_name?: string;
-  state: JobState;
-  admitted_at: string;
-  started_at?: string;
-  terminal_at?: string;
-}
-
-export interface RunHealthMetrics {
-  total_jobs: number;
-  active: number;
-  blocked: number;
-  succeeded: number;
-  failed: number;
-  cancelled: number;
-  success_rate: number | null;
-  average_queue_time_seconds: number | null;
-  average_cycle_time_seconds: number | null;
-  throughput: number;
-  jobs: RunMetricJob[];
-  definitions: MetricFilterOption[];
-  repositories: MetricFilterOption[];
-  workers: MetricFilterOption[];
-}
-
-export interface MetricsFilters {
-  definition_id?: string;
-  repository_id?: string;
-  worker_id?: string;
-}
-
 export interface AttemptEvent {
   sequence: number;
   kind: string;
@@ -553,100 +217,4 @@ export interface AttemptEventPage {
 
 export interface APIErrorBody {
   error: { code: string; message: string };
-}
-
-export interface ProductUpgrade {
-  id: string;
-  state: "ready" | "draining" | "completed";
-  legacy_read_only: boolean;
-  needed: boolean;
-  counts: {
-    legacy_tasks: number;
-    legacy_attempts: number;
-    legacy_workflows: number;
-    legacy_workflow_revisions: number;
-    compatible_schedules: number;
-    github_polling_automations: number;
-    pending_occurrences: number;
-    active_executions: number;
-  };
-  schedules: Array<{
-    automation_id: string;
-    title: string;
-    definition_name: string;
-    repository_id: string;
-    cron: string;
-    timezone: string;
-    next_due_at?: string;
-    enabled: boolean;
-  }>;
-  polling_automations: Array<{
-    automation_id: string;
-    title: string;
-    trigger_type: string;
-    guidance: string;
-  }>;
-  decisions: string[];
-  validation?: {
-    definitions_created: number;
-    schedules_converted: number;
-    polling_automations_retired: number;
-    legacy_tasks_retained: number;
-    legacy_occurrences_retained: number;
-    legacy_attempts_retained: number;
-    synthetic_runs_created: number;
-    validated_at: string;
-  };
-}
-
-interface CreateTaskBaseInput {
-  request_key: string;
-  title: string;
-  timeout_seconds: number;
-  runtime?: Runtime;
-}
-
-type CreateTaskAssignment =
-  | {
-      worker_id: string;
-      repository_id: string;
-      route?: never;
-    }
-  | {
-      worker_id?: string;
-      repository_id?: never;
-      route: {
-        repository_remote_identity: string;
-        source_access: { provider: string; hostname: string };
-      };
-    };
-
-export type CreateTaskInput = CreateTaskBaseInput & CreateTaskAssignment & (
-  | { description: string; context?: never; workflow_revision_id?: never }
-  | { description?: never; context: string; workflow_revision_id: string }
-);
-
-export interface CreateWorkflowInput {
-	request_key: string;
-	title: string;
-  summary: string;
-  instructions: string;
-}
-
-export interface CreateWorkflowRevisionInput extends CreateWorkflowInput {
-  expected_revision_id: string;
-}
-
-export interface CreateDefinitionInput {
-  request_key: string;
-  name: string;
-  prompt: string;
-  runtime: Runtime;
-  allowed_tools: string[];
-  timeout_seconds: number;
-  inputs: Record<string, string>;
-}
-
-export interface UpdateDefinitionInput extends CreateDefinitionInput {
-  expected_generation: number;
 }

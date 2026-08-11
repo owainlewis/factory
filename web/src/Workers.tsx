@@ -132,7 +132,7 @@ export function WorkersView({
                         {stateLabel(worker.health)}
                       </span>
                     </small>
-                    {worker.current_task_title && <em>{worker.current_task_title}</em>}
+                    {worker.current_work_title && <em>{worker.current_work_title}</em>}
                   </span>
                 </span>
                 <span className="capacity-cell">
@@ -233,7 +233,7 @@ export function WorkerDetail({
     </div>
   );
   const activeSessions = `${data.active_count} active session${data.active_count === 1 ? "" : "s"}`;
-  const latestActiveTask = data.active_count > 1 ? `Latest of ${activeSessions}` : activeSessions;
+  const latestActiveWork = data.active_count > 1 ? `Latest of ${activeSessions}` : activeSessions;
   const testConnection = async () => {
 	const priorEvidence = connectionEvidence(data);
 	setConnectionTest({ status: "testing" });
@@ -331,13 +331,13 @@ export function WorkerDetail({
               </dl>
             </section>
             <section className="panel">
-              <PanelHeading title="Latest active task" aside={latestActiveTask} />
-              {data.current_task_title ? (
-                <div className="current-work"><LoaderCircle size={17} className="spin" /> {data.current_task_title}</div>
+              <PanelHeading title="Latest active Work" aside={latestActiveWork} />
+              {data.current_work_title ? (
+                <div className="current-work"><LoaderCircle size={17} className="spin" /> {data.current_work_title}</div>
               ) : data.active_count > 0 ? (
-                <div className="quiet-empty">No active task title is currently reported.</div>
+                <div className="quiet-empty">No active Work title is currently reported.</div>
               ) : (
-				<div className="quiet-empty">This Worker is ready for its next task.</div>
+				<div className="quiet-empty">This Worker is ready for its next Work.</div>
               )}
             </section>
           </div>
@@ -347,13 +347,13 @@ export function WorkerDetail({
       {tabPanel("work",
         <>
           <section className="panel">
-            <PanelHeading title="Latest active task" aside={latestActiveTask} />
-            {data.current_task_title ? (
-              <div className="current-work"><LoaderCircle size={17} className="spin" /> {data.current_task_title}</div>
+            <PanelHeading title="Latest active Work" aside={latestActiveWork} />
+            {data.current_work_title ? (
+              <div className="current-work"><LoaderCircle size={17} className="spin" /> {data.current_work_title}</div>
             ) : data.active_count > 0 ? (
-              <div className="quiet-empty">No active task title is currently reported.</div>
+              <div className="quiet-empty">No active Work title is currently reported.</div>
             ) : (
-			  <div className="quiet-empty">This Worker is ready for its next task.</div>
+			  <div className="quiet-empty">This Worker is ready for its next Work.</div>
             )}
           </section>
           <section className="panel">

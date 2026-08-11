@@ -154,17 +154,6 @@ func (manager *Manager) prepareRepositoryCacheRoot() (string, error) {
 	return canonical, nil
 }
 
-func enforceRepositoryCacheLimit(root string) error {
-	ids, err := managedRepositoryCacheIDsFromRoot(root)
-	if err != nil {
-		return err
-	}
-	if len(ids) >= protocol.MaxRepositoryCacheEntries {
-		return fmt.Errorf("managed repository cache limit of %d entries reached", protocol.MaxRepositoryCacheEntries)
-	}
-	return nil
-}
-
 func managedRepositoryCacheIDs(dataDirectory string) (map[string]bool, error) {
 	root := filepath.Join(dataDirectory, "repositories")
 	info, err := os.Lstat(root)

@@ -14,10 +14,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"github.com/owainlewis/factory/internal/protocol"
 	"github.com/owainlewis/factory/migrations"
@@ -51,18 +49,9 @@ func invalid(code, message string) error {
 }
 
 type Store struct {
-	db                          *sql.DB
-	now                         func() time.Time
-	sweepEvery                  time.Duration
-	beginLegacyResumeLink       func(context.Context) (*sql.Tx, error)
-	runJobScanCursorMu          sync.Mutex
-	runJobScanCursors           map[runJobScanCursorKey]runJobScanCursor
-	automationDispatchMu        sync.Mutex
-	afterScheduleEnabledCheck   func()
-	afterGitHubWebhookAdmission func()
-	afterGitHubWebhookRunCreate func()
-	beforeProductUpgradeFreeze  func()
-	afterProductUpgradeFreeze   func()
+	db         *sql.DB
+	now        func() time.Time
+	sweepEvery time.Duration
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -119,9 +108,6 @@ func openStore(ctx context.Context, path string, existingOnly bool) (*Store, err
 	}
 	db.SetMaxOpenConns(8)
 	store := &Store{db: db, now: time.Now, sweepEvery: 5 * time.Second}
-	store.beginLegacyResumeLink = func(ctx context.Context) (*sql.Tx, error) {
-		return db.BeginTx(ctx, nil)
-	}
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping sqlite: %w", err)
@@ -503,7 +489,10 @@ func (s *Store) applyForeignKeyRebuildMigration(
 	if err != nil {
 		return fmt.Errorf("begin migration %s: %w", name, err)
 	}
-	if _, err = tx.ExecContext(ctx, string(body)); err == nil {
+	if _, err = tx.ExecContext(ctx, string(body)); err == nil && name == "027_routines_work.sql" {
+		err = normalizeMigratedRoutineTitleKeys(ctx, tx)
+	}
+	if err == nil {
 		var rows *sql.Rows
 		rows, err = tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
 		if err == nil {
@@ -911,17 +900,17 @@ func (s *Store) WorkerRepositoryOptions(
 		           SELECT COUNT(*)
 		           FROM attempts active_attempt
 		           JOIN executions active_execution ON active_execution.id = active_attempt.execution_id
-		           JOIN tasks active_task ON active_task.id = active_execution.task_id
+		           JOIN work_targets active_target ON active_target.id = active_execution.work_target_id
 		           WHERE active_attempt.worker_id = ?
-		             AND active_task.repository_id = repository.id
+		             AND active_target.repository_id = repository.id
 		             AND active_attempt.state IN ('preparing', 'running')
 		       ) + (
 		           SELECT COUNT(*)
 		           FROM attempts terminal_attempt
 		           JOIN executions terminal_execution ON terminal_execution.id = terminal_attempt.execution_id
-		           JOIN tasks terminal_task ON terminal_task.id = terminal_execution.task_id
+		           JOIN work_targets terminal_target ON terminal_target.id = terminal_execution.work_target_id
 		           WHERE terminal_attempt.worker_id = ?
-		             AND terminal_task.repository_id = repository.id
+		             AND terminal_target.repository_id = repository.id
 		             AND terminal_attempt.state IN ('succeeded', 'failed', 'cancelled', 'lost')
 		             AND terminal_attempt.capacity_acknowledged = 0
 		       )
@@ -1003,17 +992,17 @@ func (s *Store) ManagedRepositoryReadiness(
 		           SELECT COUNT(*)
 		           FROM attempts active_attempt
 		           JOIN executions active_execution ON active_execution.id = active_attempt.execution_id
-		           JOIN tasks active_task ON active_task.id = active_execution.task_id
+		           JOIN work_targets active_target ON active_target.id = active_execution.work_target_id
 		           WHERE active_attempt.worker_id = w.id
-		             AND active_task.repository_id = ?
+		             AND active_target.repository_id = ?
 		             AND active_attempt.state IN ('preparing', 'running')
 		       ) + (
 		           SELECT COUNT(*)
 		           FROM attempts terminal_attempt
 		           JOIN executions terminal_execution ON terminal_execution.id = terminal_attempt.execution_id
-		           JOIN tasks terminal_task ON terminal_task.id = terminal_execution.task_id
+		           JOIN work_targets terminal_target ON terminal_target.id = terminal_execution.work_target_id
 		           WHERE terminal_attempt.worker_id = w.id
-		             AND terminal_task.repository_id = ?
+		             AND terminal_target.repository_id = ?
 		             AND terminal_attempt.state IN ('succeeded', 'failed', 'cancelled', 'lost')
 		             AND terminal_attempt.capacity_acknowledged = 0
 		       )
@@ -1125,94 +1114,38 @@ func (s *Store) SetManagedRepositoryEnabled(
 	if affected == 0 {
 		return protocol.ManagedRepository{}, ErrNotFound
 	}
-	if enabled {
-		_, err = tx.ExecContext(ctx, `
-			UPDATE automations
-			SET evaluation_token = NULL, evaluation_started_at = NULL,
-			    next_check_at = CASE WHEN enabled = 1 THEN ? ELSE NULL END,
-			    health_status = CASE WHEN enabled = 1 THEN 'pending' ELSE health_status END,
-			    health_code = CASE WHEN enabled = 1 THEN '' ELSE health_code END,
-			    health_message = CASE WHEN enabled = 1 THEN 'Repository enabled; waiting for a GitHub check.' ELSE health_message END
-			WHERE repository_id = ? AND trigger_type IN ('github_issue', 'github_pull_request')
-		`, now, repositoryID)
-	} else {
-		_, err = tx.ExecContext(ctx, `
-			UPDATE automations
-			SET evaluation_token = NULL, evaluation_started_at = NULL,
-			    next_check_at = CASE WHEN enabled = 1 THEN ? ELSE NULL END,
-			    health_status = CASE WHEN enabled = 1 THEN 'blocked' ELSE health_status END,
-			    health_code = CASE WHEN enabled = 1 THEN 'repository_disabled' ELSE health_code END,
-			    health_message = CASE WHEN enabled = 1 THEN 'Enable the selected repository before checks can run.' ELSE health_message END
-			WHERE repository_id = ? AND trigger_type IN ('github_issue', 'github_pull_request')
-		`, now+time.Minute.Milliseconds(), repositoryID)
-	}
-	if err != nil {
-		return protocol.ManagedRepository{}, unavailable(err)
-	}
-	if enabled {
-		_, err = tx.ExecContext(ctx, `
-			UPDATE automations
-			SET health_status = CASE WHEN enabled = 1 THEN 'pending' ELSE health_status END,
-			    health_code = CASE WHEN enabled = 1 THEN '' ELSE health_code END,
-			    health_message = CASE WHEN enabled = 1 THEN 'Repository enabled; waiting for the next scheduled occurrence.' ELSE health_message END
-			WHERE repository_id = ? AND trigger_type = 'schedule'
-		`, repositoryID)
-	} else {
-		_, err = tx.ExecContext(ctx, `
-			UPDATE automations
-			SET health_status = CASE WHEN enabled = 1 THEN 'blocked' ELSE health_status END,
-			    health_code = CASE WHEN enabled = 1 THEN 'repository_disabled' ELSE health_code END,
-			    health_message = CASE WHEN enabled = 1 THEN 'Scheduled instants will be recorded without tasks until the repository is enabled.' ELSE health_message END
-			WHERE repository_id = ? AND trigger_type = 'schedule'
-		`, repositoryID)
-	}
-	if err != nil {
-		return protocol.ManagedRepository{}, unavailable(err)
-	}
-	if enabled {
-		_, err = tx.ExecContext(ctx, `
-			UPDATE automations
-			SET health_status = CASE
-			        WHEN enabled = 1 AND EXISTS (
-			            SELECT 1 FROM automation_github_webhook_triggers webhook
-			            JOIN definitions definition ON definition.id = webhook.definition_id
-			            WHERE webhook.automation_id = automations.id AND definition.archived = 0
-			        ) THEN 'healthy'
-			        WHEN enabled = 1 THEN 'blocked'
-			        ELSE health_status
-			    END,
-			    health_code = CASE
-			        WHEN enabled = 1 AND EXISTS (
-			            SELECT 1 FROM automation_github_webhook_triggers webhook
-			            JOIN definitions definition ON definition.id = webhook.definition_id
-			            WHERE webhook.automation_id = automations.id AND definition.archived = 0
-			        ) THEN ''
-			        WHEN enabled = 1 THEN 'definition_archived'
-			        ELSE health_code
-			    END,
-			    health_message = CASE
-			        WHEN enabled = 1 AND EXISTS (
-			            SELECT 1 FROM automation_github_webhook_triggers webhook
-			            JOIN definitions definition ON definition.id = webhook.definition_id
-			            WHERE webhook.automation_id = automations.id AND definition.archived = 0
-			        ) THEN 'Repository enabled; waiting for a signed GitHub webhook.'
-			        WHEN enabled = 1 THEN 'Restore the selected Definition before webhook deliveries can run.'
-			        ELSE health_message
-			    END,
-			    next_check_at = NULL
-			WHERE repository_id = ? AND trigger_type = 'github_webhook'
-		`, repositoryID)
-	} else {
-		_, err = tx.ExecContext(ctx, `
-			UPDATE automations
-			SET health_status = CASE WHEN enabled = 1 THEN 'blocked' ELSE health_status END,
-			    health_code = CASE WHEN enabled = 1 THEN 'repository_disabled' ELSE health_code END,
-			    health_message = CASE WHEN enabled = 1 THEN 'Enable the selected repository before webhook deliveries can run.' ELSE health_message END,
-			    next_check_at = NULL
-			WHERE repository_id = ? AND trigger_type = 'github_webhook'
-		`, repositoryID)
-	}
-	if err != nil {
+	if !enabled {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM executions
+			WHERE state = 'queued' AND work_target_id IN (
+				SELECT id FROM work_targets WHERE repository_id = ? AND state = 'queued'
+			)
+		`, repositoryID); err != nil {
+			return protocol.ManagedRepository{}, unavailable(err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE work_targets SET state = 'blocked', assigned_worker_id = NULL,
+			       blocked_reason = 'Repository is disabled.'
+			WHERE repository_id = ? AND state = 'queued'
+		`, repositoryID); err != nil {
+			return protocol.ManagedRepository{}, unavailable(err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE routines SET schedule_health_status = 'blocked',
+			       schedule_health_code = 'repository_disabled',
+			       schedule_health_message = 'Enable every selected repository before the next occurrence can run.'
+			WHERE schedule_enabled = 1 AND id IN (
+				SELECT routine_id FROM routine_repositories WHERE repository_id = ?
+			)
+		`, repositoryID); err != nil {
+			return protocol.ManagedRepository{}, unavailable(err)
+		}
+	} else if _, err := tx.ExecContext(ctx, `
+		UPDATE routines SET schedule_health_status = 'healthy',
+		       schedule_health_code = '', schedule_health_message = ''
+		WHERE schedule_enabled = 1 AND pending_due_at IS NULL
+		  AND id IN (SELECT routine_id FROM routine_repositories WHERE repository_id = ?)
+	`, repositoryID); err != nil {
 		return protocol.ManagedRepository{}, unavailable(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -1698,9 +1631,9 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 			  AND NOT EXISTS (
 			      SELECT 1
 			      FROM executions execution
-			      JOIN tasks task ON task.id = execution.task_id
+			      JOIN work_targets target ON target.id = execution.work_target_id
 			      WHERE execution.assigned_worker_id = ?
-			        AND task.repository_id = ?
+			        AND target.repository_id = ?
 			        AND execution.state IN ('queued', 'preparing', 'running')
 			  )
 		`, now, workerID, repositoryID, workerID, repositoryID)
@@ -1756,8 +1689,8 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 			  AND execution_id IN (
 			      SELECT e.id
 			      FROM executions e
-			      JOIN tasks t ON t.id = e.task_id
-			      WHERE t.repository_id = ?
+			      JOIN work_targets target ON target.id = e.work_target_id
+			      WHERE target.repository_id = ?
 			  )
 		`, workerID, input.ActiveCount, canBulkAcknowledge, repositoryID); err != nil {
 			return protocol.Worker{}, unavailable(err)
@@ -1772,8 +1705,8 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 				  AND execution_id IN (
 				      SELECT e.id
 				      FROM executions e
-				      JOIN tasks t ON t.id = e.task_id
-				      WHERE t.repository_id = ?
+				      JOIN work_targets target ON target.id = e.work_target_id
+				      WHERE target.repository_id = ?
 				  )
 			`, attemptID, workerID, repositoryID); err != nil {
 				return protocol.Worker{}, unavailable(err)
@@ -1869,8 +1802,10 @@ func (s *Store) Workers(ctx context.Context) ([]protocol.Worker, error) {
 		       w.retained_worktrees_json,
 		       w.registered_at, w.last_heartbeat,
 		       COALESCE((
-		           SELECT t.title
-		           FROM executions e JOIN tasks t ON t.id = e.task_id
+		           SELECT json_extract(work.routine_snapshot, '$.name')
+		           FROM executions e
+		           JOIN work_targets target ON target.id = e.work_target_id
+		           JOIN work ON work.id = target.work_id
 		           WHERE e.assigned_worker_id = w.id AND e.state IN ('preparing', 'running')
 		           ORDER BY e.updated_at DESC, e.id DESC
 		           LIMIT 1
@@ -1913,8 +1848,10 @@ func (s *Store) Worker(ctx context.Context, id string) (protocol.Worker, error) 
 		       w.retained_worktrees_json,
 		       w.registered_at, w.last_heartbeat,
 		       COALESCE((
-		           SELECT t.title
-		           FROM executions e JOIN tasks t ON t.id = e.task_id
+		           SELECT json_extract(work.routine_snapshot, '$.name')
+		           FROM executions e
+		           JOIN work_targets target ON target.id = e.work_target_id
+		           JOIN work ON work.id = target.work_id
 		           WHERE e.assigned_worker_id = w.id AND e.state IN ('preparing', 'running')
 		           ORDER BY e.updated_at DESC, e.id DESC
 		           LIMIT 1
@@ -1945,7 +1882,7 @@ func scanWorker(row scanner, now time.Time) (protocol.Worker, error) {
 		&worker.Capacity, &worker.ActiveCount, &worker.Health, &capabilities, &sourceAccess,
 		&acceptsManagedRepositories, &managedRepositoryIDs,
 		&retained, &registered, &heartbeat,
-		&worker.CurrentTaskTitle); err != nil {
+		&worker.CurrentWorkTitle); err != nil {
 		return worker, err
 	}
 	if err := json.Unmarshal(labels, &worker.Labels); err != nil {
@@ -1995,7 +1932,12 @@ func (s *Store) workerRepositories(ctx context.Context, workerID string) ([]prot
 	return repos, rows.Err()
 }
 
-type taskRouteCandidate struct {
+type workRoute struct {
+	repositoryRemoteIdentity string
+	sourceAccess             protocol.SourceAccess
+}
+
+type workRouteCandidate struct {
 	workerID                   string
 	repositoryID               string
 	runtime                    string
@@ -2015,23 +1957,6 @@ func runtimeCapabilityReady(capabilities []protocol.Capability, runtime string) 
 	return false
 }
 
-func toolCapabilitiesReady(capabilities []protocol.Capability, requiredTools []string) bool {
-	for _, required := range requiredTools {
-		ready := false
-		for _, capability := range capabilities {
-			if capability.Kind == protocol.CapabilityKindTool && capability.Name == required &&
-				capability.Status == protocol.CapabilityReady {
-				ready = true
-				break
-			}
-		}
-		if !ready {
-			return false
-		}
-	}
-	return true
-}
-
 func preferredReadyRuntime(primary string, capabilities []protocol.Capability) string {
 	if len(capabilities) == 0 {
 		return primary
@@ -2047,28 +1972,28 @@ func preferredReadyRuntime(primary string, capabilities []protocol.Capability) s
 	return ""
 }
 
-func normalizeTaskRoute(route *protocol.TaskRoute) error {
-	route.RepositoryRemoteIdentity = normalizeRemote(route.RepositoryRemoteIdentity)
-	values, err := normalizeSourceAccess([]protocol.SourceAccess{route.SourceAccess})
+func normalizeWorkRoute(route *workRoute) error {
+	route.repositoryRemoteIdentity = normalizeRemote(route.repositoryRemoteIdentity)
+	values, err := normalizeSourceAccess([]protocol.SourceAccess{route.sourceAccess})
 	if err != nil {
 		return err
 	}
-	if route.RepositoryRemoteIdentity == "" || len(route.RepositoryRemoteIdentity) > 2048 {
+	if route.repositoryRemoteIdentity == "" || len(route.repositoryRemoteIdentity) > 2048 {
 		return invalid(
 			"invalid_route",
 			"route repository_remote_identity is required and must be at most 2048 bytes",
 		)
 	}
-	route.SourceAccess = values[0]
-	if route.SourceAccess.Provider == "github" && route.SourceAccess.Hostname == "github.com" {
-		canonical, err := normalizeManagedGitHubRemote(route.RepositoryRemoteIdentity)
+	route.sourceAccess = values[0]
+	if route.sourceAccess.Provider == "github" && route.sourceAccess.Hostname == "github.com" {
+		canonical, err := normalizeManagedGitHubRemote(route.repositoryRemoteIdentity)
 		if err != nil {
 			return invalid(
 				"invalid_route",
 				"GitHub route repository_remote_identity must use github.com/owner/repository",
 			)
 		}
-		route.RepositoryRemoteIdentity = canonical
+		route.repositoryRemoteIdentity = canonical
 	}
 	return nil
 }
@@ -2082,42 +2007,29 @@ func hasSourceAccess(values []protocol.SourceAccess, required protocol.SourceAcc
 	return false
 }
 
-func betterRoute(candidate, current taskRouteCandidate) bool {
+func betterRoute(candidate, current workRouteCandidate) bool {
 	left := candidate.load * current.capacity
 	right := current.load * candidate.capacity
 	return left < right || (left == right && candidate.workerID < current.workerID)
 }
 
-func (s *Store) selectTaskRoute(
+func (s *Store) selectWorkRoute(
 	ctx context.Context,
 	tx *sql.Tx,
-	route protocol.TaskRoute,
-	now int64,
-	workerID string,
-	requiredRuntime string,
-	requiredTools []string,
-) (taskRouteCandidate, error) {
-	return s.selectTaskRouteWithSourceRequirement(ctx, tx, route, "", now, true, false, workerID, requiredRuntime, requiredTools)
-}
-
-func (s *Store) selectTaskRouteWithSourceRequirement(
-	ctx context.Context,
-	tx *sql.Tx,
-	route protocol.TaskRoute,
+	route workRoute,
 	selectedRepositoryID string,
 	now int64,
 	requireSourceAccess bool,
 	allowStaticRepository bool,
 	workerID string,
 	requiredRuntime string,
-	requiredTools []string,
-) (taskRouteCandidate, error) {
+) (workRouteCandidate, error) {
 	repositoryPredicate := "r.remote_identity = ?"
-	repositoryLookup := route.RepositoryRemoteIdentity
+	repositoryLookup := route.repositoryRemoteIdentity
 	if selectedRepositoryID != "" {
 		repositoryPredicate = "r.id = ?"
 		repositoryLookup = selectedRepositoryID
-	} else if route.SourceAccess.Provider == "github" && route.SourceAccess.Hostname == "github.com" {
+	} else if route.sourceAccess.Provider == "github" && route.sourceAccess.Hostname == "github.com" {
 		repositoryPredicate = "lower(r.remote_identity) = lower(?)"
 	}
 	var repositoryID, repositoryIdentity string
@@ -2137,15 +2049,15 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 			  )
 	`, repositoryLookup, allowStaticRepository).Scan(&repositoryID, &repositoryIdentity, &repositoryEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
-		return taskRouteCandidate{}, conflict(
+		return workRouteCandidate{}, conflict(
 			"repository_not_managed",
 			"repository is not enabled in the control-plane managed repository catalog",
 		)
 	}
 	if err != nil {
-		return taskRouteCandidate{}, unavailable(err)
+		return workRouteCandidate{}, unavailable(err)
 	}
-	workerRepositoryIdentity := route.RepositoryRemoteIdentity
+	workerRepositoryIdentity := route.repositoryRemoteIdentity
 	if workerRepositoryIdentity == "" {
 		workerRepositoryIdentity = repositoryIdentity
 	}
@@ -2153,7 +2065,7 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		workerRepositoryIdentity = canonical
 	}
 	requireAdvertisedRepository := allowStaticRepository &&
-		(repositoryEnabled == 0 || route.SourceAccess.Provider != "github" || route.SourceAccess.Hostname != "github.com")
+		(repositoryEnabled == 0 || route.sourceAccess.Provider != "github" || route.sourceAccess.Hostname != "github.com")
 	rows, err := tx.QueryContext(ctx, `
 		SELECT w.id, w.runtime, w.capabilities_json, w.capacity, w.active_count,
 		       w.source_access_json, COALESCE(wr.advertised, 0),
@@ -2208,17 +2120,17 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		      SELECT COUNT(*)
 		      FROM attempts active_attempt
 		      JOIN executions active_execution ON active_execution.id = active_attempt.execution_id
-		      JOIN tasks active_task ON active_task.id = active_execution.task_id
+		      JOIN work_targets active_target ON active_target.id = active_execution.work_target_id
 		      WHERE active_attempt.worker_id = w.id
-		        AND active_task.repository_id = ?
+		        AND active_target.repository_id = ?
 		        AND active_attempt.state IN ('preparing', 'running')
 		  ) + (
 		      SELECT COUNT(*)
 		      FROM attempts terminal_attempt
 		      JOIN executions terminal_execution ON terminal_execution.id = terminal_attempt.execution_id
-		      JOIN tasks terminal_task ON terminal_task.id = terminal_execution.task_id
+		      JOIN work_targets terminal_target ON terminal_target.id = terminal_execution.work_target_id
 		      WHERE terminal_attempt.worker_id = w.id
-		        AND terminal_task.repository_id = ?
+		        AND terminal_target.repository_id = ?
 		        AND terminal_attempt.state IN ('succeeded', 'failed', 'cancelled', 'lost')
 		        AND terminal_attempt.capacity_acknowledged = 0
 		  ) < ?
@@ -2229,13 +2141,13 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		repositoryID, protocol.MaxRepositoryCacheEntries,
 		repositoryID, repositoryID, protocol.MaxRetainedPerRepo)
 	if err != nil {
-		return taskRouteCandidate{}, unavailable(err)
+		return workRouteCandidate{}, unavailable(err)
 	}
 	defer rows.Close()
-	var best taskRouteCandidate
+	var best workRouteCandidate
 	found := false
 	for rows.Next() {
-		var candidate taskRouteCandidate
+		var candidate workRouteCandidate
 		var active, queued, repositoryAdvertised, acceptsManagedRepositories int
 		var primaryRuntime string
 		var encoded, encodedCapabilities []byte
@@ -2244,18 +2156,18 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 			&active, &encoded, &repositoryAdvertised, &acceptsManagedRepositories, &queued,
 		); err != nil {
 			rows.Close()
-			return taskRouteCandidate{}, unavailable(err)
+			return workRouteCandidate{}, unavailable(err)
 		}
 		candidate.repositoryID = repositoryID
 		candidate.repositoryAdvertised = repositoryAdvertised != 0
 		candidate.acceptsManagedRepositories = acceptsManagedRepositories != 0
 		var access []protocol.SourceAccess
 		if err := json.Unmarshal(encoded, &access); err != nil {
-			return taskRouteCandidate{}, unavailable(err)
+			return workRouteCandidate{}, unavailable(err)
 		}
 		var capabilities []protocol.Capability
 		if err := json.Unmarshal(encodedCapabilities, &capabilities); err != nil {
-			return taskRouteCandidate{}, unavailable(err)
+			return workRouteCandidate{}, unavailable(err)
 		}
 		candidate.runtime = requiredRuntime
 		if candidate.runtime == "" {
@@ -2264,11 +2176,8 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 		if len(capabilities) != 0 && !runtimeCapabilityReady(capabilities, candidate.runtime) {
 			continue
 		}
-		if !toolCapabilitiesReady(capabilities, requiredTools) {
-			continue
-		}
 		if requireSourceAccess && !(allowStaticRepository && candidate.repositoryAdvertised) &&
-			!hasSourceAccess(access, route.SourceAccess) {
+			!hasSourceAccess(access, route.sourceAccess) {
 			continue
 		}
 		candidate.load = active + queued
@@ -2279,24 +2188,24 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return taskRouteCandidate{}, unavailable(err)
+		return workRouteCandidate{}, unavailable(err)
 	}
 	if err := rows.Close(); err != nil {
-		return taskRouteCandidate{}, unavailable(err)
+		return workRouteCandidate{}, unavailable(err)
 	}
 	if !found {
 		message := "no healthy online worker can acquire the repository and access its source provider"
 		if !requireSourceAccess {
 			message = "no healthy online worker can acquire the repository"
 		}
-		return taskRouteCandidate{}, conflict(
+		return workRouteCandidate{}, conflict(
 			"no_eligible_worker",
 			message,
 		)
 	}
 	if !best.repositoryAdvertised {
 		if !best.acceptsManagedRepositories {
-			return taskRouteCandidate{}, unavailable(errors.New("selected worker cannot acquire managed repositories"))
+			return workRouteCandidate{}, unavailable(errors.New("selected worker cannot acquire managed repositories"))
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO worker_repositories(
@@ -2311,331 +2220,60 @@ func (s *Store) selectTaskRouteWithSourceRequirement(
 				dynamic=1,
 				updated_at=excluded.updated_at
 		`, best.workerID, workerRepositoryIdentity, repositoryID, workerRepositoryIdentity, now); err != nil {
-			return taskRouteCandidate{}, unavailable(err)
+			return workRouteCandidate{}, unavailable(err)
 		}
 	}
 	return best, nil
 }
 
-func (s *Store) CreateTask(ctx context.Context, input protocol.CreateTaskRequest) (protocol.TaskDetail, bool, error) {
-	input.RequestKey = strings.TrimSpace(input.RequestKey)
-	input.Title = strings.TrimSpace(input.Title)
-	input.WorkerID = strings.TrimSpace(input.WorkerID)
-	input.RepositoryID = strings.TrimSpace(input.RepositoryID)
-	input.WorkflowRevisionID = strings.TrimSpace(input.WorkflowRevisionID)
-	input.DefinitionID = strings.TrimSpace(input.DefinitionID)
-	input.Runtime = strings.ToLower(strings.TrimSpace(input.Runtime))
-	if input.RequestKey == "" || len(input.RequestKey) > 200 {
-		return protocol.TaskDetail{}, false, invalid("invalid_request_key", "request_key is required")
-	}
-	if input.Title == "" || utf8.RuneCountInString(input.Title) > 200 {
-		return protocol.TaskDetail{}, false, invalid("invalid_title", "title is required and limited to 200 Unicode characters")
-	}
-	descriptionForm := input.DescriptionProvided || input.Description != ""
-	workflowPrompt := input.WorkflowRevisionIDProvided || input.ContextProvided ||
-		input.WorkflowRevisionID != "" || input.Context != ""
-	definitionPrompt := input.DefinitionIDProvided || input.DefinitionID != ""
-	if (descriptionForm && workflowPrompt) || (definitionPrompt && (descriptionForm || workflowPrompt)) {
-		return protocol.TaskDetail{}, false, invalid(
-			"ambiguous_task_prompt",
-			"send one prompt source: description, workflow_revision_id with context, or definition_id",
-		)
-	}
-	if definitionPrompt && input.DefinitionID == "" {
-		return protocol.TaskDetail{}, false, invalid("definition_required", "definition_id cannot be blank")
-	}
-	if workflowPrompt && input.WorkflowRevisionID == "" {
-		return protocol.TaskDetail{}, false, invalid(
-			"workflow_revision_required",
-			"context requires workflow_revision_id",
-		)
-	}
-	taskContext := input.Description
-	if workflowPrompt {
-		taskContext = input.Context
-	}
-	if !definitionPrompt && (strings.TrimSpace(taskContext) == "" || len([]byte(taskContext)) > protocol.MaxDescriptionBytes) {
-		field := "description"
-		code := "invalid_description"
-		if workflowPrompt {
-			field = "context"
-			code = "invalid_context"
-		}
-		return protocol.TaskDetail{}, false, invalid(code, field+" is required and limited to 64 KiB")
-	}
-	if definitionPrompt && (input.Runtime != "" || input.TimeoutSeconds != 0) {
-		return protocol.TaskDetail{}, false, invalid(
-			"ambiguous_definition_execution",
-			"definition_id supplies runtime and timeout_seconds; do not send overrides",
-		)
-	}
-	if !definitionPrompt && input.TimeoutSeconds == 0 {
-		input.TimeoutSeconds = int(protocol.DefaultTimeout.Seconds())
-	}
-	if !definitionPrompt && (input.TimeoutSeconds < 1 || input.TimeoutSeconds > int(protocol.MaxTimeout/time.Second)) {
-		return protocol.TaskDetail{}, false, invalid("invalid_timeout", "timeout_seconds must be between 1 and 28800")
-	}
-	if input.Runtime != "" && !protocol.SupportedRuntime(input.Runtime) {
-		return protocol.TaskDetail{}, false, invalid(
-			"invalid_runtime", "runtime must be pi, codex, or claude-code",
-		)
-	}
-	if input.Route == nil {
-		if input.WorkerID == "" || input.RepositoryID == "" {
-			return protocol.TaskDetail{}, false, invalid(
-				"invalid_assignment",
-				"worker_id and repository_id are required when route is omitted",
-			)
-		}
-	} else {
-		if input.RepositoryID != "" {
-			return protocol.TaskDetail{}, false, invalid(
-				"invalid_assignment",
-				"route cannot be combined with repository_id",
-			)
-		}
-		if err := normalizeTaskRoute(input.Route); err != nil {
-			return protocol.TaskDetail{}, false, err
-		}
-	}
-	now := s.now().UnixMilli()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return protocol.TaskDetail{}, false, unavailable(err)
-	}
-	defer tx.Rollback()
-	var existingID string
-	err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE request_key = ?`, input.RequestKey).Scan(&existingID)
-	if err == nil {
-		if err := tx.Commit(); err != nil {
-			return protocol.TaskDetail{}, false, unavailable(err)
-		}
-		detail, err := s.Task(ctx, existingID)
-		return detail, false, err
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return protocol.TaskDetail{}, false, unavailable(err)
-	}
-	if err := s.legacyProductReadOnly(ctx, tx); err != nil {
-		return protocol.TaskDetail{}, false, err
-	}
-	if strings.HasPrefix(input.RequestKey, "automation:") {
-		return protocol.TaskDetail{}, false, invalid(
-			"reserved_request_key_prefix",
-			"request_key values beginning with automation: are reserved for control-plane Automations",
-		)
-	}
-	resolvedPrompt := taskContext
-	var workflowID, workflowName string
-	var workflowRevisionNumber int
-	var definitionSnapshotJSON string
-	var requiredTools []string
-	if input.DefinitionID != "" {
-		definition, definitionErr := scanDefinition(tx.QueryRowContext(ctx,
-			definitionSelect+` WHERE id = ?`, input.DefinitionID))
-		if errors.Is(definitionErr, sql.ErrNoRows) {
-			return protocol.TaskDetail{}, false, invalid("definition_not_found", "Definition was not found")
-		}
-		if definitionErr != nil {
-			return protocol.TaskDetail{}, false, unavailable(definitionErr)
-		}
-		if definition.Archived {
-			return protocol.TaskDetail{}, false, conflict("definition_archived", "archived Definitions cannot start new work")
-		}
-		snapshot := definition.Snapshot()
-		encodedSnapshot, encodeErr := json.Marshal(snapshot)
-		if encodeErr != nil {
-			return protocol.TaskDetail{}, false, unavailable(encodeErr)
-		}
-		definitionSnapshotJSON = string(encodedSnapshot)
-		resolvedPrompt = snapshot.Prompt
-		input.Runtime = snapshot.Runtime
-		input.TimeoutSeconds = snapshot.TimeoutSeconds
-		requiredTools = snapshot.AllowedTools
-	}
-	if input.WorkflowRevisionID != "" {
-		var enabled int
-		var instructions string
-		err := tx.QueryRowContext(ctx, `
-			SELECT workflow.id, workflow.enabled, revision.title,
-			       revision.revision_number, revision.instructions
-			FROM workflow_revisions revision
-			JOIN workflows workflow ON workflow.id = revision.workflow_id
-			WHERE revision.id = ?
-		`, input.WorkflowRevisionID).Scan(
-			&workflowID, &enabled, &workflowName, &workflowRevisionNumber, &instructions,
-		)
-		if errors.Is(err, sql.ErrNoRows) {
-			return protocol.TaskDetail{}, false, invalid("workflow_revision_not_found", "workflow revision was not found")
-		}
-		if err != nil {
-			return protocol.TaskDetail{}, false, unavailable(err)
-		}
-		if enabled == 0 {
-			return protocol.TaskDetail{}, false, conflict("workflow_disabled", "the selected workflow is disabled")
-		}
-		resolvedPrompt = protocol.ResolveWorkflowPrompt(instructions, taskContext)
-		if len([]byte(resolvedPrompt)) > protocol.MaxResolvedPromptBytes {
-			return protocol.TaskDetail{}, false, invalid("resolved_prompt_too_large", "the resolved prompt exceeds 64 KiB")
-		}
-	}
-	var runtime string
-	if input.Route != nil {
-		selection, routeErr := s.selectTaskRoute(ctx, tx, *input.Route, now, input.WorkerID, input.Runtime, requiredTools)
-		if routeErr != nil {
-			return protocol.TaskDetail{}, false, routeErr
-		}
-		input.WorkerID = selection.workerID
-		input.RepositoryID = selection.repositoryID
-		runtime = selection.runtime
-	} else {
-		var primaryRuntime string
-		var encodedCapabilities []byte
-		err = tx.QueryRowContext(ctx, `
-			SELECT w.runtime, w.capabilities_json
-			FROM workers w
-			JOIN worker_repositories wr ON wr.worker_id = w.id
-			WHERE w.id = ? AND wr.repository_id = ? AND wr.advertised = 1
-		`, input.WorkerID, input.RepositoryID).Scan(&primaryRuntime, &encodedCapabilities)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return protocol.TaskDetail{}, false, unavailable(err)
-		}
-		if errors.Is(err, sql.ErrNoRows) {
-			return protocol.TaskDetail{}, false, invalid("repository_not_advertised", "repository is not advertised by the assigned worker")
-		}
-		var capabilities []protocol.Capability
-		if err := json.Unmarshal(encodedCapabilities, &capabilities); err != nil {
-			return protocol.TaskDetail{}, false, unavailable(err)
-		}
-		if input.Runtime == "" {
-			runtime = preferredReadyRuntime(primaryRuntime, capabilities)
-			if runtime == "" {
-				runtime = primaryRuntime
-			}
-		} else {
-			if (len(capabilities) == 0 && input.Runtime != primaryRuntime) ||
-				(len(capabilities) != 0 && !runtimeCapabilityReady(capabilities, input.Runtime)) {
-				return protocol.TaskDetail{}, false, conflict(
-					"runtime_unavailable", "the selected runtime is not ready on the assigned worker",
-				)
-			}
-			runtime = input.Runtime
-		}
-		if !toolCapabilitiesReady(capabilities, requiredTools) {
-			return protocol.TaskDetail{}, false, conflict(
-				"tools_unavailable", "the selected Worker does not have every required tool ready",
-			)
-		}
-	}
-	var repositoryRemoteIdentity string
-	err = tx.QueryRowContext(ctx, `
-		SELECT COALESCE(NULLIF(worker_repository.worker_remote_identity, ''), repository.remote_identity)
-		FROM repositories repository
-		JOIN worker_repositories worker_repository ON worker_repository.repository_id = repository.id
-		WHERE repository.id = ? AND worker_repository.worker_id = ?
-	`, input.RepositoryID, input.WorkerID).Scan(&repositoryRemoteIdentity)
-	if err != nil {
-		return protocol.TaskDetail{}, false, unavailable(err)
-	}
-	if !protocol.AgentPromptFits(input.Title, repositoryRemoteIdentity, resolvedPrompt) {
-		return protocol.TaskDetail{}, false, invalid("agent_prompt_too_large", "the complete agent prompt exceeds 72 KiB")
-	}
-	taskID, err := newID()
-	if err != nil {
-		return protocol.TaskDetail{}, false, unavailable(err)
-	}
-	executionID, err := newID()
-	if err != nil {
-		return protocol.TaskDetail{}, false, unavailable(err)
-	}
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO tasks(
-			id, request_key, title, description, repository_id, timeout_seconds, created_at,
-			workflow_id, workflow_revision_id, workflow_title, workflow_revision_number,
-			context, definition_id, definition_snapshot
-		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, taskID, input.RequestKey, input.Title, resolvedPrompt, input.RepositoryID,
-		input.TimeoutSeconds, now, nullableString(workflowID), nullableString(input.WorkflowRevisionID),
-		nullableString(workflowName), nullableInt(workflowRevisionNumber), taskContext,
-		nullableString(input.DefinitionID), nullableString(definitionSnapshotJSON))
-	if err == nil {
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO executions(id, task_id, assigned_worker_id, required_runtime, state, created_at, updated_at)
-			VALUES (?, ?, ?, ?, 'queued', ?, ?)
-		`, executionID, taskID, input.WorkerID, runtime, now, now)
+func (s *Store) selectWorkTargetRoute(
+	ctx context.Context,
+	tx *sql.Tx,
+	repositoryID string,
+	repositoryIdentity string,
+	now int64,
+	workerID string,
+	requiredRuntime string,
+) (workRouteCandidate, error) {
+	var currentIdentity string
+	var enabled, centrallyManaged int
+	err := tx.QueryRowContext(ctx, `
+		SELECT remote_identity, enabled, centrally_managed FROM repositories WHERE id = ?
+	`, repositoryID).Scan(&currentIdentity, &enabled, &centrallyManaged)
+	if errors.Is(err, sql.ErrNoRows) {
+		return workRouteCandidate{}, conflict("repository_not_available", "repository is not configured on a Worker or enabled for managed acquisition")
 	}
 	if err != nil {
-		return protocol.TaskDetail{}, false, unavailable(err)
+		return workRouteCandidate{}, unavailable(err)
 	}
-	if err := tx.Commit(); err != nil {
-		return protocol.TaskDetail{}, false, unavailable(err)
+	if repositoryIdentity == "" {
+		repositoryIdentity = currentIdentity
 	}
-	detail, err := s.Task(ctx, taskID)
-	return detail, true, err
+	route := workRoute{
+		repositoryRemoteIdentity: repositoryIdentity,
+		sourceAccess:             protocol.SourceAccess{Provider: "local", Hostname: "localhost"},
+	}
+	if centrallyManaged != 0 && enabled == 0 {
+		return workRouteCandidate{}, conflict(
+			"repository_not_managed", "repository is not enabled in the control-plane managed repository catalog",
+		)
+	}
+	requireSourceAccess := false
+	if _, githubErr := normalizeManagedGitHubRemote(repositoryIdentity); centrallyManaged != 0 && githubErr == nil {
+		route.sourceAccess = protocol.SourceAccess{Provider: "github", Hostname: "github.com"}
+		requireSourceAccess = true
+	}
+	if err := normalizeWorkRoute(&route); err != nil {
+		return workRouteCandidate{}, err
+	}
+	return s.selectWorkRoute(
+		ctx, tx, route, repositoryID, now, requireSourceAccess, true, workerID, requiredRuntime,
+	)
 }
 
-func (s *Store) Tasks(ctx context.Context, request protocol.TaskPageRequest) (protocol.TaskPage, error) {
-	if request.Limit < 1 || request.Limit > protocol.MaxTaskPageSize {
-		return protocol.TaskPage{}, invalid("invalid_limit", "limit must be between 1 and 200")
-	}
-	query := `
-		SELECT t.id, t.request_key, t.title, t.repository_id, t.timeout_seconds,
-		       e.assigned_worker_id, e.required_runtime, e.state, t.created_at
-		FROM tasks t JOIN executions e ON e.task_id = t.id
-		WHERE NOT EXISTS (SELECT 1 FROM jobs job WHERE job.task_id = t.id)
-	`
-	args := make([]any, 0, 3)
-	if request.Cursor != nil {
-		query += ` AND (t.created_at < ? OR (t.created_at = ? AND t.id < ?))`
-		args = append(args, request.Cursor.CreatedAtMillis, request.Cursor.CreatedAtMillis, request.Cursor.ID)
-	}
-	query += ` ORDER BY t.created_at DESC, t.id DESC LIMIT ?`
-	args = append(args, request.Limit+1)
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return protocol.TaskPage{}, unavailable(err)
-	}
-	defer rows.Close()
-	tasks := make([]protocol.Task, 0, request.Limit+1)
-	for rows.Next() {
-		task, err := scanTask(rows, false)
-		if err != nil {
-			return protocol.TaskPage{}, unavailable(err)
-		}
-		tasks = append(tasks, task)
-	}
-	if err := rows.Err(); err != nil {
-		return protocol.TaskPage{}, unavailable(err)
-	}
-	page := protocol.TaskPage{Tasks: tasks}
-	if len(tasks) > request.Limit {
-		page.Tasks = tasks[:request.Limit]
-		last := page.Tasks[len(page.Tasks)-1]
-		page.NextCursor = &protocol.TaskCursor{
-			CreatedAtMillis: last.CreatedAt.UnixMilli(),
-			ID:              last.ID,
-		}
-	}
-	return page, nil
-}
-
-func scanTask(row scanner, detail bool) (protocol.Task, error) {
-	var task protocol.Task
-	var created int64
-	var err error
-	if detail {
-		err = row.Scan(&task.ID, &task.RequestKey, &task.Title, &task.Description, &task.RepositoryID,
-			&task.TimeoutSeconds, &task.WorkerID, &task.RequiredRuntime, &task.State, &created)
-	} else {
-		err = row.Scan(&task.ID, &task.RequestKey, &task.Title, &task.RepositoryID,
-			&task.TimeoutSeconds, &task.WorkerID, &task.RequiredRuntime, &task.State, &created)
-	}
-	task.CreatedAt = fromMillis(created)
-	if task.State == "preparing" {
-		task.State = "running"
-	}
-	return task, err
+func serviceErrorCode(err error, code string) bool {
+	var serviceErr *ServiceError
+	return errors.As(err, &serviceErr) && serviceErr.Code == code
 }
 
 func nullableString(value string) any {
@@ -2643,232 +2281,6 @@ func nullableString(value string) any {
 		return nil
 	}
 	return value
-}
-
-func nullableInt(value int) any {
-	if value == 0 {
-		return nil
-	}
-	return value
-}
-
-func (s *Store) Task(ctx context.Context, id string) (protocol.TaskDetail, error) {
-	var detail protocol.TaskDetail
-	row := s.db.QueryRowContext(ctx, `
-		SELECT t.id, t.request_key, t.title, t.description, t.repository_id, t.timeout_seconds,
-		       e.assigned_worker_id, e.required_runtime, e.state, t.created_at
-		FROM tasks t JOIN executions e ON e.task_id = t.id WHERE t.id = ?
-	`, id)
-	task, err := scanTask(row, true)
-	if errors.Is(err, sql.ErrNoRows) {
-		return detail, ErrNotFound
-	}
-	if err != nil {
-		return detail, unavailable(err)
-	}
-	detail.Task = task
-	var contextValue, workflowID, workflowRevisionID, workflowTitle, definitionID, definitionSnapshotJSON sql.NullString
-	var workflowRevisionNumber sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT context, workflow_id, workflow_revision_id,
-		       workflow_title, workflow_revision_number, definition_id, definition_snapshot
-		FROM tasks WHERE id = ?
-	`, id).Scan(&contextValue, &workflowID, &workflowRevisionID,
-		&workflowTitle, &workflowRevisionNumber, &definitionID, &definitionSnapshotJSON); err != nil {
-		return detail, unavailable(err)
-	}
-	detail.ResolvedPrompt = detail.Task.Description
-	if contextValue.Valid {
-		detail.Context = contextValue.String
-	}
-	if workflowID.Valid {
-		detail.Workflow = &protocol.TaskWorkflowSnapshot{
-			ID: workflowID.String, RevisionID: workflowRevisionID.String,
-			Title: workflowTitle.String, RevisionNumber: int(workflowRevisionNumber.Int64),
-		}
-	}
-	if definitionID.Valid {
-		var snapshot protocol.DefinitionSnapshot
-		if !definitionSnapshotJSON.Valid || json.Unmarshal([]byte(definitionSnapshotJSON.String), &snapshot) != nil ||
-			snapshot.ID != definitionID.String {
-			return detail, unavailable(errors.New("stored Definition snapshot is invalid"))
-		}
-		detail.Definition = &snapshot
-	}
-	row = s.db.QueryRowContext(ctx, `
-		SELECT id, task_id, assigned_worker_id, required_runtime, state,
-		       cancellation_requested, created_at, updated_at
-		FROM executions WHERE task_id = ?
-	`, id)
-	detail.Execution, err = scanExecution(row)
-	if err != nil {
-		return detail, unavailable(err)
-	}
-	var advertised int
-	err = s.db.QueryRowContext(ctx, `
-		SELECT r.id, wr.display_key, r.remote_identity, wr.retained_count, wr.advertised
-		FROM repositories r JOIN worker_repositories wr ON wr.repository_id = r.id
-		WHERE r.id = ? AND wr.worker_id = ?
-	`, detail.Task.RepositoryID, detail.Execution.AssignedWorkerID).Scan(
-		&detail.Repository.ID, &detail.Repository.Key, &detail.Repository.RemoteIdentity,
-		&detail.Repository.RetainedCount, &advertised)
-	if err != nil {
-		return detail, unavailable(err)
-	}
-	detail.RepositoryAvailable = advertised != 0
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, execution_id, worker_id, attempt_number, state, lease_expires_at,
-		       supervisor_pid, process_identity, process_group_id, result, error,
-		       started_at, completed_at, created_at
-		FROM attempts WHERE execution_id = ? ORDER BY attempt_number
-	`, detail.Execution.ID)
-	if err != nil {
-		return detail, unavailable(err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		attempt, err := scanAttempt(rows)
-		if err != nil {
-			return detail, unavailable(err)
-		}
-		detail.Attempts = append(detail.Attempts, attempt)
-	}
-	return detail, rows.Err()
-}
-
-func (s *Store) DeleteTask(ctx context.Context, taskID string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return unavailable(err)
-	}
-	defer tx.Rollback()
-	if err := s.legacyProductReadOnly(ctx, tx); err != nil {
-		return err
-	}
-
-	var executionID, state string
-	var runJob int
-	err = tx.QueryRowContext(ctx, `
-		SELECT execution.id, execution.state,
-		       EXISTS (SELECT 1 FROM jobs job WHERE job.task_id = execution.task_id)
-		FROM executions execution
-		WHERE execution.task_id = ?
-	`, taskID).Scan(&executionID, &state, &runJob)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return unavailable(err)
-	}
-	if runJob != 0 {
-		return conflict("task_delete_not_allowed", "Run Job Tasks cannot be deleted through the legacy Task endpoint")
-	}
-	if state != "succeeded" && state != "failed" && state != "cancelled" {
-		return conflict("task_not_terminal", "only terminal task history can be deleted")
-	}
-
-	var pendingDisposition int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM attempts
-		WHERE execution_id = ? AND capacity_acknowledged = 0
-	`, executionID).Scan(&pendingDisposition); err != nil {
-		return unavailable(err)
-	}
-	if pendingDisposition != 0 {
-		return conflict(
-			"worktree_disposition_pending",
-			"wait for the worker to report whether terminal attempt worktrees were retained or cleaned",
-		)
-	}
-
-	attemptRows, err := tx.QueryContext(ctx, `SELECT id FROM attempts WHERE execution_id = ?`, executionID)
-	if err != nil {
-		return unavailable(err)
-	}
-	attemptIDs := make(map[string]struct{})
-	for attemptRows.Next() {
-		var attemptID string
-		if err := attemptRows.Scan(&attemptID); err != nil {
-			attemptRows.Close()
-			return unavailable(err)
-		}
-		attemptIDs[attemptID] = struct{}{}
-	}
-	if err := attemptRows.Close(); err != nil {
-		return unavailable(err)
-	}
-
-	workerRows, err := tx.QueryContext(ctx, `SELECT retained_worktrees_json FROM workers`)
-	if err != nil {
-		return unavailable(err)
-	}
-	for workerRows.Next() {
-		var encoded string
-		if err := workerRows.Scan(&encoded); err != nil {
-			workerRows.Close()
-			return unavailable(err)
-		}
-		var retained []protocol.RetainedWorktree
-		if err := json.Unmarshal([]byte(encoded), &retained); err != nil {
-			workerRows.Close()
-			return unavailable(fmt.Errorf("decode retained worktree report: %w", err))
-		}
-		for _, worktree := range retained {
-			if _, exists := attemptIDs[worktree.AttemptID]; exists {
-				workerRows.Close()
-				return conflict("retained_worktree", "clean retained worktrees before deleting task history")
-			}
-		}
-	}
-	if err := workerRows.Close(); err != nil {
-		return unavailable(err)
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM attempt_events
-		WHERE attempt_id IN (SELECT id FROM attempts WHERE execution_id = ?)
-	`, executionID); err != nil {
-		return unavailable(err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM claim_requests
-		WHERE attempt_id IN (SELECT id FROM attempts WHERE execution_id = ?)
-	`, executionID); err != nil {
-		return unavailable(err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM attempts WHERE execution_id = ?`, executionID); err != nil {
-		return unavailable(err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM executions WHERE id = ?`, executionID); err != nil {
-		return unavailable(err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE automation_occurrences
-		SET state = 'task_deleted', task_id = NULL, context = '', resolved_prompt = NULL,
-		    diagnostic = 'linked_task_deleted', updated_at = ?
-		WHERE task_id = ? AND state = 'dispatched'
-	`, s.now().UnixMilli(), taskID); err != nil {
-		return unavailable(err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE id = ?`, taskID); err != nil {
-		return unavailable(err)
-	}
-	if err := tx.Commit(); err != nil {
-		return unavailable(err)
-	}
-	return nil
-}
-
-func scanExecution(row scanner) (protocol.Execution, error) {
-	var value protocol.Execution
-	var cancel int
-	var created, updated int64
-	err := row.Scan(&value.ID, &value.TaskID, &value.AssignedWorkerID, &value.RequiredRuntime,
-		&value.State, &cancel, &created, &updated)
-	value.CancellationRequested = cancel != 0
-	value.CreatedAt, value.UpdatedAt = fromMillis(created), fromMillis(updated)
-	return value, err
 }
 
 func fromMillis(value int64) time.Time { return time.UnixMilli(value).UTC() }
