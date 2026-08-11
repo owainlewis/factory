@@ -340,8 +340,11 @@ block the frozen migration.
 1. Back up the SQLite file and validate foreign keys.
 2. Convert every Definition to a Routine. Fold its default input JSON into the
    prompt with the same `protocol.ResolveDefinitionPrompt` representation used
-   by current admission. A Definition with no known scope becomes a draft
-   Routine with no repositories.
+   by current admission. Before conversion, calculate the final UTF-8 byte
+   length and block every Definition whose folded prompt exceeds the Routine
+   64 KiB limit. Report its Definition ID, base prompt size, input size, and
+   folded size so the operator can shorten it. A Definition with no known scope
+   becomes a draft Routine with no repositories.
 3. Merge a Definition-backed schedule into its Routine only when it is that
    Definition's sole schedule, the Routine does not already own a schedule, and
    its resolved prompt, repository scope, runtime, allowed tools, timeout, and
@@ -383,11 +386,14 @@ block the frozen migration.
 7. Block completion if any remaining Task cannot be reconstructed exactly,
    active legacy executions, enabled provider-driven Automations, unfinished
    Workflow-backed schedule triggers, deleted-Task occurrence tombstones,
-   ambiguous snapshots, orphan lifecycle rows, or foreign-key violations
-   remain. A `task_deleted` occurrence has deliberately discarded its prompt
-   and lifecycle rows, so it cannot become truthful Work. Report every blocked
-   occurrence and its retained Task ID snapshot instead of silently dropping or
-   relabelling that audit identity.
+   taskless provider occurrences, oversized folded prompts, ambiguous
+   snapshots, orphan lifecycle rows, or foreign-key violations remain. A
+   `task_deleted` occurrence has deliberately discarded its prompt and
+   lifecycle rows, so it cannot become truthful Work. A provider occurrence
+   that never admitted a Task or Run likewise has audit identity and diagnostics
+   but no truthful Work lifecycle. Report every blocked occurrence, retained
+   Task ID snapshot, external identity, and diagnostic instead of silently
+   dropping or relabelling that audit identity.
 8. Validate counts, identifiers, terminal outcomes, Attempt events, and
    retained-worktree links.
 9. Drop Definition, Workflow, Automation, Occurrence, Run, Job, and Task
