@@ -83,9 +83,12 @@ The Work page shows aggregate progress and expands to repository-level state,
 logs, results, retry, cancellation, and cleanup.
 
 When the Routine becomes due, the scheduler creates the same Work and Targets
-from the same snapshot path. The only difference is the Work source and its
-scheduled time. Editing the Routine later increments its generation but never
-changes existing Work. Migrated provider-driven history uses a third, read-only
+from the same snapshot path. Scheduled Target prompt resolution appends the
+frozen occurrence time, cron, timezone, and scheduled-occurrence instruction,
+preserving the current `ResolveDefinitionSchedulePrompt` behavior. Manual and
+scheduled admission otherwise differ only in Work source and scheduled time.
+Editing the Routine later increments its generation but never changes existing
+Work. Migrated provider-driven history uses a third, read-only
 `provider_history` source so Factory preserves provenance without restoring
 provider admission.
 
@@ -344,6 +347,11 @@ block the frozen migration.
    report every unadmitted schedule `run_now` occurrence whose `scheduled_at`
    is null and `run_request_key` is set; it cannot be represented by scheduled
    pending fields and has no admitted Work to convert.
+   A schedule trigger whose `definition_id` is null and whose Automation still
+   points at a Workflow represents an unfinished prior product-model upgrade.
+   Block migration and report its Automation and Workflow IDs. The operator
+   must complete that existing upgrade before this migration can safely resolve
+   and freeze its prompt. Never drop or silently disable that cadence.
 5. Convert Runs to Work and Jobs plus linked Tasks to Work Targets. Copy the
    resolved prompt and all lifecycle links. Preserve `webhook` and other
    provider Run provenance as a `provider_history` source with its immutable
@@ -358,8 +366,9 @@ block the frozen migration.
    use manual Work. Copy every Execution, Attempt, event, result, failure, and
    retained-worktree link. Never create one Routine per historical Task.
 7. Block completion if any remaining Task cannot be reconstructed exactly,
-   active legacy executions, enabled provider-driven Automations, ambiguous
-   snapshots, orphan lifecycle rows, or foreign-key violations remain.
+   active legacy executions, enabled provider-driven Automations, unfinished
+   Workflow-backed schedule triggers, ambiguous snapshots, orphan lifecycle
+   rows, or foreign-key violations remain.
 8. Validate counts, identifiers, terminal outcomes, Attempt events, and
    retained-worktree links.
 9. Drop Definition, Workflow, Automation, Occurrence, Run, Job, and Task
@@ -407,12 +416,19 @@ not failure or silent skipping.
 The scheduler calculates `next_due_at` when a Routine is saved or enabled. When
 that instant becomes due, one transaction moves it to `pending_due_at` and
 advances `next_due_at` to the following cron occurrence. Admission always uses
-the immutable `pending_due_at` in its deterministic key. On failure,
-`schedule_retry_at` advances from one minute up to fifteen minutes while
-`pending_due_at` remains unchanged, even when later cron occurrences become
-due. A successful admission clears the pending and retry fields before another
-due occurrence can be claimed. After a process crash the scheduler resumes
-pending retries first, then scans overdue Routines in bounded batches.
+the immutable `pending_due_at` in its deterministic key. Transient failures
+such as a database busy error advance `schedule_retry_at` from one minute up to
+fifteen minutes while `pending_due_at` remains unchanged. Permanent snapshot or
+dependency failures, including a missing or disabled Repository, set schedule
+health to Blocked and stop automatic retries. The Routines UI exposes the exact
+failure and an explicit **Discard occurrence** action; discarding clears the
+frozen pending fields only after operator confirmation.
+
+Successful admission or explicit discard clears the pending and retry fields,
+then recalculates `next_due_at` as the first cron instant strictly after the
+current time. Factory therefore skips cron instants missed during downtime or
+retry rather than admitting a backlog. After a process crash the scheduler
+resumes pending retries first, then scans overdue Routines in bounded batches.
 
 Editing a Routine while Work is active affects only later Work. Disabling its
 schedule leaves active Work unchanged. Archiving disables the schedule and
