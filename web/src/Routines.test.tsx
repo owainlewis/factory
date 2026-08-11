@@ -25,6 +25,20 @@ const routine: Routine = {
 };
 
 describe("RoutinesView", () => {
+  it("reuses the Run request key after an ambiguous failure", async () => {
+    const runnable = { ...routine, repository_count: 1 };
+    vi.spyOn(api, "routines").mockResolvedValue([runnable]);
+    const runRoutine = vi.spyOn(api, "runRoutine").mockRejectedValue(new Error("The response was lost."));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><RoutinesView onWork={() => undefined} /></QueryClientProvider>);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Run now" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The response was lost.");
+    await userEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(runRoutine).toHaveBeenCalledTimes(2);
+    expect(runRoutine.mock.calls[1][1]).toBe(runRoutine.mock.calls[0][1]);
+  });
+
   it("keeps the editor open and shows archive failures", async () => {
     vi.spyOn(api, "routines").mockResolvedValue([routine]);
     vi.spyOn(api, "routine").mockResolvedValue(routine);

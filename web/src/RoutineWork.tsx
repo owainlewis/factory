@@ -147,6 +147,13 @@ function AttemptStream({ attempt }: { attempt: Attempt }) {
     queryFn: () => loadAttemptEvents(attempt.id, client.getQueryData<AttemptEvent[]>(eventKey) ?? []),
     refetchInterval: active ? 2_000 : false,
   });
+  const wasActive = useRef(active);
+  const refetch = query.refetch;
+  useEffect(() => {
+    const becameTerminal = wasActive.current && !active;
+    wasActive.current = active;
+    if (becameTerminal) void refetch();
+  }, [active, refetch]);
   const events = (query.data ?? []).flatMap((event) => {
     const summary = eventSummary(event);
     return summary ? [{ event, summary }] : [];

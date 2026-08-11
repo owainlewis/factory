@@ -68,8 +68,8 @@ export const api = {
   archiveRoutine: (id: string, archived: boolean, expectedGeneration: number) => request<Routine>(`/api/v1/routines/${encodeURIComponent(id)}/archived`, {
     method: "PUT", body: JSON.stringify({ archived, expected_generation: expectedGeneration }),
   }),
-  runRoutine: (id: string) => request<WorkDetailV2>(`/api/v1/routines/${encodeURIComponent(id)}/run`, {
-    method: "POST", body: JSON.stringify({ request_key: crypto.randomUUID() }),
+  runRoutine: (id: string, requestKey: string) => request<WorkDetailV2>(`/api/v1/routines/${encodeURIComponent(id)}/run`, {
+    method: "POST", body: JSON.stringify({ request_key: requestKey }),
   }),
   discardRoutineOccurrence: (id: string, pendingDueAt: string) => request<Routine>(`/api/v1/routines/${encodeURIComponent(id)}/discard-occurrence`, {
     method: "POST", body: JSON.stringify({ pending_due_at: pendingDueAt }),

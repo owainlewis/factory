@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, CalendarClock, Eye, GitBranch, Pencil, Play, Plus, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { timeAgo } from "./format";
 import type { ManagedRepository, Routine, Runtime, SaveRoutineInput } from "./types";
@@ -10,10 +10,12 @@ export function RoutinesView({ initialID, createOpen, onWork }: { initialID?: st
   const client = useQueryClient();
   const [editing, setEditing] = useState<Routine | "new" | null>(createOpen ? "new" : null);
   const [showArchived, setShowArchived] = useState(false);
+  const runRequests = useRef(new Map<string, { generation: number; requestKey: string }>());
   const query = useQuery({ queryKey: ["routines", showArchived], queryFn: () => api.routines(showArchived) });
   const run = useMutation({
-    mutationFn: api.runRoutine,
-    onSuccess: (detail) => {
+    mutationFn: ({ id, requestKey }: { id: string; generation: number; requestKey: string }) => api.runRoutine(id, requestKey),
+    onSuccess: (detail, request) => {
+      runRequests.current.delete(request.id);
       void client.invalidateQueries({ queryKey: ["overview"] });
       void client.invalidateQueries({ queryKey: ["work"] });
       onWork(detail.work.id);
@@ -62,7 +64,12 @@ export function RoutinesView({ initialID, createOpen, onWork }: { initialID?: st
           <div className="routine-last"><span>{routine.last_work_state ? <StatusBadge state={routine.last_work_state} /> : "No Work yet"}</span><small>Edited {timeAgo(routine.updated_at)}</small></div>
           <div className="routine-actions">
             <button className="icon-button" aria-label={`${routine.read_only ? "View" : "Edit"} ${routine.name}`} onClick={() => openRoutine(routine.id)}>{routine.read_only ? <Eye size={15} /> : <Pencil size={15} />}</button>
-            <button className="button button-secondary" title={routine.repository_count === 0 ? "Add a repository before running" : undefined} disabled={routine.read_only || routine.archived || routine.repository_count === 0 || run.isPending} onClick={() => run.mutate(routine.id)}><Play size={14} /> Run now</button>
+            <button className="button button-secondary" title={routine.repository_count === 0 ? "Add a repository before running" : undefined} disabled={routine.read_only || routine.archived || routine.repository_count === 0 || run.isPending} onClick={() => {
+              const previous = runRequests.current.get(routine.id);
+              const requestKey = previous?.generation === routine.generation ? previous.requestKey : crypto.randomUUID();
+              runRequests.current.set(routine.id, { generation: routine.generation, requestKey });
+              run.mutate({ id: routine.id, generation: routine.generation, requestKey });
+            }}><Play size={14} /> Run now</button>
           </div>
         </article>)}
       </div>}

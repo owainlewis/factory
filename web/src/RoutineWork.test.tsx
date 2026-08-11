@@ -63,6 +63,40 @@ describe("RoutineWork", () => {
     expect(await screen.findByText("Second update")).toBeVisible();
     expect(events).toHaveBeenLastCalledWith("attempt-1", 0);
   });
+
+  it("fetches final attempt output once when an attempt becomes terminal", async () => {
+    const eventZero: AttemptEvent = {
+      sequence: 0,
+      kind: "progress",
+      payload: "Still working",
+      server_time: "2026-08-11T12:00:00Z",
+    };
+    const finalEvent: AttemptEvent = {
+      sequence: 1,
+      kind: "result",
+      payload: "Finished",
+      server_time: "2026-08-11T12:00:01Z",
+    };
+    let attemptState: "running" | "succeeded" = "running";
+    vi.spyOn(api, "workItem").mockImplementation(async () => workDetail(attemptState));
+    const events = vi.spyOn(api, "events").mockImplementation(async (_attemptID, after) => after < 0 ? {
+      events: [eventZero], next_after: 0, has_more: false,
+    } : {
+      events: after === 0 ? [finalEvent] : [], next_after: Math.max(after, 1), has_more: false,
+    });
+    const client = testClient();
+    render(<QueryClientProvider client={client}><RoutineWorkDetail id={headWork.id} onBack={() => undefined} /></QueryClientProvider>);
+
+    await userEvent.click(await screen.findByText("github.com/example/factory"));
+    expect(await screen.findByText("Still working")).toBeVisible();
+
+    attemptState = "succeeded";
+    await client.refetchQueries({ queryKey: ["work", headWork.id] });
+
+    expect(await screen.findByText("Finished")).toBeVisible();
+    expect(events).toHaveBeenCalledTimes(2);
+    expect(events).toHaveBeenLastCalledWith("attempt-1", 0);
+  });
 });
 
 function testClient(): QueryClient {
@@ -98,7 +132,7 @@ function workItem(id: string, name: string, state: WorkItem["state"]): WorkItem 
   };
 }
 
-function workDetail(): WorkDetailV2 {
+function workDetail(attemptState: "running" | "succeeded" = "running"): WorkDetailV2 {
   return {
     work: headWork,
     targets: [{
@@ -119,7 +153,7 @@ function workDetail(): WorkDetailV2 {
         execution_id: "execution-1",
         worker_id: "worker-1",
         attempt_number: 1,
-        state: "running",
+        state: attemptState,
         lease_expires_at: "2026-08-11T12:01:00Z",
         started_at: "2026-08-11T12:00:00Z",
         created_at: "2026-08-11T12:00:00Z",
