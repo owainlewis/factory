@@ -32,23 +32,25 @@ Start with the root [README](../README.md) to run Factory.
 
 ## Active design work
 
-- [Coding automation experience](automation-experience/design.md): current
-  Runbook-first UX and proposed multi-repository Run model.
+- [Routines and Work](routines/design.md): proposed single authoring model,
+  manual and scheduled Work across repositories, final database names, and a
+  reduced Overview.
 - [Software Factory vision](software-factory/vision.md): product thesis, scope,
   principles, and measures of progress.
-- [Software Factory target architecture](software-factory/design.md): proposed
-  Definitions, Triggers, Runs, Jobs, Attempts, Workers, GitHub admission, and
-  migration.
 
 ## Design records and superseded proposals
 
 - [External GitHub ingest](github-ingest/design.md): replaced by control-plane
   typed Automations, then superseded by the target architecture.
 - [Reusable workflows and automations](workflows/design.md): design record for
-  the implemented Workflow and typed Automation slices; superseded for future
-  product work by the target architecture.
+  the implemented Workflow and typed Automation slices; superseded by Routines
+  and Work.
+- [Coding automation experience](automation-experience/design.md): implemented
+  Runbook-first UX record, superseded by Routines and Work.
+- [Software Factory target architecture](software-factory/design.md): proposed
+  Definitions, Triggers, Runs, and Jobs, superseded by Routines and Work.
 - [Unified CLI](cli/design.md): useful process-boundary record whose resource
-  names and command contract must be revised against the target architecture.
+  names and command contract must be revised against Routines and Work.
 
 Current behavior belongs in the root `ARCHITECTURE.md`. Proposed behavior belongs
 in a focused design until it is implemented.
