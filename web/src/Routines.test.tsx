@@ -34,6 +34,8 @@ describe("RoutinesView", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Run now" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("The response was lost.");
+    client.setQueryData(["routines", false], [{ ...runnable, name: "Updated Routine", generation: runnable.generation + 1 }]);
+    expect(await screen.findByText("Updated Routine")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Run now" }));
     expect(runRoutine).toHaveBeenCalledTimes(2);
     expect(runRoutine.mock.calls[1][1]).toBe(runRoutine.mock.calls[0][1]);

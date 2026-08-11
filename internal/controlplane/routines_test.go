@@ -64,6 +64,101 @@ func TestRoutineAdmissionWorkerLifecycleAndAggregateWork(t *testing.T) {
 	}
 }
 
+func TestRoutineRunReplayReturnsCommittedWorkAfterRoutineChanges(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	routine, err := store.CreateRoutine(context.Background(), protocol.SaveRoutineRequest{
+		Name: "Replay after edit", Prompt: "Review the repository.", Runtime: protocol.RuntimeCodex,
+		RepositoryIDs: []string{worker.Repositories[0].ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, wasCreated, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "ambiguous-run"})
+	if err != nil || !wasCreated {
+		t.Fatalf("initial Run = %#v, created %v, err %v", created, wasCreated, err)
+	}
+	if _, err := store.UpdateRoutine(context.Background(), routine.ID, protocol.SaveRoutineRequest{
+		Name: "Replay after edit", Prompt: "Use the changed prompt.", Runtime: protocol.RuntimeCodex,
+		ExpectedGeneration: routine.Generation,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	replayed, wasCreated, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "ambiguous-run"})
+	if err != nil || wasCreated || replayed.Work.ID != created.Work.ID {
+		t.Fatalf("replayed Run = %#v, created %v, err %v", replayed, wasCreated, err)
+	}
+	if replayed.Work.Routine.Prompt != "Review the repository." {
+		t.Fatalf("replayed immutable Routine snapshot = %#v", replayed.Work.Routine)
+	}
+}
+
+func TestRoutineRunReplayRejectsDifferentImmutableIdentity(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	createRoutine := func(name string) protocol.Routine {
+		routine, err := store.CreateRoutine(context.Background(), protocol.SaveRoutineRequest{
+			Name: name, Prompt: "Review the repository.", Runtime: protocol.RuntimeCodex,
+			RepositoryIDs: []string{worker.Repositories[0].ID},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return routine
+	}
+	first := createRoutine("First identity")
+	second := createRoutine("Second identity")
+	detail, _, err := store.RunRoutine(context.Background(), first.ID, protocol.RunRoutineRequest{RequestKey: "identity-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.RunRoutine(context.Background(), second.ID, protocol.RunRoutineRequest{RequestKey: "identity-key"}); !serviceErrorCode(err, "request_key_conflict") {
+		t.Fatalf("different Routine identity error = %v", err)
+	}
+	firstDue := time.Date(2026, time.August, 11, 9, 0, 0, 0, time.UTC)
+	if _, _, err := store.admitRoutine(context.Background(), first.ID, "schedule", "identity-key", &firstDue, nil); !serviceErrorCode(err, "request_key_conflict") {
+		t.Fatalf("different source identity error = %v", err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `
+		UPDATE work SET source = 'schedule', scheduled_at = ? WHERE id = ?
+	`, firstDue.UnixMilli(), detail.Work.ID); err != nil {
+		t.Fatal(err)
+	}
+	secondDue := firstDue.Add(time.Hour)
+	if _, _, err := store.admitRoutine(context.Background(), first.ID, "schedule", "identity-key", &secondDue, nil); !serviceErrorCode(err, "request_key_conflict") {
+		t.Fatalf("different scheduled instant identity error = %v", err)
+	}
+}
+
+func TestWorkDetailClosesTargetRowsBeforeLoadingAttempts(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	routine, err := store.CreateRoutine(context.Background(), protocol.SaveRoutineRequest{
+		Name: "Connection-safe detail", Prompt: "Review the repository.", Runtime: protocol.RuntimeCodex,
+		RepositoryIDs: []string{worker.Repositories[0].ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "connection-safe-detail"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.db.SetMaxOpenConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	loaded, err := store.Work(ctx, detail.Work.ID)
+	if err != nil || len(loaded.Targets) != 1 {
+		t.Fatalf("Work detail with one connection = %#v, err %v", loaded, err)
+	}
+}
+
 func TestRoutineLimitCountsOnlyEditableRoutines(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

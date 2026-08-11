@@ -1,7 +1,6 @@
 package controlplane
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -535,6 +534,28 @@ func (s *Store) admitRoutine(
 		return protocol.WorkDetail{}, false, unavailable(err)
 	}
 	defer tx.Rollback()
+	var existingID, existingRoutineID, existingSource string
+	var existingScheduledAt sql.NullInt64
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, routine_id, source, scheduled_at FROM work WHERE request_key = ?
+	`, requestKey).Scan(&existingID, &existingRoutineID, &existingSource, &existingScheduledAt)
+	if err == nil {
+		sameSchedule := scheduledAt == nil && !existingScheduledAt.Valid
+		if scheduledAt != nil && existingScheduledAt.Valid {
+			sameSchedule = scheduledAt.UTC().UnixMilli() == existingScheduledAt.Int64
+		}
+		if existingRoutineID != routineID || existingSource != source || !sameSchedule {
+			return protocol.WorkDetail{}, false, conflict("request_key_conflict", "request_key was already used with different Work inputs")
+		}
+		if err := tx.Commit(); err != nil {
+			return protocol.WorkDetail{}, false, unavailable(err)
+		}
+		detail, err := s.Work(ctx, existingID)
+		return detail, false, err
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return protocol.WorkDetail{}, false, unavailable(err)
+	}
 	snapshot := protocol.RoutineSnapshot{}
 	if frozen != nil {
 		snapshot = *frozen
@@ -619,23 +640,6 @@ func (s *Store) admitRoutine(
 	}{requestKey, routineID, source, scheduledAt, snapshot})
 	digestArray := sha256.Sum256(digestBody)
 	digest := digestArray[:]
-	var existingID string
-	var existingDigest []byte
-	err = tx.QueryRowContext(ctx, `SELECT id, request_digest FROM work WHERE request_key = ?`, requestKey).
-		Scan(&existingID, &existingDigest)
-	if err == nil {
-		if !bytes.Equal(digest, existingDigest) {
-			return protocol.WorkDetail{}, false, conflict("request_key_conflict", "request_key was already used with different Work inputs")
-		}
-		if err := tx.Commit(); err != nil {
-			return protocol.WorkDetail{}, false, unavailable(err)
-		}
-		detail, err := s.Work(ctx, existingID)
-		return detail, false, err
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return protocol.WorkDetail{}, false, unavailable(err)
-	}
 	if err := validateFrozenRepositories(ctx, tx, snapshot.Repositories); err != nil {
 		return protocol.WorkDetail{}, false, err
 	}
@@ -894,6 +898,17 @@ func (s *Store) Work(ctx context.Context, id string) (protocol.WorkDetail, error
 			value := fromMillis(terminal.Int64)
 			target.TerminalAt = &value
 		}
+		detail.Targets = append(detail.Targets, target)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return detail, unavailable(err)
+	}
+	if err := rows.Close(); err != nil {
+		return detail, unavailable(err)
+	}
+	for index := range detail.Targets {
+		target := &detail.Targets[index]
 		attemptRows, err := s.db.QueryContext(ctx, `
 			SELECT attempt.id, attempt.execution_id, attempt.worker_id, attempt.attempt_number, attempt.state,
 			       attempt.lease_expires_at, attempt.supervisor_pid, attempt.process_identity, attempt.process_group_id,
@@ -902,26 +917,23 @@ func (s *Store) Work(ctx context.Context, id string) (protocol.WorkDetail, error
 			WHERE execution.work_target_id = ? ORDER BY attempt.attempt_number
 		`, target.ID)
 		if err != nil {
-			rows.Close()
 			return detail, unavailable(err)
 		}
 		for attemptRows.Next() {
 			attempt, err := scanAttempt(attemptRows)
 			if err != nil {
 				attemptRows.Close()
-				rows.Close()
 				return detail, unavailable(err)
 			}
 			target.Attempts = append(target.Attempts, attempt)
 		}
-		if err := attemptRows.Close(); err != nil {
-			rows.Close()
+		if err := attemptRows.Err(); err != nil {
+			attemptRows.Close()
 			return detail, unavailable(err)
 		}
-		detail.Targets = append(detail.Targets, target)
-	}
-	if err := rows.Close(); err != nil {
-		return detail, unavailable(err)
+		if err := attemptRows.Close(); err != nil {
+			return detail, unavailable(err)
+		}
 	}
 	applyWorkAggregate(&detail.Work, detail.Targets, s.now())
 	return detail, nil
