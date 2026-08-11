@@ -92,12 +92,16 @@ matches that target, preserve it, record its name as `GITHUB_REMOTE`, and create
 the repository without `--source` or `--remote`; then push through the preserved
 remote. If no matching remote or `origin` exists, create from the local source
 with `--source . --remote origin` and record `origin`. If no matching remote
-exists and a non-GitHub `origin` does, follow the approved remote-name plan and
-pass the chosen distinct name with `--source . --remote <chosen-name>`. Never
-overwrite `origin` implicitly. Do not rely on the source directory name when an
-existing remote specifies a different repository name. Do not ask GitHub to
-generate a README, license, or `.gitignore` that could conflict with local
-files. Review local files and verify `GITHUB_REMOTE` before the first push.
+exists and a non-GitHub `origin` does, follow the approved remote-name plan. To
+preserve it, pass the chosen distinct name with
+`--source . --remote <chosen-name>`. To replace it after explicit approval,
+create the GitHub repository without `--source` or `--remote`, run
+`git remote set-url origin <resolved-github-url>`, and record `origin` as
+`GITHUB_REMOTE`. Never overwrite `origin` implicitly. Do not rely on the source
+directory name when an existing remote specifies a different repository name.
+Do not ask GitHub to generate a README, license, or `.gitignore` that could
+conflict with local files. Review local files and verify `GITHUB_REMOTE` before
+the first push.
 
 ## Operating rules
 
