@@ -1,6 +1,6 @@
 # Routines and Work
 
-> **Status:** Proposed for review
+> **Status:** Accepted for implementation
 
 ## 1. Executive summary
 
@@ -85,7 +85,9 @@ logs, results, retry, cancellation, and cleanup.
 When the Routine becomes due, the scheduler creates the same Work and Targets
 from the same snapshot path. The only difference is the Work source and its
 scheduled time. Editing the Routine later increments its generation but never
-changes existing Work.
+changes existing Work. Migrated provider-driven history uses a third, read-only
+`provider_history` source so Factory preserves provenance without restoring
+provider admission.
 
 Overview shows four small facts: active Work, Work needing attention, Work
 completed in the last 24 hours, and Workers online. It then shows at most ten
@@ -115,8 +117,11 @@ retry, history, and list queries. It depends on the existing execution and
 Attempt machinery. It does not mutate the Routine snapshot after admission.
 
 The scheduler owns due-time calculation and recovery after restart. It depends
-on Routine schedule fields and the admission service. It does not create a
-second Automation, Occurrence, or Run lifecycle.
+on Routine schedule fields and the admission service. A Routine stores the
+next cron occurrence separately from any pending occurrence and its retry
+cursor, so retry backoff never replaces the scheduled instant used for
+idempotency. The scheduler does not create a second Automation, Occurrence, or
+Run lifecycle.
 
 The Overview API owns one bounded operational projection. It depends on Work,
 Routine, and Worker queries. It does not expose cohort analytics or accept
@@ -201,6 +206,12 @@ stated goal is to avoid naming debt.
   Worker, and Repository consistently.
 - `INV-12`: No migrated Work loses its Attempt events, result, failure, or
   retained-worktree state.
+- `INV-13`: A pending scheduled occurrence keeps its original due instant
+  until admission succeeds, regardless of retry backoff or later cron due
+  times.
+- `INV-14`: Migrated provider-driven Work retains its provider kind and
+  external occurrence identity but cannot be replayed as a live provider
+  trigger.
 
 ### Requirements
 
@@ -246,11 +257,14 @@ Routine responses contain stable identity, name, prompt, runtime, allowed
 tools, timeout, concurrency limit, generation, archive state, ordered
 repositories, optional schedule, next due time, and timestamps. The list omits
 the full prompt and includes repository count, last Work state, and next due
-time.
+time. Migration-only history containers are excluded from Routine collection
+responses and cannot be opened, edited, scheduled, copied, or run.
 
 Work responses contain stable identity, Routine ID, complete Routine snapshot,
-source `manual` or `schedule`, optional scheduled time, aggregate state, Target
-counts, admission time, update time, and terminal time. Work detail contains
+source `manual`, `schedule`, or read-only `provider_history`, optional scheduled
+time, optional historical provider snapshot, aggregate state, Target counts,
+admission time, update time, and terminal time. New Work can use only `manual`
+or `schedule`; `provider_history` is migration-only. Work detail contains
 ordered Target details and Attempt summaries. The Routine foreign key may be
 nullable only after a future hard-delete feature; V1 archives Routines instead.
 
@@ -280,41 +294,84 @@ worker_repositories
 ```
 
 `routines` stores schedule fields directly: `schedule_enabled`, `cron`,
-`timezone`, `next_due_at`, `schedule_health_status`,
-`schedule_health_code`, and `schedule_health_message`.
+`timezone`, `next_due_at`, `pending_due_at`, `schedule_retry_at`,
+`schedule_retry_count`, `pending_snapshot_json`, `schedule_health_status`,
+`schedule_health_code`, and `schedule_health_message`. `next_due_at` is the next
+unclaimed cron occurrence; `pending_due_at` is the original occurrence
+currently awaiting successful admission; `schedule_retry_at` is only its
+backoff cursor. `pending_snapshot_json` freezes the prompt, repositories,
+runtime, tools, timeout, concurrency, generation, and schedule identity used by
+that occurrence, so later Routine edits and migrated retries cannot change it.
+`routines.migration_only` identifies a fixed set of archived history containers
+created only during conversion. They satisfy historical Work foreign keys but
+are never authoring resources.
 `routine_repositories` stores an explicit position and unique Routine and
 Repository pair. `work` stores the Routine snapshot as validated JSON.
 `work_targets` stores the repository ID and canonical identity snapshot,
 resolved prompt, state, block reason, assigned Worker, timestamps, result, and
 failure.
 
-The migration performs these steps while writes are frozen:
+The migration performs these steps while writes are frozen. Every source name
+first passes through one deterministic allocator. It tries the normalized
+source name, then `<name> (definition)`, `<name> (schedule)`, `<name>
+(workflow)`, or `<name> (manual)` according to source kind, followed by a
+stable numeric suffix ordered by legacy table and ID. The migration report
+records every renamed Routine, so valid cross-model name collisions never
+block the frozen migration.
 
 1. Back up the SQLite file and validate foreign keys.
-2. Convert every Definition to a Routine. A Definition with no known scope
-   becomes a draft Routine with no repositories.
-3. Merge each compatible Definition-backed schedule into its Routine only when
-   prompt settings and repository scope are unambiguous. Otherwise create a
-   separate named Routine and record that decision in the migration report.
-4. Convert Runs to Work and Jobs plus linked Tasks to Work Targets. Copy the
-   resolved prompt and all lifecycle links.
-5. Convert legacy Workflow-backed manual Tasks to archived Routines and Work
-   when their prompt and repository can be reconstructed exactly.
-6. Block completion if active legacy executions, enabled provider-driven
-   Automations, ambiguous snapshots, orphan lifecycle rows, or foreign-key
-   violations remain.
-7. Validate counts, identifiers, terminal outcomes, Attempt events, and
+2. Convert every Definition to a Routine. Fold its default input JSON into the
+   prompt with the same `protocol.ResolveDefinitionPrompt` representation used
+   by current admission. A Definition with no known scope becomes a draft
+   Routine with no repositories.
+3. Merge a Definition-backed schedule into its Routine only when it is that
+   Definition's sole schedule, the Routine does not already own a schedule, and
+   its resolved prompt, repository scope, runtime, allowed tools, timeout, and
+   concurrency all equal the migrated Routine. Every additional cadence and
+   every schedule with different parameters or execution settings becomes a
+   separately named Routine whose configuration contains those resolved
+   values. Record every split in the migration report.
+4. Convert each legacy schedule's unadmitted retryable scheduled occurrence
+   into the pending fields on its mapped Routine. Copy `scheduled_at` to
+   `pending_due_at`, copy `retry_at` to `schedule_retry_at`, initialize
+   `schedule_retry_count` to zero because the legacy schema did not store a
+   count, and copy its frozen Definition, parameter, repository, runtime, tool,
+   timeout, concurrency, and schedule identity into `pending_snapshot_json`.
+   Derive `next_due_at` from the first cron instant after the pending
+   occurrence. If one legacy schedule has more than one unadmitted pending
+   occurrence, or a frozen snapshot is incomplete, block migration and report
+   every occurrence ID rather than dropping or relabelling it. Also block and
+   report every unadmitted schedule `run_now` occurrence whose `scheduled_at`
+   is null and `run_request_key` is set; it cannot be represented by scheduled
+   pending fields and has no admitted Work to convert.
+5. Convert Runs to Work and Jobs plus linked Tasks to Work Targets. Copy the
+   resolved prompt and all lifecycle links. Preserve `webhook` and other
+   provider Run provenance as a `provider_history` source with its immutable
+   provider kind and occurrence snapshot.
+6. Convert every remaining reconstructable Task before dropping legacy tables.
+   Create at most three deterministic, archived, migration-only history
+   containers for workflow, direct-manual, and provider Task history. Point
+   each converted Work at the matching container, but keep its exact prompt,
+   repositories, runtime, tools, timeout, concurrency, legacy source identity,
+   and provider occurrence solely in the immutable Work snapshot. Tasks linked
+   through disabled provider occurrences use `provider_history`; other Tasks
+   use manual Work. Copy every Execution, Attempt, event, result, failure, and
+   retained-worktree link. Never create one Routine per historical Task.
+7. Block completion if any remaining Task cannot be reconstructed exactly,
+   active legacy executions, enabled provider-driven Automations, ambiguous
+   snapshots, orphan lifecycle rows, or foreign-key violations remain.
+8. Validate counts, identifiers, terminal outcomes, Attempt events, and
    retained-worktree links.
-8. Drop Definition, Workflow, Automation, Occurrence, Run, Job, and Task
+9. Drop Definition, Workflow, Automation, Occurrence, Run, Job, and Task
    tables, indexes, triggers, and mutation ledgers. Rename no legacy table into
    a compatibility alias.
-9. Commit the migration and retain the backup path in the completion report.
+10. Commit the migration and retain the backup path in the completion report.
 
 Provider-driven Automation configuration is not silently converted into a
 schedule. An enabled provider Automation blocks migration. A disabled one is
 listed in the report with the Routine prompt and repository that can be
-recreated manually. Historical executions still migrate to Work when their
-snapshots are complete.
+recreated manually. Its historical occurrence and Task executions still
+migrate to read-only `provider_history` Work when their snapshots are complete.
 
 The old `/definitions`, `/workflows`, `/automations`, `/runs`, `/jobs`, and
 `/tasks` routes and API endpoints are removed in the same release. Because the
@@ -330,10 +387,10 @@ current Routine generation; historical Work keeps the old name in its
 snapshot.
 
 Manual Work idempotency uses the caller request key. Scheduled Work uses a
-deterministic key derived from Routine ID, Routine generation, and scheduled
-UTC instant. Target identity is unique by Work ID and Repository ID. A
-Repository rename or remote change after admission does not rewrite the stored
-canonical identity snapshot.
+deterministic key derived from Routine ID, Routine generation, and the original
+`pending_due_at` UTC instant. Target identity is unique by Work ID and
+Repository ID. A Repository rename or remote change after admission does not
+rewrite the stored canonical identity snapshot.
 
 ## 7. Failure behavior and lifecycle
 
@@ -347,11 +404,15 @@ Repository becomes unavailable after admission, its Target becomes Blocked
 with a reason while siblings continue. Worker capacity also produces Blocked,
 not failure or silent skipping.
 
-The scheduler calculates `next_due_at` when a Routine is saved, enabled, or
-successfully admitted. After a process crash it scans overdue Routines in
-bounded batches. Deterministic due keys make replay safe. A due Routine with an
-invalid repository scope records visible schedule health and retries after one
-minute, capped at fifteen minutes. A successful admission clears the error.
+The scheduler calculates `next_due_at` when a Routine is saved or enabled. When
+that instant becomes due, one transaction moves it to `pending_due_at` and
+advances `next_due_at` to the following cron occurrence. Admission always uses
+the immutable `pending_due_at` in its deterministic key. On failure,
+`schedule_retry_at` advances from one minute up to fifteen minutes while
+`pending_due_at` remains unchanged, even when later cron occurrences become
+due. A successful admission clears the pending and retry fields before another
+due occurrence can be claimed. After a process crash the scheduler resumes
+pending retries first, then scans overdue Routines in bounded batches.
 
 Editing a Routine while Work is active affects only later Work. Disabling its
 schedule leaves active Work unchanged. Archiving disables the schedule and
@@ -381,11 +442,13 @@ sensitive source or operator data. List APIs omit full prompts. Detail APIs are
 available only on the operator listener. Logs must use IDs and sizes rather
 than prompt bodies.
 
-Existing limits remain unless renamed. Routines are capped at 500, repository
-scope at 100 per Routine, prompt size at 64 KiB, timeout at 8 hours, and
-concurrency at 1 to 100 with default 10. Overview returns at most ten recent
-Work rows and five upcoming Routines. Scheduler recovery handles at most 100
-due Routines per transaction so startup cannot monopolize SQLite.
+Existing limits remain unless renamed. Operator-authored Routines are capped at
+500; the fixed migration-only history containers do not count toward that cap.
+Repository scope is capped at 100 per Routine, prompt size at 64 KiB, timeout
+at 8 hours, and concurrency at 1 to 100 with default 10. Overview returns at
+most ten recent Work rows and five upcoming Routines. Scheduler recovery
+handles at most 100 due Routines per transaction so startup cannot monopolize
+SQLite.
 
 ## 9. Acceptance criteria
 
@@ -421,12 +484,18 @@ Store tests prove `INV-1` through `INV-9` with manual and scheduled admission,
 Routine edits, duplicate requests, partial outcomes, cancellation, and
 per-Target retry. Snapshot byte comparisons prove `AC-7`.
 
-Migration fixtures cover an empty database, Definitions without scope,
-single-repository schedules, multi-repository schedules, completed and active
-Work, legacy Workflow Tasks, disabled provider Automations, blocking enabled
-provider Automations, retained worktrees, and corrupt foreign keys. Schema
-inspection proves `AC-9` and count plus lifecycle comparisons prove `INV-12`
-and `AC-11`.
+Migration fixtures cover an empty database, Definitions without scope and with
+default inputs, schedules with parameter overrides, cross-model name
+collisions, several schedules for one Definition, schedules with differing
+concurrency, one pending schedule retry with a frozen snapshot, blocking
+multiple pending retries, a blocking unadmitted schedule `run_now` request, and
+zero-initialized migrated retry counts, single-repository schedules,
+multi-repository schedules, completed and active Work, legacy Workflow Tasks,
+more than 500 reconstructable direct-description Tasks, bounded migration-only
+history containers, webhook Runs, provider-linked Tasks, disabled provider
+Automations, blocking enabled provider Automations, retained worktrees, and
+corrupt foreign keys. Schema inspection proves `AC-9`; count, provenance, and
+lifecycle comparisons prove `INV-12`, `INV-13`, `INV-14`, and `AC-11`.
 
 HTTP tests reject old routes and prove the Routine, Work, Target, and Overview
 payloads. A vocabulary check scans the final schema, public Go types, JSON
