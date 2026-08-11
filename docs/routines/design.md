@@ -225,9 +225,10 @@ stated goal is to avoid naming debt.
   writes.
 - Run now defaults to all configured repositories and has no repository picker.
 - A Routine has one runtime, allowed tool set, timeout, and concurrency limit.
-- Enabling a schedule validates the fully resolved scheduled prompt, including
-  occurrence metadata, against the 64 KiB resolved-prompt limit. A manual-only
-  Routine may use the full base-prompt limit.
+- Creating or editing a Routine whose resulting schedule is enabled validates
+  the fully resolved scheduled prompt, including occurrence metadata, against
+  the 64 KiB resolved-prompt limit. A manual-only Routine may use the full
+  base-prompt limit.
 - Work supports the existing table, list, and kanban views over the same API
   records. The selected view remains in the URL.
 - A Work detail page shows aggregate progress before Target detail.
@@ -354,6 +355,9 @@ so valid cross-model name collisions never block the frozen migration.
    every schedule with different parameters or execution settings becomes a
    separately named Routine whose configuration contains those resolved
    values. Record every split in the migration report.
+   Before conversion, block any schedule or frozen pending occurrence whose
+   repository scope exceeds 100. Report the Automation or occurrence ID and
+   repository count so the operator can reduce its scope.
 4. Convert each legacy schedule's unadmitted scheduled occurrence
    into the pending fields on its mapped Routine. Copy `scheduled_at` to
    `pending_due_at`, copy `retry_at` to `schedule_retry_at`, initialize
