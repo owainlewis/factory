@@ -36,9 +36,12 @@ stop before remote work and give the exact install or login command.
 Handle the discovered state as follows:
 
 1. If Git is not initialized, run `git init -b main`.
-2. If there is no GitHub remote, use the directory name as the proposed
-   repository name and the authenticated GitHub user as the proposed owner.
-   Never replace a non-GitHub `origin` or add a second remote without approval.
+2. Resolve the intended repository owner and name before creation. If `origin`
+   is a GitHub URL, preserve its exact `OWNER/REPO` target even when that
+   repository does not exist. If there is no GitHub remote, use the directory
+   name as the proposed repository name and the authenticated GitHub user as
+   the proposed owner. Never replace a non-GitHub `origin` or add a second
+   remote without approval.
 3. If there is no project code or manifest, do not scaffold an application or
    invent commands and architecture.
 4. If there is no local commit history and no remote default branch, the
@@ -60,6 +63,8 @@ Handle the discovered state as follows:
 Infer facts before asking questions. Ask once, in one compact message, only for:
 
 - a one-sentence purpose when neither code nor docs establish one;
+- the intended GitHub owner, and repository name when needed, if no existing
+  GitHub remote or local evidence resolves the target;
 - public or private visibility before creating a GitHub repository;
 - an open-source license when a public repository is intended to be open
   source;
@@ -69,10 +74,14 @@ Continue with independent work after the answers. If licensing or ownership is
 undecided, mark it as `[NEEDS: decision]` and complete independent work. Never
 guess legal terms or make a repository public.
 
-When the GitHub repository is missing, create `OWNER/DIRECTORY_NAME` from the
-local source with `gh repo create` after resolving visibility. Add it as
-`origin`, but do not ask GitHub to generate a README, license, or `.gitignore`
-that could conflict with local files. Review local files before the first push.
+When the GitHub repository is missing, create the exact resolved `OWNER/REPO`
+from the local source with `gh repo create` after resolving visibility. If a
+matching GitHub `origin` already exists, preserve it and do not pass
+`--remote`; otherwise add the created repository as `origin`. Do not rely on
+the source directory name when an existing remote specifies a different
+repository name. Do not ask GitHub to generate a README, license, or
+`.gitignore` that could conflict with local files. Review local files and
+verify the final remote URL before the first push.
 
 ## Operating rules
 

@@ -43,8 +43,11 @@ when it could expose private work.
 
 ## Create issue intake
 
-Enable Issues. Create or improve YAML issue forms under
-`.github/ISSUE_TEMPLATE/`:
+Enable Issues only after the supported forms are live on the default branch.
+If Issues are disabled and this work only proposes the forms in an unmerged
+pull request, leave Issues disabled and report enabling them as an explicit
+post-merge action. If Issues are already enabled, do not disable them. Create
+or improve YAML issue forms under `.github/ISSUE_TEMPLATE/`:
 
 - `bug_report.yml`: problem, expected behavior, minimal reproduction, version,
   environment, sanitized evidence, duplicate search, and a reminder to use the
