@@ -36,23 +36,27 @@ stop before remote work and give the exact install or login command.
 Handle the discovered state as follows:
 
 1. If Git is not initialized, run `git init -b main`.
-2. Resolve the intended repository owner and name before creation. If `origin`
-   is a GitHub URL, preserve its exact `OWNER/REPO` target even when that
-   repository does not exist. If there is no GitHub remote, use the directory
-   name as the proposed repository name and the authenticated GitHub user as
-   the proposed owner. If `origin` is not a GitHub remote, preserve it and ask
-   whether to add GitHub under a distinct remote name or replace `origin`.
-   Never make either remote change without approval.
-   Record the resolved local name as `GITHUB_REMOTE`; use it for every GitHub
-   fetch, push, comparison, tracking branch, and remote URL verification.
+2. Resolve the intended repository owner, name, and local GitHub remote before
+   creation. Prefer an existing GitHub remote selected by current tracking or
+   default-branch metadata; otherwise use the sole matching GitHub remote. Keep
+   its exact `OWNER/REPO` target even when that repository does not exist. If
+   multiple GitHub remotes remain plausible, ask which target is intended. If
+   there is no GitHub remote, use the directory name as the proposed repository
+   name and the authenticated GitHub user as the proposed owner. If GitHub must
+   be added while `origin` points elsewhere, preserve `origin` and ask whether
+   to use a distinct remote name or replace it. Never make either remote change
+   without approval. Record the resolved local name as `GITHUB_REMOTE`; use it
+   for every GitHub fetch, push, comparison, tracking branch, and remote URL
+   verification.
 3. If there is no project code or manifest, do not scaffold an application or
    invent commands and architecture.
 4. If there is no local commit history and no remote default branch, the
-   complete initial setup may be committed and pushed directly to `main` on
-   `GITHUB_REMOTE` because no protected default branch exists. Inspect every
-   file for secrets, local configuration, generated output, and large binaries
-   before including it. If a remote default branch exists, follow step 6
-   instead.
+   local unborn branch must be named `main` before the first commit. Run
+   `git branch -M main` when necessary. Then the complete initial setup may be
+   committed and pushed directly to `main` on `GITHUB_REMOTE` because no
+   protected default branch exists. Inspect every file for secrets, local
+   configuration, generated output, and large binaries before including it. If
+   a remote default branch exists, follow step 6 instead.
 5. If local history exists and there is no remote default branch, create the
    GitHub repository when needed, publish the existing default branch to
    `GITHUB_REMOTE` without rewriting it, then make setup changes on a focused
@@ -68,8 +72,9 @@ Handle the discovered state as follows:
 Infer facts before asking questions. Ask once, in one compact message, only for:
 
 - a one-sentence purpose when neither code nor docs establish one;
-- the intended GitHub owner, and repository name when needed, if no existing
-  GitHub remote or local evidence resolves the target;
+- the intended GitHub target when multiple remotes remain plausible, or the
+  owner and repository name when no existing remote or local evidence resolves
+  it;
 - the remote-name plan when `origin` points somewhere other than GitHub;
 - public, private, or internal visibility before creating a GitHub repository;
   offer internal only when the resolved owner supports it;
@@ -82,15 +87,16 @@ undecided, mark it as `[NEEDS: decision]` and complete independent work. Never
 guess legal terms or make a repository public.
 
 When the GitHub repository is missing, create the exact resolved `OWNER/REPO`
-from the local source with `gh repo create` after resolving visibility. If a
-matching GitHub `origin` already exists, preserve it and do not pass
-`--remote`, then record `origin` as `GITHUB_REMOTE`. If no `origin` exists, add
-the created repository as `origin` and record it. If a non-GitHub `origin`
-exists, follow the approved remote-name plan, record the chosen name, and never
-overwrite it implicitly. Do not rely on the source directory name when an
-existing remote specifies a different repository name. Do not ask GitHub to
-generate a README, license, or `.gitignore` that could conflict with local
-files. Review local files and verify `GITHUB_REMOTE` before the first push.
+from the local source with `gh repo create` after resolving visibility. If any
+existing remote already matches that target, preserve it, record its name as
+`GITHUB_REMOTE`, and do not pass `--remote`. If no matching remote or `origin`
+exists, add the created repository as `origin` and record it. If no matching
+remote exists and a non-GitHub `origin` does, follow the approved remote-name
+plan, record the chosen name, and never overwrite `origin` implicitly. Do not
+rely on the source directory name when an existing remote specifies a
+different repository name. Do not ask GitHub to generate a README, license, or
+`.gitignore` that could conflict with local files. Review local files and
+verify `GITHUB_REMOTE` before the first push.
 
 ## Operating rules
 
@@ -196,9 +202,11 @@ When CI is applicable, it must:
 - run the formatting, analysis, tests, and builds the project supports;
 - test extra platforms only when they are a real support contract;
 - cancel superseded pull request runs;
-- expose one stable final job named `check` when several jobs or a matrix sit
-  behind protection. Make it depend on every required job, use `if: always()`,
-  and fail unless every `needs.*.result` is `success`;
+- expose one stable required job named `check`. Use that name for the sole job
+  in a single-job workflow. When several jobs or a matrix sit behind
+  protection, make `check` a final aggregator that depends on every required
+  job, uses `if: always()`, and fails unless every `needs.*.result` is
+  `success`;
 - pin third-party actions to verified full commit SHAs with version comments;
 - prevent untrusted pull request code from receiving write tokens or secrets.
 

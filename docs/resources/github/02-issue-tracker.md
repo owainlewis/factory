@@ -6,20 +6,27 @@ the repository maintains a backlog, one GitHub Project that shows delivery
 flow. Perform the work, verify it, and report the result. Do not merely return
 instructions.
 
-This prompt requires a GitHub `origin` with an initialized default branch. If
-either is missing, stop and run the repository best-practices setup first. This
-prompt does not authorize changing repository visibility, source code, CI,
-branch rules, security features, releases, deployments, or production access.
+This prompt requires a configured GitHub remote with an initialized default
+branch. If either is missing, stop and run the repository best-practices setup
+first. This prompt does not authorize changing repository visibility, source
+code, CI, branch rules, security features, releases, deployments, or production
+access.
 
 ## Inspect before changing
 
-Resolve the repository and its default branch from `origin`. Verify GitHub CLI
-authentication and repository access before making mutations.
+Resolve the repository, its default branch, and the local name of the remote
+that targets it. Prefer the GitHub remote selected by current tracking or
+default-branch metadata; otherwise use the sole GitHub remote. If multiple
+GitHub remotes remain plausible, ask once which repository is intended before
+making mutations. Record the chosen name as `GITHUB_REMOTE` and use it for
+every GitHub fetch, push, tracking branch, and URL verification. Verify GitHub
+CLI authentication and repository access before making mutations.
 
-Fetch and inspect the remote default branch. If committed issue-form changes
-are needed, create their focused branch from `origin/DEFAULT_BRANCH`, not an
-arbitrary current branch. If local work prevents a clean switch, use an
-isolated worktree or stop and explain the conflict.
+Fetch and inspect the default branch from `GITHUB_REMOTE`. If committed
+issue-form changes are needed, create their focused branch from
+`GITHUB_REMOTE/DEFAULT_BRANCH`, not an arbitrary current branch. If local work
+prevents a clean switch, use an isolated worktree or stop and explain the
+conflict.
 
 Inspect:
 
