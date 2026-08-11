@@ -333,13 +333,11 @@ Repository pair. `work` stores the Routine snapshot as validated JSON.
 resolved prompt, state, block reason, assigned Worker, timestamps, result, and
 failure.
 
-The migration performs these steps while writes are frozen. Every source name
-first passes through one deterministic allocator. It tries the normalized
-source name, then `<name> (definition)`, `<name> (schedule)`, `<name>
-(workflow)`, or `<name> (manual)` according to source kind, followed by a
-stable numeric suffix ordered by legacy table and ID. The migration report
-records every renamed Routine, so valid cross-model name collisions never
-block the frozen migration.
+The migration performs these steps while writes are frozen. Every migrated
+operator-authored Routine receives `<name> · definition N` or `<name> ·
+schedule N`. The globally unique number is allocated deterministically by
+source kind and legacy ID. The migration report records every renamed Routine,
+so valid cross-model name collisions never block the frozen migration.
 
 1. Back up the SQLite file and validate foreign keys.
 2. Convert every Definition to a Routine. Fold its default input JSON into the
