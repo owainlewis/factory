@@ -706,8 +706,11 @@ The gateway accepts it only while its own clock is before the current object's
 `valid_until`. It computes the new `valid_until` as the earlier of 30 seconds
 after its own server time and `work_deadline_at`, then writes with GCS
 `ifGenerationMatch`. Replaying the same request ID returns the stored result and
-never extends authority again. Factory cannot issue the next request until it
-has received and persisted that result. Thus one lost or delayed refresh can
+never performs another compare-and-set or extends authority again, including
+after a later revocation. The stored response is historical evidence, not the
+current authority state. Factory ignores such a replay after timeout or
+cancellation intent owns the outcome. Factory cannot issue the next request
+until it has received and persisted that result. Thus one lost or delayed refresh can
 extend authority at most one 30-second window beyond the last acknowledged
 deadline; it cannot form an unbounded chain. At or after `work_deadline_at`, the
 gateway refuses refresh and start-fence requests and conditionally revokes any
@@ -751,8 +754,9 @@ gateway to revoke authority even when no start fence exists. Fence and
 revocation requests compete through the same authority generation. On a
 generation conflict, Factory reads the new generation and retries revocation;
 it never refreshes authority. A successful revocation compare-and-set is the
-gateway fence: every delayed refresh carries the older generation or the
-already-consumed request ID and is rejected. When the gateway is unreachable,
+gateway fence: a delayed first delivery carrying the older generation is
+rejected, while replay of an already-consumed request ID may return only its
+immutable historical response and cannot mutate the revoked object. When the gateway is unreachable,
 Factory does not treat the last acknowledged lease alone as proof if a refresh
 is outstanding. Confirmed revocation, a gateway response showing
 that the absolute deadline has arrived, provider-terminal proof, or expiry of a
@@ -1045,7 +1049,10 @@ extend authority again, and Factory cannot issue a second refresh while the
 first is unresolved. A request delayed past the current `valid_until` must be
 rejected without changing the authority generation, last request ID, or
 deadline. When revocation succeeds, its generation and request-ID fence must
-reject the delayed refresh. Duplicate tests must prove that one terminal
+reject a delayed first delivery. A replay of a refresh consumed before
+revocation must return the original response without changing the current
+generation, revocation marker, or deadline, and Factory must ignore it for
+state transitions. Duplicate tests must prove that one terminal
 execution cannot
 satisfy provider-terminal proof while the fence winner remains active, and that
 the no-winner case requires every matching execution to be terminal.
