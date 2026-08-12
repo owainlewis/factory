@@ -16,6 +16,13 @@ artifact, and stop paying for compute when the Job exits. The existing control
 plane remains the source of truth. Cloud Run provides managed compute, not a
 second scheduler or product model.
 
+The first hosted deployment runs `factory-server` on a dedicated Compute
+Engine VM. Its attached dispatcher service account supplies metadata-backed
+workload credentials to Google client libraries. Factory calls Cloud Run and the
+Attempt gateway directly and never shells out to `gcloud` or loads a downloaded
+service-account key. Coding agents do not run on this VM because any process on
+it could otherwise request the attached identity from the metadata server.
+
 The main downside is weaker local recovery. An ephemeral Job cannot retain an
 inspectable worktree after it exits, so it must publish a durable, verified
 artifact before Factory accepts completion. Cloud Run also isolates a process
@@ -53,8 +60,9 @@ every cloud provider.
 
 ```mermaid
 flowchart LR
-    O["Operator"] --> R["Routine and Work"]
+    O["Operator through SSH tunnel"] --> R["Routine and Work"]
     R --> CP["Factory control plane"]
+    IAM["Attached dispatcher identity"] --> CP
     CP --> PW["Persistent Worker backend"]
     PW --> PA["Subscription or API-backed agent"]
     CP --> CD["Cloud Run dispatcher"]
@@ -83,6 +91,13 @@ Backend, runtime, and model are independent choices:
 | Provider and model | Subscription session, OpenRouter and DeepSeek | Execution profile |
 
 DeepSeek V4 Flash is one tested model, not a Cloud Run backend type.
+
+In the first hosted shape, the control plane and SQLite database run on a
+dedicated Compute Engine VM with persistent disk. The operator reaches its
+loopback listener through an SSH tunnel. Persistent Workers run on separate
+local or VM hosts and keep their existing outbound authenticated connection to
+Factory. This preserves the current architecture while preventing an agent
+process from using the dispatcher VM's attached Google identity.
 
 ## 4. Proposed design
 
@@ -117,10 +132,12 @@ and any cloud credential are not override values.
 The Job service account has no access to the artifact bucket, Cloud Run
 administration, or sibling Attempts. Its only data permission is access to the
 dedicated, single-version model secret when the selected provider requires one.
-It can mint an identity token whose audience is only the Attempt gateway. The
-gateway requires that token and the random run capability, maps them to one
-active Attempt prefix, and permits only the protocol operations and byte limits
-defined in this document.
+The wrapper requests an identity token for the Attempt gateway. Although code
+in the Job can ask the metadata server for another audience, the Job identity
+has no invoker grant on another Factory service. The gateway requires the exact
+gateway audience, expected service-account subject, and random run capability,
+maps them to one active Attempt prefix, and permits only the protocol operations
+and byte limits defined in this document.
 The gateway performs all Job-originated storage reads and conditional writes.
 This prevents one profile's execution from reading or corrupting a sibling
 execution. It does not prevent trusted repository code from tampering with its
@@ -214,6 +231,87 @@ automatically fail over between backends in the first release.
 
 Work and Attempt detail show the selected backend, but lists and metrics
 continue to use one product lifecycle across both backends.
+
+### Google Cloud deployment and authentication
+
+The first supported hosted control plane is one dedicated Compute Engine VM.
+It runs `factory-server`, SQLite on persistent disk, the scheduler, and the
+Cloud Run dispatcher. It does not run `factory-worker` or any coding-agent
+process. The operator keeps the existing loopback-only API and reaches it with
+an SSH tunnel. Running `factory-server` itself as a Cloud Run service would
+require a separate design for durable state, leader election, continuously
+running dispatch, and operator authentication.
+
+The VM has one dedicated dispatcher service account attached at creation and
+uses the `cloud-platform` OAuth scope. IAM supplies the narrow authorization.
+The hosted profile fixes `credential_mode` to `compute_metadata`. In this mode
+Factory rejects a set `GOOGLE_APPLICATION_CREDENTIALS` variable and a local ADC
+file at Google's well-known path, then obtains short-lived access and ID tokens
+directly from the Compute Engine metadata server. It does not use the generic
+[Application Default Credentials search order](https://docs.cloud.google.com/docs/authentication/application-default-credentials),
+which could prefer a credential file over the attached identity.
+
+Local development uses a separate `impersonated_adc` mode. Its ADC file must be
+an impersonated-service-account configuration targeting the expected
+dispatcher subject. Factory rejects `service_account` key files and plain
+`authorized_user` ADC for dispatch. A human developer receives Token Creator
+on only the dispatcher service account. Validation-only setup may use the
+human's existing Google session, but it cannot enable or run a profile. Neither
+mode makes `gcloud` a Factory runtime dependency. User-managed service-account
+keys are unsupported, and setup recommends enforcing the organization policies
+that disable key creation and upload, following Google's
+[service-account security guidance](https://docs.cloud.google.com/iam/docs/best-practices-service-accounts).
+
+Factory uses access tokens with Google client libraries and the Cloud Run v2
+API. Gateway calls carry an audience-bound Google-signed ID token in exactly
+one `Authorization: Bearer` header. The caller never uses
+`X-Serverless-Authorization`, and the gateway rejects that header, a missing or
+repeated Authorization header, or another authentication scheme. Before
+reading a request body, the gateway verifies the Google signature, issuer,
+expiry, exact service URL or configured custom audience, immutable numeric
+`sub`, and the path-specific dispatcher or Job allowlist. This follows Google's
+[service-to-service authentication contract](https://docs.cloud.google.com/run/docs/authenticating/service-to-service)
+while preserving the signed token for application verification.
+
+The identity and binding table is normative:
+
+| Identity | Retained grant | Resource scope | Forbidden at runtime |
+| --- | --- | --- | --- |
+| Provisioning operator or temporary provisioner | None managed by Factory after setup validation | Setup session only | Credentials in Factory, gateway, Job, config, or SQLite |
+| Dispatcher service account | Custom Job dispatcher role containing `run.jobs.get`, `run.jobs.run`, `run.jobs.runWithOverrides`, `run.executions.get`, `run.executions.list`, `run.executions.cancel`, and `run.executions.delete`; custom operation reader containing only `run.operations.get`; custom gateway reader containing only `run.services.get`; custom identity reader containing only `iam.serviceAccounts.get`; `roles/run.servicesInvoker` | Job dispatcher on each versioned Job; operation reader on the project; gateway reader and invoker on the one gateway; identity reader on the dispatcher, gateway, and Job service-account resources | Job create, update, delete, or IAM changes; service-account impersonation; artifact objects; model secrets |
+| Gateway service account | `roles/storage.objectAdmin` | Dedicated artifact bucket | Cloud Run Job administration, model secrets, Factory operator API |
+| Profile Job service account | `roles/run.servicesInvoker`; `roles/secretmanager.secretAccessor` | One gateway service; one dedicated model secret | Artifact bucket, Cloud Run administration, Factory operator API, sibling model secrets |
+
+These are the complete Factory-managed bindings. A runtime principal with any
+other direct or inherited project, folder, organization, resource, or
+service-account binding fails deployment validation. Google-managed service
+agents are outside this table and never run Factory code. The provisioning
+operator's pre-existing human administration is part of the deployment trust
+boundary, not a Factory runtime identity.
+
+The supported setup uses the operator's current identity or a temporary
+provisioner identity to enable APIs and create resources. Setup prints its
+permission plan before applying it. Factory never stores that identity. If a
+temporary provisioner service account is used, setup removes all of its project
+and resource bindings after runtime validation; later changes require an
+explicit operator session to grant them again. The runtime bindings above are
+resource-level except `run.operations.get` where Google requires a wider parent.
+Google provides execution and cancellation through the
+[Cloud Run Jobs Executor With Overrides role](https://docs.cloud.google.com/run/docs/reference/iam/roles),
+but Factory uses the documented custom role so drift inspection and
+[`run.executions.delete`](https://docs.cloud.google.com/run/docs/reference/rest/v2/projects.locations.jobs.executions/delete)
+do not require Cloud Run Developer.
+
+Profile validation obtains both token types, verifies the active subject,
+reads the immutable Job and gateway service, resolves the immutable numeric IDs
+of every expected service account, and checks required and explicitly forbidden
+dispatcher permissions before enabling new dispatch. Hosted mode also reads
+the attached service-account identity from the metadata server before every Run
+call and authority refresh, so an active identity change is detected within the
+ten-second refresh interval even while an earlier token remains valid. Idle
+profiles repeat the full validation every 30 seconds. Tokens remain in process
+memory only and are never written to SQLite, config, events, artifacts, logs,
+or Cloud Run overrides.
 
 ### Delivery sequence
 
@@ -377,6 +475,27 @@ that version before dispatch. Referenced versions cannot be deleted. An
 explicit retry uses the same version; if it is unavailable, Factory blocks the
 retry instead of silently running different code.
 
+#### Direct APIs with attached workload identity
+
+Factory uses Google client libraries and direct v2 APIs. Hosted mode obtains
+credentials only from Compute Engine metadata, while development dispatch uses
+explicit service-account impersonation through ADC. We reject invoking `gcloud`
+from the dispatcher because CLI configuration, output, and subprocess state are
+not a durable runtime contract. We also reject downloaded service-account keys
+because they are long-lived bearer credentials that add rotation and leakage
+risk. The cost is that setup must attach and validate a dedicated workload
+identity before a cloud profile can be enabled.
+
+#### Dedicated control-plane VM
+
+The first hosted deployment uses a dedicated Compute Engine VM because the
+current control plane owns local SQLite, continuous dispatch, and a loopback
+operator API. We reject co-locating a persistent Worker on that VM because
+agent and repository code could obtain the VM's dispatcher identity from the
+metadata server. We also defer hosting Factory itself on Cloud Run because that
+requires a different persistence, leadership, and operator-authentication
+design.
+
 ## 5. Invariants and requirements
 
 ### Invariants
@@ -413,6 +532,18 @@ retry instead of silently running different code.
   started by then. A running wrapper starts process-group shutdown at the same
   deadline and sends SIGKILL no later than ten seconds afterward, independent
   of the longer profile or Cloud Run Job timeout.
+- `INV-15`: Hosted Factory authenticates Google runtime calls only through the
+  attached Compute Engine metadata identity and direct APIs. Development
+  dispatch permits only explicit ADC service-account impersonation. Neither
+  mode invokes `gcloud` or accepts a user-managed key at runtime.
+- `INV-16`: Provisioning, dispatcher, gateway, and Job runtime identities stay
+  separate. No runtime identity can change IAM policy or assume another runtime
+  identity.
+- `INV-17`: The gateway accepts a dispatcher or Job call only when its
+  Google-signed ID token has the exact audience and expected immutable service
+  account subject for that surface.
+- `INV-18`: No coding-agent process runs on the Compute Engine VM that owns the
+  dispatcher service account.
 
 ### Requirements
 
@@ -468,6 +599,27 @@ retry instead of silently running different code.
   configured bound is exceeded.
 - Cloud execution status, model cost, compute duration, image digest, and
   console log URL appear in Attempt detail.
+- The hosted Factory VM has one dedicated attached dispatcher service account,
+  the `cloud-platform` OAuth scope, and no downloaded Google credential file.
+  IAM, not narrower VM access scopes, restricts its resource access.
+- Hosted Factory rejects environment or well-known-file ADC and calls the Cloud
+  Run v2 API with metadata-backed access tokens. Development dispatch accepts
+  only impersonated-service-account ADC. Both modes call the gateway with
+  short-lived ID tokens whose audience is the exact configured service URL or
+  custom audience. Token values are never persisted.
+- The dispatcher may read and run only configured immutable Jobs, inspect,
+  cancel, and delete their executions, read their operations, and invoke the
+  gateway. It cannot create, update, delete, or change IAM on a Job, impersonate
+  another service account, or access a model secret.
+- The gateway service account has object administration only on the dedicated
+  artifact bucket. Each Job service account can invoke the gateway and access
+  only its profile's pinned model secret. These bindings are resource-level,
+  not project-wide.
+- Startup validates the configured credential mode, the active dispatcher
+  subject, both token types, the Job and gateway resources, every configured
+  service-account subject, and required and forbidden permissions. Hosted mode
+  revalidates its attached identity before every Run and authority refresh. A
+  failed check leaves the profile disabled and starts no Cloud Run execution.
 - Persistent Workers remain the default backend and require no Google Cloud
   configuration.
 
@@ -485,6 +637,9 @@ project
 region
 artifact_bucket
 gateway_url
+credential_mode = compute_metadata | impersonated_adc
+dispatcher_service_account
+gateway_service_account
 max_concurrent
 trust_tier = trusted_repository
 capabilities[] = runtime + provider + model selectors
@@ -494,9 +649,10 @@ enabled
 Each immutable profile version records `job`, `image_digest`,
 `job_service_account`, resource limits, timeout, wrapper configuration, and a
 dedicated model-secret resource with one enabled pinned version. Cloud
-credentials belong to the Factory process environment or host identity, not
-this record. Secret values belong in Secret Manager and are referenced by the
-versioned Job configuration.
+credential values do not belong in this record. The service-account fields are
+expected principal identifiers used for validation, not credentials. Secret
+values belong in Secret Manager and are referenced by the versioned Job
+configuration.
 
 The dispatcher creates
 `attempts/<attempt-id>/gateway-registration.json` before launch. The immutable
@@ -522,6 +678,12 @@ synthetic Worker ID is `cloud-run-<profile-id>` and never changes when the
 display name, image, region settings, or capabilities change. Deleting and
 recreating a profile creates a new identity. Existing Work continues to point
 at the frozen old profile and synthetic Worker record.
+
+Google service accounts are stored by full resource name, email, and immutable
+numeric subject. Validation fails if a name is missing, resolves to a different
+subject, or no longer matches the deployed Job or gateway. Deleting and
+recreating a service account with the same email therefore cannot inherit an
+enabled profile silently. Tokens and credential file paths are never stored.
 
 The synthetic Worker cannot authenticate to the Worker HTTP API and cannot be
 claimed by an external process. The dispatcher uses an internal store
@@ -829,6 +991,31 @@ with a two-minute deadline.
 
 ## 7. Failure behavior and lifecycle
 
+At startup, each enabled cloud profile must complete authentication validation
+before the dispatcher admits cloud Work. A disallowed credential source, a
+principal mismatch, an invalid gateway audience, or a missing required or
+present forbidden permission marks the profile unhealthy with a specific
+reason. Factory does not try another local credential, invoke `gcloud`, read a
+key file, or fall back to a broader identity.
+
+If access-token or ID-token acquisition fails while an Attempt is active,
+Factory stops new Run and authority-refresh calls and moves the dispatch to
+reconciling. The wrapper stops when its last verified authority expires.
+Factory retries profile validation no more than once every 30 seconds with
+jitter. Restored credentials permit cleanup and reconciliation first. An agent
+whose authority expired is failed and cancelled rather than resumed. New cloud
+Work starts only after the complete profile validation passes again.
+
+Replacing the VM's attached service account, deleting and recreating a service
+account under the same email, or changing the gateway audience creates an
+identity mismatch. Compute Engine requires a stop before changing the attached
+account, so startup validation rejects the new subject before reconciliation
+or dispatch after the VM restarts. As a defensive runtime check, Factory still
+reads the attached account from metadata before each ten-second authority
+refresh and every Run call. A live token or gateway-authorization failure stops
+the next refresh. Factory keeps the profile disabled until the stored expected
+subjects and deployed resources are explicitly reprovisioned and validated.
+
 If input upload fails, the Attempt remains preparing and dispatch retries after
 one second with jitter, doubling to at most 30 seconds until its five-minute
 dispatch deadline. No Cloud Job starts. Reaching the deadline fails the Attempt
@@ -915,6 +1102,13 @@ embedded inside that prompt. The Job may execute repository code. That code can
 read credentials available to the agent process, request tokens for permissions
 granted to the Job service account, and use permitted network egress.
 
+The dedicated control-plane VM is part of the dispatcher trust boundary. Any
+person or process with code execution on that VM can request its attached
+identity from the metadata server, so coding agents and repository hooks run on
+separate Worker hosts. The VM uses a dedicated service account rather than the
+Compute Engine default account. SSH and operating-system administration of that
+VM are therefore privileged dispatcher operations.
+
 Each trust tier uses dedicated dispatcher, gateway, and Job service accounts
 and preferably a separate Google Cloud project. The dispatcher can run the
 versioned Job, manage its executions, and invoke only the gateway's dispatcher
@@ -926,6 +1120,15 @@ artifact-store permission, Cloud Run administration, project editor, or
 Factory control-plane credential.
 Repository credentials are short-lived and scoped to one repository when
 private checkout or publishing is added.
+
+Factory's runtime image and service definition do not require the Google Cloud
+CLI. Provisioning may use `gcloud`, but it cannot copy its user configuration
+or tokens into the Factory service account. The deployment creates no
+user-managed service-account keys and recommends the
+`iam.disableServiceAccountKeyCreation` and
+`iam.disableServiceAccountKeyUpload` organization-policy constraints. Cloud
+Audit Logs remain enabled for Cloud Run administration, service-account token
+creation or impersonation, Secret Manager access, and artifact storage.
 
 Prompt text is stored in the encrypted artifact store rather than Cloud Run
 environment overrides. Identifiers placed in execution metadata are not
@@ -1006,6 +1209,28 @@ Cloud Logging retention are diagnostic and are never the only retained record.
   out and cancels an accepted but unstarted execution, the gateway rejects a
   late start fence, and a running wrapper starts agent shutdown immediately,
   kills the process group within ten seconds, and publishes no success.
+- `AC-15`: On a dedicated Compute Engine VM with the configured dispatcher
+  service account attached, Factory can read and run the versioned Job, inspect,
+  cancel, and delete its executions, and invoke the gateway through direct APIs
+  when `gcloud` is absent. Hosted mode rejects valid environment or local-file
+  credentials, including a key for the expected dispatcher subject.
+- `AC-16`: A disallowed credential source, a different service-account subject,
+  a wrong gateway audience, or a missing required or present forbidden
+  permission leaves the cloud profile unhealthy and starts no execution. A live
+  token or gateway-authorization failure during an Attempt stops authority
+  refresh within ten seconds of the first observable authentication failure,
+  lets authority expire, stops the agent, and reconciles cleanup before
+  admitting new Work. An attached-identity change made while the VM is stopped
+  fails startup validation after restart.
+- `AC-17`: Effective IAM analysis, including inherited bindings, custom-role
+  contents, and service-account policies, gives the dispatcher, gateway, and
+  Job identities only the normative table's permissions. No temporary
+  provisioner binding remains after setup. The gateway rejects a valid Google
+  token for the wrong audience, surface, or service-account subject.
+- `AC-18`: The supported Google Cloud deployment runs no `factory-worker`,
+  coding-agent process, or repository hook on the dispatcher VM. Persistent
+  Workers on separate hosts can complete Work without access to the dispatcher
+  service account.
 
 ## 10. Test approach
 
@@ -1106,6 +1331,41 @@ read-only and one patch-producing Attempt, cancel one long-running Attempt,
 restart the dispatcher during one Attempt, and verify the final UI/API evidence
 required by `AC-4`, `AC-5`, and `AC-10`.
 
+Authentication tests will run `factory-server` in an image without `gcloud` and
+then on a dedicated Compute Engine VM with an attached service account. Hosted
+mode tests set a valid expected-subject service-account key in
+`GOOGLE_APPLICATION_CREDENTIALS`, install valid user and service-account ADC at
+the well-known path, and confirm that each source is rejected before token
+resolution. Development tests accept only an impersonated-service-account ADC
+file targeting the expected subject. These cases prove `INV-15`, `AC-15`, and
+the direct API path.
+
+Fault tests return token-refresh errors, deny each required permission, grant
+each forbidden permission, and use a wrong gateway audience. A controlled
+gateway returns 401 and 403 responses during a running Attempt and proves that
+Factory stops refresh within ten seconds of the first response. A separate
+real-project test removes the gateway invocation binding, waits until an access
+probe observes the removal, and then applies the same ten-second bound; IAM
+propagation time is recorded but is not part of that bound. Another real-VM
+test stops the VM, replaces its attached service account, restarts it, and
+proves startup reconciliation rejects the new subject before issuing a Run or
+refresh. A controlled metadata-server test double changes the subject while the
+process is active and proves the defensive pre-refresh check. These tests prove
+`AC-16` and that no launch or refresh occurs after validation fails.
+
+The real-project security test will use effective-access analysis rather than
+only direct resource policy exports. It inspects inherited project, folder, and
+organization bindings; every custom-role definition; the configured Job,
+gateway, bucket, and secret policies; and each service-account resource policy.
+It tests the dispatcher allowlist and forbidden permissions, asserts that no
+runtime key or temporary provisioner binding exists, and sends gateway requests
+with `X-Serverless-Authorization`, missing or repeated Authorization headers,
+and signed tokens for the wrong issuer, expiry, audience, surface, and subject.
+These cases prove `INV-16`, `INV-17`, and `AC-17`. The deployment topology test
+will inspect the dispatcher VM's service definition and process tree, then
+confirm that its separately hosted persistent Worker has no dispatcher token
+source, to prove `INV-18` and `AC-18`.
+
 ## 11. Risks and tradeoffs
 
 - Cold starts and repeated checkout make short Jobs slower than warm Workers.
@@ -1124,6 +1384,9 @@ required by `AC-4`, `AC-5`, and `AC-10`.
   artifacts. Keep its API narrow and its deployment reproducible.
 - Polling storage adds latency and API cost. Keep bounded intervals and preserve
   room for a private callback or queue in hosted deployments.
+- Any process on the dispatcher VM can use its attached service account. Keep
+  that VM dedicated to the control plane, restrict SSH access, and run every
+  coding agent on a separate Worker or Cloud Run Job.
 - Google Cloud concepts could leak into the product. Keep them in backend
   profile setup and Attempt diagnostics, not Routine authoring vocabulary.
 
@@ -1144,6 +1407,8 @@ required by `AC-4`, `AC-5`, and `AC-10`.
 
 - Replacing SQLite orchestration with Temporal or another durable workflow
   engine.
+- Hosting `factory-server` itself on Cloud Run, GKE, or another replicated
+  platform.
 - Removing or deprecating local and VM Workers.
 - Running arbitrary untrusted repositories safely.
 - Automatic provider selection based only on price.
