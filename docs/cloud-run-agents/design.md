@@ -660,10 +660,12 @@ writes terminal success invokes a registered suspend-aware monotonic clock
 function and requires `now < deadline` together with the checks that neither
 cancellation nor timeout intent is committed. The clock uses an operating-system
 continuous-time source that includes host sleep. The deadline value is not a
-wall-clock comparison or a boolean computed before entering SQLite. If that
-atomic predicate fails, the same transaction records timeout intent instead of
-success. A stale, missing, delayed, or expired response also records timeout
-intent; prior manifest publication cannot extend the Work. Explicit
+wall-clock comparison or a boolean computed before entering SQLite. The
+serialized transaction first preserves any existing terminal, cancellation, or
+timeout owner. Only when no owner exists and the time predicate fails does it
+record timeout intent instead of success. A stale, missing, delayed, or expired
+response follows that same conditional timeout branch; it never replaces an
+existing owner. Prior manifest publication cannot extend the Work. Explicit
 cancellation checks that neither a terminal outcome nor timeout intent is
 committed and atomically records `cancellation_requested_at`. Timeout checks
 that neither a terminal outcome nor cancellation is committed and atomically
