@@ -380,8 +380,9 @@ retry instead of silently running different code.
   resolution policy. Editing a Routine or profile does not change existing
   Work.
 - Dispatch stores the Attempt ID, non-secret run ID, run-capability digest,
-  state, immutable profile version, every observed Cloud operation and
-  execution name, timestamps, error, and reconciliation deadline.
+  envelope-encrypted run-capability ciphertext, state, immutable profile
+  version, every observed Cloud operation and execution name, timestamps,
+  error, and reconciliation deadline.
 - The Job input uses the full commit SHA. Branch names and mutable tags are
   rejected.
 - Before every Run call, the dispatcher reads the Job and verifies its resource
@@ -441,7 +442,12 @@ protocol version, and absolute expiry. The Job sends the raw capability only to
 the gateway. The gateway hashes it, uses its own bucket identity to load the
 registration and authority, and never exposes list or arbitrary object
 operations. Authority revocation closes an otherwise valid registration
-immediately.
+immediately. The Job sends the capability only over TLS in an authenticated
+request body. The Job and gateway redact request bodies and authorization data,
+never place the capability in a URL, header echoed by infrastructure, metric,
+trace, error, or log. The wrapper retains the capability only for the Job
+lifetime and clears its copy on shutdown. The gateway discards its request copy
+after each operation.
 
 ### Naming and identity
 
@@ -464,6 +470,7 @@ attempt_id
 backend_profile_id
 run_id
 run_capability_digest
+run_capability_ciphertext
 state
 cloud_operation_name
 cloud_execution_name
@@ -485,12 +492,21 @@ are retained as duplicate evidence and cancelled.
 
 `attempt_id` is the Factory identity. `run_id` is random, non-secret, and
 immutable for one dispatch. It is safe for object names, events, manifests,
-logs, and diagnostic URLs. The separate raw run capability is stored only in
-the dispatcher's protected database and the active Cloud Run override; the
-artifact store keeps only `run_capability_digest`. Cloud operation and
-execution names are observations returned by Google and never replace Factory
-identity. Missing names keep the record in reconciliation; they do not
-authorize a second agent to pass the start fence.
+logs, and diagnostic URLs. Factory envelope-encrypts the separate raw run
+capability before committing the dispatch. The encryption key comes from the
+host keyring or process environment and is never stored in SQLite. The raw
+value exists transiently in dispatcher, Job wrapper, TLS request, and gateway
+memory. Cloud Run retains the raw active execution override as provider-managed
+metadata for its documented execution-retention period, so permission to
+inspect executions is restricted to the dispatcher and operators who may
+inspect model credentials. Factory never stores raw plaintext: SQLite stores
+only `run_capability_ciphertext`, and the artifact store keeps only
+`run_capability_digest`. A restart decrypts the ciphertext to retry or reconcile
+the same dispatch. A missing or invalid encryption key blocks new cloud Work,
+revokes authority, and fails active dispatches closed rather than minting a new
+capability. Cloud operation and execution names are observations returned by
+Google and never replace Factory identity. Missing names keep the record in
+reconciliation; they do not authorize a second agent to pass the start fence.
 
 ### Object layout
 
@@ -760,8 +776,9 @@ default and once through a Cloud Run manual override. They will prove
 tests will prove `INV-2` and `AC-2`, including exact-commit reuse on retry.
 
 Dispatcher tests will inject lost responses, duplicate executions, delayed
-startup, API outages, stale generations, restart, and quota failures to prove
-`INV-3`, `INV-4`, `INV-9`, `AC-3`, `AC-4`, and `AC-5`.
+startup, API outages, stale generations, restart with the encrypted capability,
+missing or invalid encryption keys, and quota failures to prove `INV-3`,
+`INV-4`, `INV-9`, `AC-3`, `AC-4`, and `AC-5`.
 
 Protocol tests will reorder, repeat, corrupt, truncate, and oversize event and
 artifact objects to prove `INV-6`, `INV-7`, `INV-8`, `AC-7`, and `AC-8`.
@@ -769,10 +786,15 @@ They will also force both SQLite transaction orderings after manifest
 verification to prove that cancellation and terminal success cannot both win.
 
 Security tests will inspect the deployed Job configuration, IAM policy, input
-metadata, structured logs, and container environment to prove `INV-10`,
-`INV-12`, `INV-13`, `AC-9`, `AC-12`, and `AC-13`. They will verify that
-repository code cannot use the Job identity to run or cancel Cloud Run
-resources or access a sibling Attempt through the gateway or storage API.
+metadata, gateway request logs and traces, structured logs, and container
+environment to prove `INV-10`, `INV-12`, `INV-13`, `AC-9`, `AC-12`, and
+`AC-13`. They will verify that raw capabilities never appear in Factory
+artifacts or telemetry, that Cloud Run execution inspection is restricted to
+the intended identities, and that repository code cannot use the Job identity
+to run or cancel Cloud Run resources or access a sibling Attempt through the
+gateway or storage API. The real-project prototype must measure how long Cloud
+Run retains completed execution overrides and feed that value into the profile
+retention and operator warning.
 
 A gated real-project integration test will build an immutable image, run one
 read-only and one patch-producing Attempt, cancel one long-running Attempt,
