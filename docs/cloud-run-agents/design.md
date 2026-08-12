@@ -438,11 +438,13 @@ retry instead of silently running different code.
   established before the Run call. The wrapper anchors the remaining duration
   to the monotonic instant recorded before the request, producing a conservative
   deadline shared by Cloud Run startup, checkout, and agent execution. At the
-  deadline it applies the ten-second process-group kill rule, records a timeout
-  outcome, and stops all gateway writes. A wrapper has no more than five minutes
-  from process start to acquire its fence and never beyond `work_deadline_at`.
-  The versioned Cloud Run Job timeout is at least the maximum Work timeout plus
-  ten seconds and is a platform safety limit, not the Work timeout.
+  deadline Factory records timeout intent in SQLite, while the wrapper applies
+  the ten-second process-group kill rule, stops all Job-originated gateway
+  writes, and exits nonzero. Gateway control-plane authority revocation remains
+  permitted. A wrapper has no more than five minutes from process start to
+  acquire its fence and never beyond `work_deadline_at`. The versioned Cloud Run
+  Job timeout is at least the maximum Work timeout plus ten seconds and is a
+  platform safety limit, not the Work timeout.
 - Event and completion sizes reuse the existing Attempt limits. Artifact size
   defaults to 64 MiB and has a 512 MiB maximum. Completion is rejected when the
   configured bound is exceeded.
@@ -671,9 +673,11 @@ the last verified monotonic deadline; there is no grace period after that
 instant. Before checkout, agent start, every external publish action exposed by
 the wrapper, and final manifest upload, it requires current matching authority.
 On expiry or cancellation it sends SIGTERM to the process group immediately,
-waits ten seconds, sends SIGKILL, and exits nonzero. Any bounded failure
-evidence must already have been uploaded while the gateway still authorized
-it; timeout does not grant a post-expiry write window.
+waits ten seconds, sends SIGKILL, stops all Job-originated gateway writes, and
+exits nonzero. Any bounded failure evidence must already have been uploaded
+while the gateway still authorized it; timeout does not grant the Job a
+post-expiry write window. This does not prevent the gateway from performing a
+control-plane authority-revocation compare-and-set requested by Factory.
 
 Factory asks the gateway to refresh authority only while the same Attempt lease
 and dispatch record remain active. Every gateway response includes server time.
@@ -926,7 +930,10 @@ retention and operator warning.
 Wrapper tests will expire the frozen Work timeout during checkout and agent
 execution, expire the five-minute pre-fence window, delay start-fence responses,
 make the process ignore SIGTERM, and delay artifact upload to prove `INV-14`
-and `AC-14` independently from the profile-wide Job timeout.
+and `AC-14` independently from the profile-wide Job timeout. After expiry they
+must observe no attempted or accepted Job-originated timeout event, final
+manifest, artifact, or other gateway write, while still permitting Factory's
+gateway authority-revocation compare-and-set.
 
 A gated real-project integration test will build an immutable image, run one
 read-only and one patch-producing Attempt, cancel one long-running Attempt,
