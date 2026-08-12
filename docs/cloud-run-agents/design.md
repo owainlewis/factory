@@ -97,14 +97,15 @@ repository identity, and execution-profile version on the cloud Target. Every
 cloud Attempt and explicit retry for that Target reuses those inputs.
 
 The embedded Cloud Run dispatcher creates an Attempt and a backend dispatch
-record in one transaction. The record contains a random run nonce and starts in
-`dispatching`. Factory writes an immutable input document and a short-lived
-authority document to cloud storage, then registers the Attempt and run nonce
-with an Attempt gateway. Factory calls one immutable, versioned Cloud Run Job
-resource with the Attempt ID and a random 256-bit run capability as bounded
-overrides. The capability is sensitive, excluded from logs, and visible only to
-identities already allowed to inspect Cloud Run executions. The prompt, model
-credential, and any cloud credential are not override values.
+record in one transaction. The record contains a random non-secret run ID and
+starts in `dispatching`. Factory writes an immutable input document and a
+short-lived authority document to cloud storage, then registers the Attempt and
+run ID with an Attempt gateway. Factory calls one immutable, versioned Cloud
+Run Job resource with the Attempt ID, run ID, and a separate random 256-bit run
+capability as bounded overrides. The capability is sensitive, excluded from
+logs, and visible only to identities already allowed to inspect Cloud Run
+executions. The prompt, model credential, and any cloud credential are not
+override values.
 
 The Job service account has no access to the artifact bucket, Cloud Run
 administration, or sibling Attempts. Its only data permission is access to the
@@ -118,7 +119,7 @@ This prevents one profile's execution from reading or corrupting a sibling
 execution. It does not prevent trusted repository code from tampering with its
 own Attempt, which is part of the initial trusted-repository boundary.
 
-The Job wrapper obtains a start fence for the Attempt and run nonce before it
+The Job wrapper obtains a start fence for the Attempt and run ID before it
 starts the agent. If a lost API response causes Factory to launch a duplicate,
 only one execution can create that fence; every duplicate exits without
 running an agent. The winning wrapper verifies the input, checks out only the
@@ -141,7 +142,7 @@ the event database.
 
 Before exit, the wrapper uploads a bounded result, Git status, checksummed
 patch or Git recovery bundle, untracked-file archive when present, model cost,
-and a final manifest. The manifest binds the Attempt ID, run nonce, exact
+and a final manifest. The manifest binds the Attempt ID, run ID, exact
 commit, canonical input digest, image digest, runtime and model, Cloud
 execution identity, and byte length and SHA-256 digest of every required
 output. It is written last. Factory rejects an object or manifest whose storage
@@ -299,9 +300,10 @@ without changing Attempt identity.
 #### Factory owns retries
 
 Cloud Run task retries are zero. Every operator retry creates a new Factory
-Attempt, run nonce, and cloud execution while reusing the original frozen Work
-input. We reject native task retries because an agent may already have made
-external side effects and Factory must preserve one visible retry history.
+Attempt, run ID, run capability, and cloud execution while reusing the original
+frozen Work input. We reject native task retries because an agent may already
+have made external side effects and Factory must preserve one visible retry
+history.
 
 #### Durable artifact replaces retained worktree
 
@@ -345,11 +347,11 @@ retry instead of silently running different code.
   provider, model, and execution-profile version before its first dispatch;
   every cloud retry reuses them.
 - `INV-3`: At most one agent process can pass the start fence for one Attempt
-  and run nonce.
+  and run ID.
 - `INV-4`: Authority expiry starts process-group shutdown immediately and the
   wrapper sends SIGKILL no later than ten seconds after expiry.
 - `INV-5`: Cloud Run task retries remain zero; Factory creates every retry.
-- `INV-6`: Event ingestion is ordered and idempotent by Attempt, run nonce,
+- `INV-6`: Event ingestion is ordered and idempotent by Attempt, run ID,
   sequence, and event ID.
 - `INV-7`: Factory accepts successful completion only after verifying the final
   manifest and every required artifact.
@@ -362,7 +364,7 @@ retry instead of silently running different code.
 - `INV-11`: Cloud and persistent backends use the same user-facing Routine,
   Work, Target, result, retry, and cancellation concepts.
 - `INV-12`: Cloud execution never weakens the loopback-only operator API.
-- `INV-13`: A Job identity and run nonce can access only its own Attempt
+- `INV-13`: A Job identity and run capability can access only its own Attempt
   protocol and cannot read or mutate a sibling Attempt.
 
 ### Requirements
@@ -377,9 +379,9 @@ retry instead of silently running different code.
   profile version, runtime, provider, model, timeout, resource class, and commit
   resolution policy. Editing a Routine or profile does not change existing
   Work.
-- Dispatch stores the Attempt ID, run nonce, state, immutable profile version,
-  every observed Cloud operation and execution name, timestamps, error, and
-  reconciliation deadline.
+- Dispatch stores the Attempt ID, non-secret run ID, run-capability digest,
+  state, immutable profile version, every observed Cloud operation and
+  execution name, timestamps, error, and reconciliation deadline.
 - The Job input uses the full commit SHA. Branch names and mutable tags are
   rejected.
 - Before every Run call, the dispatcher reads the Job and verifies its resource
@@ -434,11 +436,12 @@ versioned Job configuration.
 The dispatcher creates
 `attempts/<attempt-id>/gateway-registration.json` before launch. The immutable
 registration stores the expected Job service-account principal, SHA-256 digest
-of the run capability, exact Attempt prefix, input digest, protocol version,
-and absolute expiry. The Job sends the raw capability only to the gateway. The
-gateway hashes it, uses its own bucket identity to load the registration and
-authority, and never exposes list or arbitrary object operations. Authority
-revocation closes an otherwise valid registration immediately.
+of the run capability, non-secret run ID, exact Attempt prefix, input digest,
+protocol version, and absolute expiry. The Job sends the raw capability only to
+the gateway. The gateway hashes it, uses its own bucket identity to load the
+registration and authority, and never exposes list or arbitrary object
+operations. Authority revocation closes an otherwise valid registration
+immediately.
 
 ### Naming and identity
 
@@ -450,7 +453,7 @@ at the frozen old profile and synthetic Worker record.
 
 The synthetic Worker cannot authenticate to the Worker HTTP API and cannot be
 claimed by an external process. The dispatcher uses an internal store
-transaction to create its Attempt and lease. Attempt and run nonce identify the
+transaction to create its Attempt and lease. Attempt and run ID identify the
 dispatch protocol; the Google operation name, execution name, and image digest
 are immutable external observations after they become known.
 
@@ -459,7 +462,8 @@ are immutable external observations after they become known.
 ```text
 attempt_id
 backend_profile_id
-run_nonce
+run_id
+run_capability_digest
 state
 cloud_operation_name
 cloud_execution_name
@@ -479,19 +483,20 @@ override digest, state, and duplicate disposition. The winning execution name
 is set only from the create-only start fence. All other matching executions
 are retained as duplicate evidence and cancelled.
 
-`attempt_id` is the Factory identity. `run_nonce` is random and immutable for
-one dispatch. It is also the short-lived run capability described above and is
-stored in raw form only in the dispatcher's protected database and the active
-Cloud Run override; the artifact store keeps only its digest. Cloud operation
-and execution names are observations returned by Google and never replace
-Factory identity. Missing names keep the record in reconciliation; they do not
+`attempt_id` is the Factory identity. `run_id` is random, non-secret, and
+immutable for one dispatch. It is safe for object names, events, manifests,
+logs, and diagnostic URLs. The separate raw run capability is stored only in
+the dispatcher's protected database and the active Cloud Run override; the
+artifact store keeps only `run_capability_digest`. Cloud operation and
+execution names are observations returned by Google and never replace Factory
+identity. Missing names keep the record in reconciliation; they do not
 authorize a second agent to pass the start fence.
 
 ### Object layout
 
 ```text
 attempts/<attempt-id>/gateway-registration.json
-attempts/<attempt-id>/<run-nonce>/
+attempts/<attempt-id>/<run-id>/
   input.json
   authority.json
   started.json
@@ -524,7 +529,7 @@ themselves.
 
 | Factory dispatch state | Required evidence | Allowed next states |
 | --- | --- | --- |
-| `dispatching` | Committed Attempt, run nonce, immutable input | `starting`, `cancel_requested`, `terminal` |
+| `dispatching` | Committed Attempt, run ID, immutable input | `starting`, `cancel_requested`, `terminal` |
 | `starting` | Accepted Run operation or matching start fence | `running`, `reconciling`, `cancel_requested`, `terminal` |
 | `running` | Matching start fence and valid authority generation | `reconciling`, `cancel_requested`, `terminal` |
 | `reconciling` | Incomplete or conflicting cloud observation | `starting`, `running`, `cancel_requested`, `terminal` |
@@ -532,21 +537,21 @@ themselves.
 | `terminal` | One stored Factory outcome | none |
 
 Before every external side effect, the dispatcher commits the intended state
-and immutable run nonce. A crash before the Run call leaves `dispatching` and
-may safely retry the same nonce. A crash after Google accepts the call but
-before its response leaves `dispatching`. Reconciliation pages every execution
-of the frozen Job version created since the recorded dispatch start, inspects
-its effective environment overrides, and persists every execution carrying the
-exact Attempt ID and run nonce before another Run call is allowed. Another call
-may still create a duplicate container. Every
-container must create the exact `started.json` object with
+and immutable run ID. A crash before the Run call leaves `dispatching` and may
+safely retry the same run ID and capability. A crash after Google accepts the
+call but before its response leaves `dispatching`. Reconciliation pages every
+execution of the frozen Job version created since the recorded dispatch start,
+inspects its effective environment overrides, and persists every execution
+carrying the exact Attempt ID and run ID before another Run call is allowed.
+Another call may still create a duplicate container. Every container must
+create the exact `started.json` object with
 `ifGenerationMatch=0` before checkout, model calls, Git writes, or external tool
-use. A fence winner whose Attempt, nonce, input digest, or authority is stale
+use. A fence winner whose Attempt, run ID, input digest, or authority is stale
 exits nonzero. A fence loser exits zero without running the agent.
 
 Cloud Run execution names are provider-assigned and cannot be deterministic.
-The Factory Attempt and run nonce provide deterministic dispatch identity.
-Factory stores every operation or execution name observed for that nonce
+The Factory Attempt and run ID provide deterministic dispatch identity.
+Factory stores every operation or execution name observed for that run ID
 immutably. The `started.json` winner names its `CLOUD_RUN_EXECUTION`; additional
 names are duplicate evidence and are cancelled. They never replace the winning
 identity. The prototype must prove that the v2 execution-list response exposes
@@ -562,9 +567,9 @@ stored outcome always wins.
 ### Authority lease protocol
 
 The dispatcher is the single authority writer. `authority.json` contains the
-Attempt ID, run nonce, monotonically increasing revision, input digest,
-`valid_until`, cancellation flag, and previous object generation. Each refresh
-uses GCS `ifGenerationMatch` against the generation Factory last stored. A
+Attempt ID, run ID, run-capability digest, monotonically increasing revision,
+input digest, `valid_until`, cancellation flag, and previous object generation.
+Each refresh uses GCS `ifGenerationMatch` against the generation Factory last stored. A
 precondition failure moves the dispatch to `reconciling`, stops refresh, and
 revokes the Attempt because another writer or stale state exists.
 
@@ -605,11 +610,12 @@ dispatch deadline. No Cloud Job starts. Reaching the deadline fails the Attempt
 with an actionable storage or permission error.
 
 If the Run API accepts a request but its response is lost, Factory keeps the
-same run nonce and enumerates matching executions as specified in section 6.
-It persists and supervises the complete matching set. A repeated API call may
-create another container, but only the execution that creates `started.json`
-can launch the agent. Other executions exit successfully without agent side
-effects, are recorded as duplicates, and are cancelled if they remain active.
+same run ID and capability and enumerates matching executions as specified in
+section 6. It persists and supervises the complete matching set. A repeated API
+call may create another container, but only the execution that creates
+`started.json` can launch the agent. Other executions exit successfully without
+agent side effects, are recorded as duplicates, and are cancelled if they
+remain active.
 
 If container startup exceeds 30 seconds, the dispatcher continues renewing the
 Factory lease and cloud authority while the execution is starting. The Job
@@ -716,7 +722,7 @@ Cloud Logging retention are diagnostic and are never the only retained record.
 - `AC-2`: A cloud Attempt runs the frozen full commit and rejects a mutable or
   mismatched Git reference.
 - `AC-3`: A lost launch response or duplicate execution starts at most one
-  agent process for the Attempt and run nonce.
+  agent process for the Attempt and run ID.
 - `AC-4`: After Factory commits cancellation, it revokes authority within five
   seconds; a healthy wrapper stops the agent within 15 more seconds, requests
   Cloud Run cancellation, and reaches a stable cancelled outcome. Controller
