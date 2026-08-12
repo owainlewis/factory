@@ -100,7 +100,10 @@ The embedded Cloud Run dispatcher creates an Attempt and a backend dispatch
 record in one transaction. The record contains a random non-secret run ID and
 starts in `dispatching`. Factory writes the immutable input and gateway
 registration, then asks the gateway to create the initial short-lived authority
-document using the gateway clock and an object-generation precondition. Factory
+document using the gateway clock and an object-generation precondition. That
+response also fixes `work_started_at` to gateway server time and
+`work_deadline_at` to `work_started_at + timeout_seconds`; both are persisted in
+the dispatch before the Run call and bound into the authority object. Factory
 calls one immutable, versioned Cloud Run Job resource with the Attempt ID, run
 ID, and a separate random 256-bit run capability as bounded overrides. The
 capability is sensitive, excluded from logs, and visible only to identities
@@ -119,14 +122,16 @@ This prevents one profile's execution from reading or corrupting a sibling
 execution. It does not prevent trusted repository code from tampering with its
 own Attempt, which is part of the initial trusted-repository boundary.
 
-The Job wrapper starts a five-minute monotonic pre-fence timer when its process
-starts and exits without an agent if that timer expires. It records local
-monotonic time immediately before requesting the Attempt and run-ID start fence.
+The Job wrapper starts a monotonic pre-fence timer when its process starts and
+sets it to the smaller of five minutes and the trusted remaining Work duration.
+It exits without an agent if that timer expires. It records local monotonic time
+immediately before requesting the Attempt and run-ID start fence.
 If a lost API response causes Factory to launch a duplicate, only one execution
 can create that fence; every duplicate exits without running an agent. The
-successful response includes gateway server time. The wrapper anchors the
-frozen Work duration to the earlier pre-request monotonic instant, so response
-delay can shorten but never extend the deadline. The winning wrapper verifies
+successful response includes gateway server time and the persisted
+`work_deadline_at`. The wrapper anchors `work_deadline_at - server_time` to the
+earlier pre-request monotonic instant, so Cloud Run startup and response delay
+consume rather than extend the frozen Work timeout. The winning wrapper verifies
 the input, checks out only the frozen commit, and starts the selected runtime in
 the checkout. Checkout and agent execution share that deadline. After it
 expires, the wrapper has at most 60 seconds to kill the process group and
@@ -135,10 +140,11 @@ repository tool actions.
 
 The dispatcher requests an authority refresh every ten seconds while it owns
 the Attempt. The gateway performs the conditional write and computes
-`valid_until` from its own server clock. The wrapper checks authority before
-agent launch and at most every five seconds while the process runs. An expired,
-cancelled, mismatched, or timed-out Attempt starts shutdown of the runtime
-process group. This preserves
+`valid_until` as the earlier of 30 seconds from its own server clock and the
+frozen Work deadline. The wrapper checks authority before agent launch and at
+most every five seconds while the process runs. An expired, cancelled,
+mismatched, or timed-out Attempt starts shutdown of the runtime process group.
+This preserves
 fail-closed lease behavior without making the local Factory API reachable from
 the internet.
 Cloud execution therefore depends on one continuously running Factory control
@@ -377,7 +383,9 @@ retry instead of silently running different code.
 - `INV-12`: Cloud execution never weakens the loopback-only operator API.
 - `INV-13`: A Job identity and run capability can access only its own Attempt
   protocol and cannot read or mutate a sibling Attempt.
-- `INV-14`: The wrapper starts process-group shutdown at the frozen Work
+- `INV-14`: The gateway refuses to start an agent at or after the frozen Work
+  deadline. Factory times out and cancels an accepted execution that has not
+  started by then. A running wrapper starts process-group shutdown at the same
   deadline and sends SIGKILL no later than ten seconds afterward, independent
   of the longer profile or Cloud Run Job timeout.
 
@@ -396,7 +404,8 @@ retry instead of silently running different code.
 - Dispatch stores the Attempt ID, non-secret run ID, run-capability digest,
   envelope-encrypted run-capability ciphertext, state, immutable profile
   version, every observed Cloud operation and execution name, timestamps,
-  error, and reconciliation deadline.
+  gateway-derived `work_started_at` and `work_deadline_at`, error, and
+  reconciliation deadline.
 - The Job input uses the full commit SHA. Branch names and mutable tags are
   rejected.
 - Before every Run call, the dispatcher reads the Job and verifies its resource
@@ -414,14 +423,16 @@ retry instead of silently running different code.
 - The wrapper checks authority at most five seconds apart. Authority remains
   valid for no more than 30 seconds without a dispatcher refresh.
 - The immutable input includes `timeout_seconds`. The gateway start-fence
-  response supplies trusted server time. The wrapper anchors the frozen duration
+  response supplies trusted server time and the persisted `work_deadline_at`
+  established before the Run call. The wrapper anchors the remaining duration
   to the monotonic instant recorded before the request, producing a conservative
-  deadline shared by checkout and agent execution. At the deadline it applies
-  the ten-second process-group kill rule, records a timeout outcome, and permits
-  at most 60 seconds for bounded failure-evidence upload with no live agent. A
-  wrapper has at most five minutes from process start to acquire its fence. The
-  versioned Cloud Run Job timeout is at least five minutes plus the maximum Work
-  timeout plus 70 seconds and is a platform safety limit, not the Work timeout.
+  deadline shared by Cloud Run startup, checkout, and agent execution. At the
+  deadline it applies the ten-second process-group kill rule, records a timeout
+  outcome, and permits at most 60 seconds for bounded failure-evidence upload
+  with no live agent. A wrapper has no more than five minutes from process start
+  to acquire its fence and never beyond `work_deadline_at`. The versioned Cloud
+  Run Job timeout is at least the maximum Work timeout plus 70 seconds and is a
+  platform safety limit, not the Work timeout.
 - Event and completion sizes reuse the existing Attempt limits. Artifact size
   defaults to 64 MiB and has a 512 MiB maximum. Completion is rejected when the
   configured bound is exceeded.
@@ -495,6 +506,8 @@ run_id
 run_capability_digest
 run_capability_ciphertext
 state
+work_started_at
+work_deadline_at
 cloud_operation_name
 cloud_execution_name
 image_digest
@@ -569,7 +582,7 @@ themselves.
 | Factory dispatch state | Required evidence | Allowed next states |
 | --- | --- | --- |
 | `dispatching` | Committed Attempt, run ID, immutable input | `starting`, `cancel_requested`, `terminal` |
-| `starting` | Accepted Run operation or matching start fence | `running`, `reconciling`, `cancel_requested`, `terminal` |
+| `starting` | Accepted Run operation or matching start fence, before `work_deadline_at` | `running`, `reconciling`, `cancel_requested`, `terminal` |
 | `running` | Matching start fence and valid authority generation | `reconciling`, `cancel_requested`, `terminal` |
 | `reconciling` | Incomplete or conflicting cloud observation | `starting`, `running`, `cancel_requested`, `terminal` |
 | `cancel_requested` | Durable cancellation time and revoked authority | `terminal` |
@@ -611,13 +624,15 @@ is idempotent and the stored outcome always wins.
 The dispatcher is the sole authority decision-maker, and the gateway is the
 sole physical authority-object writer. `authority.json` contains the Attempt
 ID, run ID, run-capability digest, monotonically increasing revision, input
-digest, `valid_until`, cancellation flag, and previous object generation. An
-authenticated refresh request contains the expected generation and desired
-cancellation state, but no caller-supplied time. The gateway computes
-`valid_until` as 30 seconds after its own server time and writes with GCS
-`ifGenerationMatch`. A precondition failure moves the dispatch to
-`reconciling`, stops refresh, and revokes the Attempt because another writer or
-stale state exists.
+digest, `work_deadline_at`, `valid_until`, cancellation flag, and previous
+object generation. An authenticated refresh request contains the expected
+generation and desired cancellation state, but no caller-supplied time. The
+gateway computes `valid_until` as the earlier of 30 seconds after its own server
+time and `work_deadline_at`, then writes with GCS `ifGenerationMatch`. At or
+after `work_deadline_at`, it refuses refresh and start-fence requests and
+conditionally revokes any remaining authority. A precondition failure moves
+the dispatch to `reconciling`, stops refresh, and revokes the Attempt because
+another writer or stale state exists.
 
 Every refresh and authority-read response returns the gateway server time,
 `valid_until`, revision, and object generation from one operation. The wrapper
@@ -635,12 +650,18 @@ waits ten seconds, sends SIGKILL, uploads only bounded failure evidence while
 the gateway still authorizes it, and exits nonzero.
 
 Factory asks the gateway to refresh authority only while the same Attempt lease
-and dispatch record remain active. The gateway performs every initial,
-refresh, and revocation authority-object write using its clock and generation
-precondition. A server shutdown, dispatcher crash, SQLite ownership loss, GCS
-generation conflict, or inability to prove state stops refresh. The first-release
-availability contract is explicit: a continuously available Factory controller
-is required for a continuously running Cloud Job.
+and dispatch record remain active. Every gateway response includes server time.
+During dispatch and reconciliation, Factory uses that time to determine whether
+an accepted execution is still before `work_deadline_at`; it never uses its own
+wall clock to extend the Work. Once gateway time reaches the deadline, Factory
+stops refresh, records the same timed-out failure used by the persistent
+backend, and requests Cloud Run cancellation even when no start fence exists.
+The gateway performs every initial, refresh, and revocation authority-object
+write using its clock and generation precondition. A server shutdown,
+dispatcher crash, SQLite ownership loss, GCS generation conflict, or inability
+to prove state stops refresh. The first-release availability contract is
+explicit: a continuously available Factory controller is required for a
+continuously running Cloud Job.
 
 After Factory commits explicit cancellation, it asks the gateway to revoke
 authority with one conditional write. A healthy wrapper observes that
@@ -669,8 +690,12 @@ agent side effects, are recorded as duplicates, and are cancelled if they
 remain active.
 
 If container startup exceeds 30 seconds, the dispatcher continues renewing the
-Factory lease and cloud authority while the execution is starting. The Job
-checks authority before starting the runtime.
+Factory lease and cloud authority only while gateway time remains before the
+persisted `work_deadline_at`. The gateway caps every authority lease at that
+deadline. When the deadline arrives, Factory records a timed-out failure and
+requests Cloud Run cancellation even if the container has not started. A
+container that starts late cannot acquire the start fence or valid authority
+and exits without checkout or an agent process.
 
 If the frozen Work timeout expires during checkout or agent execution, the
 wrapper sends SIGTERM immediately and SIGKILL after ten seconds. It emits a
@@ -806,9 +831,11 @@ Cloud Logging retention are diagnostic and are never the only retained record.
   sandbox.
 - `AC-13`: Two concurrent Attempts using one profile cannot read, overwrite,
   fence, publish, or cancel each other's protocol data.
-- `AC-14`: A cloud Attempt that reaches its frozen Work timeout starts agent
-  shutdown immediately, kills the process group within ten seconds, publishes
-  no success, and cannot continue until the profile-wide Job timeout.
+- `AC-14`: Cloud Run startup, checkout, and agent execution share one frozen
+  Work timeout established before the Run call. At its deadline Factory times
+  out and cancels an accepted but unstarted execution, the gateway rejects a
+  late start fence, and a running wrapper starts agent shutdown immediately,
+  kills the process group within ten seconds, and publishes no success.
 
 ## 10. Test approach
 
@@ -821,9 +848,11 @@ Dispatcher tests will inject lost responses, duplicate executions, delayed
 startup, API outages, stale generations, restart with the encrypted capability,
 missing or invalid encryption keys, Factory clocks ahead of and behind the
 gateway, delayed gateway responses, and quota failures to prove `INV-3`,
-`INV-4`, `INV-9`, `AC-3`, `AC-4`, and `AC-5`. Delay tests anchor timers to the
-pre-request monotonic instant and prove response transit cannot extend Work or
-authority deadlines.
+`INV-4`, `INV-9`, `AC-3`, `AC-4`, and `AC-5`. A container-start delay beyond
+`work_deadline_at` must produce a timed-out Attempt, a Cloud Run cancellation
+request, no successful start fence, and no authority refresh beyond the
+deadline. Delay tests anchor timers to the pre-request monotonic instant and
+prove startup and response transit cannot extend Work or authority deadlines.
 
 Protocol tests will reorder, repeat, corrupt, truncate, and oversize event and
 artifact objects to prove `INV-6`, `INV-7`, `INV-8`, `AC-7`, and `AC-8`.
