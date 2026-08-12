@@ -267,12 +267,20 @@ records, Cloud Run API calls, Attempt lease renewal, authority refresh,
 event ingestion, artifact verification, cancellation, and restart
 reconciliation. It does not run an agent or make Cloud Run state authoritative.
 
-The Attempt gateway is a narrow authenticated Cloud Run service. It maps one
-Job identity plus one random run capability to one active Attempt and exposes only
-input read, authority read, conditional start-fence creation, bounded event
-append, and bounded output publication. Its service account, not the Job
-service account, accesses the artifact bucket. It rejects unknown, expired,
-terminal, mismatched, cross-prefix, conflicting, and oversized operations.
+The Attempt gateway is a narrow authenticated Cloud Run service with separate
+Job and dispatcher surfaces. The Job surface maps one Job identity plus one
+random run capability to one active Attempt and exposes only input read,
+authority read, conditional start-fence creation, bounded event append, and
+bounded output publication. The dispatcher surface authenticates Factory's
+dedicated dispatcher service identity and exposes only initial-authority
+creation, conditional authority refresh, conditional revocation, and trusted
+gateway-time and authority-status reads for the named Attempt and run ID. Job
+identities cannot invoke dispatcher operations, and dispatcher credentials are
+never present in the Job. Every authority mutation requires the expected object
+generation and an active matching dispatch registration. The gateway service
+account, not the Job service account, accesses the artifact bucket. It rejects
+unknown, expired, terminal, mismatched, cross-prefix, conflicting, and oversized
+operations.
 
 The Job wrapper is the trusted container entrypoint. It owns input validation,
 the start fence, exact checkout, runtime supervision, authority checks, event
@@ -817,9 +825,11 @@ granted to the Job service account, and use permitted network egress.
 
 Each trust tier uses dedicated dispatcher, gateway, and Job service accounts
 and preferably a separate Google Cloud project. The dispatcher can run the
-versioned Job and manage its executions. The gateway can access only the
-artifact bucket. The Job can invoke only the gateway and read its dedicated
-model-secret resource, which has one enabled pinned version. It receives no
+versioned Job, manage its executions, and invoke only the gateway's dispatcher
+authority surface. The gateway validates the exact dispatcher principal and can
+access only the artifact bucket. The Job can invoke only the gateway's Job
+surface and read its dedicated model-secret resource, which has one enabled
+pinned version. It receives no
 artifact-store permission, Cloud Run administration, project editor, or
 Factory control-plane credential.
 Repository credentials are short-lived and scoped to one repository when

@@ -18,10 +18,11 @@ VMs.
 
 Factory starts with coding agents on machines you control and is intended to
 scale to elastic cloud execution without rewriting a Routine or splitting its
-Work history. Existing Routines remain persistent by default; a manual run can
-select a compatible elastic profile. Persistent local and VM Workers remain
-the rich path for subscription authentication, warm repository caches, and
-inspectable worktrees. A proposed
+Work history. Existing Routines remain persistent by default. Once the proposed
+cloud backend is implemented, a manual run will be able to select a compatible
+elastic profile. Persistent local and VM Workers remain the rich path for
+subscription authentication, warm repository caches, and inspectable
+worktrees. A proposed
 Cloud Run backend adds disposable, API-backed agent containers for bursty and
 parallel Work. Read the
 [Cloud Run agent backend design](docs/cloud-run-agents/design.md) for the
