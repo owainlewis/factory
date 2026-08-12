@@ -104,6 +104,10 @@ document using the gateway clock and an object-generation precondition. That
 response also fixes `work_started_at` to gateway server time and
 `work_deadline_at` to `work_started_at + timeout_seconds`; both are persisted in
 the dispatch before the Run call and bound into the authority object. Factory
+records local monotonic time immediately before that gateway request and
+anchors the returned remaining Work duration to the earlier instant. That
+conservative monotonic deadline drives the live dispatcher even if later
+gateway responses are delayed or unavailable. Factory
 calls one immutable, versioned Cloud Run Job resource with the Attempt ID, run
 ID, and a separate random 256-bit run capability as bounded overrides. The
 capability is sensitive, excluded from logs, and visible only to identities
@@ -127,16 +131,19 @@ sets it to the smaller of five minutes and the trusted remaining Work duration.
 It exits without an agent if that timer expires. It records local monotonic time
 immediately before requesting the Attempt and run-ID start fence.
 If a lost API response causes Factory to launch a duplicate, only one execution
-can create that fence; every duplicate exits without running an agent. The
-successful response includes gateway server time and the persisted
+can win that fence; every duplicate exits without running an agent. The gateway
+serializes the fence and revocation through a conditional authority-object
+update, then publishes `started.json` as immutable evidence. The successful
+response includes gateway server time and the persisted
 `work_deadline_at`. The wrapper anchors `work_deadline_at - server_time` to the
 earlier pre-request monotonic instant, so Cloud Run startup and response delay
 consume rather than extend the frozen Work timeout. The winning wrapper verifies
 the input, checks out only the frozen commit, and starts the selected runtime in
 the checkout. Checkout and agent execution share that deadline. After it
-expires, the wrapper has at most 60 seconds to kill the process group and
-publish bounded timeout evidence; it cannot restart the agent or perform
-repository tool actions.
+expires, the wrapper kills the process group and exits nonzero. It cannot
+publish new evidence, restart the agent, or perform repository tool actions.
+Factory's durable timeout record is authoritative and may reference only
+bounded evidence uploaded before authority expired.
 
 The dispatcher requests an authority refresh every ten seconds while it owns
 the Attempt. The gateway performs the conditional write and computes
@@ -372,8 +379,10 @@ retry instead of silently running different code.
   sequence, and event ID.
 - `INV-7`: Factory accepts successful completion only after verifying the final
   manifest and every required artifact.
-- `INV-8`: Cancellation committed before terminal success cannot become
-  succeeded because of prior artifact ingestion or a late cloud result.
+- `INV-8`: Cancellation or timeout intent committed before terminal success
+  cannot become succeeded because of prior artifact ingestion or a late cloud
+  result. The first committed success, cancellation, or timeout intent owns the
+  outcome.
 - `INV-9`: A control-plane restart can identify, reconcile, and either resume
   supervision or cancel every nonterminal cloud execution.
 - `INV-10`: The Job receives no operator API credential or broad cloud
@@ -411,8 +420,10 @@ retry instead of silently running different code.
 - Before every Run call, the dispatcher reads the Job and verifies its resource
   name, template digest, image digest, service account, model-secret resource
   and version, task count of one, and native retry count of zero against the
-  frozen profile version. Drift blocks dispatch. The wrapper repeats the
-  verifiable checks and binds the effective values into its final manifest.
+  frozen profile version. It also requires current authority and a conservative
+  monotonic Work deadline that has not expired. Drift or expiry blocks dispatch.
+  The wrapper repeats the verifiable checks and binds the effective values into
+  its final manifest.
 - Dispatch and reconciliation respect the profile capacity and Google Cloud
   API, CPU, memory, and execution quotas. Quota pressure leaves work queued or
   blocked with an actionable reason; it does not create extra executions.
@@ -428,11 +439,10 @@ retry instead of silently running different code.
   to the monotonic instant recorded before the request, producing a conservative
   deadline shared by Cloud Run startup, checkout, and agent execution. At the
   deadline it applies the ten-second process-group kill rule, records a timeout
-  outcome, and permits at most 60 seconds for bounded failure-evidence upload
-  with no live agent. A wrapper has no more than five minutes from process start
-  to acquire its fence and never beyond `work_deadline_at`. The versioned Cloud
-  Run Job timeout is at least the maximum Work timeout plus 70 seconds and is a
-  platform safety limit, not the Work timeout.
+  outcome, and stops all gateway writes. A wrapper has no more than five minutes
+  from process start to acquire its fence and never beyond `work_deadline_at`.
+  The versioned Cloud Run Job timeout is at least the maximum Work timeout plus
+  ten seconds and is a platform safety limit, not the Work timeout.
 - Event and completion sizes reuse the existing Attempt limits. Artifact size
   defaults to 64 MiB and has a 512 MiB maximum. Completion is rejected when the
   configured bound is exceeded.
@@ -472,16 +482,18 @@ The dispatcher creates
 `attempts/<attempt-id>/gateway-registration.json` before launch. The immutable
 registration stores the expected Job service-account principal, SHA-256 digest
 of the run capability, non-secret run ID, exact Attempt prefix, input digest,
-protocol version, and absolute expiry. The Job sends the raw capability only to
-the gateway. The gateway hashes it, uses its own bucket identity to load the
-registration and authority, and never exposes list or arbitrary object
-operations. Authority revocation closes an otherwise valid registration
-immediately. The Job sends the capability only over TLS in an authenticated
-request body. The Job and gateway redact request bodies and authorization data,
-never place the capability in a URL, header echoed by infrastructure, metric,
-trace, error, or log. The wrapper retains the capability only for the Job
-lifetime and clears its copy on shutdown. The gateway discards its request copy
-after each operation.
+frozen `timeout_seconds`, protocol version, and absolute registration expiry.
+The gateway uses that registered duration and its own server time to establish
+`work_started_at` and `work_deadline_at`; neither the Job nor a later refresh can
+change them. The Job sends the raw capability only to the gateway. The gateway
+hashes it, uses its own bucket identity to load the registration and authority,
+and never exposes list or arbitrary object operations. Authority revocation
+closes an otherwise valid registration immediately. The Job sends the
+capability only over TLS in an authenticated request body. The Job and gateway
+redact request bodies and authorization data, never place the capability in a
+URL, header echoed by infrastructure, metric, trace, error, or log. The wrapper
+retains the capability only for the Job lifetime and clears its copy on
+shutdown. The gateway discards its request copy after each operation.
 
 ### Naming and identity
 
@@ -568,10 +580,10 @@ is published last.
 ### Dispatch states
 
 The internal dispatch states are `dispatching`, `starting`, `running`,
-`cancel_requested`, `reconciling`, and `terminal`. They map onto the existing
-Attempt states and remain internal. A transient Google API failure moves a
-record to `reconciling`; it does not invent a second Attempt or user-facing
-lifecycle.
+`timeout_requested`, `cancel_requested`, `reconciling`, and `terminal`. They map
+onto the existing Attempt states and remain internal. A transient Google API
+failure moves a record to `reconciling`; it does not invent a second Attempt or
+user-facing lifecycle.
 
 ### Normative state machine
 
@@ -581,10 +593,11 @@ themselves.
 
 | Factory dispatch state | Required evidence | Allowed next states |
 | --- | --- | --- |
-| `dispatching` | Committed Attempt, run ID, immutable input | `starting`, `cancel_requested`, `terminal` |
-| `starting` | Accepted Run operation or matching start fence, before `work_deadline_at` | `running`, `reconciling`, `cancel_requested`, `terminal` |
-| `running` | Matching start fence and valid authority generation | `reconciling`, `cancel_requested`, `terminal` |
-| `reconciling` | Incomplete or conflicting cloud observation | `starting`, `running`, `cancel_requested`, `terminal` |
+| `dispatching` | Committed Attempt, run ID, immutable input; after authority creation, an unexpired monotonic Work deadline | `starting`, `timeout_requested`, `cancel_requested`, `terminal` |
+| `starting` | Accepted Run operation or matching start fence, before `work_deadline_at` | `running`, `reconciling`, `timeout_requested`, `cancel_requested`, `terminal` |
+| `running` | Matching start fence and valid authority generation | `reconciling`, `timeout_requested`, `cancel_requested`, `terminal` |
+| `reconciling` | Incomplete or conflicting cloud observation; an unexpired Work deadline before returning to `starting` or `running` | `starting`, `running`, `timeout_requested`, `cancel_requested`, `terminal` |
+| `timeout_requested` | Expired conservative monotonic Work deadline; refresh and Run calls disabled | `terminal` after confirmed authority revocation or absolute gateway deadline |
 | `cancel_requested` | Durable cancellation time and revoked authority | `terminal` |
 | `terminal` | One stored Factory outcome | none |
 
@@ -595,11 +608,15 @@ call but before its response leaves `dispatching`. Reconciliation pages every
 execution of the frozen Job version created since the recorded dispatch start,
 inspects its effective environment overrides, and persists every execution
 carrying the exact Attempt ID and run ID before another Run call is allowed.
-Another call may still create a duplicate container. Every container must
-create the exact `started.json` object with
-`ifGenerationMatch=0` before checkout, model calls, Git writes, or external tool
-use. A fence winner whose Attempt, run ID, input digest, or authority is stale
-exits nonzero. A fence loser exits zero without running the agent.
+Another call may still create a duplicate container. Before checkout, model
+calls, Git writes, or external tool use, every container asks the gateway for
+the start fence. The gateway conditionally updates `authority.json` with the
+winning execution identity and then creates the exact `started.json` object
+with `ifGenerationMatch=0`. A retry after a failure between those writes
+completes the same winner's immutable evidence. Revocation and start-fence
+authority updates use the same generation compare-and-swap, so their order is
+unambiguous. A fence winner whose Attempt, run ID, input digest, or authority is
+stale exits nonzero. A fence loser exits zero without running the agent.
 
 Cloud Run execution names are provider-assigned and cannot be deterministic.
 The Factory Attempt and run ID provide deterministic dispatch identity.
@@ -610,29 +627,37 @@ identity. The prototype must prove that the v2 execution-list response exposes
 the effective overrides needed for this search. If it does not, durable launch
 is blocked until the design supplies another discoverable correlation key.
 
-Artifact ingestion and verification do not decide the cancellation race. The
-successful-completion transaction loads the verified manifest evidence, checks
-that no cancellation is committed, and writes the terminal success atomically.
-The cancellation transaction checks that no terminal outcome is committed and
-atomically records `cancellation_requested_at`. SQLite serialization makes one
-of those transactions the first durable Factory decision. Once cancellation is
-committed, no later cloud success can change the outcome. Terminal completion
-is idempotent and the stored outcome always wins.
+Artifact ingestion and verification do not decide the terminal race. Three
+SQLite transactions compete. Successful completion loads the verified manifest
+evidence, checks that neither cancellation nor timeout intent is committed, and
+writes terminal success atomically. Explicit cancellation checks that neither a
+terminal outcome nor timeout intent is committed and atomically records
+`cancellation_requested_at`. Timeout checks that neither a terminal outcome nor
+cancellation is committed and atomically records `timeout_requested_at` and the
+`timeout_requested` dispatch state. SQLite serialization makes one transaction
+the first durable Factory decision. If timeout intent wins, a later explicit
+cancel may accelerate the same gateway revocation and Cloud Run cleanup but
+cannot change the eventual timed-out outcome. If cancellation wins, later
+timeout observation cannot replace cancelled. If success wins, neither signal
+can replace succeeded. Terminal completion is idempotent and the stored outcome
+always wins.
 
 ### Authority lease protocol
 
 The dispatcher is the sole authority decision-maker, and the gateway is the
 sole physical authority-object writer. `authority.json` contains the Attempt
 ID, run ID, run-capability digest, monotonically increasing revision, input
-digest, `work_deadline_at`, `valid_until`, cancellation flag, and previous
-object generation. An authenticated refresh request contains the expected
-generation and desired cancellation state, but no caller-supplied time. The
+digest, `work_deadline_at`, `valid_until`, winning execution identity when
+fenced, revocation reason, and previous object generation. An authenticated
+refresh request contains the expected generation and desired revocation state,
+but no caller-supplied time. The
 gateway computes `valid_until` as the earlier of 30 seconds after its own server
 time and `work_deadline_at`, then writes with GCS `ifGenerationMatch`. At or
 after `work_deadline_at`, it refuses refresh and start-fence requests and
 conditionally revokes any remaining authority. A precondition failure moves
-the dispatch to `reconciling`, stops refresh, and revokes the Attempt because
-another writer or stale state exists.
+the dispatch to `reconciling` and stops refresh because another writer or stale
+state exists. A timeout or cancellation revocation then reads the new generation
+and retries until revocation is confirmed or the absolute deadline has arrived.
 
 Every refresh and authority-read response returns the gateway server time,
 `valid_until`, revision, and object generation from one operation. The wrapper
@@ -646,16 +671,29 @@ the last verified monotonic deadline; there is no grace period after that
 instant. Before checkout, agent start, every external publish action exposed by
 the wrapper, and final manifest upload, it requires current matching authority.
 On expiry or cancellation it sends SIGTERM to the process group immediately,
-waits ten seconds, sends SIGKILL, uploads only bounded failure evidence while
-the gateway still authorizes it, and exits nonzero.
+waits ten seconds, sends SIGKILL, and exits nonzero. Any bounded failure
+evidence must already have been uploaded while the gateway still authorized
+it; timeout does not grant a post-expiry write window.
 
 Factory asks the gateway to refresh authority only while the same Attempt lease
 and dispatch record remain active. Every gateway response includes server time.
-During dispatch and reconciliation, Factory uses that time to determine whether
-an accepted execution is still before `work_deadline_at`; it never uses its own
-wall clock to extend the Work. Once gateway time reaches the deadline, Factory
-stops refresh, records the same timed-out failure used by the persistent
-backend, and requests Cloud Run cancellation even when no start fence exists.
+Factory records local monotonic time immediately before every request and
+anchors `work_deadline_at - server_time` to that earlier instant. During
+dispatch and reconciliation, the shortest such monotonic deadline determines
+whether an accepted execution may continue; neither Factory wall time nor a
+delayed response can extend the Work. Once that deadline arrives, Factory stops
+refresh and Run calls, atomically records `timeout_requested`, and asks the
+gateway to revoke authority even when no start fence exists. Fence and
+revocation requests compete through the same authority generation. On a
+generation conflict, Factory reads the new generation and retries revocation;
+it never refreshes authority. Only confirmed revocation, or a gateway response
+showing that the absolute deadline has arrived, permits Factory to commit the
+terminal timed-out failure. It then requests Cloud Run cancellation as platform
+cleanup. Therefore no container can acquire a valid fence after Factory records
+the terminal timeout. After a Factory restart, no refresh or Run retry is
+allowed until a fresh gateway response establishes a new conservative
+monotonic deadline. Failure to obtain one leaves the execution without authority
+and fails closed through reconciliation rather than reviving it.
 The gateway performs every initial, refresh, and revocation authority-object
 write using its clock and generation precondition. A server shutdown,
 dispatcher crash, SQLite ownership loss, GCS generation conflict, or inability
@@ -684,25 +722,27 @@ with an actionable storage or permission error.
 If the Run API accepts a request but its response is lost, Factory keeps the
 same run ID and capability and enumerates matching executions as specified in
 section 6. It persists and supervises the complete matching set. A repeated API
-call may create another container, but only the execution that creates
-`started.json` can launch the agent. Other executions exit successfully without
-agent side effects, are recorded as duplicates, and are cancelled if they
-remain active.
+call is allowed only before the same monotonic Work deadline and may create
+another container, but only the execution that creates `started.json` can
+launch the agent. Other executions exit successfully without agent side
+effects, are recorded as duplicates, and are cancelled if they remain active.
 
 If container startup exceeds 30 seconds, the dispatcher continues renewing the
 Factory lease and cloud authority only while gateway time remains before the
-persisted `work_deadline_at`. The gateway caps every authority lease at that
-deadline. When the deadline arrives, Factory records a timed-out failure and
-requests Cloud Run cancellation even if the container has not started. A
-container that starts late cannot acquire the start fence or valid authority
-and exits without checkout or an agent process.
+persisted `work_deadline_at` and Factory's conservative monotonic deadline has
+not expired. The gateway caps every authority lease at that deadline. When the
+monotonic deadline arrives, Factory records timeout intent and conditionally
+revokes gateway authority. After revocation is confirmed, it records the
+timed-out failure and requests Cloud Run cancellation even if the container has
+not started. A container that starts after that terminal decision cannot
+acquire the start fence or valid authority and exits without checkout or an
+agent process.
 
 If the frozen Work timeout expires during checkout or agent execution, the
-wrapper sends SIGTERM immediately and SIGKILL after ten seconds. It emits a
-timeout event and may publish bounded failure evidence for at most 60 seconds,
-then exits nonzero. Factory records the same timed-out failure semantics as the
-persistent backend. The profile-wide Cloud Run Job timeout remains only a final
-platform kill switch.
+wrapper sends SIGTERM immediately, sends SIGKILL after ten seconds, and exits
+nonzero without attempting a final event. Factory's durable record supplies the
+same timed-out failure semantics as the persistent backend. The profile-wide
+Cloud Run Job timeout remains only a final platform kill switch.
 
 If event upload or ingestion fails, the wrapper retries bounded, immutable
 batches. Factory accepts a repeated batch only when its identity and bytes
@@ -722,12 +762,15 @@ If Factory restarts, it loads every nonterminal dispatch before admitting more
 cloud work. It verifies profile identity, authority generation, start fence,
 Cloud Run execution state, and artifacts. It resumes supervision only when the
 same Attempt still owns valid authority. Otherwise it revokes authority,
-cancels the execution, and records a failed or cancelled outcome.
+cancels the execution, and records the outcome owned by the durable decision:
+timed out for stored timeout intent, cancelled for stored cancellation, or
+failed when neither exists and ownership cannot be proved.
 
-If cancellation races with completion, the first durable Factory decision
-wins. Manifest upload, ingestion, or verification alone does not win. A
-terminal-success transaction committed before cancellation succeeds. A durable
-cancellation request committed first produces cancelled and retains any late
+If cancellation or timeout races with completion, the first durable Factory
+decision wins. Manifest upload, ingestion, or verification alone does not win.
+A terminal-success transaction committed first succeeds. Cancellation committed
+first produces cancelled. Timeout intent committed first produces timed out
+after authority revocation. Either non-success outcome retains any late
 artifact.
 
 Disabling a backend profile stops new dispatches. Existing executions continue
@@ -737,11 +780,15 @@ it.
 
 Server shutdown stops new dispatch, revokes authority for active Jobs, requests
 Cloud Run cancellation, and waits for up to 30 seconds. On restart, Factory
-reconciles every nonterminal cloud dispatch before admitting new cloud work. If
-an execution still cannot be reconciled within two minutes, its expired
-authority keeps the agent stopped and Factory records a
-`cloud_reconciliation_timeout` failure with the external execution identity for
-operator cleanup.
+reconciles every nonterminal cloud dispatch before admitting new cloud work.
+The two-minute reconciliation deadline never replaces a durable terminal owner
+or bypasses gateway confirmation. A dispatch with timeout intent remains
+nonterminal until the gateway confirms revocation or absolute expiry, then
+becomes timed out. A dispatch with cancellation intent becomes cancelled after
+the same confirmation. Only a dispatch with neither intent that still cannot
+prove ownership within two minutes records a `cloud_reconciliation_timeout`
+failure with the external execution identity for operator cleanup. Expired or
+revoked authority keeps the agent stopped throughout.
 
 ## 8. Security, privacy, and operations
 
@@ -851,13 +898,19 @@ gateway, delayed gateway responses, and quota failures to prove `INV-3`,
 `INV-4`, `INV-9`, `AC-3`, `AC-4`, and `AC-5`. A container-start delay beyond
 `work_deadline_at` must produce a timed-out Attempt, a Cloud Run cancellation
 request, no successful start fence, and no authority refresh beyond the
-deadline. Delay tests anchor timers to the pre-request monotonic instant and
-prove startup and response transit cannot extend Work or authority deadlines.
+deadline. A delayed gateway response that shortens Factory's monotonic deadline
+must persist timeout intent, race a late container start through one authority
+generation, confirm revocation before terminal timeout, and prevent any fence
+after that terminal commit. Delay tests anchor timers to the pre-request
+monotonic instant and prove startup and response transit cannot extend Work or
+authority deadlines.
 
 Protocol tests will reorder, repeat, corrupt, truncate, and oversize event and
 artifact objects to prove `INV-6`, `INV-7`, `INV-8`, `AC-7`, and `AC-8`.
-They will also force both SQLite transaction orderings after manifest
-verification to prove that cancellation and terminal success cannot both win.
+They will force both SQLite transaction orderings for success versus
+cancellation, success versus timeout intent, and cancellation versus timeout
+intent. Each test proves that exactly one durable decision owns the outcome and
+that later signals can perform cleanup without replacing it.
 
 Security tests will inspect the deployed Job configuration, IAM policy, input
 metadata, gateway request logs and traces, structured logs, and container
