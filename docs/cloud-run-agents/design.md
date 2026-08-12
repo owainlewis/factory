@@ -652,18 +652,29 @@ is blocked until the design supplies another discoverable correlation key.
 
 Artifact ingestion and verification do not decide the terminal race. Three
 SQLite transactions compete. Successful completion loads the verified manifest
-evidence, checks that neither cancellation nor timeout intent is committed, and
-writes terminal success atomically. Explicit cancellation checks that neither a
-terminal outcome nor timeout intent is committed and atomically records
-`cancellation_requested_at`. Timeout checks that neither a terminal outcome nor
-cancellation is committed and atomically records `timeout_requested_at` and the
-`timeout_requested` dispatch state. SQLite serialization makes one transaction
-the first durable Factory decision. If timeout intent wins, a later explicit
-cancel may accelerate the same gateway revocation and Cloud Run cleanup but
-cannot change the eventual timed-out outcome. If cancellation wins, later
-timeout observation cannot replace cancelled. If success wins, neither signal
-can replace succeeded. Terminal completion is idempotent and the stored outcome
-always wins.
+evidence and first obtains a fresh gateway authority-state response. Factory
+records local monotonic time immediately before that request and derives the
+conservative remaining Work duration from the returned gateway time and
+`work_deadline_at`. The single serialized SQLite statement that conditionally
+writes terminal success invokes a registered suspend-aware monotonic clock
+function and requires `now < deadline` together with the checks that neither
+cancellation nor timeout intent is committed. The clock uses an operating-system
+continuous-time source that includes host sleep. The deadline value is not a
+wall-clock comparison or a boolean computed before entering SQLite. If that
+atomic predicate fails, the same transaction records timeout intent instead of
+success. A stale, missing, delayed, or expired response also records timeout
+intent; prior manifest publication cannot extend the Work. Explicit
+cancellation checks that neither a terminal outcome nor timeout intent is
+committed and atomically records `cancellation_requested_at`. Timeout checks
+that neither a terminal outcome nor cancellation is committed and atomically
+records `timeout_requested_at` and the `timeout_requested` dispatch state.
+SQLite serialization makes one transaction the first durable Factory decision.
+If timeout intent wins, a later explicit cancel may accelerate the same gateway
+revocation and Cloud Run cleanup but cannot change the eventual timed-out
+outcome. If cancellation wins, later timeout observation cannot replace
+cancelled. If success wins before its deadline, neither signal can replace
+succeeded. Terminal completion is idempotent and the stored outcome always
+wins.
 
 ### Authority lease protocol
 
@@ -943,7 +954,11 @@ artifact objects to prove `INV-6`, `INV-7`, `INV-8`, `AC-7`, and `AC-8`.
 They will force both SQLite transaction orderings for success versus
 cancellation, success versus timeout intent, and cancellation versus timeout
 intent. Each test proves that exactly one durable decision owns the outcome and
-that later signals can perform cleanup without replacing it.
+that later signals can perform cleanup without replacing it. Success tests will
+verify that a manifest published before the deadline is still rejected when
+gateway response delay, scheduler delay, SQLite contention, host suspension, or
+restart makes the conservative monotonic deadline expire before the conditional
+terminal write. Missing or stale gateway time must also reject success.
 
 Security tests will inspect the deployed Job configuration, IAM policy, input
 metadata, gateway request logs and traces, structured logs, and container
