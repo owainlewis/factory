@@ -699,9 +699,12 @@ sole physical authority-object writer. `authority.json` contains the Attempt
 ID, run ID, run-capability digest, monotonically increasing revision, input
 digest, `work_deadline_at`, `valid_until`, winning execution identity when
 fenced, a complete `last_refresh_receipt`, revocation reason, and previous object
-generation. The receipt contains the request ID, expected and resulting
-generation, gateway processing time, and resulting `valid_until`. It is written
-atomically with the authority extension. Every later non-refresh authority
+generation. The receipt contains the request ID, expected storage generation,
+gateway processing time, resulting `valid_until`, and deterministic resulting
+logical authority revision. It does not claim the provider-assigned generation
+of the write that contains it, because GCS assigns that value only after
+accepting the payload. The receipt is written atomically with the authority
+extension. Every later non-refresh authority
 mutation, including fencing and revocation, copies it byte-for-byte; the next
 successful refresh atomically replaces it with its own receipt. It remains in
 `authority.json` for the dispatch retention period, so any gateway instance can
@@ -716,8 +719,11 @@ after its own server time and `work_deadline_at`, then writes the authority and
 receipt with one GCS `ifGenerationMatch`. Replaying the request ID in the current
 receipt returns that exact receipt and never performs another compare-and-set or
 extends authority again, including after a later revocation. An older resolved
-request ID is rejected without mutation. The stored response is historical
-evidence, not current authority state. Factory ignores such a replay after
+request ID is rejected without mutation. The gateway returns the logical
+receipt together with the separately read current storage generation, current
+logical revision, and revocation state. The receipt is historical evidence, not
+current authority state, and Factory never treats its expected generation as a
+current generation. Factory ignores such a replay after
 timeout or cancellation intent owns the outcome. Factory cannot issue the next
 request until it has received and persisted that result. Thus one lost or
 delayed refresh can extend authority at most one 30-second window beyond the
@@ -730,7 +736,8 @@ timeout or cancellation revocation then reads the new generation and retries
 until revocation is confirmed or the absolute deadline has arrived.
 
 Every refresh and authority-read response returns the gateway server time,
-`valid_until`, refresh request ID, revision, and object generation from one
+`valid_until`, refresh request ID, logical revision, and the storage generation
+observed on the current object from one
 operation. The wrapper and Factory record suspend-aware monotonic instants both
 immediately before sending and immediately after receiving the response. They
 set an early fail-closed deadline by adding `valid_until - server_time` to the
@@ -1065,7 +1072,12 @@ revocation must return the original response without changing the current
 generation, revocation marker, or deadline, and Factory must ignore it for
 state transitions. The same replay must work after gateway restart and from a
 different gateway instance by reading the receipt retained in `authority.json`;
-an older resolved request ID must be rejected without mutation. Duplicate tests
+an older resolved request ID must be rejected without mutation. A crash after
+the authority CAS succeeds but before response delivery, followed by fencing or
+revocation, gateway restart, and cross-instance replay must recover the logical
+receipt while returning the separately observed current generation and
+revocation state; no step may require embedding the provider-assigned resulting
+generation in the original receipt. Duplicate tests
 must prove that one terminal execution cannot
 satisfy provider-terminal proof while the fence winner remains active, and that
 the no-winner case requires every matching execution to be terminal.
