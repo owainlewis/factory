@@ -698,21 +698,31 @@ The dispatcher is the sole authority decision-maker, and the gateway is the
 sole physical authority-object writer. `authority.json` contains the Attempt
 ID, run ID, run-capability digest, monotonically increasing revision, input
 digest, `work_deadline_at`, `valid_until`, winning execution identity when
-fenced, the last refresh request ID, revocation reason, and previous object
-generation. An authenticated refresh request contains a durable unique request
-ID and the expected generation, but no caller-supplied time. Factory allows only
-one outstanding refresh per dispatch and commits its request ID before sending.
-The gateway accepts it only while its own clock is before the current object's
+fenced, a complete `last_refresh_receipt`, revocation reason, and previous object
+generation. The receipt contains the request ID, expected and resulting
+generation, gateway processing time, and resulting `valid_until`. It is written
+atomically with the authority extension. Every later non-refresh authority
+mutation, including fencing and revocation, copies it byte-for-byte; the next
+successful refresh atomically replaces it with its own receipt. It remains in
+`authority.json` for the dispatch retention period, so any gateway instance can
+replay the current receipt after restart without process memory.
+
+An authenticated refresh request contains a durable unique request ID and the
+expected generation, but no caller-supplied time. Factory allows only one
+outstanding refresh per dispatch and commits its request ID before sending. The
+gateway accepts it only while its own clock is before the current object's
 `valid_until`. It computes the new `valid_until` as the earlier of 30 seconds
-after its own server time and `work_deadline_at`, then writes with GCS
-`ifGenerationMatch`. Replaying the same request ID returns the stored result and
-never performs another compare-and-set or extends authority again, including
-after a later revocation. The stored response is historical evidence, not the
-current authority state. Factory ignores such a replay after timeout or
-cancellation intent owns the outcome. Factory cannot issue the next request
-until it has received and persisted that result. Thus one lost or delayed refresh can
-extend authority at most one 30-second window beyond the last acknowledged
-deadline; it cannot form an unbounded chain. At or after `work_deadline_at`, the
+after its own server time and `work_deadline_at`, then writes the authority and
+receipt with one GCS `ifGenerationMatch`. Replaying the request ID in the current
+receipt returns that exact receipt and never performs another compare-and-set or
+extends authority again, including after a later revocation. An older resolved
+request ID is rejected without mutation. The stored response is historical
+evidence, not current authority state. Factory ignores such a replay after
+timeout or cancellation intent owns the outcome. Factory cannot issue the next
+request until it has received and persisted that result. Thus one lost or
+delayed refresh can extend authority at most one 30-second window beyond the
+last acknowledged deadline; it cannot form an unbounded chain. At or after
+`work_deadline_at`, the
 gateway refuses refresh and start-fence requests and conditionally revokes any
 remaining authority. A precondition failure moves the dispatch to
 `reconciling` and stops refresh because another writer or stale state exists. A
@@ -756,12 +766,13 @@ generation conflict, Factory reads the new generation and retries revocation;
 it never refreshes authority. A successful revocation compare-and-set is the
 gateway fence: a delayed first delivery carrying the older generation is
 rejected, while replay of an already-consumed request ID may return only its
-immutable historical response and cannot mutate the revoked object. When the gateway is unreachable,
-Factory does not treat the last acknowledged lease alone as proof if a refresh
-is outstanding. Confirmed revocation, a gateway response showing
-that the absolute deadline has arrived, provider-terminal proof, or expiry of a
-conservative authority-uncertainty deadline permits Factory to commit the
-terminal outcome already owned by timeout or cancellation intent. When there is
+immutable durable receipt and cannot mutate the revoked object. When the gateway
+is unreachable, Factory does not treat the last acknowledged lease alone as
+proof if a refresh is outstanding. Confirmed revocation, a gateway response
+showing that the absolute deadline has arrived, provider-terminal proof, or
+expiry of a conservative authority-uncertainty deadline permits Factory to
+commit the terminal outcome already owned by timeout or cancellation intent.
+When there is
 no outstanding refresh, that uncertainty deadline is the last acknowledged
 authority-expiry upper bound, not the earlier client-stop deadline. When one
 refresh may be unacknowledged, Factory adds one full 30-second authority window
@@ -1052,8 +1063,10 @@ deadline. When revocation succeeds, its generation and request-ID fence must
 reject a delayed first delivery. A replay of a refresh consumed before
 revocation must return the original response without changing the current
 generation, revocation marker, or deadline, and Factory must ignore it for
-state transitions. Duplicate tests must prove that one terminal
-execution cannot
+state transitions. The same replay must work after gateway restart and from a
+different gateway instance by reading the receipt retained in `authority.json`;
+an older resolved request ID must be rejected without mutation. Duplicate tests
+must prove that one terminal execution cannot
 satisfy provider-terminal proof while the fence winner remains active, and that
 the no-winner case requires every matching execution to be terminal.
 
