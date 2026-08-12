@@ -16,6 +16,17 @@ Factory is local-first. Its browser and operator API accept loopback connections
 only. An optional, separate TLS-authenticated endpoint accepts Workers on remote
 VMs.
 
+Factory starts with coding agents on machines you control and is intended to
+scale to elastic cloud execution without rewriting a Routine or splitting its
+Work history. Existing Routines remain persistent by default; a manual run can
+select a compatible elastic profile. Persistent local and VM Workers remain
+the rich path for subscription authentication, warm repository caches, and
+inspectable worktrees. A proposed
+Cloud Run backend adds disposable, API-backed agent containers for bursty and
+parallel Work. Read the
+[Cloud Run agent backend design](docs/cloud-run-agents/design.md) for the
+planned boundary, security model, and rollout.
+
 Read the [product vision](docs/software-factory/vision.md), the
 [target architecture](docs/software-factory/design.md), and the
 [current implementation architecture](ARCHITECTURE.md). Planned work follows
@@ -107,6 +118,20 @@ The control plane owns durable coordination. Workers own execution and Git
 worktrees. Workers poll the API, so the system does not require WebSockets or
 inbound connections to worker hosts.
 
+The future execution model keeps three choices independent:
+
+```text
+Execution backend     Agent runtime              Provider and model
+-----------------     -------------              ------------------
+Persistent Worker  +  Pi, Codex, Claude Code  +  subscription or API
+Cloud Run Job      +  Pi, Codex, Claude Code  +  API-backed model
+```
+
+Cloud Run is a proposed execution backend, not a DeepSeek-specific product.
+For example, the completed experiment ran the Pi runtime in Cloud Run with
+DeepSeek V4 Flash through OpenRouter. Cloud execution is managed and elastic,
+but not infrastructure-free, infinitely scalable, or a hostile-code sandbox.
+
 All default state is below `~/.factory`:
 
 ```text
@@ -138,7 +163,8 @@ Implemented:
 - automatic cleanup of clean unchanged or published work and preservation of
   unpublished branches.
 
-Designed but not implemented: a unified `factory` CLI.
+Designed but not implemented: a unified `factory` CLI and an elastic Cloud Run
+agent backend.
 
 See the [documentation index](docs/README.md) for current guides and proposed
 designs.
