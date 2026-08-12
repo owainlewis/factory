@@ -355,8 +355,8 @@ retry instead of silently running different code.
   sequence, and event ID.
 - `INV-7`: Factory accepts successful completion only after verifying the final
   manifest and every required artifact.
-- `INV-8`: Cancellation recorded before verified completion cannot become
-  succeeded because of a late cloud result.
+- `INV-8`: Cancellation committed before terminal success cannot become
+  succeeded because of prior artifact ingestion or a late cloud result.
 - `INV-9`: A control-plane restart can identify, reconcile, and either resume
   supervision or cancel every nonterminal cloud execution.
 - `INV-10`: The Job receives no operator API credential or broad cloud
@@ -558,11 +558,14 @@ identity. The prototype must prove that the v2 execution-list response exposes
 the effective overrides needed for this search. If it does not, durable launch
 is blocked until the design supplies another discoverable correlation key.
 
-Cancellation and completion use their committed Factory timestamps. Verified
-completion can win only when its manifest was fully ingested before
-`cancellation_requested_at`. Once cancellation is committed, no later cloud
-success can change the outcome. Terminal completion is idempotent and the
-stored outcome always wins.
+Artifact ingestion and verification do not decide the cancellation race. The
+successful-completion transaction loads the verified manifest evidence, checks
+that no cancellation is committed, and writes the terminal success atomically.
+The cancellation transaction checks that no terminal outcome is committed and
+atomically records `cancellation_requested_at`. SQLite serialization makes one
+of those transactions the first durable Factory decision. Once cancellation is
+committed, no later cloud success can change the outcome. Terminal completion
+is idempotent and the stored outcome always wins.
 
 ### Authority lease protocol
 
@@ -642,8 +645,9 @@ same Attempt still owns valid authority. Otherwise it revokes authority,
 cancels the execution, and records a failed or cancelled outcome.
 
 If cancellation races with completion, the first durable Factory decision
-wins. A verified completion stored before cancellation succeeds. A durable
-cancellation request stored first produces cancelled and retains any late
+wins. Manifest upload, ingestion, or verification alone does not win. A
+terminal-success transaction committed before cancellation succeeds. A durable
+cancellation request committed first produces cancelled and retains any late
 artifact.
 
 Disabling a backend profile stops new dispatches. Existing executions continue
@@ -761,6 +765,8 @@ startup, API outages, stale generations, restart, and quota failures to prove
 
 Protocol tests will reorder, repeat, corrupt, truncate, and oversize event and
 artifact objects to prove `INV-6`, `INV-7`, `INV-8`, `AC-7`, and `AC-8`.
+They will also force both SQLite transaction orderings after manifest
+verification to prove that cancellation and terminal success cannot both win.
 
 Security tests will inspect the deployed Job configuration, IAM policy, input
 metadata, structured logs, and container environment to prove `INV-10`,
