@@ -170,7 +170,15 @@ commit, canonical input digest, image digest, runtime and model, Cloud
 execution identity, and byte length and SHA-256 digest of every required
 output. It is written last. Factory rejects an object or manifest whose storage
 generation, prefix, identity, digest, or immutable input does not match the
-dispatch record. Partial artifacts remain visible on failure.
+dispatch record. Transport checks are not enough for success. In a temporary
+verification checkout at the frozen commit, Factory applies a patch with
+`git apply --check` before applying it, or verifies a Git bundle, its advertised
+tip, and the frozen commit as the expected base. It extracts untracked content
+only after rejecting absolute paths, `..` traversal, links, devices, excess file
+counts, and excess expanded bytes. Factory then compares the reconstructed Git
+status and working-tree manifest with the wrapper's manifest. Any malformed,
+non-applicable, incomplete, or semantically mismatched recovery artifact fails
+the Attempt. Partial artifacts remain visible on failure.
 
 Cancellation first records Factory's intent and revokes authority. The
 dispatcher then calls the Cloud Run cancellation API and keeps reconciling
@@ -609,8 +617,8 @@ themselves.
 | `starting` | Accepted Run operation or matching start fence, before `work_deadline_at` | `running`, `reconciling`, `timeout_requested`, `cancel_requested`, `terminal` |
 | `running` | Matching start fence and valid authority generation | `reconciling`, `timeout_requested`, `cancel_requested`, `terminal` |
 | `reconciling` | Incomplete or conflicting cloud observation; an unexpired Work deadline before returning to `starting` or `running` | `starting`, `running`, `timeout_requested`, `cancel_requested`, `terminal` |
-| `timeout_requested` | Expired conservative monotonic Work deadline; refresh and Run calls disabled | `terminal` after confirmed authority revocation or absolute gateway deadline |
-| `cancel_requested` | Durable cancellation time and revoked authority | `terminal` |
+| `timeout_requested` | Expired conservative monotonic Work deadline; refresh and Run calls disabled | `terminal` after confirmed revocation, elapsed last verified authority deadline, or provider-terminal execution |
+| `cancel_requested` | Durable cancellation time; refresh and Run calls disabled | `terminal` after confirmed revocation, elapsed last verified authority deadline, or provider-terminal execution |
 | `terminal` | One stored Factory outcome | none |
 
 Before every external side effect, the dispatcher commits the intended state
@@ -663,9 +671,13 @@ continuous-time source that includes host sleep. The deadline value is not a
 wall-clock comparison or a boolean computed before entering SQLite. The
 serialized transaction first preserves any existing terminal, cancellation, or
 timeout owner. Only when no owner exists and the time predicate fails does it
-record timeout intent instead of success. A stale, missing, delayed, or expired
-response follows that same conditional timeout branch; it never replaces an
-existing owner. Prior manifest publication cannot extend the Work. Explicit
+record timeout intent instead of success. A stale, missing, or failed gateway
+read does not by itself own the outcome. While the last trusted suspend-aware
+Work deadline remains unexpired, Factory leaves completion in `reconciling` and
+retries the authority read without accepting success. Once that deadline has
+expired, the same conditional timeout branch applies. An expired response also
+uses that branch. None can replace an existing owner. Prior manifest publication
+cannot extend the Work. Explicit
 cancellation checks that neither a terminal outcome nor timeout intent is
 committed and atomically records `cancellation_requested_at`. Timeout checks
 that neither a terminal outcome nor cancellation is committed and atomically
@@ -724,14 +736,23 @@ refresh and Run calls, atomically records `timeout_requested`, and asks the
 gateway to revoke authority even when no start fence exists. Fence and
 revocation requests compete through the same authority generation. On a
 generation conflict, Factory reads the new generation and retries revocation;
-it never refreshes authority. Only confirmed revocation, or a gateway response
-showing that the absolute deadline has arrived, permits Factory to commit the
-terminal timed-out failure. It then requests Cloud Run cancellation as platform
+it never refreshes authority. Confirmed revocation, a gateway response showing
+that the absolute deadline has arrived, provider-terminal execution, or expiry
+of the last verified authority deadline on Factory's suspend-aware monotonic
+clock permits Factory to commit the terminal outcome already owned by timeout or
+cancellation intent. The last case is sufficient because the gateway never
+grants authority beyond that anchored instant; another gateway response is not
+required merely to restate expiry. Factory durably records which proof
+terminalized the outcome, then requests Cloud Run cancellation as platform
 cleanup. Therefore no container can acquire a valid fence after Factory records
 the terminal timeout. After a Factory restart, no refresh or Run retry is
-allowed until a fresh gateway response establishes a new conservative
-monotonic deadline. Failure to obtain one leaves the execution without authority
-and fails closed through reconciliation rather than reviving it.
+allowed until a fresh gateway response establishes a new conservative monotonic
+deadline. If the gateway is unreachable, Factory first proves exclusive
+dispatch ownership and waits the full 30-second maximum authority lease from
+its suspend-aware monotonic startup instant. That conservative wait substitutes
+for the lost pre-restart anchor and may terminalize an already owned timeout or
+cancellation without a fresh gateway response; provider terminal state may do
+the same sooner. Gateway failure cannot revive the execution.
 The gateway performs every initial, refresh, and revocation authority-object
 write using its clock and generation precondition. A server shutdown,
 dispatcher crash, SQLite ownership loss, GCS generation conflict, or inability
@@ -820,13 +841,15 @@ Server shutdown stops new dispatch, revokes authority for active Jobs, requests
 Cloud Run cancellation, and waits for up to 30 seconds. On restart, Factory
 reconciles every nonterminal cloud dispatch before admitting new cloud work.
 The two-minute reconciliation deadline never replaces a durable terminal owner
-or bypasses gateway confirmation. A dispatch with timeout intent remains
-nonterminal until the gateway confirms revocation or absolute expiry, then
-becomes timed out. A dispatch with cancellation intent becomes cancelled after
-the same confirmation. Only a dispatch with neither intent that still cannot
-prove ownership within two minutes records a `cloud_reconciliation_timeout`
-failure with the external execution identity for operator cleanup. Expired or
-revoked authority keeps the agent stopped throughout.
+or bypasses authority-expiry proof. A dispatch with timeout or cancellation
+intent remains nonterminal until the gateway confirms revocation or absolute
+expiry, the last verified suspend-aware authority deadline elapses, the provider
+reports terminal, or a restarted exclusive owner completes the full
+maximum-lease wait described above. It then commits the outcome already owned by
+that intent. Only a dispatch with neither intent that still cannot prove
+ownership within two minutes records a `cloud_reconciliation_timeout` failure
+with the external execution identity for operator cleanup. Expired or revoked
+authority keeps the agent stopped throughout.
 
 ## 8. Security, privacy, and operations
 
@@ -904,8 +927,10 @@ Cloud Logging retention are diagnostic and are never the only retained record.
   creates another Attempt.
 - `AC-7`: Events remain ordered, bounded, and duplicate-safe across delayed or
   repeated object ingestion.
-- `AC-8`: Success requires a verified final manifest and recovery artifact;
-  missing, conflicting, corrupt, or oversized artifacts fail the Attempt.
+- `AC-8`: Success requires Factory to reconstruct a verified final manifest and
+  recovery artifact against the frozen commit; missing, non-applicable,
+  conflicting, corrupt, unsafe, incomplete, or oversized artifacts fail the
+  Attempt.
 - `AC-9`: The Job receives only the configured least-privilege identity and no
   operator API credential, durable cloud key, or secret prompt metadata.
 - `AC-10`: Attempt detail shows backend, execution identity, image digest,
@@ -953,6 +978,9 @@ unbounded fallback can never become bounded again.
 
 Protocol tests will reorder, repeat, corrupt, truncate, and oversize event and
 artifact objects to prove `INV-6`, `INV-7`, `INV-8`, `AC-7`, and `AC-8`.
+They will supply a hash-valid patch that does not apply, an invalid bundle base,
+unsafe and incomplete untracked archives, and a reconstructed Git status that
+differs from the manifest; none may reach success.
 They will force both SQLite transaction orderings for success versus
 cancellation, success versus timeout intent, and cancellation versus timeout
 intent. Each test proves that exactly one durable decision owns the outcome and
@@ -960,7 +988,13 @@ that later signals can perform cleanup without replacing it. Success tests will
 verify that a manifest published before the deadline is still rejected when
 gateway response delay, scheduler delay, SQLite contention, host suspension, or
 restart makes the conservative monotonic deadline expire before the conditional
-terminal write. Missing or stale gateway time must also reject success.
+terminal write. Before the trusted Work deadline, a transient missing or stale
+gateway response must remain `reconciling` and retry rather than record timeout.
+After expiry it must reject success and take the conditional timeout branch.
+Authority tests will make the gateway permanently unreachable after timeout and
+cancellation intent, then prove that expiry of the last verified suspend-aware
+authority deadline terminalizes the owned outcome without another gateway
+response.
 
 Security tests will inspect the deployed Job configuration, IAM policy, input
 metadata, gateway request logs and traces, structured logs, and container
