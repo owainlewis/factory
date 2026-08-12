@@ -617,8 +617,8 @@ themselves.
 | `starting` | Accepted Run operation or matching start fence, before `work_deadline_at` | `running`, `reconciling`, `timeout_requested`, `cancel_requested`, `terminal` |
 | `running` | Matching start fence and valid authority generation | `reconciling`, `timeout_requested`, `cancel_requested`, `terminal` |
 | `reconciling` | Incomplete or conflicting cloud observation; an unexpired Work deadline before returning to `starting` or `running` | `starting`, `running`, `timeout_requested`, `cancel_requested`, `terminal` |
-| `timeout_requested` | Expired conservative monotonic Work deadline; refresh and Run calls disabled | `terminal` after confirmed revocation, elapsed last verified authority deadline, or provider-terminal execution |
-| `cancel_requested` | Durable cancellation time; refresh and Run calls disabled | `terminal` after confirmed revocation, elapsed last verified authority deadline, or provider-terminal execution |
+| `timeout_requested` | Expired conservative monotonic Work deadline; refresh and Run calls disabled | `terminal` after confirmed revocation, elapsed last verified authority deadline, or provider-terminal proof for the matching execution set |
+| `cancel_requested` | Durable cancellation time; refresh and Run calls disabled | `terminal` after confirmed revocation, elapsed last verified authority deadline, or provider-terminal proof for the matching execution set |
 | `terminal` | One stored Factory outcome | none |
 
 Before every external side effect, the dispatcher commits the intended state
@@ -737,7 +737,7 @@ gateway to revoke authority even when no start fence exists. Fence and
 revocation requests compete through the same authority generation. On a
 generation conflict, Factory reads the new generation and retries revocation;
 it never refreshes authority. Confirmed revocation, a gateway response showing
-that the absolute deadline has arrived, provider-terminal execution, or expiry
+that the absolute deadline has arrived, provider-terminal proof, or expiry
 of the last verified authority deadline on Factory's suspend-aware monotonic
 clock permits Factory to commit the terminal outcome already owned by timeout or
 cancellation intent. The last case is sufficient because the gateway never
@@ -752,7 +752,16 @@ dispatch ownership and waits the full 30-second maximum authority lease from
 its suspend-aware monotonic startup instant. That conservative wait substitutes
 for the lost pre-restart anchor and may terminalize an already owned timeout or
 cancellation without a fresh gateway response; provider terminal state may do
-the same sooner. Gateway failure cannot revive the execution.
+the same sooner only when it satisfies the set-wide proof below. Gateway failure
+cannot revive the execution.
+
+Provider-terminal proof is set-wide, not evidence from any one duplicate. If a
+start-fence winner is known, its Cloud Run execution must be terminal and every
+other discovered matching execution must either be terminal or be proven unable
+to win the immutable fence. If no winner is known, every discovered matching
+execution must be terminal; otherwise Factory uses revocation or authority-
+expiry proof instead. Reconciliation completes pagination and the discovery
+window before declaring that set complete.
 The gateway performs every initial, refresh, and revocation authority-object
 write using its clock and generation precondition. A server shutdown,
 dispatcher crash, SQLite ownership loss, GCS generation conflict, or inability
@@ -843,10 +852,11 @@ reconciles every nonterminal cloud dispatch before admitting new cloud work.
 The two-minute reconciliation deadline never replaces a durable terminal owner
 or bypasses authority-expiry proof. A dispatch with timeout or cancellation
 intent remains nonterminal until the gateway confirms revocation or absolute
-expiry, the last verified suspend-aware authority deadline elapses, the provider
-reports terminal, or a restarted exclusive owner completes the full
-maximum-lease wait described above. It then commits the outcome already owned by
-that intent. Only a dispatch with neither intent that still cannot prove
+expiry, the last verified suspend-aware authority deadline elapses, set-wide
+provider-terminal proof completes as defined above, or a restarted exclusive
+owner completes the full maximum-lease wait described above. It then commits
+the outcome already owned by that intent. Only a dispatch with neither intent
+that still cannot prove
 ownership within two minutes records a `cloud_reconciliation_timeout` failure
 with the external execution identity for operator cleanup. Expired or revoked
 authority keeps the agent stopped throughout.
@@ -994,7 +1004,13 @@ After expiry it must reject success and take the conditional timeout branch.
 Authority tests will make the gateway permanently unreachable after timeout and
 cancellation intent, then prove that expiry of the last verified suspend-aware
 authority deadline terminalizes the owned outcome without another gateway
-response.
+response. A separate restart test discards the old monotonic anchor, makes the
+gateway unreachable, and proves terminalization remains blocked until Factory
+acquires exclusive dispatcher ownership and completes the full 30-second
+maximum-lease wait on a fresh suspend-aware clock, including host suspension
+during that wait. Duplicate tests must prove that one terminal execution cannot
+satisfy provider-terminal proof while the fence winner remains active, and that
+the no-winner case requires every matching execution to be terminal.
 
 Security tests will inspect the deployed Job configuration, IAM policy, input
 metadata, gateway request logs and traces, structured logs, and container
