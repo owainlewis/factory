@@ -429,8 +429,10 @@ retry instead of silently running different code.
 - Dispatch stores the Attempt ID, non-secret run ID, run-capability digest,
   envelope-encrypted run-capability ciphertext, state, immutable profile
   version, every observed Cloud operation and execution name, timestamps,
-  gateway-derived `work_started_at` and `work_deadline_at`, error, and
-  reconciliation deadline.
+  gateway-derived `work_started_at` and `work_deadline_at`, the last acknowledged
+  authority generation, an early fail-closed client deadline, a conservative
+  authority-expiry upper bound, any single outstanding refresh request ID,
+  error, and reconciliation deadline.
 - The Job input uses the full commit SHA. Branch names and mutable tags are
   rejected.
 - Before every Run call, the dispatcher reads the Job and verifies its resource
@@ -617,8 +619,8 @@ themselves.
 | `starting` | Accepted Run operation or matching start fence, before `work_deadline_at` | `running`, `reconciling`, `timeout_requested`, `cancel_requested`, `terminal` |
 | `running` | Matching start fence and valid authority generation | `reconciling`, `timeout_requested`, `cancel_requested`, `terminal` |
 | `reconciling` | Incomplete or conflicting cloud observation; an unexpired Work deadline before returning to `starting` or `running` | `starting`, `running`, `timeout_requested`, `cancel_requested`, `terminal` |
-| `timeout_requested` | Expired conservative monotonic Work deadline; refresh and Run calls disabled | `terminal` after confirmed revocation, elapsed last verified authority deadline, or provider-terminal proof for the matching execution set |
-| `cancel_requested` | Durable cancellation time; refresh and Run calls disabled | `terminal` after confirmed revocation, elapsed last verified authority deadline, or provider-terminal proof for the matching execution set |
+| `timeout_requested` | Expired conservative monotonic Work deadline; refresh and Run calls disabled | `terminal` after confirmed revocation, elapsed conservative authority-uncertainty deadline, or provider-terminal proof for the matching execution set |
+| `cancel_requested` | Durable cancellation time; refresh and Run calls disabled | `terminal` after confirmed revocation, elapsed conservative authority-uncertainty deadline, or provider-terminal proof for the matching execution set |
 | `terminal` | One stored Factory outcome | none |
 
 Before every external side effect, the dispatcher commits the intended state
@@ -696,23 +698,35 @@ The dispatcher is the sole authority decision-maker, and the gateway is the
 sole physical authority-object writer. `authority.json` contains the Attempt
 ID, run ID, run-capability digest, monotonically increasing revision, input
 digest, `work_deadline_at`, `valid_until`, winning execution identity when
-fenced, revocation reason, and previous object generation. An authenticated
-refresh request contains the expected generation and desired revocation state,
-but no caller-supplied time. The
-gateway computes `valid_until` as the earlier of 30 seconds after its own server
-time and `work_deadline_at`, then writes with GCS `ifGenerationMatch`. At or
-after `work_deadline_at`, it refuses refresh and start-fence requests and
-conditionally revokes any remaining authority. A precondition failure moves
-the dispatch to `reconciling` and stops refresh because another writer or stale
-state exists. A timeout or cancellation revocation then reads the new generation
-and retries until revocation is confirmed or the absolute deadline has arrived.
+fenced, the last refresh request ID, revocation reason, and previous object
+generation. An authenticated refresh request contains a durable unique request
+ID and the expected generation, but no caller-supplied time. Factory allows only
+one outstanding refresh per dispatch and commits its request ID before sending.
+The gateway accepts it only while its own clock is before the current object's
+`valid_until`. It computes the new `valid_until` as the earlier of 30 seconds
+after its own server time and `work_deadline_at`, then writes with GCS
+`ifGenerationMatch`. Replaying the same request ID returns the stored result and
+never extends authority again. Factory cannot issue the next request until it
+has received and persisted that result. Thus one lost or delayed refresh can
+extend authority at most one 30-second window beyond the last acknowledged
+deadline; it cannot form an unbounded chain. At or after `work_deadline_at`, the
+gateway refuses refresh and start-fence requests and conditionally revokes any
+remaining authority. A precondition failure moves the dispatch to
+`reconciling` and stops refresh because another writer or stale state exists. A
+timeout or cancellation revocation then reads the new generation and retries
+until revocation is confirmed or the absolute deadline has arrived.
 
 Every refresh and authority-read response returns the gateway server time,
-`valid_until`, revision, and object generation from one operation. The wrapper
-records local monotonic time immediately before every gateway request and sets
-the returned `valid_until - server_time` duration against that earlier instant.
-Network delay can shorten but never extend authority. Neither the Factory clock
-nor the wrapper wall clock can extend validity. It fetches authority at most
+`valid_until`, refresh request ID, revision, and object generation from one
+operation. The wrapper and Factory record suspend-aware monotonic instants both
+immediately before sending and immediately after receiving the response. They
+set an early fail-closed deadline by adding `valid_until - server_time` to the
+pre-request instant. Factory separately persists an authority-expiry upper
+bound by adding the same duration to the response-receipt instant. Network delay
+therefore shortens client permission but lengthens only the conservative proof
+window; neither bound can let Factory terminalize while gateway authority may
+still be valid. Neither the Factory clock nor the wrapper wall clock can extend
+validity. The wrapper fetches authority at most
 five seconds apart and verifies the revision and generation never move
 backwards. A read error is not authority. The wrapper may continue only until
 the last verified monotonic deadline; there is no grace period after that
@@ -736,24 +750,33 @@ refresh and Run calls, atomically records `timeout_requested`, and asks the
 gateway to revoke authority even when no start fence exists. Fence and
 revocation requests compete through the same authority generation. On a
 generation conflict, Factory reads the new generation and retries revocation;
-it never refreshes authority. Confirmed revocation, a gateway response showing
-that the absolute deadline has arrived, provider-terminal proof, or expiry
-of the last verified authority deadline on Factory's suspend-aware monotonic
-clock permits Factory to commit the terminal outcome already owned by timeout or
-cancellation intent. The last case is sufficient because the gateway never
-grants authority beyond that anchored instant; another gateway response is not
-required merely to restate expiry. Factory durably records which proof
-terminalized the outcome, then requests Cloud Run cancellation as platform
-cleanup. Therefore no container can acquire a valid fence after Factory records
-the terminal timeout. After a Factory restart, no refresh or Run retry is
-allowed until a fresh gateway response establishes a new conservative monotonic
-deadline. If the gateway is unreachable, Factory first proves exclusive
-dispatch ownership and waits the full 30-second maximum authority lease from
-its suspend-aware monotonic startup instant. That conservative wait substitutes
-for the lost pre-restart anchor and may terminalize an already owned timeout or
-cancellation without a fresh gateway response; provider terminal state may do
-the same sooner only when it satisfies the set-wide proof below. Gateway failure
-cannot revive the execution.
+it never refreshes authority. A successful revocation compare-and-set is the
+gateway fence: every delayed refresh carries the older generation or the
+already-consumed request ID and is rejected. When the gateway is unreachable,
+Factory does not treat the last acknowledged lease alone as proof if a refresh
+is outstanding. Confirmed revocation, a gateway response showing
+that the absolute deadline has arrived, provider-terminal proof, or expiry of a
+conservative authority-uncertainty deadline permits Factory to commit the
+terminal outcome already owned by timeout or cancellation intent. When there is
+no outstanding refresh, that uncertainty deadline is the last acknowledged
+authority-expiry upper bound, not the earlier client-stop deadline. When one
+refresh may be unacknowledged, Factory adds one full 30-second authority window
+to that receipt-anchored upper bound. The single-flight, idempotent refresh rule
+proves that no delayed request can extend authority beyond that later instant.
+Another gateway
+response is not required merely to restate expiry. Factory durably records which
+proof terminalized the outcome, then requests Cloud Run cancellation as
+platform cleanup. Therefore no container can retain valid authority after
+Factory records the terminal timeout or cancellation. After a Factory restart,
+no refresh or Run retry is allowed until a fresh gateway response establishes a
+new conservative monotonic deadline. If the gateway is unreachable, Factory
+first proves exclusive dispatch ownership and waits a full 60 seconds from its
+suspend-aware monotonic startup instant: one maximum currently valid 30-second
+lease plus one possible unacknowledged refresh extension. That conservative
+wait substitutes for the lost pre-restart anchor and may terminalize an already
+owned timeout or cancellation without a fresh gateway response; provider
+terminal state may do the same sooner only when it satisfies the set-wide proof
+below. Gateway failure cannot revive the execution.
 
 Provider-terminal proof is set-wide, not evidence from any one duplicate. If a
 start-fence winner is known, its Cloud Run execution must be terminal and every
@@ -776,9 +799,11 @@ a further ten seconds.
 The product bound is 15 seconds after successful authority revocation, with a
 five-second allowance for dispatcher scheduling. If the controller disappears
 without revoking authority, the last 30-second authority window plus the
-ten-second kill grace bounds process survival to 40 seconds. Cloud Run may take
-longer to report the execution terminal, so Factory tracks that platform
-reconciliation separately with a two-minute deadline.
+possible single unacknowledged 30-second refresh extension plus the ten-second
+kill grace bounds process survival to 70 seconds. When no refresh is outstanding
+the original 40-second bound applies. Cloud Run may take longer to report the
+execution terminal, so Factory tracks that platform reconciliation separately
+with a two-minute deadline.
 
 ## 7. Failure behavior and lifecycle
 
@@ -852,9 +877,8 @@ reconciles every nonterminal cloud dispatch before admitting new cloud work.
 The two-minute reconciliation deadline never replaces a durable terminal owner
 or bypasses authority-expiry proof. A dispatch with timeout or cancellation
 intent remains nonterminal until the gateway confirms revocation or absolute
-expiry, the last verified suspend-aware authority deadline elapses, set-wide
-provider-terminal proof completes as defined above, or a restarted exclusive
-owner completes the full maximum-lease wait described above. It then commits
+expiry, the conservative authority-uncertainty deadline elapses, or set-wide
+provider-terminal proof completes as defined above. It then commits
 the outcome already owned by that intent. Only a dispatch with neither intent
 that still cannot prove
 ownership within two minutes records a `cloud_reconciliation_timeout` failure
@@ -930,7 +954,9 @@ Cloud Logging retention are diagnostic and are never the only retained record.
 - `AC-4`: After Factory commits cancellation, it revokes authority within five
   seconds; a healthy wrapper stops the agent within 15 more seconds, requests
   Cloud Run cancellation, and reaches a stable cancelled outcome. Controller
-  loss starts shutdown by 30 seconds and kills the process by 40 seconds.
+  loss with no outstanding refresh starts shutdown by 30 seconds and kills the
+  process by 40 seconds. One unacknowledged refresh increases those conservative
+  bounds to 60 and 70 seconds; it cannot chain another extension.
 - `AC-5`: Factory restart reconciles every nonterminal execution before it
   admits new cloud work.
 - `AC-6`: Native Cloud Run retries are zero and only an explicit Factory retry
@@ -1002,13 +1028,25 @@ terminal write. Before the trusted Work deadline, a transient missing or stale
 gateway response must remain `reconciling` and retry rather than record timeout.
 After expiry it must reject success and take the conditional timeout branch.
 Authority tests will make the gateway permanently unreachable after timeout and
-cancellation intent, then prove that expiry of the last verified suspend-aware
-authority deadline terminalizes the owned outcome without another gateway
-response. A separate restart test discards the old monotonic anchor, makes the
-gateway unreachable, and proves terminalization remains blocked until Factory
-acquires exclusive dispatcher ownership and completes the full 30-second
-maximum-lease wait on a fresh suspend-aware clock, including host suspension
-during that wait. Duplicate tests must prove that one terminal execution cannot
+cancellation intent. With no outstanding refresh, expiry of the last
+acknowledged receipt-anchored authority-expiry upper bound terminalizes the
+owned outcome. With one committed unacknowledged refresh, terminalization
+remains blocked for one additional full authority window. Tests delay an
+acknowledged response, then lose a refresh accepted near actual expiry and prove
+Factory waits beyond the real lease plus its possible extension. A separate
+restart test discards the old
+monotonic anchor, makes the gateway unreachable, and proves terminalization
+remains blocked until Factory acquires exclusive dispatcher ownership and
+completes the full 60-second current-plus-unacknowledged-lease wait on a fresh
+suspend-aware clock, including host suspension during that wait. Refresh-race
+tests delay and lose a refresh response, then prove cancellation cannot
+terminalize before the uncertainty deadline, replaying its request ID cannot
+extend authority again, and Factory cannot issue a second refresh while the
+first is unresolved. A request delayed past the current `valid_until` must be
+rejected without changing the authority generation, last request ID, or
+deadline. When revocation succeeds, its generation and request-ID fence must
+reject the delayed refresh. Duplicate tests must prove that one terminal
+execution cannot
 satisfy provider-terminal proof while the fence winner remains active, and that
 the no-winner case requires every matching execution to be terminal.
 
