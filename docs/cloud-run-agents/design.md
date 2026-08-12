@@ -522,6 +522,8 @@ run_capability_ciphertext
 state
 work_started_at
 work_deadline_at
+provider_search_not_before
+provider_search_unbounded
 cloud_operation_name
 cloud_execution_name
 image_digest
@@ -606,10 +608,21 @@ themselves.
 Before every external side effect, the dispatcher commits the intended state
 and immutable run ID. A crash before the Run call leaves `dispatching` and may
 safely retry the same run ID and capability. A crash after Google accepts the
-call but before its response leaves `dispatching`. Reconciliation pages every
-execution of the frozen Job version created since the recorded dispatch start,
-inspects its effective environment overrides, and persists every execution
-carrying the exact Attempt ID and run ID before another Run call is allowed.
+call but before its response leaves `dispatching`. Immediately before each Run
+call, Factory obtains a Cloud Run provider timestamp from the preceding API
+response. Before the first Run, it durably initializes
+`provider_search_not_before` to that timestamp minus a 60-second provider-clock
+margin. Before a later Run, it may only broaden discovery by storing the earlier
+of the existing and new cutoffs. Reconciliation pages every execution of the
+frozen Job version with provider `createTime` at or after that bound, inspects
+its effective environment overrides, and persists every execution carrying the
+exact Attempt ID and run ID before another Run call is allowed. It never derives
+this cutoff from the Factory clock. If any Run call lacks a trustworthy provider
+timestamp, Factory durably sets `provider_search_unbounded`; that flag never
+returns to bounded for the dispatch, and reconciliation pages all retained
+executions for the frozen Job version. A retry remains blocked until a complete
+paginated search and the two-minute provider-discovery window both find no
+matching execution.
 Another call may still create a duplicate container. Before checkout, model
 calls, Git writes, or external tool use, every container asks the gateway for
 the start fence. The gateway conditionally updates `authority.json` with the
@@ -907,7 +920,13 @@ must persist timeout intent, race a late container start through one authority
 generation, confirm revocation before terminal timeout, and prevent any fence
 after that terminal commit. Delay tests anchor timers to the pre-request
 monotonic instant and prove startup and response transit cannot extend Work or
-authority deadlines.
+authority deadlines. Lost-launch tests skew the Factory clock in both
+directions, place the accepted execution inside the provider-clock margin, and
+remove the provider timestamp entirely. They must still discover the exact
+Attempt and run ID before another Run call; the no-timestamp case must fall back
+to a complete retained-execution scan. Multiple-lost-response tests must prove
+that a later provider timestamp cannot move the cutoff forward and that an
+unbounded fallback can never become bounded again.
 
 Protocol tests will reorder, repeat, corrupt, truncate, and oversize event and
 artifact objects to prove `INV-6`, `INV-7`, `INV-8`, `AC-7`, and `AC-8`.

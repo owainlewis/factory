@@ -6,9 +6,9 @@
 >
 > **Future direction:** The proposed
 > [Cloud Run agent backend](docs/cloud-run-agents/design.md) adds elastic
-> execution without changing Factory's product lifecycle. The broader
-> [Software Factory target architecture](docs/software-factory/design.md) is
-> also proposed. This document describes code that exists today.
+> execution without changing Factory's product lifecycle. The Software Factory
+> target architecture is a historical proposal superseded by Routines and Work.
+> This document describes code that exists today.
 
 ## 1. Executive summary
 
