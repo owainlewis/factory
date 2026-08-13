@@ -170,7 +170,7 @@ trap - ERR
 set +e
 (
     cd "$checkout_dir"
-    pi \
+    printf '%s' "$prompt" | pi \
         --mode json \
         --no-session \
         --no-approve \
@@ -180,9 +180,7 @@ set +e
         --provider openrouter \
         --model "$model" \
         --thinking "$thinking" \
-        --tools "$agent_tools" \
-        -- \
-        "$prompt"
+        --tools "$agent_tools"
 ) | tee "$raw_events_path" | jq --unbuffered -c '
     select(.type == "message_end" and .message.role == "assistant")
     | .message.content |= map(select(.type != "thinking"))

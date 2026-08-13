@@ -24,6 +24,7 @@ cat > "${fake_bin}/pi" <<'EOF'
 set -Eeuo pipefail
 printf '%s\n' "$PWD" > "${FAKE_PI_CAPTURE}/cwd"
 printf '%s\n' "$@" > "${FAKE_PI_CAPTURE}/arguments"
+cat > "${FAKE_PI_CAPTURE}/prompt"
 printf 'CLOUD_RUN_AGENT_OK\n' > cloud-run-smoke.txt
 printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"PRIVATE_REASONING"}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"PRIVATE_PROMPT"}]}}'
@@ -142,9 +143,8 @@ run_success_test() {
     grep -Fx -- '--provider' "${workspace}/capture/arguments" >/dev/null
     grep -Fx -- 'openrouter' "${workspace}/capture/arguments" >/dev/null
     grep -Fx -- 'deepseek/deepseek-v4-flash' "${workspace}/capture/arguments" >/dev/null
-    readonly separator_line="$(grep -nFx -- '--' "${workspace}/capture/arguments" | cut -d: -f1)"
-    readonly prompt_line="$(grep -nFx -- '--help' "${workspace}/capture/arguments" | cut -d: -f1)"
-    [[ "$separator_line" -lt "$prompt_line" ]]
+    ! grep -Fx -- '--help' "${workspace}/capture/arguments" >/dev/null
+    [[ "$(cat "${workspace}/capture/prompt")" == '--help' ]]
     grep -F -- '"cost_usd":0.0123' "${workspace}/output" >/dev/null
     grep -F -- '"exit_code":0' "${workspace}/output" >/dev/null
     ! grep -F -- 'PRIVATE_REASONING' "${workspace}/output" >/dev/null
