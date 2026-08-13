@@ -23,7 +23,7 @@ case "$1 $2 $3" in
         ;;
     secrets\ get-iam-policy\ *)
         if [[ "${FAKE_SECRET_ACCESS:-true}" == true ]]; then
-            jq -nc '{bindings:[{role:"roles/secretmanager.secretAccessor",members:["serviceAccount:factory-agent-experiment@factory-505220.iam.gserviceaccount.com"]}]}'
+            jq -nc '{bindings:[{role:"roles/secretmanager.secretAccessor",members:["serviceAccount:factory-agent-experiment@factory-505220.iam.gserviceaccount.com","serviceAccount:another@example.invalid"]}]}'
         else
             jq -nc '{bindings:[]}'
         fi
@@ -33,7 +33,7 @@ case "$1 $2 $3" in
             '{public_access_prevention:$pap,uniform_bucket_level_access:$uniform}'
         ;;
     'storage buckets get-iam-policy')
-        jq -nc '{bindings:[{role:"roles/storage.objectUser",members:["serviceAccount:factory-agent-experiment@factory-505220.iam.gserviceaccount.com"]}]}'
+        jq -nc '{bindings:[{role:"roles/storage.objectUser",members:["serviceAccount:factory-agent-experiment@factory-505220.iam.gserviceaccount.com","serviceAccount:another@example.invalid"]}]}'
         ;;
     *)
         printf 'unexpected gcloud call: %s\n' "$*" >&2

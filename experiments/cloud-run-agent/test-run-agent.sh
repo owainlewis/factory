@@ -42,6 +42,7 @@ set -Eeuo pipefail
 output=""
 source_file=""
 url=""
+write_out=false
 while (( $# > 0 )); do
     case "$1" in
         --output)
@@ -50,6 +51,10 @@ while (( $# > 0 )); do
             ;;
         --data-binary)
             source_file="${2#@}"
+            shift 2
+            ;;
+        --write-out)
+            write_out=true
             shift 2
             ;;
         http://* | https://*)
@@ -66,11 +71,30 @@ case "$url" in
         printf '%s\n' '{"access_token":"test-token"}'
         ;;
     *'?alt=media')
-        cp "$FAKE_INPUT_JSON" "$output"
+        if [[ "$url" == *attempt-result.tar.gz* ]]; then
+            cp "$FAKE_OUTPUT_ARCHIVE" "$output"
+        else
+            cp "$FAKE_INPUT_JSON" "$output"
+        fi
         ;;
     https://storage.googleapis.com/upload/*)
-        cp "$source_file" "$FAKE_OUTPUT_ARCHIVE"
-        printf '%s\n' '{}'
+        if [[ "${FAKE_UPLOAD_LOST_RESPONSE:-}" == 1 ]]; then
+            counter=0
+            [[ ! -f "$FAKE_UPLOAD_COUNTER" ]] || counter="$(cat "$FAKE_UPLOAD_COUNTER")"
+            counter=$((counter + 1))
+            printf '%s' "$counter" > "$FAKE_UPLOAD_COUNTER"
+            if (( counter == 1 )); then
+                cp "$source_file" "$FAKE_OUTPUT_ARCHIVE"
+                printf '000'
+                exit 28
+            fi
+            printf '%s' '{"error":{"code":412}}' > "$output"
+            printf '412'
+        else
+            cp "$source_file" "$FAKE_OUTPUT_ARCHIVE"
+            printf '%s' '{}' > "$output"
+            [[ "$write_out" == false ]] || printf '200'
+        fi
         ;;
     *)
         printf 'unexpected curl URL: %s\n' "$url" >&2
@@ -101,6 +125,7 @@ run_agent() {
     local output="$4"
     local exit_code="${5:-0}"
     local malformed="${6:-0}"
+    local lost_upload_response="${7:-0}"
     mkdir -p "$workspace" "${workspace}/capture"
     PATH="${fake_bin}:$PATH" \
     WORKSPACE_ROOT="$workspace" \
@@ -114,7 +139,24 @@ run_agent() {
     FAKE_PI_CAPTURE="${workspace}/capture" \
     FAKE_PI_EXIT_CODE="$exit_code" \
     FAKE_PI_MALFORMED="$malformed" \
+    FAKE_UPLOAD_LOST_RESPONSE="$lost_upload_response" \
+    FAKE_UPLOAD_COUNTER="${workspace}/upload-counter" \
         "$script_dir/run-agent.sh" > "${workspace}/output"
+}
+
+run_lost_upload_response_test() {
+    local workspace="${temp_root}/lost-upload-response"
+    local input="${temp_root}/lost-upload-response-input.json"
+    local output="${temp_root}/lost-upload-response-result.tar.gz"
+    write_input "$input" attempt-lost-upload-response read-only
+
+    run_agent "$workspace" attempt-lost-upload-response "$input" "$output" 0 0 1
+
+    [[ "$(cat "${workspace}/upload-counter")" -eq 2 ]]
+    [[ -s "$output" ]]
+    mkdir -p "${workspace}/verified"
+    tar -xzf "$output" -C "${workspace}/verified"
+    [[ "$(jq -r '.exit_code' "${workspace}/verified/result.json")" == 0 ]]
 }
 
 run_malformed_event_test() {
@@ -238,6 +280,7 @@ run_cloud_run_test_bypass_rejection_test() {
 
 run_success_test
 run_agent_failure_test
+run_lost_upload_response_test
 run_malformed_event_test
 run_invalid_input_test
 run_cloud_run_test_bypass_rejection_test

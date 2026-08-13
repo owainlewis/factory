@@ -68,7 +68,7 @@ fi
 if gcloud secrets get-iam-policy "$secret_name" \
     --project "$project_id" --format=json \
     | jq -e --arg member "serviceAccount:${expected_service_account}" \
-        '.bindings[]? | select(.role == "roles/secretmanager.secretAccessor") | .members[]? == $member' \
+        'any(.bindings[]?; .role == "roles/secretmanager.secretAccessor" and any(.members[]?; . == $member))' \
         >/dev/null; then
     pass "Job can access the model secret"
 else
@@ -96,7 +96,7 @@ fi
 if gcloud storage buckets get-iam-policy "gs://${artifact_bucket}" \
     --project "$project_id" --format=json \
     | jq -e --arg member "serviceAccount:${expected_service_account}" \
-        '.bindings[]? | select(.role == "roles/storage.objectUser") | .members[]? == $member' \
+        'any(.bindings[]?; .role == "roles/storage.objectUser" and any(.members[]?; . == $member))' \
         >/dev/null; then
     pass "Job can read and write attempt artifacts"
 else

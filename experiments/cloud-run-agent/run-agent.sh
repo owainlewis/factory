@@ -67,18 +67,54 @@ download_object() {
 upload_object_create_only() {
     local source="$1"
     local uri="$2"
-    local storage_bucket storage_object encoded_object token
+    local storage_bucket storage_object encoded_object token response_path existing_path
+    local http_code curl_exit upload_attempt
     parse_gs_uri "$uri"
     encoded_object="$(jq -rn --arg value "$storage_object" '$value | @uri')"
     token="$(storage_token)"
-    curl --fail-with-body --silent --show-error \
-        --retry 3 --retry-all-errors \
-        --request POST \
-        --header "Authorization: Bearer ${token}" \
-        --header 'Content-Type: application/gzip' \
-        --data-binary "@${source}" \
-        "https://storage.googleapis.com/upload/storage/v1/b/${storage_bucket}/o?uploadType=media&ifGenerationMatch=0&name=${encoded_object}" \
-        >/dev/null
+    response_path="$(mktemp "${workspace_root}/upload-response.XXXXXX")"
+    existing_path="$(mktemp "${workspace_root}/existing-result.XXXXXX")"
+
+    for upload_attempt in 1 2 3 4; do
+        if http_code="$(
+            curl --silent --show-error \
+                --request POST \
+                --header "Authorization: Bearer ${token}" \
+                --header 'Content-Type: application/gzip' \
+                --data-binary "@${source}" \
+                --output "$response_path" \
+                --write-out '%{http_code}' \
+                "https://storage.googleapis.com/upload/storage/v1/b/${storage_bucket}/o?uploadType=media&ifGenerationMatch=0&name=${encoded_object}"
+        )"; then
+            curl_exit=0
+        else
+            curl_exit="$?"
+        fi
+
+        if (( curl_exit == 0 )) && [[ "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+            rm -f "$response_path" "$existing_path"
+            return 0
+        fi
+        if [[ "$http_code" == 412 ]]; then
+            download_object "$uri" "$existing_path"
+            if cmp -s "$source" "$existing_path"; then
+                rm -f "$response_path" "$existing_path"
+                return 0
+            fi
+            printf 'result object already exists with different content: %s\n' "$uri" >&2
+            rm -f "$response_path" "$existing_path"
+            return 1
+        fi
+        if (( upload_attempt < 4 )); then
+            sleep "$upload_attempt"
+        fi
+    done
+
+    printf 'result upload failed with HTTP %s: ' "${http_code:-unknown}" >&2
+    cat "$response_path" >&2
+    printf '\n' >&2
+    rm -f "$response_path" "$existing_path"
+    return 1
 }
 
 file_digest() {
