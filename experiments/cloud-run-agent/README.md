@@ -152,8 +152,9 @@ The only per-execution environment overrides are `ATTEMPT_ID`, `INPUT_URI`, and
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "attempt_id": "attempt-...",
+  "dispatch_nonce": "32 lowercase hexadecimal characters",
   "repository_url": "https://github.com/owainlewis/factory.git",
   "git_commit": "full 40 character commit",
   "prompt": "the agent task",

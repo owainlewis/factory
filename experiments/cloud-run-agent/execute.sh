@@ -62,38 +62,61 @@ if [[ ! "$attempt_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
     printf 'ATTEMPT_ID contains unsupported characters\n' >&2
     exit 2
 fi
+readonly dispatch_nonce="${DISPATCH_NONCE:-$(openssl rand -hex 16)}"
+if [[ ! "$dispatch_nonce" =~ ^[0-9a-f]{32}$ ]]; then
+    printf 'DISPATCH_NONCE must be 32 lowercase hexadecimal characters\n' >&2
+    exit 2
+fi
 readonly input_uri="gs://${artifact_bucket}/attempts/${attempt_id}/input.json"
 readonly output_uri="gs://${artifact_bucket}/attempts/${attempt_id}/attempt-result.tar.gz"
 readonly input_path="${temp_root}/input.json"
+readonly existing_input_path="${temp_root}/existing-input.json"
 readonly attempt_output="${output_root}/${attempt_id}"
 readonly launch_path="${attempt_output}/launch.json"
-mkdir -p "$attempt_output"
+mkdir -p "$output_root"
+if ! mkdir "$attempt_output" 2>/dev/null; then
+    printf 'Attempt already exists locally: %s\n' "$attempt_id" >&2
+    printf 'Resume it with: PROJECT_ID=%s OUTPUT_ROOT=%q %q %q\n' \
+        "$project_id" "$output_root" "${script_dir}/inspect.sh" "$attempt_id" >&2
+    printf 'Use a new ATTEMPT_ID for a genuine retry.\n' >&2
+    exit 2
+fi
 
 jq -nc \
     --arg attempt_id "$attempt_id" \
+    --arg dispatch_nonce "$dispatch_nonce" \
     --arg repository_url "$repository_url" \
     --arg git_commit "$git_commit" \
     --rawfile prompt "$prompt_path" \
     --arg agent_mode "$agent_mode" \
     --arg model "$model" \
     --arg thinking "$thinking" \
-    '{version: 1, attempt_id: $attempt_id, repository_url: $repository_url, git_commit: $git_commit, prompt: $prompt, agent_mode: $agent_mode, model: $model, thinking: $thinking}' \
+    '{version: 2, attempt_id: $attempt_id, dispatch_nonce: $dispatch_nonce, repository_url: $repository_url, git_commit: $git_commit, prompt: $prompt, agent_mode: $agent_mode, model: $model, thinking: $thinking}' \
     > "$input_path"
-
-gcloud storage cp "$input_path" "$input_uri" \
-    --if-generation-match 0 \
-    --project "$project_id" --quiet
 
 jq -n \
     --arg project "$project_id" \
     --arg region "$region" \
     --arg job "$job_name" \
     --arg attempt "$attempt_id" \
+    --arg dispatch_nonce "$dispatch_nonce" \
     --arg commit "$git_commit" \
     --arg input_uri "$input_uri" \
     --arg output_uri "$output_uri" \
-    '{version: 1, project: $project, region: $region, job: $job, attempt: $attempt, execution_name: null, execution: null, commit: $commit, input_uri: $input_uri, output_uri: $output_uri, dispatch_state: "dispatching"}' \
+    '{version: 2, project: $project, region: $region, job: $job, attempt: $attempt, dispatch_nonce: $dispatch_nonce, execution_name: null, execution: null, commit: $commit, input_uri: $input_uri, output_uri: $output_uri, dispatch_state: "dispatching"}' \
     > "$launch_path"
+
+if ! gcloud storage cp "$input_path" "$input_uri" \
+    --if-generation-match 0 \
+    --project "$project_id" --quiet; then
+    if ! gcloud storage cp "$input_uri" "$existing_input_path" \
+        --project "$project_id" --quiet \
+        || ! cmp -s "$input_path" "$existing_input_path"; then
+        printf 'input upload failed and no byte-identical object could be recovered: %s\n' "$input_uri" >&2
+        exit 1
+    fi
+    printf 'Recovered byte-identical input after an ambiguous upload response.\n' >&2
+fi
 
 readonly request_body="$(
     jq -nc \

@@ -114,7 +114,7 @@ write_input() {
         --arg git_commit "$source_commit" \
         --arg prompt "${TEST_PROMPT:---help}" \
         --arg agent_mode "$mode" \
-        '{version: 1, attempt_id: $attempt_id, repository_url: $repository_url, git_commit: $git_commit, prompt: $prompt, agent_mode: $agent_mode, model: "deepseek/deepseek-v4-flash", thinking: "low"}' \
+        '{version: 2, attempt_id: $attempt_id, dispatch_nonce: "0123456789abcdef0123456789abcdef", repository_url: $repository_url, git_commit: $git_commit, prompt: $prompt, agent_mode: $agent_mode, model: "deepseek/deepseek-v4-flash", thinking: "low"}' \
         > "$path"
 }
 
@@ -200,6 +200,7 @@ run_success_test() {
     ! grep -F -- 'PRIVATE_REASONING' "${workspace}/verified/events.jsonl" >/dev/null
     [[ "$(jq -r '.attempt_id' "${workspace}/verified/manifest.json")" == attempt-success ]]
     [[ "$(jq -r '.commit' "${workspace}/verified/manifest.json")" == "$source_commit" ]]
+    [[ "$(jq -r '.dispatch_nonce' "${workspace}/verified/manifest.json")" == 0123456789abcdef0123456789abcdef ]]
 }
 
 run_agent_failure_test() {

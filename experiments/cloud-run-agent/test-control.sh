@@ -36,8 +36,17 @@ if [[ "$1 $2 $3" == "auth print-access-token " ]]; then
 fi
 if [[ "$1 $2" == "storage cp" ]]; then
     if [[ "$3" == gs://* ]]; then
+        if [[ "$3" == *'/input.json' && -n "${FAKE_STORED_INPUT:-}" ]]; then
+            cp "$FAKE_STORED_INPUT" "$4"
+            exit 0
+        fi
         [[ "${FAKE_ARTIFACT_MISSING:-}" != 1 ]] || exit 1
         cp "${FAKE_RESULT_ARCHIVE:?}" "$4"
+    elif [[ "${FAKE_INPUT_LOST_RESPONSE:-}" == 1 ]]; then
+        [[ -s "${EXPECTED_LAUNCH_PATH:?}" ]]
+        [[ "$(jq -r '.dispatch_state' "$EXPECTED_LAUNCH_PATH")" == dispatching ]]
+        [[ -e "${FAKE_STORED_INPUT:?}" ]] || cp "$3" "$FAKE_STORED_INPUT"
+        exit 1
     fi
     exit 0
 fi
@@ -79,6 +88,19 @@ readonly launch_path="${output_root}/attempt-launch-record/launch.json"
 [[ "$(jq -r '.commit' "$launch_path")" == "$source_commit" ]]
 grep -F -- 'Resume:' "${temp_root}/execute-output" >/dev/null
 
+set +e
+PATH="${fake_bin}:$PATH" \
+PROJECT_ID=factory-505220 \
+GIT_COMMIT="$source_commit" \
+ATTEMPT_ID=attempt-launch-record \
+OUTPUT_ROOT="$output_root" \
+    "${script_dir}/execute.sh" "${temp_root}/prompt.txt" > "${temp_root}/duplicate-attempt-output" 2>&1
+duplicate_attempt_exit="$?"
+set -e
+[[ "$duplicate_attempt_exit" -eq 2 ]]
+grep -F -- 'Attempt already exists locally: attempt-launch-record' "${temp_root}/duplicate-attempt-output" >/dev/null
+grep -F -- 'Use a new ATTEMPT_ID for a genuine retry.' "${temp_root}/duplicate-attempt-output" >/dev/null
+
 cat > "${fake_bin}/curl" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -109,11 +131,14 @@ PATH="${fake_bin}:$PATH" \
 PROJECT_ID=factory-505220 \
 GIT_COMMIT="$source_commit" \
 ATTEMPT_ID=attempt-dispatch-recovery \
+DISPATCH_NONCE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
 OUTPUT_ROOT="$output_root" \
 WAIT_SECONDS=10 \
 DELETE_EXECUTION_ON_TERMINAL=false \
 FAKE_ARTIFACT_MISSING=1 \
 EXPECTED_LAUNCH_PATH="$recovered_launch_path" \
+FAKE_INPUT_LOST_RESPONSE=1 \
+FAKE_STORED_INPUT="${temp_root}/stored-input.json" \
     "${script_dir}/execute.sh" "${temp_root}/prompt.txt" > "${temp_root}/dispatch-recovery-output" 2>&1
 dispatch_recovery_exit="$?"
 set -e
@@ -121,7 +146,28 @@ set -e
 [[ "$(jq -r '.dispatch_state' "$recovered_launch_path")" == reconciled ]]
 [[ "$(jq -r '.execution' "$recovered_launch_path")" == execution-reconciled ]]
 grep -F -- 'RunJob response was lost; reconciling by Attempt ID.' "${temp_root}/dispatch-recovery-output" >/dev/null
+grep -F -- 'Recovered byte-identical input after an ambiguous upload response.' "${temp_root}/dispatch-recovery-output" >/dev/null
 grep -F -- 'Reconciled execution: execution-reconciled' "${temp_root}/dispatch-recovery-output" >/dev/null
+
+readonly second_output_root="${temp_root}/second-results"
+readonly second_launch_path="${second_output_root}/attempt-dispatch-recovery/launch.json"
+set +e
+PATH="${fake_bin}:$PATH" \
+PROJECT_ID=factory-505220 \
+GIT_COMMIT="$source_commit" \
+ATTEMPT_ID=attempt-dispatch-recovery \
+DISPATCH_NONCE=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+OUTPUT_ROOT="$second_output_root" \
+WAIT_SECONDS=10 \
+DELETE_EXECUTION_ON_TERMINAL=false \
+FAKE_INPUT_LOST_RESPONSE=1 \
+FAKE_STORED_INPUT="${temp_root}/stored-input.json" \
+EXPECTED_LAUNCH_PATH="$second_launch_path" \
+    "${script_dir}/execute.sh" "${temp_root}/prompt.txt" > "${temp_root}/cross-root-duplicate-output" 2>&1
+cross_root_duplicate_exit="$?"
+set -e
+[[ "$cross_root_duplicate_exit" -eq 1 ]]
+grep -F -- 'input upload failed and no byte-identical object could be recovered' "${temp_root}/cross-root-duplicate-output" >/dev/null
 
 readonly result_fixture="${temp_root}/result-fixture"
 mkdir -p "$result_fixture"
@@ -132,12 +178,13 @@ printf '%s\n' '{"attempt_id":"attempt-launch-record"}' > "${result_fixture}/resu
 digest_file() { shasum -a 256 "$1" | awk '{print $1}'; }
 jq -nc \
     --arg attempt_id attempt-launch-record \
+    --arg dispatch_nonce "$(jq -r '.dispatch_nonce' "$launch_path")" \
     --arg commit "$source_commit" \
     --arg result "$(digest_file "${result_fixture}/result.json")" \
     --arg patch "$(digest_file "${result_fixture}/changes.patch")" \
     --arg status "$(digest_file "${result_fixture}/status.txt")" \
     --arg events "$(digest_file "${result_fixture}/events.jsonl")" \
-    '{version:1,attempt_id:$attempt_id,commit:$commit,files:{"result.json":$result,"changes.patch":$patch,"status.txt":$status,"events.jsonl":$events}}' \
+    '{version:2,attempt_id:$attempt_id,dispatch_nonce:$dispatch_nonce,commit:$commit,files:{"result.json":$result,"changes.patch":$patch,"status.txt":$status,"events.jsonl":$events}}' \
     > "${result_fixture}/manifest.json"
 tar -czf "$fake_archive" -C "$result_fixture" \
     manifest.json result.json changes.patch status.txt events.jsonl

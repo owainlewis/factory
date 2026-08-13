@@ -30,6 +30,7 @@ readonly launch_project="$(jq -er '.project' "$launch_path")"
 readonly region="$(jq -er '.region' "$launch_path")"
 readonly job_name="$(jq -er '.job' "$launch_path")"
 readonly recorded_attempt="$(jq -er '.attempt' "$launch_path")"
+readonly dispatch_nonce="$(jq -r '.dispatch_nonce // ""' "$launch_path")"
 readonly git_commit="$(jq -er '.commit' "$launch_path")"
 readonly input_uri="$(jq -er '.input_uri' "$launch_path")"
 readonly output_uri="$(jq -er '.output_uri' "$launch_path")"
@@ -40,6 +41,10 @@ if [[ "$launch_project" != "$project_id" || "$recorded_attempt" != "$attempt_id"
 fi
 if [[ ! "$git_commit" =~ ^[0-9a-f]{40}$ ]]; then
     printf 'launch record contains an invalid commit identity\n' >&2
+    exit 2
+fi
+if [[ -n "$dispatch_nonce" && ! "$dispatch_nonce" =~ ^[0-9a-f]{32}$ ]]; then
+    printf 'launch record contains an invalid dispatch nonce\n' >&2
     exit 2
 fi
 
@@ -128,6 +133,11 @@ verify_archive() {
     if [[ "$(jq -er '.attempt_id' "${attempt_output}/manifest.json")" != "$attempt_id" ]] \
         || [[ "$(jq -er '.commit' "${attempt_output}/manifest.json")" != "$git_commit" ]]; then
         printf 'result archive identity does not match the frozen input\n' >&2
+        return 1
+    fi
+    if [[ -n "$dispatch_nonce" ]] \
+        && [[ "$(jq -er '.dispatch_nonce' "${attempt_output}/manifest.json")" != "$dispatch_nonce" ]]; then
+        printf 'result archive dispatch nonce does not match the immutable input\n' >&2
         return 1
     fi
 }

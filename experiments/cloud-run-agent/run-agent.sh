@@ -140,6 +140,7 @@ download_object "$INPUT_URI" "$input_path"
 
 readonly input_version="$(jq -er '.version' "$input_path")"
 readonly input_attempt="$(jq -er '.attempt_id' "$input_path")"
+readonly dispatch_nonce="$(jq -er '.dispatch_nonce' "$input_path")"
 readonly repository_url="$(jq -er '.repository_url' "$input_path")"
 readonly git_commit="$(jq -er '.git_commit' "$input_path")"
 readonly prompt="$(jq -er '.prompt | select(type == "string" and length > 0)' "$input_path")"
@@ -147,8 +148,12 @@ readonly agent_mode="$(jq -er '.agent_mode' "$input_path")"
 readonly model="$(jq -er '.model' "$input_path")"
 readonly thinking="$(jq -er '.thinking // "low"' "$input_path")"
 
-if [[ "$input_version" != 1 || "$input_attempt" != "$ATTEMPT_ID" ]]; then
+if [[ "$input_version" != 2 || "$input_attempt" != "$ATTEMPT_ID" ]]; then
     printf 'input identity does not match this execution\n' >&2
+    exit 2
+fi
+if [[ ! "$dispatch_nonce" =~ ^[0-9a-f]{32}$ ]]; then
+    printf 'dispatch_nonce must be 32 lowercase hexadecimal characters\n' >&2
     exit 2
 fi
 if [[ ! "$git_commit" =~ ^[0-9a-f]{40}$ ]]; then
@@ -196,6 +201,7 @@ jq -nc \
     --arg type factory_agent_start \
     --arg attempt "$ATTEMPT_ID" \
     --arg execution "${CLOUD_RUN_EXECUTION:-local}" \
+    --arg dispatch_nonce "$dispatch_nonce" \
     --arg repository "$repository_url" \
     --arg commit "$base_commit" \
     --arg model "$model" \
@@ -243,6 +249,7 @@ readonly cost="$(
 
 jq -nc \
     --arg attempt_id "$ATTEMPT_ID" \
+    --arg dispatch_nonce "$dispatch_nonce" \
     --arg execution "${CLOUD_RUN_EXECUTION:-local}" \
     --arg commit "$base_commit" \
     --arg model "$model" \
@@ -250,11 +257,12 @@ jq -nc \
     --arg status "$(cat "$status_path")" \
     --argjson cost_usd "$cost" \
     --argjson exit_code "$agent_exit_code" \
-    '{attempt_id: $attempt_id, execution: $execution, commit: $commit, model: $model, mode: $mode, exit_code: $exit_code, cost_usd: $cost_usd, git_status: $status}' \
+    '{attempt_id: $attempt_id, dispatch_nonce: $dispatch_nonce, execution: $execution, commit: $commit, model: $model, mode: $mode, exit_code: $exit_code, cost_usd: $cost_usd, git_status: $status}' \
     > "${result_dir}/result.json"
 
 jq -nc \
     --arg attempt_id "$ATTEMPT_ID" \
+    --arg dispatch_nonce "$dispatch_nonce" \
     --arg input_uri "$INPUT_URI" \
     --arg output_uri "$OUTPUT_URI" \
     --arg commit "$base_commit" \
@@ -262,7 +270,7 @@ jq -nc \
     --arg patch_sha256 "$(file_digest "$patch_path")" \
     --arg status_sha256 "$(file_digest "$status_path")" \
     --arg events_sha256 "$(file_digest "$events_path")" \
-    '{version: 1, attempt_id: $attempt_id, input_uri: $input_uri, output_uri: $output_uri, commit: $commit, files: {"result.json": $result_sha256, "changes.patch": $patch_sha256, "status.txt": $status_sha256, "events.jsonl": $events_sha256}}' \
+    '{version: 2, attempt_id: $attempt_id, dispatch_nonce: $dispatch_nonce, input_uri: $input_uri, output_uri: $output_uri, commit: $commit, files: {"result.json": $result_sha256, "changes.patch": $patch_sha256, "status.txt": $status_sha256, "events.jsonl": $events_sha256}}' \
     > "${result_dir}/manifest.json"
 
 tar -czf "$archive_path" -C "$result_dir" \
