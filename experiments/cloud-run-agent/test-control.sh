@@ -36,6 +36,7 @@ if [[ "$1 $2 $3" == "auth print-access-token " ]]; then
 fi
 if [[ "$1 $2" == "storage cp" ]]; then
     if [[ "$3" == gs://* ]]; then
+        [[ "${FAKE_ARTIFACT_MISSING:-}" != 1 ]] || exit 1
         cp "${FAKE_RESULT_ARCHIVE:?}" "$4"
     fi
     exit 0
@@ -128,5 +129,28 @@ set -e
 [[ "$(cat "${temp_root}/curl-counter")" -eq 2 ]]
 grep -F -- 'Verified result:' "${temp_root}/inspect-output" >/dev/null
 [[ "$(jq -r '.state' "${output_root}/attempt-launch-record/execution.json")" == CONDITION_SUCCEEDED ]]
+
+rm -f "${output_root}/attempt-launch-record/attempt-result.tar.gz" \
+    "${output_root}/attempt-launch-record/manifest.json" \
+    "${output_root}/attempt-launch-record/result.json" \
+    "${output_root}/attempt-launch-record/changes.patch" \
+    "${output_root}/attempt-launch-record/status.txt" \
+    "${output_root}/attempt-launch-record/events.jsonl"
+: > "${temp_root}/curl-counter"
+set +e
+PATH="${fake_bin}:$PATH" \
+PROJECT_ID=factory-505220 \
+OUTPUT_ROOT="$output_root" \
+WAIT_SECONDS=10 \
+DELETE_EXECUTION_ON_TERMINAL=true \
+FAKE_CURL_COUNTER="${temp_root}/curl-counter" \
+FAKE_RESULT_ARCHIVE="$fake_archive" \
+FAKE_ARTIFACT_MISSING=1 \
+    "${script_dir}/inspect.sh" attempt-launch-record > "${temp_root}/missing-artifact-output" 2>&1
+missing_artifact_exit="$?"
+set -e
+[[ "$missing_artifact_exit" -eq 1 ]]
+grep -F -- 'Execution retained:' "${temp_root}/missing-artifact-output" >/dev/null
+grep -F -- 'execution succeeded without a result artifact' "${temp_root}/missing-artifact-output" >/dev/null
 
 printf 'cloud-run control tests passed\n'

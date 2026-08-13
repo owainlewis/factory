@@ -122,7 +122,9 @@ jq -n \
     '{attempt: $attempt, execution: $execution, state: $state, commit: $commit, input_uri: $input_uri, output_uri: $output_uri, artifact_available: $artifact_available, log_uri: $log_uri}' \
     > "${attempt_output}/execution.json"
 
-if [[ "$delete_on_terminal" == true && "$completion_state" != CONDITION_PENDING ]]; then
+if [[ "$delete_on_terminal" == true \
+    && "$completion_state" != CONDITION_PENDING \
+    && "$artifact_available" == true ]]; then
     curl --fail-with-body --silent --show-error \
         --request DELETE \
         --header "Authorization: Bearer ${access_token}" \
