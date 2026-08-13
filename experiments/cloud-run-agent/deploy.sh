@@ -8,6 +8,7 @@ readonly repository="${ARTIFACT_REPOSITORY:-experiments}"
 readonly job_name="${JOB_NAME:-factory-agent-experiment}"
 readonly service_account_name="${SERVICE_ACCOUNT_NAME:-factory-agent-experiment}"
 readonly secret_name="${OPENROUTER_SECRET_NAME:-openrouter-api-key}"
+readonly artifact_bucket="${ARTIFACT_BUCKET:-${project_id}-factory-agent-artifacts}"
 readonly service_account="${service_account_name}@${project_id}.iam.gserviceaccount.com"
 readonly source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -34,6 +35,7 @@ gcloud services enable \
     cloudbuild.googleapis.com \
     run.googleapis.com \
     secretmanager.googleapis.com \
+    storage.googleapis.com \
     --project "$project_id" \
     --quiet
 
@@ -60,6 +62,29 @@ if ! gcloud iam service-accounts describe "$service_account" \
         --quiet
 fi
 
+if ! gcloud storage buckets describe "gs://${artifact_bucket}" \
+    --project "$project_id" >/dev/null 2>&1; then
+    gcloud storage buckets create "gs://${artifact_bucket}" \
+        --location "$region" \
+        --uniform-bucket-level-access \
+        --public-access-prevention \
+        --project "$project_id" \
+        --quiet
+fi
+
+gcloud storage buckets update "gs://${artifact_bucket}" \
+    --lifecycle-file "${source_dir}/bucket-lifecycle.json" \
+    --uniform-bucket-level-access \
+    --public-access-prevention \
+    --project "$project_id" \
+    --quiet >/dev/null
+
+gcloud storage buckets add-iam-policy-binding "gs://${artifact_bucket}" \
+    --member "serviceAccount:${service_account}" \
+    --role roles/storage.objectUser \
+    --project "$project_id" \
+    --quiet >/dev/null
+
 readonly build_service_account="$(
     gcloud builds get-default-service-account \
         --project "$project_id"
@@ -74,6 +99,20 @@ if ! gcloud secrets describe "$secret_name" \
     --project "$project_id" >/dev/null 2>&1; then
     printf 'Secret %s does not exist in project %s.\n' "$secret_name" "$project_id" >&2
     printf 'Create it before deploying; see README.md.\n' >&2
+    exit 1
+fi
+
+secret_version="$(
+    gcloud secrets versions list "$secret_name" \
+        --filter 'state=ENABLED' \
+        --sort-by='~createTime' \
+        --limit 1 \
+        --format 'value(name)' \
+        --project "$project_id"
+)"
+readonly secret_version
+if [[ ! "$secret_version" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'Secret %s has no enabled numeric version.\n' "$secret_name" >&2
     exit 1
 fi
 
@@ -109,7 +148,7 @@ job_flags=(
     --memory 2Gi
     --task-timeout 10m
     --max-retries 0
-    --set-secrets "OPENROUTER_API_KEY=${secret_name}:latest"
+    --set-secrets "OPENROUTER_API_KEY=${secret_name}:${secret_version}"
     --quiet
 )
 
@@ -164,3 +203,15 @@ gcloud run jobs update "$job_name" "${job_flags[@]}"
 printf 'IMAGE=%s\n' "$image"
 printf 'IMAGE_TAG=%s\n' "$tagged_image"
 printf 'JOB=%s\n' "$job_name"
+printf 'ARTIFACT_BUCKET=%s\n' "$artifact_bucket"
+printf 'OPENROUTER_SECRET_VERSION=%s\n' "$secret_version"
+printf '\nFactory profile:\n'
+printf '[[cloud_profiles]]\n'
+printf 'id = "%s"\n' "$job_name"
+printf 'kind = "cloud_run"\n'
+printf 'project = "%s"\n' "$project_id"
+printf 'region = "%s"\n' "$region"
+printf 'job = "%s"\n' "$job_name"
+printf 'artifact_bucket = "%s"\n' "$artifact_bucket"
+printf 'image = "%s"\n' "$image"
+printf 'job_service_account = "%s"\n' "$service_account"

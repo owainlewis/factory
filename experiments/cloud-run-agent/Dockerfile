@@ -5,6 +5,7 @@ ARG PI_VERSION=0.80.10
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        curl \
         git \
         jq \
     && rm -rf /var/lib/apt/lists/*

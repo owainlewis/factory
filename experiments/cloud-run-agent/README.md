@@ -1,62 +1,73 @@
-# Cloud Run agent experiment
+# Cloud Run agent proof of concept
 
-This experiment proves that one Cloud Run Job can check out a Git repository,
-run Pi with DeepSeek V4 Flash through OpenRouter from that checkout, report JSON
-events and cost, and exit. It is intentionally separate from Factory's durable
+This proof of concept runs Pi as a disposable Cloud Run Job while keeping its
+result after the container exits. It is intentionally separate from Factory's
 Worker protocol.
 
-The experiment trusts the selected repository and prompt. Pi can execute code
-with the same environment and credentials as the container. Use `read-only`
-mode unless a write-capable run is required.
+One reusable Job handles every execution. A run freezes a public GitHub
+repository to one full commit, uploads an input document to a private GCS
+bucket, starts the Job, and verifies the returned result archive. Completed
+Cloud Run execution records are deleted by default. The reusable Job remains.
 
-Cloud Logging receives sanitized assistant events and the final summary. Pi's
-raw JSON stream, including reasoning events, exists only on the Job's ephemeral
-filesystem and disappears with the container. The base64 prompt is not secret:
-it is visible in Cloud Run execution metadata to users who can inspect the Job.
+The proof trusts the selected repository and prompt. Repository code can read
+the OpenRouter credential mounted in its container and can make outbound
+network requests. This is managed disposable compute, not a sandbox for hostile
+code.
+
+## What the operator provisions
+
+`deploy.sh` performs the manual project setup:
+
+- one Artifact Registry repository;
+- one Cloud Run Job service account;
+- one private artifact bucket with seven-day object cleanup;
+- read and write access from that service account to the artifact bucket;
+- access to one existing OpenRouter secret;
+- one reusable Cloud Run Job with a digest-pinned image, one task, and zero
+  native retries.
+
+The OpenRouter secret must exist before deployment. Its latest enabled numeric
+version is pinned on the Job. Factory does not receive or store the secret.
 
 ## Files
 
 - `Dockerfile` builds a pinned Node and Pi image.
-- `run-agent.sh` checks out the requested Git ref and runs Pi.
-- `deploy.sh` creates or updates the Artifact Registry repository, runtime
-  service account, image, and Cloud Run Job.
-- `execute.sh` starts one Job execution from a prompt file.
-- `test-run-agent.sh` verifies checkout, invocation, patch capture, cost capture,
-  failure propagation, and mode validation without using an API key.
+- `run-agent.sh` reads frozen input, checks out the exact commit, runs Pi, and
+  uploads one immutable result archive.
+- `deploy.sh` creates or updates the manually managed Google Cloud resources.
+- `validate.sh` checks the deployed profile and prints actionable failures.
+- `execute.sh` resolves a commit, starts one execution, verifies its archive,
+  and requests execution cleanup.
+- `inspect.sh` resumes polling and artifact recovery from a durable launch
+  record.
+- `resolve-git-ref.sh` freezes branches, lightweight tags, and annotated tags.
+- `cleanup.sh` lists or deletes old completed execution records.
+- `test-run-agent.sh` tests checkout, invocation, redaction, failure artifacts,
+  and input identity without a real model call.
 
 ## Local checks
-
-Run the shell and behavior checks:
 
 ```sh
 bash -n experiments/cloud-run-agent/*.sh
 experiments/cloud-run-agent/test-run-agent.sh
+experiments/cloud-run-agent/test-control.sh
+experiments/cloud-run-agent/test-validate.sh
 ```
 
-With a Docker daemon running, build and run the real image:
+With a Docker daemon running:
 
 ```sh
 docker build --platform linux/amd64 \
   --tag factory-agent-experiment \
   experiments/cloud-run-agent
-
-PROMPT_B64="$(base64 < experiments/cloud-run-agent/smoke-prompt.txt | tr -d '\n')"
-
-docker run --rm \
-  --env OPENROUTER_API_KEY \
-  --env REPOSITORY_URL=https://github.com/owainlewis/factory.git \
-  --env GIT_REF=main \
-  --env PROMPT_B64="$PROMPT_B64" \
-  --env AGENT_MODE=read-only \
-  factory-agent-experiment
 ```
 
-## Google Cloud setup
+## Deploy to the Factory Google Cloud project
 
-The deploy script enables the required APIs, grants the default Cloud Build
-service account the standard Cloud Build builder role, and creates the
-non-secret resources. Create the OpenRouter secret once without placing the
-value in shell history:
+The project name is `Factory` and its project ID is `factory-505220`. Commands
+use the project ID explicitly and do not depend on the global `gcloud` project.
+
+Create the secret without placing the value in shell history:
 
 ```sh
 export PROJECT_ID=factory-505220
@@ -67,7 +78,7 @@ printf '%s' "$OPENROUTER_API_KEY" | \
     --project "$PROJECT_ID"
 ```
 
-If the secret already exists, add a new version instead:
+If it already exists, add a version instead:
 
 ```sh
 printf '%s' "$OPENROUTER_API_KEY" | \
@@ -76,7 +87,7 @@ printf '%s' "$OPENROUTER_API_KEY" | \
     --project "$PROJECT_ID"
 ```
 
-Build the image and create or update the Job:
+Build the image and deploy the reusable Job:
 
 ```sh
 PROJECT_ID=factory-505220 \
@@ -84,11 +95,21 @@ REGION=europe-west1 \
   experiments/cloud-run-agent/deploy.sh
 ```
 
-By default, deploys require a clean experiment directory and tag the image with
-the containing Git commit. For an intentional development build, set a unique
-`IMAGE_TAG`. The Job itself is updated with the resolved image digest.
+By default, a clean experiment directory is required and the image is tagged
+with the Git commit. Set a unique `IMAGE_TAG` only for an intentional
+development deployment. The Job always uses the resolved image digest.
 
-Execute the read-only smoke test:
+Validate the profile:
+
+```sh
+PROJECT_ID=factory-505220 \
+REGION=europe-west1 \
+  experiments/cloud-run-agent/validate.sh
+```
+
+## Run an agent
+
+The safe smoke prompt uses read-only Pi tools:
 
 ```sh
 PROJECT_ID=factory-505220 \
@@ -97,36 +118,96 @@ REGION=europe-west1 \
   experiments/cloud-run-agent/smoke-prompt.txt
 ```
 
-`execute.sh` calls the Cloud Run v2 API directly and uses `gcloud` only for the
-current access token. This avoids client-version-specific execution overrides.
-It waits for the execution and prints its final state and Cloud Logging URL.
+To produce a patch:
 
-The first live read-only run against Factory completed in 1 minute 40 seconds
-with zero retries. OpenRouter reported a model cost of `$0.013663` for that run.
+```sh
+PROJECT_ID=factory-505220 \
+REGION=europe-west1 \
+AGENT_MODE=write \
+  experiments/cloud-run-agent/execute.sh \
+  experiments/cloud-run-agent/write-smoke-prompt.txt
+```
 
-Use `AGENT_MODE=write` to enable Pi's Bash and file mutation tools. The runner
-prints a binary Git patch after Pi exits. The patch is diagnostic output only;
-the experiment does not upload it or push a branch.
+The run stores verified files under
+`./factory-agent-results/<attempt-id>/`. The same archive remains in GCS until
+the bucket's lifecycle rule deletes it.
 
-## Inputs
+`execute.sh` writes `launch.json` immediately after Cloud Run accepts the run.
+If the terminal closes or polling fails, use the printed resume command. You
+can also resume directly:
 
-| Name | Default | Meaning |
-| --- | --- | --- |
-| `REPOSITORY_URL` | none | Git remote fetched by the Job. |
-| `GIT_REF` | none | Branch, tag, or reachable commit to fetch. |
-| `PROMPT_B64` | none | Base64-encoded task prompt. |
-| `AGENT_MODE` | `read-only` | `read-only` or `write`. |
-| `MODEL` | `deepseek/deepseek-v4-flash` | OpenRouter model ID. |
-| `THINKING` | `low` | Pi thinking level. |
-| `OPENROUTER_API_KEY` | none | Secret used by Pi's OpenRouter provider. |
-| `WORKSPACE_ROOT` | `/workspace` | Checkout and result root. |
+```sh
+PROJECT_ID=factory-505220 \
+  experiments/cloud-run-agent/inspect.sh <attempt-id>
+```
+
+Set `DELETE_EXECUTION_ON_TERMINAL=false` to retain one execution for console
+inspection. The default requests deletion after terminal state and artifact
+verification.
+
+## Input contract
+
+The only per-execution environment overrides are `ATTEMPT_ID`, `INPUT_URI`, and
+`OUTPUT_URI`. The private input object contains:
+
+```json
+{
+  "version": 1,
+  "attempt_id": "attempt-...",
+  "repository_url": "https://github.com/owainlewis/factory.git",
+  "git_commit": "full 40 character commit",
+  "prompt": "the agent task",
+  "agent_mode": "read-only",
+  "model": "deepseek/deepseek-v4-flash",
+  "thinking": "low"
+}
+```
+
+The first proof supports public GitHub HTTPS repositories only. `execute.sh`
+resolves a branch or tag before uploading the input. Set `GIT_COMMIT` to supply
+an already resolved full commit.
+
+## Result contract
+
+`attempt-result.tar.gz` contains exactly:
+
+```text
+manifest.json
+result.json
+changes.patch
+status.txt
+events.jsonl
+```
+
+The manifest binds the archive to the Attempt and frozen commit and includes a
+SHA-256 digest for every result file. `execute.sh` checks the paths, identity,
+and every digest before accepting the result. Raw Pi reasoning and the prompt
+are not included in the result archive or mirrored to container logs.
+
+## Clean old execution records
+
+List completed execution records without deleting them:
+
+```sh
+PROJECT_ID=factory-505220 \
+  experiments/cloud-run-agent/cleanup.sh
+```
+
+Delete every completed execution record for the reusable Job:
+
+```sh
+PROJECT_ID=factory-505220 APPLY=true \
+  experiments/cloud-run-agent/cleanup.sh
+```
+
+This does not delete the reusable Job or the GCS artifacts.
 
 ## Deliberate limits
 
-- One repository and one agent process per Job execution.
-- Public HTTPS repositories are the supported deployment path.
-- No Factory task, lease, event, or cancellation integration.
-- No automatic retries.
-- No branch push, pull request, or durable patch storage.
-- No Codex or Claude Code installation.
-- No private-repository authentication or secret-prompt transport.
+- Manual executions only.
+- One public repository and one Pi process per execution.
+- No Factory Work, Attempt, lease, or cancellation integration yet.
+- No private repository authentication.
+- No branch push or pull request publishing.
+- No untrusted repository isolation.
+- No automatic infrastructure provisioning from the Factory UI.
