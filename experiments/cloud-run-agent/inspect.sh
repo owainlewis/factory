@@ -90,7 +90,14 @@ for _poll_index in $(seq 1 "$poll_count"); do
         jq -r 'first(.conditions[]? | select(.type == "Completed") | .state) // "CONDITION_PENDING"' \
             <<< "$execution_response"
     )"
-    [[ "$completion_state" == CONDITION_PENDING ]] || break
+    case "$completion_state" in
+        CONDITION_SUCCEEDED | CONDITION_FAILED)
+            break
+            ;;
+        *)
+            completion_state=CONDITION_PENDING
+            ;;
+    esac
     sleep 5
 done
 

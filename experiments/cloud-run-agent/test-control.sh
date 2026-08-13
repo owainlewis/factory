@@ -34,6 +34,7 @@ if [[ "$1 $2 $3" == "auth print-access-token " ]]; then
     exit 0
 fi
 if [[ "$1 $2" == "storage cp" ]]; then
+    [[ "$3" != gs://* ]] || exit 1
     exit 0
 fi
 printf 'unexpected gcloud call: %s\n' "$*" >&2
@@ -73,5 +74,35 @@ readonly launch_path="${output_root}/attempt-launch-record/launch.json"
 [[ "$(jq -r '.execution' "$launch_path")" == execution-test ]]
 [[ "$(jq -r '.commit' "$launch_path")" == "$source_commit" ]]
 grep -F -- 'Resume:' "${temp_root}/execute-output" >/dev/null
+
+cat > "${fake_bin}/curl" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+counter_path="${FAKE_CURL_COUNTER:?}"
+counter=0
+[[ ! -f "$counter_path" ]] || counter="$(cat "$counter_path")"
+counter=$((counter + 1))
+printf '%s' "$counter" > "$counter_path"
+if (( counter == 1 )); then
+    printf '%s\n' '{"name":"projects/factory-505220/locations/europe-west1/jobs/factory-agent-experiment/executions/execution-test","conditions":[{"type":"Completed","state":"CONDITION_RECONCILING"}]}'
+else
+    printf '%s\n' '{"name":"projects/factory-505220/locations/europe-west1/jobs/factory-agent-experiment/executions/execution-test","conditions":[{"type":"Completed","state":"CONDITION_FAILED"}]}'
+fi
+EOF
+chmod 0755 "${fake_bin}/curl"
+
+set +e
+PATH="${fake_bin}:$PATH" \
+PROJECT_ID=factory-505220 \
+OUTPUT_ROOT="$output_root" \
+WAIT_SECONDS=10 \
+DELETE_EXECUTION_ON_TERMINAL=false \
+FAKE_CURL_COUNTER="${temp_root}/curl-counter" \
+    "${script_dir}/inspect.sh" attempt-launch-record > "${temp_root}/inspect-output" 2>&1
+inspect_exit="$?"
+set -e
+[[ "$inspect_exit" -eq 1 ]]
+[[ "$(cat "${temp_root}/curl-counter")" -eq 2 ]]
+grep -F -- 'CONDITION_FAILED' "${temp_root}/inspect-output" >/dev/null
 
 printf 'cloud-run control tests passed\n'
