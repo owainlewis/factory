@@ -130,6 +130,14 @@ export interface RoutineOverview {
   completed_last_24h: number;
   workers_online: number;
   workers_total: number;
+  run_metrics: {
+    window: "24h";
+    total_runs: number;
+    completed_runs: number;
+    completion_rate: number | null;
+    average_queue_time_seconds: number | null;
+    average_cycle_time_seconds: number | null;
+  };
   recent_work: WorkItem[] | null;
   upcoming_routines: Routine[] | null;
   generated_at: string;

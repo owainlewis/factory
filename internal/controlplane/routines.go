@@ -1170,7 +1170,10 @@ func (s *Store) Overview(ctx context.Context) (protocol.Overview, error) {
 	if err != nil {
 		return protocol.Overview{}, err
 	}
-	result := protocol.Overview{GeneratedAt: s.now().UTC()}
+	result := protocol.Overview{
+		GeneratedAt: s.now().UTC(),
+		RunMetrics:  protocol.OverviewRunMetrics{Window: "24h"},
+	}
 	result.RecentWork = page.Work
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT
@@ -1195,6 +1198,42 @@ func (s *Store) Overview(ctx context.Context) (protocol.Overview, error) {
 		result.GeneratedAt.Add(-24*time.Hour).UnixMilli()).Scan(
 		&result.ActiveWork, &result.NeedsAttention, &result.CompletedLast24H); err != nil {
 		return result, unavailable(err)
+	}
+	var averageQueueMillis, averageCycleMillis sql.NullFloat64
+	if err := s.db.QueryRowContext(ctx, `
+		WITH recent_work AS (
+			SELECT work.id, work.admitted_at, work.terminal_at,
+			       (SELECT MIN(attempt.started_at)
+			        FROM work_targets target
+			        JOIN executions execution ON execution.work_target_id = target.id
+			        JOIN attempts attempt ON attempt.execution_id = execution.id
+			        WHERE target.work_id = work.id AND attempt.started_at IS NOT NULL) AS first_started_at
+			FROM work
+			WHERE work.admitted_at >= ? AND work.admitted_at <= ?
+		)
+		SELECT COUNT(*),
+		       COALESCE(SUM(terminal_at IS NOT NULL), 0),
+		       AVG(CASE WHEN first_started_at IS NOT NULL
+		                THEN MAX(0, first_started_at - admitted_at) END),
+		       AVG(CASE WHEN terminal_at IS NOT NULL
+		                THEN MAX(0, terminal_at - admitted_at) END)
+		FROM recent_work
+	`, result.GeneratedAt.Add(-24*time.Hour).UnixMilli(), result.GeneratedAt.UnixMilli()).Scan(
+		&result.RunMetrics.TotalRuns, &result.RunMetrics.CompletedRuns,
+		&averageQueueMillis, &averageCycleMillis); err != nil {
+		return result, unavailable(err)
+	}
+	if result.RunMetrics.TotalRuns > 0 {
+		completionRate := float64(result.RunMetrics.CompletedRuns) / float64(result.RunMetrics.TotalRuns)
+		result.RunMetrics.CompletionRate = &completionRate
+	}
+	if averageQueueMillis.Valid {
+		averageQueueSeconds := averageQueueMillis.Float64 / float64(time.Second/time.Millisecond)
+		result.RunMetrics.AverageQueueTimeSeconds = &averageQueueSeconds
+	}
+	if averageCycleMillis.Valid {
+		averageCycleSeconds := averageCycleMillis.Float64 / float64(time.Second/time.Millisecond)
+		result.RunMetrics.AverageCycleTimeSeconds = &averageCycleSeconds
 	}
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(last_heartbeat >= ?), 0), COUNT(*) FROM workers

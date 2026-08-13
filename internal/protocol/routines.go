@@ -190,13 +190,23 @@ type WorkPage struct {
 	NextCursor string `json:"next_cursor,omitempty"`
 }
 
+type OverviewRunMetrics struct {
+	Window                  string   `json:"window"`
+	TotalRuns               int      `json:"total_runs"`
+	CompletedRuns           int      `json:"completed_runs"`
+	CompletionRate          *float64 `json:"completion_rate"`
+	AverageQueueTimeSeconds *float64 `json:"average_queue_time_seconds"`
+	AverageCycleTimeSeconds *float64 `json:"average_cycle_time_seconds"`
+}
+
 type Overview struct {
-	ActiveWork       int       `json:"active_work"`
-	NeedsAttention   int       `json:"needs_attention"`
-	CompletedLast24H int       `json:"completed_last_24h"`
-	WorkersOnline    int       `json:"workers_online"`
-	WorkersTotal     int       `json:"workers_total"`
-	RecentWork       []Work    `json:"recent_work"`
-	UpcomingRoutines []Routine `json:"upcoming_routines"`
-	GeneratedAt      time.Time `json:"generated_at"`
+	ActiveWork       int                `json:"active_work"`
+	NeedsAttention   int                `json:"needs_attention"`
+	CompletedLast24H int                `json:"completed_last_24h"`
+	WorkersOnline    int                `json:"workers_online"`
+	WorkersTotal     int                `json:"workers_total"`
+	RunMetrics       OverviewRunMetrics `json:"run_metrics"`
+	RecentWork       []Work             `json:"recent_work"`
+	UpcomingRoutines []Routine          `json:"upcoming_routines"`
+	GeneratedAt      time.Time          `json:"generated_at"`
 }

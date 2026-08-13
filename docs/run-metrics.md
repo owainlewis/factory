@@ -1,30 +1,19 @@
 # Run health metrics
 
-Factory's overview reports agent Jobs, not generic process or GitHub activity.
-Every metric uses one cohort: Jobs admitted during the selected time window after
-the Definition, repository, and Worker filters are applied. `All retained` has
-no lower time boundary.
+Factory's overview reports Routine runs, stored as Work. Performance metrics use
+one fixed cohort: Work admitted during the previous 24 hours. Operational status
+metrics such as active Work and Worker availability cover all retained records.
 
 | Metric | Formula |
 | --- | --- |
-| Active Jobs | Count of Jobs whose effective state is `queued`, `preparing`, or `running` |
-| Blocked Jobs | Count of Jobs whose effective state is `blocked` |
-| Succeeded Jobs | Count of Jobs whose effective state is `succeeded` |
-| Failed Jobs | Count of Jobs whose effective state is `failed` |
-| Success rate | Succeeded Jobs divided by succeeded plus failed Jobs; cancellations are excluded |
-| Average queue time | Mean of first agent start minus Job admission for Jobs that started |
-| Average cycle time | Mean of terminal time minus Job admission for terminal Jobs |
-| Throughput | Count of succeeded, failed, and cancelled Jobs in the cohort |
+| Runs | Count of Work admitted in the cohort |
+| Completed runs | Count of cohort Work with a terminal time |
+| Completion rate | Completed runs divided by all runs in the cohort |
+| Average queue time | Mean of first Target start minus Work admission for runs that started |
+| Average cycle time | Mean of terminal time minus Work admission for completed runs |
 
-The effective state comes from the Job's Execution after one exists, otherwise
-from the durable Job admission record. First start is the earliest stored
-Attempt start. Terminal time prefers the terminal Execution's update time, then
-the latest stored Attempt completion when an Execution transition time is not
-available, then the Job update time. The final fallback covers a blocked Job
-cancelled before an Execution exists. A retry does not create another Job and
-therefore does not inflate throughput.
-
-The overview returns at most the 100 most recently admitted matching Jobs for
-drill-down. Aggregate formulas include the full matching cohort. Filter choices
-come from retained Runs and Jobs, so archived Definitions and historical target
-identities remain understandable.
+The first start is the earliest stored Attempt start across the Work's Targets.
+The terminal time is set when every Target has reached a terminal state. A
+Target retry stays inside the same Work record, so it does not inflate the run
+count or rewrite the first start. Empty cohorts show `No data` for rates and
+durations instead of reporting a misleading zero.

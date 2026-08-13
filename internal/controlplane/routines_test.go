@@ -473,6 +473,11 @@ func TestOverviewHandlesFreshInstallAndRedactsUpcomingRoutines(t *testing.T) {
 	if err != nil || overview.WorkersOnline != 0 || overview.WorkersTotal != 0 {
 		t.Fatalf("fresh Overview = %#v, err %v", overview, err)
 	}
+	if overview.RunMetrics.Window != "24h" || overview.RunMetrics.TotalRuns != 0 ||
+		overview.RunMetrics.CompletionRate != nil || overview.RunMetrics.AverageQueueTimeSeconds != nil ||
+		overview.RunMetrics.AverageCycleTimeSeconds != nil {
+		t.Fatalf("fresh Overview run metrics = %#v", overview.RunMetrics)
+	}
 	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
 		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
@@ -493,6 +498,84 @@ func TestOverviewHandlesFreshInstallAndRedactsUpcomingRoutines(t *testing.T) {
 	summary := overview.UpcomingRoutines[0]
 	if summary.Prompt != "" || summary.Repositories != nil || summary.RepositoryCount != 1 {
 		t.Fatalf("Overview leaked Routine detail: %#v", summary)
+	}
+}
+
+func TestOverviewReportsRunPerformanceForWorkAdmittedInLastDay(t *testing.T) {
+	store := newTestStore(t)
+	base := time.Date(2026, time.August, 13, 9, 0, 0, 0, time.UTC)
+	now := base
+	store.now = func() time.Time { return now }
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	routine, err := store.CreateRoutine(context.Background(), protocol.SaveRoutineRequest{
+		Name: "Measured review", Prompt: "Review the repository.", Runtime: protocol.RuntimeCodex,
+		RepositoryIDs: []string{worker.Repositories[0].ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	measured, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "measured-run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = base.Add(20 * time.Second)
+	claim, err := store.Claim(context.Background(), worker.ID, protocol.ClaimRequest{RequestID: "measured-claim", LeaseToken: tokenA})
+	if err != nil || claim == nil {
+		t.Fatalf("claim = %#v, err %v", claim, err)
+	}
+	if _, err := store.StartAttempt(context.Background(), claim.Attempt.ID, protocol.StartAttemptRequest{LeaseToken: tokenA}); err != nil {
+		t.Fatal(err)
+	}
+	now = base.Add(30 * time.Second)
+	if _, err := store.CompleteAttempt(context.Background(), claim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "failed", Error: "Retry this run.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now = base.Add(35 * time.Second)
+	if _, err := store.HeartbeatWorker(context.Background(), worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RetryWorkTarget(context.Background(), measured.Work.ID, measured.Targets[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	now = base.Add(50 * time.Second)
+	retryClaim, err := store.Claim(context.Background(), worker.ID, protocol.ClaimRequest{RequestID: "retry-claim", LeaseToken: tokenA})
+	if err != nil || retryClaim == nil {
+		t.Fatalf("retry claim = %#v, err %v", retryClaim, err)
+	}
+	if _, err := store.StartAttempt(context.Background(), retryClaim.Attempt.ID, protocol.StartAttemptRequest{LeaseToken: tokenA}); err != nil {
+		t.Fatal(err)
+	}
+	now = base.Add(60 * time.Second)
+	if _, err := store.CompleteAttempt(context.Background(), retryClaim.Attempt.ID, protocol.CompleteAttemptRequest{
+		LeaseToken: tokenA, State: "succeeded", Result: "Done.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now = base.Add(70 * time.Second)
+	if _, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "active-run"}); err != nil {
+		t.Fatal(err)
+	}
+	now = base.Add(90 * time.Second)
+	overview, err := store.Overview(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics := overview.RunMetrics
+	if metrics.Window != "24h" || metrics.TotalRuns != 2 || metrics.CompletedRuns != 1 {
+		t.Fatalf("run metric counts = %#v", metrics)
+	}
+	if metrics.CompletionRate == nil || *metrics.CompletionRate != 0.5 {
+		t.Fatalf("completion rate = %#v", metrics.CompletionRate)
+	}
+	if metrics.AverageQueueTimeSeconds == nil || *metrics.AverageQueueTimeSeconds != 20 {
+		t.Fatalf("average queue time = %#v", metrics.AverageQueueTimeSeconds)
+	}
+	if metrics.AverageCycleTimeSeconds == nil || *metrics.AverageCycleTimeSeconds != 60 {
+		t.Fatalf("average cycle time = %#v", metrics.AverageCycleTimeSeconds)
 	}
 }
 

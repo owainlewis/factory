@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2, Clock3, Play, Users } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock3, Gauge, Play, Timer, Users } from "lucide-react";
 import type { ReactNode } from "react";
 import { api } from "./api";
 import { duration, timeAgo, timeUntil } from "./format";
@@ -17,6 +17,18 @@ export function RoutineOverview({ onWork, onRoutine }: { onWork: (id: string) =>
       <Fact icon={<AlertTriangle size={15} />} label="Needs attention" value={overview.needs_attention} tone={overview.needs_attention ? "danger" : undefined} />
       <Fact icon={<CheckCircle2 size={15} />} label="Completed · 24h" value={overview.completed_last_24h} />
       <Fact icon={<Users size={15} />} label="Workers online" value={`${overview.workers_online}/${overview.workers_total}`} />
+    </section>
+    <section aria-labelledby="run-performance-title">
+      <div className="overview-section-heading">
+        <div><span className="eyebrow">LAST 24 HOURS</span><h2 id="run-performance-title">Run performance</h2></div>
+        <span>{overview.run_metrics.completed_runs} completed</span>
+      </div>
+      <div className="overview-facts overview-run-metrics">
+        <Fact icon={<Gauge size={15} />} label="Runs" value={overview.run_metrics.total_runs} />
+        <Fact icon={<CheckCircle2 size={15} />} label="Completion rate" value={formatRate(overview.run_metrics.completion_rate)} />
+        <Fact icon={<Clock3 size={15} />} label="Average queue time" value={formatSeconds(overview.run_metrics.average_queue_time_seconds)} />
+        <Fact icon={<Timer size={15} />} label="Average cycle time" value={formatSeconds(overview.run_metrics.average_cycle_time_seconds)} />
+      </div>
     </section>
     <div className="overview-columns">
       <section className="panel clean-panel">
@@ -45,4 +57,18 @@ export function RoutineOverview({ onWork, onRoutine }: { onWork: (id: string) =>
 
 function Fact({ icon, label, value, tone }: { icon: ReactNode; label: string; value: string | number; tone?: string }) {
   return <div className={`overview-fact ${tone ?? ""}`}><span>{icon}{label}</span><strong>{value}</strong></div>;
+}
+
+function formatRate(value: number | null): string {
+  if (value === null) return "No data";
+  return new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 1 }).format(value);
+}
+
+function formatSeconds(value: number | null): string {
+  if (value === null) return "No data";
+  const seconds = Math.max(0, Math.round(value));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
