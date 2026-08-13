@@ -47,15 +47,15 @@ if [[ ! "$execution_name" =~ ^projects/${project_id}/locations/${region}/jobs/${
 fi
 
 verify_archive() {
-    local archive_path="$1"
+    local verified_archive_path="$1"
     local archive_listing expected_listing artifact_name expected_digest actual_digest
-    archive_listing="$(tar -tzf "$archive_path")"
+    archive_listing="$(tar -tzf "$verified_archive_path")"
     expected_listing=$'manifest.json\nresult.json\nchanges.patch\nstatus.txt\nevents.jsonl'
     if [[ "$archive_listing" != "$expected_listing" ]]; then
         printf 'result archive contains unexpected paths\n' >&2
         return 1
     fi
-    tar -xzf "$archive_path" -C "$attempt_output"
+    tar -xzf "$verified_archive_path" -C "$attempt_output"
     for artifact_name in result.json changes.patch status.txt events.jsonl; do
         expected_digest="$(jq -er --arg name "$artifact_name" '.files[$name]' "${attempt_output}/manifest.json")"
         if command -v sha256sum >/dev/null 2>&1; then

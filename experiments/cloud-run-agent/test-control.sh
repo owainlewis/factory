@@ -24,6 +24,7 @@ resolved_commit="$("${script_dir}/resolve-git-ref.sh" "$source_repo" annotated)"
 
 readonly fake_bin="${temp_root}/bin"
 readonly output_root="${temp_root}/results"
+readonly fake_archive="${temp_root}/attempt-result.tar.gz"
 mkdir -p "$fake_bin"
 
 cat > "${fake_bin}/gcloud" <<'EOF'
@@ -34,7 +35,9 @@ if [[ "$1 $2 $3" == "auth print-access-token " ]]; then
     exit 0
 fi
 if [[ "$1 $2" == "storage cp" ]]; then
-    [[ "$3" != gs://* ]] || exit 1
+    if [[ "$3" == gs://* ]]; then
+        cp "${FAKE_RESULT_ARCHIVE:?}" "$4"
+    fi
     exit 0
 fi
 printf 'unexpected gcloud call: %s\n' "$*" >&2
@@ -75,6 +78,25 @@ readonly launch_path="${output_root}/attempt-launch-record/launch.json"
 [[ "$(jq -r '.commit' "$launch_path")" == "$source_commit" ]]
 grep -F -- 'Resume:' "${temp_root}/execute-output" >/dev/null
 
+readonly result_fixture="${temp_root}/result-fixture"
+mkdir -p "$result_fixture"
+printf '%s\n' '{"attempt_id":"attempt-launch-record"}' > "${result_fixture}/result.json"
+: > "${result_fixture}/changes.patch"
+: > "${result_fixture}/status.txt"
+: > "${result_fixture}/events.jsonl"
+digest_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+jq -nc \
+    --arg attempt_id attempt-launch-record \
+    --arg commit "$source_commit" \
+    --arg result "$(digest_file "${result_fixture}/result.json")" \
+    --arg patch "$(digest_file "${result_fixture}/changes.patch")" \
+    --arg status "$(digest_file "${result_fixture}/status.txt")" \
+    --arg events "$(digest_file "${result_fixture}/events.jsonl")" \
+    '{version:1,attempt_id:$attempt_id,commit:$commit,files:{"result.json":$result,"changes.patch":$patch,"status.txt":$status,"events.jsonl":$events}}' \
+    > "${result_fixture}/manifest.json"
+tar -czf "$fake_archive" -C "$result_fixture" \
+    manifest.json result.json changes.patch status.txt events.jsonl
+
 cat > "${fake_bin}/curl" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -86,7 +108,7 @@ printf '%s' "$counter" > "$counter_path"
 if (( counter == 1 )); then
     printf '%s\n' '{"name":"projects/factory-505220/locations/europe-west1/jobs/factory-agent-experiment/executions/execution-test","conditions":[{"type":"Completed","state":"CONDITION_RECONCILING"}]}'
 else
-    printf '%s\n' '{"name":"projects/factory-505220/locations/europe-west1/jobs/factory-agent-experiment/executions/execution-test","conditions":[{"type":"Completed","state":"CONDITION_FAILED"}]}'
+    printf '%s\n' '{"name":"projects/factory-505220/locations/europe-west1/jobs/factory-agent-experiment/executions/execution-test","conditions":[{"type":"Completed","state":"CONDITION_SUCCEEDED"}]}'
 fi
 EOF
 chmod 0755 "${fake_bin}/curl"
@@ -98,11 +120,13 @@ OUTPUT_ROOT="$output_root" \
 WAIT_SECONDS=10 \
 DELETE_EXECUTION_ON_TERMINAL=false \
 FAKE_CURL_COUNTER="${temp_root}/curl-counter" \
+FAKE_RESULT_ARCHIVE="$fake_archive" \
     "${script_dir}/inspect.sh" attempt-launch-record > "${temp_root}/inspect-output" 2>&1
 inspect_exit="$?"
 set -e
-[[ "$inspect_exit" -eq 1 ]]
+[[ "$inspect_exit" -eq 0 ]]
 [[ "$(cat "${temp_root}/curl-counter")" -eq 2 ]]
-grep -F -- 'CONDITION_FAILED' "${temp_root}/inspect-output" >/dev/null
+grep -F -- 'Verified result:' "${temp_root}/inspect-output" >/dev/null
+[[ "$(jq -r '.state' "${output_root}/attempt-launch-record/execution.json")" == CONDITION_SUCCEEDED ]]
 
 printf 'cloud-run control tests passed\n'
