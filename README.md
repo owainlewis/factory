@@ -1,5 +1,10 @@
 # Factory
 
+**Developer preview**
+
+Factory is currently in *developer preview* and is iterating rapidly.
+**THERE WILL BE COMPATIBILITY-BREAKING CHANGES.**
+
 Factory runs repeatable software-engineering Work across Git repositories and
 compute. Operators save prompts as Routines, run them now, or schedule them
 across one or more repositories. Its Go control plane coordinates Work and a
