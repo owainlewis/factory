@@ -79,6 +79,50 @@ readonly launch_path="${output_root}/attempt-launch-record/launch.json"
 [[ "$(jq -r '.commit' "$launch_path")" == "$source_commit" ]]
 grep -F -- 'Resume:' "${temp_root}/execute-output" >/dev/null
 
+cat > "${fake_bin}/curl" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+url="${!#}"
+case "$url" in
+    *:run)
+        [[ -s "${EXPECTED_LAUNCH_PATH:?}" ]]
+        [[ "$(jq -r '.dispatch_state' "$EXPECTED_LAUNCH_PATH")" == dispatching ]]
+        exit 28
+        ;;
+    *'/executions?pageSize=100')
+        jq -nc '{executions:[{name:"projects/factory-505220/locations/europe-west1/jobs/factory-agent-experiment/executions/execution-reconciled",template:{containers:[{env:[{name:"ATTEMPT_ID",value:"attempt-dispatch-recovery"},{name:"INPUT_URI",value:"gs://factory-505220-factory-agent-artifacts/attempts/attempt-dispatch-recovery/input.json"},{name:"OUTPUT_URI",value:"gs://factory-505220-factory-agent-artifacts/attempts/attempt-dispatch-recovery/attempt-result.tar.gz"}]}]}}]}'
+        ;;
+    *'/executions/execution-reconciled')
+        jq -nc '{name:"projects/factory-505220/locations/europe-west1/jobs/factory-agent-experiment/executions/execution-reconciled",conditions:[{type:"Completed",state:"CONDITION_FAILED"}]}'
+        ;;
+    *)
+        printf 'unexpected curl URL: %s\n' "$url" >&2
+        exit 1
+        ;;
+esac
+EOF
+chmod 0755 "${fake_bin}/curl"
+
+readonly recovered_launch_path="${output_root}/attempt-dispatch-recovery/launch.json"
+set +e
+PATH="${fake_bin}:$PATH" \
+PROJECT_ID=factory-505220 \
+GIT_COMMIT="$source_commit" \
+ATTEMPT_ID=attempt-dispatch-recovery \
+OUTPUT_ROOT="$output_root" \
+WAIT_SECONDS=10 \
+DELETE_EXECUTION_ON_TERMINAL=false \
+FAKE_ARTIFACT_MISSING=1 \
+EXPECTED_LAUNCH_PATH="$recovered_launch_path" \
+    "${script_dir}/execute.sh" "${temp_root}/prompt.txt" > "${temp_root}/dispatch-recovery-output" 2>&1
+dispatch_recovery_exit="$?"
+set -e
+[[ "$dispatch_recovery_exit" -eq 1 ]]
+[[ "$(jq -r '.dispatch_state' "$recovered_launch_path")" == reconciled ]]
+[[ "$(jq -r '.execution' "$recovered_launch_path")" == execution-reconciled ]]
+grep -F -- 'RunJob response was lost; reconciling by Attempt ID.' "${temp_root}/dispatch-recovery-output" >/dev/null
+grep -F -- 'Reconciled execution: execution-reconciled' "${temp_root}/dispatch-recovery-output" >/dev/null
+
 readonly result_fixture="${temp_root}/result-fixture"
 mkdir -p "$result_fixture"
 printf '%s\n' '{"attempt_id":"attempt-launch-record"}' > "${result_fixture}/result.json"

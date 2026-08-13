@@ -65,6 +65,9 @@ fi
 readonly input_uri="gs://${artifact_bucket}/attempts/${attempt_id}/input.json"
 readonly output_uri="gs://${artifact_bucket}/attempts/${attempt_id}/attempt-result.tar.gz"
 readonly input_path="${temp_root}/input.json"
+readonly attempt_output="${output_root}/${attempt_id}"
+readonly launch_path="${attempt_output}/launch.json"
+mkdir -p "$attempt_output"
 
 jq -nc \
     --arg attempt_id "$attempt_id" \
@@ -81,6 +84,17 @@ gcloud storage cp "$input_path" "$input_uri" \
     --if-generation-match 0 \
     --project "$project_id" --quiet
 
+jq -n \
+    --arg project "$project_id" \
+    --arg region "$region" \
+    --arg job "$job_name" \
+    --arg attempt "$attempt_id" \
+    --arg commit "$git_commit" \
+    --arg input_uri "$input_uri" \
+    --arg output_uri "$output_uri" \
+    '{version: 1, project: $project, region: $region, job: $job, attempt: $attempt, execution_name: null, execution: null, commit: $commit, input_uri: $input_uri, output_uri: $output_uri, dispatch_state: "dispatching"}' \
+    > "$launch_path"
+
 readonly request_body="$(
     jq -nc \
         --arg attempt_id "$attempt_id" \
@@ -90,37 +104,35 @@ readonly request_body="$(
 )"
 readonly access_token="$(gcloud auth print-access-token)"
 readonly run_url="https://run.googleapis.com/v2/projects/${project_id}/locations/${region}/jobs/${job_name}:run"
-readonly run_response="$(
+run_response=''
+run_response_received=false
+if run_response="$(
     curl --fail-with-body --silent --show-error \
         --request POST \
         --header "Authorization: Bearer ${access_token}" \
         --header 'Content-Type: application/json' \
         --data "$request_body" \
         "$run_url"
-)"
-readonly execution_name="$(jq -er '.metadata.name' <<< "$run_response")"
-readonly execution_id="${execution_name##*/}"
-readonly attempt_output="${output_root}/${attempt_id}"
-mkdir -p "$attempt_output"
-
-jq -n \
-    --arg project "$project_id" \
-    --arg region "$region" \
-    --arg job "$job_name" \
-    --arg attempt "$attempt_id" \
-    --arg execution_name "$execution_name" \
-    --arg execution "$execution_id" \
-    --arg commit "$git_commit" \
-    --arg input_uri "$input_uri" \
-    --arg output_uri "$output_uri" \
-    '{version: 1, project: $project, region: $region, job: $job, attempt: $attempt, execution_name: $execution_name, execution: $execution, commit: $commit, input_uri: $input_uri, output_uri: $output_uri}' \
-    > "${attempt_output}/launch.json"
+)"; then
+    run_response_received=true
+    execution_name="$(jq -er '.metadata.name' <<< "$run_response")"
+    execution_id="${execution_name##*/}"
+    launch_update="$(mktemp "${attempt_output}/launch.XXXXXX")"
+    jq --arg execution_name "$execution_name" --arg execution "$execution_id" \
+        '.execution_name = $execution_name | .execution = $execution | .dispatch_state = "accepted"' \
+        "$launch_path" > "$launch_update"
+    mv "$launch_update" "$launch_path"
+fi
 
 printf 'Attempt: %s\n' "$attempt_id"
 printf 'Commit: %s\n' "$git_commit"
-printf 'Execution started: %s\n' "$execution_id"
+if [[ "$run_response_received" == true ]]; then
+    printf 'Execution started: %s\n' "$execution_id"
+else
+    printf 'RunJob response was lost; reconciling by Attempt ID.\n' >&2
+fi
 printf 'Input: %s\n' "$input_uri"
-printf 'Launch record: %s\n' "${attempt_output}/launch.json"
+printf 'Launch record: %s\n' "$launch_path"
 printf 'Resume: PROJECT_ID=%s OUTPUT_ROOT=%q %q %q\n' \
     "$project_id" "$output_root" "${script_dir}/inspect.sh" "$attempt_id"
 

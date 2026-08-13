@@ -30,8 +30,6 @@ readonly launch_project="$(jq -er '.project' "$launch_path")"
 readonly region="$(jq -er '.region' "$launch_path")"
 readonly job_name="$(jq -er '.job' "$launch_path")"
 readonly recorded_attempt="$(jq -er '.attempt' "$launch_path")"
-readonly execution_name="$(jq -er '.execution_name' "$launch_path")"
-readonly execution_id="$(jq -er '.execution' "$launch_path")"
 readonly git_commit="$(jq -er '.commit' "$launch_path")"
 readonly input_uri="$(jq -er '.input_uri' "$launch_path")"
 readonly output_uri="$(jq -er '.output_uri' "$launch_path")"
@@ -40,10 +38,69 @@ if [[ "$launch_project" != "$project_id" || "$recorded_attempt" != "$attempt_id"
     printf 'launch record identity does not match this inspection\n' >&2
     exit 2
 fi
-if [[ ! "$execution_name" =~ ^projects/${project_id}/locations/${region}/jobs/${job_name}/executions/${execution_id}$ ]] \
-    || [[ ! "$git_commit" =~ ^[0-9a-f]{40}$ ]]; then
-    printf 'launch record contains an invalid execution or commit identity\n' >&2
+if [[ ! "$git_commit" =~ ^[0-9a-f]{40}$ ]]; then
+    printf 'launch record contains an invalid commit identity\n' >&2
     exit 2
+fi
+
+readonly access_token="$(gcloud auth print-access-token)"
+execution_name="$(jq -r '.execution_name // ""' "$launch_path")"
+execution_id="$(jq -r '.execution // ""' "$launch_path")"
+
+find_execution() {
+    local page_token='' list_url list_response match next_page_token
+    while true; do
+        list_url="https://run.googleapis.com/v2/projects/${project_id}/locations/${region}/jobs/${job_name}/executions?pageSize=100"
+        if [[ -n "$page_token" ]]; then
+            list_url="${list_url}&pageToken=$(jq -rn --arg value "$page_token" '$value | @uri')"
+        fi
+        list_response="$(
+            curl --fail-with-body --silent --show-error \
+                --header "Authorization: Bearer ${access_token}" \
+                "$list_url"
+        )"
+        match="$(
+            jq -r \
+                --arg attempt "$attempt_id" \
+                --arg input "$input_uri" \
+                --arg output "$output_uri" '
+                first(.executions[]? | select(
+                    any(.template.containers[].env[]?; .name == "ATTEMPT_ID" and .value == $attempt)
+                    and any(.template.containers[].env[]?; .name == "INPUT_URI" and .value == $input)
+                    and any(.template.containers[].env[]?; .name == "OUTPUT_URI" and .value == $output)
+                ) | .name) // ""
+                ' <<< "$list_response"
+        )"
+        if [[ -n "$match" ]]; then
+            printf '%s\n' "$match"
+            return 0
+        fi
+        next_page_token="$(jq -r '.nextPageToken // ""' <<< "$list_response")"
+        [[ -n "$next_page_token" ]] || return 1
+        page_token="$next_page_token"
+    done
+}
+
+if [[ -z "$execution_name" ]]; then
+    readonly reconcile_count="$((wait_seconds / 5 + 1))"
+    for _reconcile_index in $(seq 1 "$reconcile_count"); do
+        if execution_name="$(find_execution)"; then
+            execution_id="${execution_name##*/}"
+            launch_update="$(mktemp "${attempt_output}/launch.XXXXXX")"
+            jq --arg execution_name "$execution_name" --arg execution "$execution_id" \
+                '.execution_name = $execution_name | .execution = $execution | .dispatch_state = "reconciled"' \
+                "$launch_path" > "$launch_update"
+            mv "$launch_update" "$launch_path"
+            printf 'Reconciled execution: %s\n' "$execution_id"
+            break
+        fi
+        sleep 5
+    done
+fi
+readonly execution_name execution_id
+if [[ ! "$execution_name" =~ ^projects/${project_id}/locations/${region}/jobs/${job_name}/executions/${execution_id}$ ]]; then
+    printf 'No matching Cloud Run execution is visible yet; retry this inspect command.\n' >&2
+    exit 1
 fi
 
 verify_archive() {
@@ -75,7 +132,6 @@ verify_archive() {
     fi
 }
 
-readonly access_token="$(gcloud auth print-access-token)"
 readonly execution_url="https://run.googleapis.com/v2/${execution_name}"
 completion_state=CONDITION_PENDING
 execution_response='{}'
