@@ -154,17 +154,31 @@ func TestExecutionProfileRunReplayIncludesManualOverride(t *testing.T) {
 	}); !serviceErrorCode(err, "request_key_conflict") {
 		t.Fatalf("changed override replay error = %v", err)
 	}
-	persistent, wasCreated, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{
-		RequestKey: "persistent-replay",
+}
+
+func TestPersistentAutoManualOverrideBeatsCloudRoutineDefault(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
-	if err != nil || !wasCreated {
-		t.Fatalf("persistent create = %#v, %v, %v", persistent, wasCreated, err)
+	profile := createFakeProfile(t, store, "Cloud default", protocol.RuntimeCodex, "succeeded")
+	routine, err := store.CreateRoutine(context.Background(), protocol.SaveRoutineRequest{
+		Name: "Persistent override", Prompt: "Review the repository.", Runtime: protocol.RuntimeCodex,
+		TimeoutSeconds: 3600, ConcurrencyLimit: 1, RepositoryIDs: []string{worker.Repositories[0].ID},
+		ExecutionProfileID: profile.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	replayed, wasCreated, err = store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{
-		RequestKey: "persistent-replay", ExecutionProfileID: protocol.PersistentAutoProfileID,
+	work, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{
+		RequestKey: "persistent-override", ExecutionProfileID: protocol.PersistentAutoProfileID,
 	})
-	if err != nil || wasCreated || replayed.Work.ID != persistent.Work.ID {
-		t.Fatalf("persistent sentinel replay = %#v, %v, %v", replayed, wasCreated, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work.Work.Execution.ProfileID != protocol.PersistentAutoProfileID ||
+		work.Work.Execution.Backend != protocol.BackendPersistent || work.Targets[0].AssignedWorkerID != worker.ID {
+		t.Fatalf("persistent manual override = %#v", work)
 	}
 }
 
@@ -279,6 +293,55 @@ func TestFakeCloudDoesNotStartQueuedWorkWhileProfileIsUnready(t *testing.T) {
 	if work.Work.State != protocol.WorkSucceeded || work.Work.Execution.ProfileVersion != 1 ||
 		len(work.Targets[0].Attempts) != 1 {
 		t.Fatalf("re-enabled frozen Work = %#v", work)
+	}
+}
+
+func TestFakeCloudDoesNotReleaseOrRetryDisabledRepository(t *testing.T) {
+	store := newTestStore(t)
+	repository, _, err := store.CreateManagedRepository(context.Background(), protocol.CreateManagedRepositoryRequest{
+		RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := createFakeProfile(t, store, "Repository gate", protocol.RuntimeCodex, "failed")
+	routine := createProfileRoutine(t, store, repository.ID, profile.ID)
+
+	queued, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "disable-before-dispatch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetManagedRepositoryEnabled(context.Background(), repository.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := store.DispatchFakeCloud(context.Background(), 10); err != nil || processed != 0 {
+		t.Fatalf("disabled repository release = %d, err %v", processed, err)
+	}
+	queued, _ = store.Work(context.Background(), queued.Work.ID)
+	if queued.Work.State != protocol.WorkBlocked || queued.Targets[0].BlockedReason != "Repository is disabled." ||
+		len(queued.Targets[0].Attempts) != 0 {
+		t.Fatalf("disabled queued Work = %#v", queued)
+	}
+
+	if _, err := store.SetManagedRepositoryEnabled(context.Background(), repository.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	failed, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "disable-before-retry"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+	failed, _ = store.Work(context.Background(), failed.Work.ID)
+	if failed.Work.State != protocol.WorkFailed {
+		t.Fatalf("failed Work before retry = %#v", failed)
+	}
+	if _, err := store.SetManagedRepositoryEnabled(context.Background(), repository.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RetryWorkTarget(context.Background(), failed.Work.ID, failed.Targets[0].ID); !serviceErrorCode(err, "repository_not_available") {
+		t.Fatalf("retry with disabled repository error = %v", err)
 	}
 }
 

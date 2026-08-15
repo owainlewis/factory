@@ -540,9 +540,6 @@ func (s *Store) Routine(ctx context.Context, id string) (protocol.Routine, error
 func (s *Store) RunRoutine(ctx context.Context, id string, input protocol.RunRoutineRequest) (protocol.WorkDetail, bool, error) {
 	input.RequestKey = strings.TrimSpace(input.RequestKey)
 	input.ExecutionProfileID = strings.TrimSpace(input.ExecutionProfileID)
-	if input.ExecutionProfileID == protocol.PersistentAutoProfileID {
-		input.ExecutionProfileID = ""
-	}
 	if input.RequestKey == "" || len(input.RequestKey) > 200 {
 		return protocol.WorkDetail{}, false, invalid("invalid_request_key", "request_key is required and limited to 200 bytes")
 	}
@@ -1248,6 +1245,22 @@ func (s *Store) RetryWorkTarget(ctx context.Context, expectedWorkID, targetID st
 		}
 		assignedWorkerID = selection.workerID
 	} else {
+		var repositoryAvailable int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS(
+				SELECT 1 FROM repositories repository
+				WHERE repository.id = ? AND repository.remote_identity = ?
+				  AND (repository.centrally_managed = 0 OR repository.enabled = 1)
+			)
+		`, repositoryID, identity).Scan(&repositoryAvailable); err != nil {
+			return protocol.WorkDetail{}, unavailable(err)
+		}
+		if repositoryAvailable == 0 {
+			return protocol.WorkDetail{}, conflict(
+				"repository_not_available",
+				"the frozen repository is disabled, unavailable, or no longer matches its admitted identity",
+			)
+		}
 		var available int
 		if err := tx.QueryRowContext(ctx, `
 			SELECT EXISTS(

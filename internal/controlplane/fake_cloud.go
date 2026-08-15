@@ -135,12 +135,14 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		SELECT target.id, target.execution_profile_id, target.required_runtime
 		FROM work_targets target
 		JOIN work ON work.id = target.work_id
+		JOIN repositories repository ON repository.id = target.repository_id
 		JOIN execution_profiles profile ON profile.id = target.execution_profile_id
 		JOIN execution_profile_versions version
 		  ON version.profile_id = target.execution_profile_id
 		 AND version.version = target.execution_profile_version
 		WHERE target.execution_backend = 'fake_cloud_run'
 		  AND target.state = 'blocked'
+		  AND (repository.centrally_managed = 0 OR repository.enabled = 1)
 		  AND profile.enabled = 1 AND profile.healthy = 1
 		  AND version.runtime = target.required_runtime
 		  AND (
