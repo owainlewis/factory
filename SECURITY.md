@@ -18,7 +18,7 @@ request CI scans that exact minimum. The weekly security workflow scans the
 minimum and latest available Go 1.25 patch plus the minimum and latest Go 1.26
 patch, then opens a pull request updating `go.mod` and the matching documentation
 when a newer Go 1.25 patch is available. The minimum supported toolchains are Go
-1.25.12 on the 1.25 release line and Go 1.26.5 on the 1.26 release line. Raise
+1.25.13 on the 1.25 release line and Go 1.26.6 on the 1.26 release line. Raise
 these minimums when a later Go security release
 affects Factory.
 

@@ -12,7 +12,7 @@ Use [WORKFLOW.md](WORKFLOW.md) for project statuses and repository labels.
 
 Install:
 
-- Go 1.25.12 or newer on the 1.25 release line, or Go 1.26.5 or newer
+- Go 1.25.13 or newer on the 1.25 release line, or Go 1.26.6 or newer
 - Git
 - just
 - Node.js 22.22.2 or newer on the 22 release line, Node.js 24.15.0 or newer,

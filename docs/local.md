@@ -4,7 +4,7 @@ This guide starts one control plane and one worker on macOS or Linux.
 
 ## Requirements
 
-- Go 1.25.12 or newer on the 1.25 release line, or Go 1.26.5 or newer
+- Go 1.25.13 or newer on the 1.25 release line, or Go 1.26.6 or newer
 - Git
 - `curl`
 - `just`
