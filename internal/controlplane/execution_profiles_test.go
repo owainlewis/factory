@@ -243,6 +243,46 @@ func TestFakeCloudCancellationIsFactoryOwned(t *testing.T) {
 	}
 }
 
+func TestFakeCloudRunningAttemptHonorsFrozenTimeout(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	profile, err := store.CreateExecutionProfile(context.Background(), protocol.SaveExecutionProfileRequest{
+		Name: "Timed cloud", Kind: protocol.BackendFakeCloudRun, Runtime: protocol.RuntimeCodex,
+		Provider: "openrouter", Model: "deepseek/test", TimeoutSeconds: 1,
+		ResourceClass: "1cpu-2gib", MaxConcurrent: 1, Enabled: true, Healthy: true,
+		FakeOutcome: "running",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	routine := createProfileRoutine(t, store, worker.Repositories[0].ID, profile.ID)
+	work, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "timeout-cloud"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+	work, _ = store.Work(context.Background(), work.Work.ID)
+	if work.Work.State != protocol.WorkRunning || work.Targets[0].TimeoutSeconds != 1 {
+		t.Fatalf("running fake Attempt = %#v", work)
+	}
+
+	now = now.Add(2 * time.Second)
+	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+	work, _ = store.Work(context.Background(), work.Work.ID)
+	if work.Work.State != protocol.WorkFailed || work.Targets[0].FailureReason != fakeCloudTimeoutReason ||
+		len(work.Targets[0].Attempts) != 1 || work.Targets[0].Attempts[0].State != "failed" {
+		t.Fatalf("timed-out fake Attempt = %#v", work)
+	}
+}
+
 func TestUnhealthyAndIncompatibleProfilesBlockWithoutAttempt(t *testing.T) {
 	store := newTestStore(t)
 	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
@@ -273,6 +313,63 @@ func TestUnhealthyAndIncompatibleProfilesBlockWithoutAttempt(t *testing.T) {
 			work.Targets[0].AssignedWorkerID != "" || !strings.Contains(work.Targets[0].BlockedReason, test.reason) {
 			t.Fatalf("blocked profile Work = %#v", work)
 		}
+	}
+}
+
+func TestFakeCloudProfileBlockedWorkRecoversWhenProfileIsReady(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		enabled       bool
+		healthy       bool
+		healthReason  string
+		blockedReason string
+	}{
+		{name: "disabled", enabled: false, healthy: true, blockedReason: "is disabled"},
+		{name: "unhealthy", enabled: true, healthy: false, healthReason: "model secret missing", blockedReason: "model secret missing"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := newTestStore(t)
+			worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+				Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+			})
+			profile, err := store.CreateExecutionProfile(context.Background(), protocol.SaveExecutionProfileRequest{
+				Name: "Recovering cloud", Kind: protocol.BackendFakeCloudRun, Runtime: protocol.RuntimeCodex,
+				Provider: "openrouter", Model: "deepseek/frozen", TimeoutSeconds: 900,
+				ResourceClass: "1cpu-2gib", MaxConcurrent: 1, Enabled: test.enabled, Healthy: test.healthy,
+				HealthReason: test.healthReason, FakeOutcome: "succeeded", FakeResult: "frozen result",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			routine := createProfileRoutine(t, store, worker.Repositories[0].ID, profile.ID)
+			work, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "recover-cloud"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if work.Work.State != protocol.WorkBlocked || len(work.Targets[0].Attempts) != 0 ||
+				!strings.Contains(work.Targets[0].BlockedReason, test.blockedReason) {
+				t.Fatalf("profile-blocked Work = %#v", work)
+			}
+
+			updated, err := store.UpdateExecutionProfile(context.Background(), profile.ID, protocol.SaveExecutionProfileRequest{
+				Name: profile.Name, Kind: profile.Kind, Runtime: profile.Runtime, Provider: profile.Provider,
+				Model: "deepseek/current", TimeoutSeconds: profile.TimeoutSeconds, ResourceClass: profile.ResourceClass,
+				MaxConcurrent: profile.MaxConcurrent, Enabled: true, Healthy: true, FakeOutcome: "failed",
+				FakeError: "new version result", ExpectedVersion: profile.Version,
+			})
+			if err != nil || updated.Version != 2 {
+				t.Fatalf("profile recovery = %#v, err %v", updated, err)
+			}
+			if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
+				t.Fatal(err)
+			}
+			work, _ = store.Work(context.Background(), work.Work.ID)
+			if work.Work.State != protocol.WorkSucceeded || work.Work.Execution.ProfileVersion != 1 ||
+				work.Work.Execution.Model != "deepseek/frozen" || work.Targets[0].Result != "frozen result" ||
+				len(work.Targets[0].Attempts) != 1 {
+				t.Fatalf("recovered frozen Work = %#v", work)
+			}
+		})
 	}
 }
 
@@ -355,5 +452,9 @@ func TestOverviewUsesSyntheticWorkerHealthForOnlineState(t *testing.T) {
 	overview, err = store.Overview(context.Background())
 	if err != nil || overview.WorkersTotal != 1 || overview.WorkersOnline != 0 {
 		t.Fatalf("unhealthy synthetic Overview = %#v, err %v", overview, err)
+	}
+	worker, err = store.Worker(context.Background(), profile.SyntheticWorkerID)
+	if err != nil || worker.Online {
+		t.Fatalf("unhealthy synthetic Worker = %#v, err %v", worker, err)
 	}
 }

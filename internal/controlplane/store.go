@@ -1927,7 +1927,8 @@ func scanWorker(row scanner, now time.Time) (protocol.Worker, error) {
 	}
 	worker.RegisteredAt = fromMillis(registered)
 	worker.LastHeartbeat = fromMillis(heartbeat)
-	worker.Online = worker.Synthetic && worker.Health == "healthy" || now.Sub(worker.LastHeartbeat) <= protocol.WorkerOnlineWindow
+	worker.Online = worker.Synthetic && worker.Health == "healthy" ||
+		!worker.Synthetic && now.Sub(worker.LastHeartbeat) <= protocol.WorkerOnlineWindow
 	return worker, nil
 }
 

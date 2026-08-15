@@ -10,7 +10,10 @@ import (
 	"github.com/owainlewis/factory/internal/protocol"
 )
 
-const fakeCloudPollInterval = 100 * time.Millisecond
+const (
+	fakeCloudPollInterval  = 100 * time.Millisecond
+	fakeCloudTimeoutReason = "Execution timed out."
+)
 
 // RunFakeCloudDispatcher drives the deterministic fake cloud backend through
 // the same durable lifecycle tables as persistent Workers.
@@ -86,6 +89,32 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		return false, unavailable(err)
 	}
 
+	// The frozen Target timeout bounds the fake execution just as it will bound
+	// the real cloud wrapper. Resolve timeout before extending the lease.
+	var timedOutAttempt, timedOutExecution string
+	err = tx.QueryRowContext(ctx, `
+		SELECT attempt.id, execution.id
+		FROM attempts attempt
+		JOIN executions execution ON execution.id = attempt.execution_id
+		JOIN work_targets target ON target.id = execution.work_target_id
+		WHERE target.execution_backend = 'fake_cloud_run'
+		  AND attempt.state IN ('preparing', 'running')
+		  AND attempt.started_at + (target.timeout_seconds * 1000) <= ?
+		ORDER BY attempt.started_at, attempt.id LIMIT 1
+	`, now).Scan(&timedOutAttempt, &timedOutExecution)
+	if err == nil {
+		if err := completeFakeCloudAttempt(ctx, tx, timedOutAttempt, timedOutExecution, "failed", "", fakeCloudTimeoutReason, now); err != nil {
+			return false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return false, unavailable(err)
+		}
+		return true, nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, unavailable(err)
+	}
+
 	// Keep deliberately running fake Attempts leased until Factory cancels them.
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE attempts SET lease_expires_at = ?
@@ -95,21 +124,25 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		      JOIN work_targets target ON target.id = execution.work_target_id
 		      WHERE target.execution_backend = 'fake_cloud_run'
 		  )
-	`, s.now().Add(protocol.LeaseDuration).UnixMilli()); err != nil {
+	`, now+protocol.LeaseDuration.Milliseconds()); err != nil {
 		return false, unavailable(err)
 	}
 
-	// Release the next profile-concurrency-blocked Target into its frozen pool.
+	// Release the next eligible blocked Target into its frozen pool. This also
+	// reconsiders Work admitted while its profile was disabled or unhealthy.
 	var blockedTarget, blockedProfile, blockedRuntime string
 	err = tx.QueryRowContext(ctx, `
 		SELECT target.id, target.execution_profile_id, target.required_runtime
 		FROM work_targets target
 		JOIN work ON work.id = target.work_id
+		JOIN execution_profiles profile ON profile.id = target.execution_profile_id
 		JOIN execution_profile_versions version
 		  ON version.profile_id = target.execution_profile_id
 		 AND version.version = target.execution_profile_version
 		WHERE target.execution_backend = 'fake_cloud_run'
-		  AND target.state = 'blocked' AND target.blocked_reason = ?
+		  AND target.state = 'blocked'
+		  AND profile.enabled = 1 AND profile.healthy = 1
+		  AND version.runtime = target.required_runtime
 		  AND (
 		      SELECT COUNT(*) FROM work_targets active
 		      WHERE active.work_id = target.work_id AND active.state IN ('queued','preparing','running')
@@ -120,7 +153,7 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		        AND active_attempt.state IN ('preparing','running')
 		  ) < version.max_concurrent
 		ORDER BY target.admitted_at, target.id LIMIT 1
-	`, routineConcurrencyBlockedReason).Scan(&blockedTarget, &blockedProfile, &blockedRuntime)
+	`).Scan(&blockedTarget, &blockedProfile, &blockedRuntime)
 	if err == nil {
 		executionID, idErr := newID()
 		if idErr != nil {
