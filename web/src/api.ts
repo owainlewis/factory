@@ -71,7 +71,10 @@ export const api = {
     method: "PUT", body: JSON.stringify({ archived, expected_generation: expectedGeneration }),
   }),
   runRoutine: (id: string, requestKey: string, executionProfileID?: string) => request<WorkDetailV2>(`/api/v1/routines/${encodeURIComponent(id)}/run`, {
-    method: "POST", body: JSON.stringify({ request_key: requestKey, execution_profile_id: executionProfileID }),
+    method: "POST", body: JSON.stringify({
+      request_key: requestKey,
+      execution_profile_id: executionProfileID === "persistent-auto" ? undefined : executionProfileID,
+    }),
   }),
   discardRoutineOccurrence: (id: string, pendingDueAt: string) => request<Routine>(`/api/v1/routines/${encodeURIComponent(id)}/discard-occurrence`, {
     method: "POST", body: JSON.stringify({ pending_due_at: pendingDueAt }),

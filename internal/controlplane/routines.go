@@ -540,6 +540,9 @@ func (s *Store) Routine(ctx context.Context, id string) (protocol.Routine, error
 func (s *Store) RunRoutine(ctx context.Context, id string, input protocol.RunRoutineRequest) (protocol.WorkDetail, bool, error) {
 	input.RequestKey = strings.TrimSpace(input.RequestKey)
 	input.ExecutionProfileID = strings.TrimSpace(input.ExecutionProfileID)
+	if input.ExecutionProfileID == protocol.PersistentAutoProfileID {
+		input.ExecutionProfileID = ""
+	}
 	if input.RequestKey == "" || len(input.RequestKey) > 200 {
 		return protocol.WorkDetail{}, false, invalid("invalid_request_key", "request_key is required and limited to 200 bytes")
 	}
@@ -1249,8 +1252,10 @@ func (s *Store) RetryWorkTarget(ctx context.Context, expectedWorkID, targetID st
 		if err := tx.QueryRowContext(ctx, `
 			SELECT EXISTS(
 				SELECT 1 FROM execution_profile_versions version
+				JOIN execution_profiles profile ON profile.id = version.profile_id
 				JOIN workers worker ON worker.id = ? AND worker.synthetic = 1
 				WHERE version.profile_id = ? AND version.version = ?
+				  AND profile.enabled = 1 AND profile.healthy = 1
 			)
 		`, syntheticWorkerID(profileID), profileID, profileVersion).Scan(&available); err != nil {
 			return protocol.WorkDetail{}, unavailable(err)

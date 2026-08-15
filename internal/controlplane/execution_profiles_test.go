@@ -28,7 +28,7 @@ func TestExecutionProfileAndManualOverrideAPI(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		request := httptest.NewRequest(method, "http://localhost"+path, bytes.NewReader(encoded))
+		request := httptest.NewRequestWithContext(context.Background(), method, "http://localhost"+path, bytes.NewReader(encoded))
 		request.Host = "localhost"
 		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()
@@ -154,6 +154,18 @@ func TestExecutionProfileRunReplayIncludesManualOverride(t *testing.T) {
 	}); !serviceErrorCode(err, "request_key_conflict") {
 		t.Fatalf("changed override replay error = %v", err)
 	}
+	persistent, wasCreated, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{
+		RequestKey: "persistent-replay",
+	})
+	if err != nil || !wasCreated {
+		t.Fatalf("persistent create = %#v, %v, %v", persistent, wasCreated, err)
+	}
+	replayed, wasCreated, err = store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{
+		RequestKey: "persistent-replay", ExecutionProfileID: protocol.PersistentAutoProfileID,
+	})
+	if err != nil || wasCreated || replayed.Work.ID != persistent.Work.ID {
+		t.Fatalf("persistent sentinel replay = %#v, %v, %v", replayed, wasCreated, err)
+	}
 }
 
 func TestFakeCloudRetryReusesFrozenProfileVersion(t *testing.T) {
@@ -178,13 +190,25 @@ func TestFakeCloudRetryReusesFrozenProfileVersion(t *testing.T) {
 		t.Fatalf("native retry occurred: processed %d, err %v", processed, err)
 	}
 
+	disabled, err := store.UpdateExecutionProfile(context.Background(), profile.ID, protocol.SaveExecutionProfileRequest{
+		Name: profile.Name, Kind: profile.Kind, Runtime: profile.Runtime, Provider: profile.Provider,
+		Model: profile.Model, TimeoutSeconds: profile.TimeoutSeconds, ResourceClass: profile.ResourceClass,
+		MaxConcurrent: profile.MaxConcurrent, Enabled: false, Healthy: true, FakeOutcome: profile.FakeOutcome,
+		ExpectedVersion: profile.Version,
+	})
+	if err != nil || disabled.Version != 2 {
+		t.Fatalf("disabled profile update = %#v, err %v", disabled, err)
+	}
+	if _, err := store.RetryWorkTarget(context.Background(), work.Work.ID, work.Targets[0].ID); !serviceErrorCode(err, "execution_profile_version_unavailable") {
+		t.Fatalf("retry with disabled profile error = %v", err)
+	}
 	updated, err := store.UpdateExecutionProfile(context.Background(), profile.ID, protocol.SaveExecutionProfileRequest{
 		Name: profile.Name, Kind: profile.Kind, Runtime: profile.Runtime, Provider: profile.Provider,
 		Model: "deepseek/new", TimeoutSeconds: profile.TimeoutSeconds, ResourceClass: profile.ResourceClass,
 		MaxConcurrent: profile.MaxConcurrent, Enabled: true, Healthy: true, FakeOutcome: "succeeded",
-		ExpectedVersion: profile.Version,
+		ExpectedVersion: disabled.Version,
 	})
-	if err != nil || updated.Version != 2 {
+	if err != nil || updated.Version != 3 {
 		t.Fatalf("profile update = %#v, err %v", updated, err)
 	}
 	if _, err := store.RetryWorkTarget(context.Background(), work.Work.ID, work.Targets[0].ID); err != nil {
@@ -207,9 +231,54 @@ func TestFakeCloudRetryReusesFrozenProfileVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	newWork, _ = store.Work(context.Background(), newWork.Work.ID)
-	if newWork.Work.Execution.ProfileVersion != 2 || newWork.Work.Execution.Model != "deepseek/new" ||
+	if newWork.Work.Execution.ProfileVersion != 3 || newWork.Work.Execution.Model != "deepseek/new" ||
 		newWork.Work.State != protocol.WorkSucceeded {
 		t.Fatalf("new Work did not freeze new version = %#v", newWork)
+	}
+}
+
+func TestFakeCloudDoesNotStartQueuedWorkWhileProfileIsUnready(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	profile := createFakeProfile(t, store, "Dispatch health", protocol.RuntimeCodex, "succeeded")
+	routine := createProfileRoutine(t, store, worker.Repositories[0].ID, profile.ID)
+	work, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "dispatch-health"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := store.UpdateExecutionProfile(context.Background(), profile.ID, protocol.SaveExecutionProfileRequest{
+		Name: profile.Name, Kind: profile.Kind, Runtime: profile.Runtime, Provider: profile.Provider,
+		Model: profile.Model, TimeoutSeconds: profile.TimeoutSeconds, ResourceClass: profile.ResourceClass,
+		MaxConcurrent: profile.MaxConcurrent, Enabled: false, Healthy: true, FakeOutcome: profile.FakeOutcome,
+		ExpectedVersion: profile.Version,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := store.DispatchFakeCloud(context.Background(), 10); err != nil || processed != 0 {
+		t.Fatalf("disabled dispatch = %d, err %v", processed, err)
+	}
+	work, _ = store.Work(context.Background(), work.Work.ID)
+	if work.Work.State != protocol.WorkQueued || len(work.Targets[0].Attempts) != 0 {
+		t.Fatalf("Work started while profile disabled = %#v", work)
+	}
+	if _, err := store.UpdateExecutionProfile(context.Background(), profile.ID, protocol.SaveExecutionProfileRequest{
+		Name: profile.Name, Kind: profile.Kind, Runtime: profile.Runtime, Provider: profile.Provider,
+		Model: profile.Model, TimeoutSeconds: profile.TimeoutSeconds, ResourceClass: profile.ResourceClass,
+		MaxConcurrent: profile.MaxConcurrent, Enabled: true, Healthy: true, FakeOutcome: profile.FakeOutcome,
+		ExpectedVersion: disabled.Version,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+	work, _ = store.Work(context.Background(), work.Work.ID)
+	if work.Work.State != protocol.WorkSucceeded || work.Work.Execution.ProfileVersion != 1 ||
+		len(work.Targets[0].Attempts) != 1 {
+		t.Fatalf("re-enabled frozen Work = %#v", work)
 	}
 }
 

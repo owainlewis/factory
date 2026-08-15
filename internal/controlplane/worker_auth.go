@@ -146,8 +146,11 @@ func (s *Store) AuthenticateWorkerCredential(ctx context.Context, credential str
 	err := s.db.QueryRowContext(ctx, `
 		SELECT credential.worker_id
 		FROM remote_worker_credentials credential
-		JOIN workers worker ON worker.id = credential.worker_id AND worker.synthetic = 0
 		WHERE credential.token_digest = ?
+		  AND NOT EXISTS (
+		      SELECT 1 FROM workers worker
+		      WHERE worker.id = credential.worker_id AND worker.synthetic = 1
+		  )
 	`, digestToken(credential)).Scan(&workerID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", unauthorizedWorker()

@@ -166,10 +166,19 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		`, executionID, blockedTarget, workerID, blockedRuntime, now, now); err != nil {
 			return false, unavailable(err)
 		}
-		if _, err := tx.ExecContext(ctx, `
+		released, err := tx.ExecContext(ctx, `
 			UPDATE work_targets SET state = 'queued', blocked_reason = NULL, assigned_worker_id = ? WHERE id = ?
-		`, workerID, blockedTarget); err != nil {
+			  AND state = 'blocked'
+		`, workerID, blockedTarget)
+		if err != nil {
 			return false, unavailable(err)
+		}
+		changed, err := released.RowsAffected()
+		if err != nil {
+			return false, unavailable(err)
+		}
+		if changed != 1 {
+			return false, conflict("target_route_conflict", "Target routing state changed before assignment")
 		}
 		if err := tx.Commit(); err != nil {
 			return false, unavailable(err)
@@ -186,11 +195,13 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		       version.fake_outcome, version.fake_result, version.fake_error
 		FROM executions execution
 		JOIN work_targets target ON target.id = execution.work_target_id
+		JOIN execution_profiles profile ON profile.id = target.execution_profile_id
 		JOIN execution_profile_versions version
 		  ON version.profile_id = target.execution_profile_id
 		 AND version.version = target.execution_profile_version
 		WHERE target.execution_backend = 'fake_cloud_run'
 		  AND target.state = 'queued' AND execution.state = 'queued'
+		  AND profile.enabled = 1 AND profile.healthy = 1
 		  AND (
 		      SELECT COUNT(*) FROM attempts active_attempt
 		      WHERE active_attempt.worker_id = execution.assigned_worker_id

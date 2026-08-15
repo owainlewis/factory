@@ -8,16 +8,16 @@ export interface ExecutionProfile {
   name: string;
   kind: ExecutionBackend;
   version: number;
-  runtime?: Runtime;
+  runtime: Runtime | "";
   provider: string;
   model: string;
-  timeout_seconds?: number;
+  timeout_seconds: number;
   resource_class: string;
   max_concurrent: number;
   enabled: boolean;
   healthy: boolean;
   health_reason?: string;
-  synthetic_worker_id?: string;
+  synthetic_worker_id: string;
 }
 
 export interface ExecutionSnapshot {
