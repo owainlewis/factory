@@ -415,6 +415,79 @@ func TestFakeCloudRunningAttemptHonorsFrozenTimeout(t *testing.T) {
 	}
 }
 
+func TestFakeCloudRunningAttemptSurvivesStartupLeaseSweep(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	profile := createFakeProfile(t, store, "Restarted cloud", protocol.RuntimeCodex, "running")
+	routine := createProfileRoutine(t, store, worker.Repositories[0].ID, profile.ID)
+	work, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "restart-cloud"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+	work, _ = store.Work(context.Background(), work.Work.ID)
+	if work.Work.State != protocol.WorkRunning || len(work.Targets[0].Attempts) != 1 {
+		t.Fatalf("running fake Attempt = %#v", work)
+	}
+
+	now = now.Add(protocol.LeaseDuration + time.Second)
+	expired, err := store.SweepExpired(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expired) != 0 {
+		t.Fatalf("startup sweep expired synthetic Attempts: %#v", expired)
+	}
+	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+	work, _ = store.Work(context.Background(), work.Work.ID)
+	if work.Work.State != protocol.WorkRunning || work.Targets[0].Attempts[0].State != "running" ||
+		!work.Targets[0].Attempts[0].LeaseExpiresAt.After(now) {
+		t.Fatalf("recovered fake Attempt = %#v", work)
+	}
+}
+
+func TestStartupLeaseSweepStillExpiresPersistentAttempts(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	routine := createProfileRoutine(t, store, worker.Repositories[0].ID, "")
+	work, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "expire-persistent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.Claim(context.Background(), worker.ID, protocol.ClaimRequest{
+		RequestID: "expire-persistent", LeaseToken: tokenA,
+	})
+	if err != nil || claim == nil {
+		t.Fatalf("claim = %#v, err %v", claim, err)
+	}
+
+	now = now.Add(protocol.LeaseDuration + time.Second)
+	expired, err := store.SweepExpired(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expired) != 1 || expired[0].AttemptID != claim.Attempt.ID {
+		t.Fatalf("expired persistent Attempts = %#v", expired)
+	}
+	work, _ = store.Work(context.Background(), work.Work.ID)
+	if work.Work.State != protocol.WorkFailed || work.Targets[0].Attempts[0].State != "lost" ||
+		work.Targets[0].FailureReason != "lease expired" {
+		t.Fatalf("expired persistent Work = %#v", work)
+	}
+}
+
 func TestUnhealthyAndIncompatibleProfilesBlockWithoutAttempt(t *testing.T) {
 	store := newTestStore(t)
 	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{

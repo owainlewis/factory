@@ -663,9 +663,14 @@ func (s *Store) SweepExpired(ctx context.Context) ([]ExpiredLease, error) {
 		return nil, unavailable(err)
 	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, execution_id FROM attempts
-		WHERE state IN ('preparing', 'running') AND lease_expires_at <= ?
-	`, now)
+		SELECT attempt.id, attempt.execution_id
+		FROM attempts attempt
+		JOIN executions execution ON execution.id = attempt.execution_id
+		JOIN work_targets target ON target.id = execution.work_target_id
+		WHERE attempt.state IN ('preparing', 'running')
+		  AND attempt.lease_expires_at <= ?
+		  AND target.execution_backend = ?
+	`, now, protocol.BackendPersistent)
 	if err != nil {
 		return nil, unavailable(err)
 	}
@@ -685,7 +690,13 @@ func (s *Store) SweepExpired(ctx context.Context) ([]ExpiredLease, error) {
 		result, err := tx.ExecContext(ctx, `
 			UPDATE attempts SET state = 'lost', error = 'lease expired', completed_at = ?
 			WHERE id = ? AND state IN ('preparing', 'running') AND lease_expires_at <= ?
-		`, now, value.AttemptID, now)
+			  AND execution_id IN (
+			      SELECT execution.id
+			      FROM executions execution
+			      JOIN work_targets target ON target.id = execution.work_target_id
+			      WHERE target.execution_backend = ?
+			  )
+		`, now, value.AttemptID, now, protocol.BackendPersistent)
 		if err != nil {
 			return nil, unavailable(err)
 		}
