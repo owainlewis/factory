@@ -122,9 +122,12 @@ export function RoutineWorkDetail({ id, onBack }: { id: string; onBack: () => vo
   if (query.isPending) return <LoadingState label="Loading Work" />;
   if (query.isError || !query.data) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
   const { work, targets } = query.data;
+  const execution = work.execution.backend === "persistent"
+    ? "Automatic persistent Worker"
+    : `Cloud Run · ${work.execution.provider} / ${work.execution.model}`;
   return <div className="page work-detail-clean">
     <button className="back-link" onClick={onBack}><ArrowLeft size={14} /> Work</button>
-    <div className="detail-heading work-detail-heading"><div><span className="eyebrow">{work.source.replace("_", " ")} · {work.id.slice(0, 8)}</span><h1>{work.routine.name}</h1><p>{work.target_count} repository target{work.target_count === 1 ? "" : "s"} · started {timeAgo(work.admitted_at)}</p></div><div className="detail-actions"><StatusBadge state={work.state} />{work.active_count > 0 && <button className="button button-danger-secondary" disabled={cancel.isPending} onClick={() => cancel.mutate()}><StopCircle size={14} /> Cancel</button>}</div></div>
+    <div className="detail-heading work-detail-heading"><div><span className="eyebrow">{work.source.replace("_", " ")} · {work.id.slice(0, 8)}</span><h1>{work.routine.name}</h1><p>{work.target_count} repository target{work.target_count === 1 ? "" : "s"} · {execution} · started {timeAgo(work.admitted_at)}</p></div><div className="detail-actions"><StatusBadge state={work.state} />{work.active_count > 0 && <button className="button button-danger-secondary" disabled={cancel.isPending} onClick={() => cancel.mutate()}><StopCircle size={14} /> Cancel</button>}</div></div>
     <InlineError error={cancel.error ?? retry.error ?? cancelTarget.error} />
     <section className="work-summary-strip"><div><span>Progress</span><strong>{work.succeeded_count + work.failed_count + work.cancelled_count}/{work.target_count}</strong></div><div><span>Succeeded</span><strong>{work.succeeded_count}</strong></div><div><span>Failed</span><strong>{work.failed_count}</strong></div><div><span>Duration</span><strong>{work.terminal_at ? duration(work.admitted_at, work.terminal_at) : "Active"}</strong></div></section>
     <section className="panel target-panel"><div className="panel-heading"><h2>Targets</h2><span>{targets?.length ?? 0}</span></div>{(targets ?? []).map((target) => <TargetRow key={target.id} target={target} onRetry={() => retry.mutate(target.id)} onCancel={() => cancelTarget.mutate(target.id)} />)}</section>

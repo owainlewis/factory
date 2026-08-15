@@ -1009,6 +1009,7 @@ func (s *Store) ManagedRepositoryReadiness(
 		FROM workers w
 		LEFT JOIN worker_repositories wr
 		  ON wr.worker_id = w.id AND wr.repository_id = ?
+		WHERE w.synthetic = 0
 		ORDER BY w.registered_at, w.id
 	`, repository.ID, repository.RemoteIdentity, repository.ID,
 		repository.ID, repository.ID, repository.ID)
@@ -1238,7 +1239,7 @@ func (s *Store) resolveRepositoryAlias(ctx context.Context, repositoryID string)
 }
 
 func (s *Store) HeartbeatWorker(ctx context.Context, workerID string) (protocol.Worker, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE workers SET last_heartbeat = ? WHERE id = ?`, s.now().UnixMilli(), workerID)
+	result, err := s.db.ExecContext(ctx, `UPDATE workers SET last_heartbeat = ? WHERE id = ? AND synthetic = 0`, s.now().UnixMilli(), workerID)
 	if err != nil {
 		return protocol.Worker{}, unavailable(err)
 	}
@@ -1247,6 +1248,10 @@ func (s *Store) HeartbeatWorker(ctx context.Context, workerID string) (protocol.
 		return protocol.Worker{}, unavailable(err)
 	}
 	if updated == 0 {
+		var synthetic int
+		if err := s.db.QueryRowContext(ctx, `SELECT synthetic FROM workers WHERE id = ?`, workerID).Scan(&synthetic); err == nil && synthetic != 0 {
+			return protocol.Worker{}, conflict("synthetic_worker_isolated", "synthetic cloud Workers cannot use Worker heartbeat routes")
+		}
 		return protocol.Worker{}, ErrNotFound
 	}
 	return s.Worker(ctx, workerID)
@@ -1256,6 +1261,12 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	workerID = strings.TrimSpace(workerID)
 	if workerID == "" || len(workerID) > 200 {
 		return protocol.Worker{}, invalid("invalid_worker_id", "worker_id is required and must be at most 200 bytes")
+	}
+	var synthetic int
+	if err := s.db.QueryRowContext(ctx, `SELECT synthetic FROM workers WHERE id = ?`, workerID).Scan(&synthetic); err == nil && synthetic != 0 {
+		return protocol.Worker{}, conflict("synthetic_worker_isolated", "synthetic cloud Workers cannot register through Worker routes")
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return protocol.Worker{}, unavailable(err)
 	}
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" || len(input.Name) > 200 {
@@ -1810,7 +1821,7 @@ func (s *Store) Workers(ctx context.Context) ([]protocol.Worker, error) {
 		       w.capacity, w.active_count, w.health, w.capabilities_json, w.source_access_json,
 		       w.accepts_managed_repositories, w.managed_repository_ids_json,
 		       w.retained_worktrees_json,
-		       w.registered_at, w.last_heartbeat,
+		       w.synthetic, w.registered_at, w.last_heartbeat,
 		       COALESCE((
 		           SELECT json_extract(work.routine_snapshot, '$.name')
 		           FROM executions e
@@ -1856,7 +1867,7 @@ func (s *Store) Worker(ctx context.Context, id string) (protocol.Worker, error) 
 		       w.capacity, w.active_count, w.health, w.capabilities_json, w.source_access_json,
 		       w.accepts_managed_repositories, w.managed_repository_ids_json,
 		       w.retained_worktrees_json,
-		       w.registered_at, w.last_heartbeat,
+		       w.synthetic, w.registered_at, w.last_heartbeat,
 		       COALESCE((
 		           SELECT json_extract(work.routine_snapshot, '$.name')
 		           FROM executions e
@@ -1886,12 +1897,12 @@ type scanner interface {
 func scanWorker(row scanner, now time.Time) (protocol.Worker, error) {
 	var worker protocol.Worker
 	var labels, capabilities, sourceAccess, managedRepositoryIDs, retained []byte
-	var acceptsManagedRepositories int
+	var acceptsManagedRepositories, synthetic int
 	var registered, heartbeat int64
 	if err := row.Scan(&worker.ID, &worker.Name, &labels, &worker.WorkerVersion, &worker.Runtime, &worker.RuntimeVersion,
 		&worker.Capacity, &worker.ActiveCount, &worker.Health, &capabilities, &sourceAccess,
 		&acceptsManagedRepositories, &managedRepositoryIDs,
-		&retained, &registered, &heartbeat,
+		&retained, &synthetic, &registered, &heartbeat,
 		&worker.CurrentWorkTitle); err != nil {
 		return worker, err
 	}
@@ -1905,6 +1916,7 @@ func scanWorker(row scanner, now time.Time) (protocol.Worker, error) {
 		return worker, err
 	}
 	worker.AcceptsManagedRepositories = acceptsManagedRepositories != 0
+	worker.Synthetic = synthetic != 0
 	var repositoryIDs []string
 	if err := json.Unmarshal(managedRepositoryIDs, &repositoryIDs); err != nil {
 		return worker, err
@@ -1915,7 +1927,7 @@ func scanWorker(row scanner, now time.Time) (protocol.Worker, error) {
 	}
 	worker.RegisteredAt = fromMillis(registered)
 	worker.LastHeartbeat = fromMillis(heartbeat)
-	worker.Online = now.Sub(worker.LastHeartbeat) <= protocol.WorkerOnlineWindow
+	worker.Online = worker.Synthetic && worker.Health == "healthy" || now.Sub(worker.LastHeartbeat) <= protocol.WorkerOnlineWindow
 	return worker, nil
 }
 
@@ -2088,6 +2100,7 @@ func (s *Store) selectWorkRoute(
 		LEFT JOIN worker_repositories wr
 		  ON wr.worker_id = w.id AND wr.repository_id = ?
 		WHERE w.health = 'healthy'
+		  AND w.synthetic = 0
 		  AND w.work_claim_protocol_version = ?
 		  AND w.last_heartbeat >= ?
 		  AND (? = '' OR w.id = ?)

@@ -58,32 +58,37 @@ func normalizeMigratedRoutineTitleKeys(ctx context.Context, tx *sql.Tx) error {
 }
 
 type normalizedRoutine struct {
-	name             string
-	nameKey          string
-	prompt           string
-	runtime          string
-	timeoutSeconds   int
-	concurrencyLimit int
-	repositoryIDs    []string
-	scheduleEnabled  bool
-	cron             string
-	timezone         string
-	nextDueAt        *time.Time
+	name               string
+	nameKey            string
+	prompt             string
+	runtime            string
+	executionProfileID string
+	timeoutSeconds     int
+	concurrencyLimit   int
+	repositoryIDs      []string
+	scheduleEnabled    bool
+	cron               string
+	timezone           string
+	nextDueAt          *time.Time
 }
 
 func normalizeRoutine(input protocol.SaveRoutineRequest, now time.Time) (normalizedRoutine, error) {
 	value := normalizedRoutine{
-		name:             strings.TrimSpace(input.Name),
-		prompt:           strings.TrimSpace(input.Prompt),
-		runtime:          strings.ToLower(strings.TrimSpace(input.Runtime)),
-		timeoutSeconds:   input.TimeoutSeconds,
-		concurrencyLimit: input.ConcurrencyLimit,
-		repositoryIDs:    append([]string(nil), input.RepositoryIDs...),
-		scheduleEnabled:  input.Schedule.Enabled,
-		cron:             strings.TrimSpace(input.Schedule.Cron),
-		timezone:         strings.TrimSpace(input.Schedule.Timezone),
+		name:               strings.TrimSpace(input.Name),
+		prompt:             strings.TrimSpace(input.Prompt),
+		runtime:            strings.ToLower(strings.TrimSpace(input.Runtime)),
+		executionProfileID: strings.TrimSpace(input.ExecutionProfileID),
+		timeoutSeconds:     input.TimeoutSeconds,
+		concurrencyLimit:   input.ConcurrencyLimit,
+		repositoryIDs:      append([]string(nil), input.RepositoryIDs...),
+		scheduleEnabled:    input.Schedule.Enabled,
+		cron:               strings.TrimSpace(input.Schedule.Cron),
+		timezone:           strings.TrimSpace(input.Schedule.Timezone),
 	}
 	value.nameKey = normalizeTitleKey(value.name)
+	if value.executionProfileID == protocol.PersistentAutoProfileID {
+		value.executionProfileID = ""
+	}
 	if value.name == "" || utf8.RuneCountInString(value.name) > 200 {
 		return value, invalid("invalid_routine_name", "name is required and limited to 200 characters")
 	}
@@ -171,6 +176,9 @@ func (s *Store) CreateRoutine(ctx context.Context, input protocol.SaveRoutineReq
 	if err := validateRoutineRepositories(ctx, tx, value.repositoryIDs); err != nil {
 		return protocol.Routine{}, err
 	}
+	if err := validateRoutineExecutionProfile(ctx, tx, value.executionProfileID); err != nil {
+		return protocol.Routine{}, err
+	}
 	id, err := newID()
 	if err != nil {
 		return protocol.Routine{}, unavailable(err)
@@ -183,11 +191,11 @@ func (s *Store) CreateRoutine(ctx context.Context, input protocol.SaveRoutineReq
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO routines(
 			id, name, name_key, prompt, runtime, timeout_seconds,
-			concurrency_limit, generation, archived, migration_only, schedule_enabled,
+			concurrency_limit, execution_profile_id, generation, archived, migration_only, schedule_enabled,
 			cron, timezone, next_due_at, schedule_health_status, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?)
 	`, id, value.name, value.nameKey, value.prompt, value.runtime, value.timeoutSeconds,
-		value.concurrencyLimit, value.scheduleEnabled, nullableString(value.cron), nullableString(value.timezone),
+		value.concurrencyLimit, nullableString(value.executionProfileID), value.scheduleEnabled, nullableString(value.cron), nullableString(value.timezone),
 		next, routineScheduleHealth(value.scheduleEnabled), now, now)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -218,6 +226,9 @@ func (s *Store) UpdateRoutine(ctx context.Context, id string, input protocol.Sav
 	}
 	defer tx.Rollback()
 	if err := validateRoutineRepositories(ctx, tx, value.repositoryIDs); err != nil {
+		return protocol.Routine{}, err
+	}
+	if err := validateRoutineExecutionProfile(ctx, tx, value.executionProfileID); err != nil {
 		return protocol.Routine{}, err
 	}
 	var archived, migrationOnly, readOnly int
@@ -254,7 +265,7 @@ func (s *Store) UpdateRoutine(ctx context.Context, id string, input protocol.Sav
 	result, err := tx.ExecContext(ctx, `
 		UPDATE routines SET
 			name = ?, name_key = ?, prompt = ?, runtime = ?, timeout_seconds = ?,
-			concurrency_limit = ?, generation = generation + 1, schedule_enabled = ?,
+			concurrency_limit = ?, execution_profile_id = ?, generation = generation + 1, schedule_enabled = ?,
 			cron = CASE WHEN pending_due_at IS NOT NULL AND ? = 0 THEN cron ELSE ? END,
 			timezone = CASE WHEN pending_due_at IS NOT NULL AND ? = 0 THEN timezone ELSE ? END,
 			next_due_at = CASE WHEN pending_due_at IS NULL THEN ? ELSE next_due_at END,
@@ -270,7 +281,7 @@ func (s *Store) UpdateRoutine(ctx context.Context, id string, input protocol.Sav
 			updated_at = ?
 		WHERE id = ? AND generation = ?
 	`, value.name, value.nameKey, value.prompt, value.runtime, value.timeoutSeconds,
-		value.concurrencyLimit, value.scheduleEnabled, value.scheduleEnabled, nullableString(value.cron),
+		value.concurrencyLimit, nullableString(value.executionProfileID), value.scheduleEnabled, value.scheduleEnabled, nullableString(value.cron),
 		value.scheduleEnabled, nullableString(value.timezone),
 		next, value.scheduleEnabled, preserveBlockedOccurrence, value.scheduleEnabled,
 		preserveBlockedOccurrence, preserveBlockedOccurrence, now, id, input.ExpectedGeneration)
@@ -317,6 +328,20 @@ func validateRoutineRepositories(ctx context.Context, tx *sql.Tx, ids []string) 
 		if centrallyManaged != 0 && enabled == 0 || centrallyManaged == 0 && advertised == 0 {
 			return conflict("routine_repository_unavailable", "every selected repository must be enabled or advertised by a Worker")
 		}
+	}
+	return nil
+}
+
+func validateRoutineExecutionProfile(ctx context.Context, tx *sql.Tx, id string) error {
+	if id == "" {
+		return nil
+	}
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM execution_profiles WHERE id = ?`, id).Scan(&exists); err != nil {
+		return unavailable(err)
+	}
+	if exists == 0 {
+		return invalid("execution_profile_not_found", "the selected execution profile does not exist")
 	}
 	return nil
 }
@@ -447,11 +472,11 @@ func (s *Store) Routine(ctx context.Context, id string) (protocol.Routine, error
 	var nextDue, pendingDue sql.NullInt64
 	var created, updated int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, prompt, runtime, timeout_seconds, concurrency_limit,
+		SELECT id, name, prompt, runtime, COALESCE(execution_profile_id, ''), timeout_seconds, concurrency_limit,
 		       generation, archived, read_only, schedule_enabled, cron, timezone, next_due_at, pending_due_at,
 		       schedule_health_status, schedule_health_code, schedule_health_message, created_at, updated_at
 		FROM routines WHERE id = ? AND migration_only = 0
-	`, id).Scan(&routine.ID, &routine.Name, &routine.Prompt, &routine.Runtime,
+	`, id).Scan(&routine.ID, &routine.Name, &routine.Prompt, &routine.Runtime, &routine.ExecutionProfileID,
 		&routine.TimeoutSeconds, &routine.ConcurrencyLimit, &routine.Generation, &archived, &readOnly,
 		&scheduleEnabled, &cron, &timezone, &nextDue, &pendingDue, &routine.Schedule.HealthStatus,
 		&routine.Schedule.HealthCode, &routine.Schedule.HealthMessage, &created, &updated)
@@ -514,13 +539,14 @@ func (s *Store) Routine(ctx context.Context, id string) (protocol.Routine, error
 
 func (s *Store) RunRoutine(ctx context.Context, id string, input protocol.RunRoutineRequest) (protocol.WorkDetail, bool, error) {
 	input.RequestKey = strings.TrimSpace(input.RequestKey)
+	input.ExecutionProfileID = strings.TrimSpace(input.ExecutionProfileID)
 	if input.RequestKey == "" || len(input.RequestKey) > 200 {
 		return protocol.WorkDetail{}, false, invalid("invalid_request_key", "request_key is required and limited to 200 bytes")
 	}
 	if strings.HasPrefix(input.RequestKey, "schedule:") {
 		return protocol.WorkDetail{}, false, invalid("reserved_request_key", "request_key uses a reserved internal prefix")
 	}
-	return s.admitRoutine(ctx, id, "manual", input.RequestKey, nil, nil)
+	return s.admitRoutine(ctx, id, "manual", input.RequestKey, nil, nil, input.ExecutionProfileID)
 }
 
 func (s *Store) admitRoutine(
@@ -528,6 +554,7 @@ func (s *Store) admitRoutine(
 	routineID, source, requestKey string,
 	scheduledAt *time.Time,
 	frozen *protocol.RoutineSnapshot,
+	requestedProfileID string,
 ) (protocol.WorkDetail, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -536,15 +563,16 @@ func (s *Store) admitRoutine(
 	defer tx.Rollback()
 	var existingID, existingRoutineID, existingSource string
 	var existingScheduledAt sql.NullInt64
+	var existingRequestedProfile sql.NullString
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, routine_id, source, scheduled_at FROM work WHERE request_key = ?
-	`, requestKey).Scan(&existingID, &existingRoutineID, &existingSource, &existingScheduledAt)
+		SELECT id, routine_id, source, scheduled_at, requested_execution_profile_id FROM work WHERE request_key = ?
+	`, requestKey).Scan(&existingID, &existingRoutineID, &existingSource, &existingScheduledAt, &existingRequestedProfile)
 	if err == nil {
 		sameSchedule := scheduledAt == nil && !existingScheduledAt.Valid
 		if scheduledAt != nil && existingScheduledAt.Valid {
 			sameSchedule = scheduledAt.UTC().UnixMilli() == existingScheduledAt.Int64
 		}
-		if existingRoutineID != routineID || existingSource != source || !sameSchedule {
+		if existingRoutineID != routineID || existingSource != source || !sameSchedule || existingRequestedProfile.String != requestedProfileID {
 			return protocol.WorkDetail{}, false, conflict("request_key_conflict", "request_key was already used with different Work inputs")
 		}
 		if err := tx.Commit(); err != nil {
@@ -586,11 +614,11 @@ func (s *Store) admitRoutine(
 	} else {
 		var archived, migrationOnly, readOnly int
 		err := tx.QueryRowContext(ctx, `
-			SELECT id, name, prompt, runtime, timeout_seconds, concurrency_limit,
+			SELECT id, name, prompt, runtime, COALESCE(execution_profile_id, ''), timeout_seconds, concurrency_limit,
 			       generation, archived, migration_only, read_only
 			FROM routines WHERE id = ?
 		`, routineID).Scan(&snapshot.ID, &snapshot.Name, &snapshot.Prompt, &snapshot.Runtime,
-			&snapshot.TimeoutSeconds, &snapshot.ConcurrencyLimit, &snapshot.Generation, &archived, &migrationOnly, &readOnly)
+			&snapshot.ExecutionProfileID, &snapshot.TimeoutSeconds, &snapshot.ConcurrencyLimit, &snapshot.Generation, &archived, &migrationOnly, &readOnly)
 		if errors.Is(err, sql.ErrNoRows) {
 			return protocol.WorkDetail{}, false, ErrNotFound
 		}
@@ -627,17 +655,22 @@ func (s *Store) admitRoutine(
 	if len(snapshot.Repositories) == 0 {
 		return protocol.WorkDetail{}, false, conflict("routine_has_no_repositories", "select at least one repository before running this Routine")
 	}
+	execution, profileReady, profileBlockedReason, err := loadExecutionSnapshot(ctx, tx, snapshot, requestedProfileID)
+	if err != nil {
+		return protocol.WorkDetail{}, false, err
+	}
 	snapshotJSON, err := json.Marshal(snapshot)
 	if err != nil {
 		return protocol.WorkDetail{}, false, unavailable(err)
 	}
 	digestBody, _ := json.Marshal(struct {
-		RequestKey  string                   `json:"request_key"`
-		RoutineID   string                   `json:"routine_id"`
-		Source      string                   `json:"source"`
-		ScheduledAt *time.Time               `json:"scheduled_at,omitempty"`
-		Snapshot    protocol.RoutineSnapshot `json:"snapshot"`
-	}{requestKey, routineID, source, scheduledAt, snapshot})
+		RequestKey  string                     `json:"request_key"`
+		RoutineID   string                     `json:"routine_id"`
+		Source      string                     `json:"source"`
+		ScheduledAt *time.Time                 `json:"scheduled_at,omitempty"`
+		Snapshot    protocol.RoutineSnapshot   `json:"snapshot"`
+		Execution   protocol.ExecutionSnapshot `json:"execution"`
+	}{requestKey, routineID, source, scheduledAt, snapshot, execution})
 	digestArray := sha256.Sum256(digestBody)
 	digest := digestArray[:]
 	if err := validateFrozenRepositories(ctx, tx, snapshot.Repositories); err != nil {
@@ -652,11 +685,16 @@ func (s *Store) admitRoutine(
 	if scheduledAt != nil {
 		scheduled = scheduledAt.UTC().UnixMilli()
 	}
+	executionJSON, err := json.Marshal(execution)
+	if err != nil {
+		return protocol.WorkDetail{}, false, unavailable(err)
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO work(id, request_key, request_digest, routine_id, routine_snapshot, source,
-		                 scheduled_at, admitted_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, workID, requestKey, digest, routineID, snapshotJSON, source, scheduled, now, now); err != nil {
+		                 scheduled_at, requested_execution_profile_id, execution_snapshot, admitted_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, workID, requestKey, digest, routineID, snapshotJSON, source, scheduled,
+		nullableString(requestedProfileID), executionJSON, now, now); err != nil {
 		return protocol.WorkDetail{}, false, unavailable(err)
 	}
 	resolvedPrompt := snapshot.Prompt
@@ -687,23 +725,35 @@ func (s *Store) admitRoutine(
 		state, blockedReason := "blocked", routineConcurrencyBlockedReason
 		var assigned any
 		var selection workRouteCandidate
-		if materialized < snapshot.ConcurrencyLimit {
-			selection, err = s.selectWorkTargetRoute(ctx, tx, repository.ID, repository.RemoteIdentity, now, "", snapshot.Runtime)
-			blockedReason = "Waiting for a healthy compatible Worker with repository access."
-			if err == nil {
-				state, blockedReason, assigned = "queued", "", selection.workerID
+		if !profileReady {
+			blockedReason = profileBlockedReason
+		} else if materialized < snapshot.ConcurrencyLimit {
+			if execution.Backend == protocol.BackendPersistent {
+				selection, err = s.selectWorkTargetRoute(ctx, tx, repository.ID, repository.RemoteIdentity, now, "", snapshot.Runtime)
+				blockedReason = "Waiting for a healthy compatible Worker with repository access."
+				if err == nil {
+					state, blockedReason, assigned = "queued", "", selection.workerID
+					materialized++
+				} else if !serviceErrorCode(err, "no_eligible_worker") {
+					return protocol.WorkDetail{}, false, err
+				}
+			} else {
+				state, blockedReason, assigned = "queued", "", syntheticWorkerID(execution.ProfileID)
+				selection.workerID = assigned.(string)
 				materialized++
-			} else if !serviceErrorCode(err, "no_eligible_worker") {
-				return protocol.WorkDetail{}, false, err
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO work_targets(
 				id, work_id, repository_id, repository_identity, resolved_prompt, required_runtime,
-				timeout_seconds, state, blocked_reason, assigned_worker_id, admitted_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				timeout_seconds, state, blocked_reason, assigned_worker_id, admitted_at,
+				execution_profile_id, execution_profile_version, execution_backend, execution_provider,
+				execution_model, resource_class, commit_resolution_policy
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, targetID, workID, repository.ID, repository.RemoteIdentity, resolvedPrompt, snapshot.Runtime,
-			snapshot.TimeoutSeconds, state, nullableString(blockedReason), assigned, now); err != nil {
+			execution.TimeoutSeconds, state, nullableString(blockedReason), assigned, now,
+			execution.ProfileID, execution.ProfileVersion, execution.Backend, execution.Provider,
+			execution.Model, execution.ResourceClass, execution.CommitResolutionPolicy); err != nil {
 			return protocol.WorkDetail{}, false, unavailable(err)
 		}
 		if state == "queued" {
@@ -724,6 +774,58 @@ func (s *Store) admitRoutine(
 	}
 	detail, err := s.Work(ctx, workID)
 	return detail, true, err
+}
+
+func loadExecutionSnapshot(
+	ctx context.Context,
+	tx *sql.Tx,
+	routine protocol.RoutineSnapshot,
+	requestedProfileID string,
+) (protocol.ExecutionSnapshot, bool, string, error) {
+	profileID := requestedProfileID
+	if profileID == "" {
+		profileID = routine.ExecutionProfileID
+	}
+	if profileID == "" || profileID == protocol.PersistentAutoProfileID {
+		return protocol.ExecutionSnapshot{
+			ProfileID: protocol.PersistentAutoProfileID, ProfileVersion: 1,
+			Backend: protocol.BackendPersistent, Runtime: routine.Runtime,
+			Provider: "worker", Model: "worker-default", TimeoutSeconds: routine.TimeoutSeconds,
+			ResourceClass: "worker", CommitResolutionPolicy: protocol.CommitResolvePerAttempt,
+		}, true, "", nil
+	}
+	var snapshot protocol.ExecutionSnapshot
+	var enabled, healthy int
+	var reason string
+	err := tx.QueryRowContext(ctx, `
+		SELECT p.id, p.current_version, v.kind, v.runtime, v.provider, v.model,
+		       v.timeout_seconds, v.resource_class, v.commit_resolution_policy,
+		       p.enabled, p.healthy, p.health_reason
+		FROM execution_profiles p
+		JOIN execution_profile_versions v ON v.profile_id = p.id AND v.version = p.current_version
+		WHERE p.id = ?
+	`, profileID).Scan(&snapshot.ProfileID, &snapshot.ProfileVersion, &snapshot.Backend,
+		&snapshot.Runtime, &snapshot.Provider, &snapshot.Model, &snapshot.TimeoutSeconds,
+		&snapshot.ResourceClass, &snapshot.CommitResolutionPolicy, &enabled, &healthy, &reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return snapshot, false, "", invalid("execution_profile_not_found", "the selected execution profile does not exist")
+	}
+	if err != nil {
+		return snapshot, false, "", unavailable(err)
+	}
+	if snapshot.Runtime != routine.Runtime {
+		return snapshot, false, fmt.Sprintf("Execution profile %s does not support runtime %s.", profileID, routine.Runtime), nil
+	}
+	if enabled == 0 {
+		return snapshot, false, fmt.Sprintf("Execution profile %s is disabled.", profileID), nil
+	}
+	if healthy == 0 {
+		if reason == "" {
+			reason = "health validation has not passed"
+		}
+		return snapshot, false, fmt.Sprintf("Execution profile %s is unhealthy: %s", profileID, reason), nil
+	}
+	return snapshot, true, "", nil
 }
 
 func validateFrozenRepositories(ctx context.Context, tx *sql.Tx, repositories []protocol.RoutineRepository) error {
@@ -833,15 +935,15 @@ func (s *Store) WorkPage(ctx context.Context, limit int, cursor string) (protoco
 
 func (s *Store) Work(ctx context.Context, id string) (protocol.WorkDetail, error) {
 	var detail protocol.WorkDetail
-	var snapshot []byte
+	var snapshot, executionSnapshot []byte
 	var scheduledAt, terminalAt sql.NullInt64
 	var providerSnapshot sql.NullString
 	var admittedAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, routine_id, routine_snapshot, source, scheduled_at, provider_snapshot,
+		SELECT id, routine_id, routine_snapshot, execution_snapshot, source, scheduled_at, provider_snapshot,
 		       admitted_at, updated_at, terminal_at
 		FROM work WHERE id = ?
-	`, id).Scan(&detail.Work.ID, &detail.Work.RoutineID, &snapshot, &detail.Work.Source,
+	`, id).Scan(&detail.Work.ID, &detail.Work.RoutineID, &snapshot, &executionSnapshot, &detail.Work.Source,
 		&scheduledAt, &providerSnapshot, &admittedAt, &updatedAt, &terminalAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return detail, ErrNotFound
@@ -850,6 +952,9 @@ func (s *Store) Work(ctx context.Context, id string) (protocol.WorkDetail, error
 		return detail, unavailable(err)
 	}
 	if err := json.Unmarshal(snapshot, &detail.Work.Routine); err != nil {
+		return detail, unavailable(err)
+	}
+	if err := json.Unmarshal(executionSnapshot, &detail.Work.Execution); err != nil {
 		return detail, unavailable(err)
 	}
 	if providerSnapshot.Valid {
@@ -867,6 +972,8 @@ func (s *Store) Work(ctx context.Context, id string) (protocol.WorkDetail, error
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT target.id, target.work_id, target.repository_id, target.repository_identity,
 		       target.resolved_prompt, target.required_runtime, target.timeout_seconds,
+		       target.execution_profile_id, target.execution_profile_version, target.execution_backend,
+		       target.execution_provider, target.execution_model, target.resource_class, target.commit_resolution_policy,
 		       target.state, target.blocked_reason, target.assigned_worker_id,
 		       target.cancellation_requested, target.retry_may_repeat_effects,
 		       target.admitted_at, target.started_at, target.terminal_at, target.result, target.failure_reason
@@ -882,12 +989,16 @@ func (s *Store) Work(ctx context.Context, id string) (protocol.WorkDetail, error
 		var admitted int64
 		var started, terminal sql.NullInt64
 		if err := rows.Scan(&target.ID, &target.WorkID, &target.RepositoryID, &target.RepositoryIdentity,
-			&target.ResolvedPrompt, &target.RequiredRuntime, &target.TimeoutSeconds, &target.State,
+			&target.ResolvedPrompt, &target.RequiredRuntime, &target.TimeoutSeconds,
+			&target.Execution.ProfileID, &target.Execution.ProfileVersion, &target.Execution.Backend,
+			&target.Execution.Provider, &target.Execution.Model, &target.Execution.ResourceClass,
+			&target.Execution.CommitResolutionPolicy, &target.State,
 			&blockedReason, &workerID, &cancellation, &retry, &admitted, &started, &terminal, &result, &failure); err != nil {
 			rows.Close()
 			return detail, unavailable(err)
 		}
 		target.BlockedReason, target.AssignedWorkerID = blockedReason.String, workerID.String
+		target.Execution.Runtime, target.Execution.TimeoutSeconds = target.RequiredRuntime, target.TimeoutSeconds
 		target.CancellationRequested, target.RetryMayRepeatEffects = cancellation != 0, retry != 0
 		target.AdmittedAt, target.Result, target.FailureReason = fromMillis(admitted), result.String, failure.String
 		if started.Valid {
@@ -1096,11 +1207,14 @@ func (s *Store) RetryWorkTarget(ctx context.Context, expectedWorkID, targetID st
 		return protocol.WorkDetail{}, unavailable(err)
 	}
 	defer tx.Rollback()
-	var workID, state, repositoryID, identity, runtime string
+	var workID, state, repositoryID, identity, runtime, backend, profileID string
+	var profileVersion int
 	err = tx.QueryRowContext(ctx, `
-		SELECT work_id, state, repository_id, repository_identity, required_runtime
+		SELECT work_id, state, repository_id, repository_identity, required_runtime,
+		       execution_backend, execution_profile_id, execution_profile_version
 		FROM work_targets WHERE id = ? AND work_id = ?
-	`, targetID, expectedWorkID).Scan(&workID, &state, &repositoryID, &identity, &runtime)
+	`, targetID, expectedWorkID).Scan(&workID, &state, &repositoryID, &identity, &runtime,
+		&backend, &profileID, &profileVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.WorkDetail{}, ErrNotFound
 	}
@@ -1123,9 +1237,28 @@ func (s *Store) RetryWorkTarget(ctx context.Context, expectedWorkID, targetID st
 	if activeTargets >= concurrencyLimit {
 		return protocol.WorkDetail{}, conflict("routine_concurrency_full", "retry this Target after another active Target finishes")
 	}
-	selection, err := s.selectWorkTargetRoute(ctx, tx, repositoryID, identity, now, "", runtime)
-	if err != nil {
-		return protocol.WorkDetail{}, err
+	assignedWorkerID := ""
+	if backend == protocol.BackendPersistent {
+		selection, err := s.selectWorkTargetRoute(ctx, tx, repositoryID, identity, now, "", runtime)
+		if err != nil {
+			return protocol.WorkDetail{}, err
+		}
+		assignedWorkerID = selection.workerID
+	} else {
+		var available int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS(
+				SELECT 1 FROM execution_profile_versions version
+				JOIN workers worker ON worker.id = ? AND worker.synthetic = 1
+				WHERE version.profile_id = ? AND version.version = ?
+			)
+		`, syntheticWorkerID(profileID), profileID, profileVersion).Scan(&available); err != nil {
+			return protocol.WorkDetail{}, unavailable(err)
+		}
+		if available == 0 {
+			return protocol.WorkDetail{}, conflict("execution_profile_version_unavailable", "the frozen execution profile version is unavailable")
+		}
+		assignedWorkerID = syntheticWorkerID(profileID)
 	}
 	var executionID string
 	err = tx.QueryRowContext(ctx, `SELECT id FROM executions WHERE work_target_id = ?`, targetID).Scan(&executionID)
@@ -1138,12 +1271,12 @@ func (s *Store) RetryWorkTarget(ctx context.Context, expectedWorkID, targetID st
 			INSERT INTO executions(id, work_target_id, assigned_worker_id, required_runtime, state,
 			                       cancellation_requested, created_at, updated_at, retry_count)
 			VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, 1)
-		`, executionID, targetID, selection.workerID, runtime, now, now)
+		`, executionID, targetID, assignedWorkerID, runtime, now, now)
 	} else if err == nil {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE executions SET assigned_worker_id = ?, state = 'queued', cancellation_requested = 0,
 			       retry_count = retry_count + 1, updated_at = ? WHERE id = ?
-		`, selection.workerID, now, executionID)
+		`, assignedWorkerID, now, executionID)
 	}
 	if err != nil {
 		return protocol.WorkDetail{}, unavailable(err)
@@ -1153,7 +1286,7 @@ func (s *Store) RetryWorkTarget(ctx context.Context, expectedWorkID, targetID st
 		       cancellation_requested = 0, retry_may_repeat_effects = 1,
 		       started_at = NULL, terminal_at = NULL, result = NULL, failure_reason = NULL
 		WHERE id = ?
-	`, selection.workerID, targetID); err != nil {
+	`, assignedWorkerID, targetID); err != nil {
 		return protocol.WorkDetail{}, unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE work SET updated_at = ?, terminal_at = NULL WHERE id = ?`, now, workID); err != nil {
@@ -1236,7 +1369,10 @@ func (s *Store) Overview(ctx context.Context) (protocol.Overview, error) {
 		result.RunMetrics.AverageCycleTimeSeconds = &averageCycleSeconds
 	}
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(last_heartbeat >= ?), 0), COUNT(*) FROM workers
+		SELECT COALESCE(SUM(
+			(synthetic = 1 AND health = 'healthy') OR
+			(synthetic = 0 AND last_heartbeat >= ?)
+		), 0), COUNT(*) FROM workers
 	`, result.GeneratedAt.Add(-protocol.WorkerOnlineWindow).UnixMilli()).Scan(&result.WorkersOnline, &result.WorkersTotal); err != nil {
 		return result, unavailable(err)
 	}

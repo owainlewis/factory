@@ -27,6 +27,12 @@ func (s *Store) CreateWorkerEnrollment(ctx context.Context, workerID string) (pr
 	if workerID == "" || len(workerID) > 200 {
 		return protocol.WorkerEnrollment{}, invalid("invalid_worker_id", "worker_id is required and must be at most 200 bytes")
 	}
+	var synthetic int
+	if err := s.db.QueryRowContext(ctx, `SELECT synthetic FROM workers WHERE id = ?`, workerID).Scan(&synthetic); err == nil && synthetic != 0 {
+		return protocol.WorkerEnrollment{}, conflict("synthetic_worker_isolated", "synthetic cloud Workers cannot enroll")
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return protocol.WorkerEnrollment{}, unavailable(err)
+	}
 	token, err := randomWorkerSecret("factory_enroll_")
 	if err != nil {
 		return protocol.WorkerEnrollment{}, unavailable(err)
@@ -63,6 +69,12 @@ func (s *Store) ExchangeWorkerEnrollment(
 		return protocol.WorkerCredential{}, unavailable(err)
 	}
 	defer tx.Rollback()
+	var synthetic int
+	if err := tx.QueryRowContext(ctx, `SELECT synthetic FROM workers WHERE id = ?`, workerID).Scan(&synthetic); err == nil && synthetic != 0 {
+		return protocol.WorkerCredential{}, unauthorizedWorker()
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return protocol.WorkerCredential{}, unavailable(err)
+	}
 	var enrollmentID string
 	var usedAt sql.NullInt64
 	var expiresAt int64
@@ -132,7 +144,10 @@ func (s *Store) AuthenticateWorkerCredential(ctx context.Context, credential str
 	}
 	var workerID string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT worker_id FROM remote_worker_credentials WHERE token_digest = ?
+		SELECT credential.worker_id
+		FROM remote_worker_credentials credential
+		JOIN workers worker ON worker.id = credential.worker_id AND worker.synthetic = 0
+		WHERE credential.token_digest = ?
 	`, digestToken(credential)).Scan(&workerID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", unauthorizedWorker()

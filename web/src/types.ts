@@ -1,6 +1,36 @@
 export type Runtime = "pi" | "codex" | "claude-code";
+export type ExecutionBackend = "persistent" | "fake_cloud_run";
 export type WorkTargetState = "blocked" | "queued" | "preparing" | "running" | "succeeded" | "failed" | "cancelled";
 export type WorkState = "blocked" | "queued" | "running" | "succeeded" | "failed" | "partial" | "cancelled";
+
+export interface ExecutionProfile {
+  id: string;
+  name: string;
+  kind: ExecutionBackend;
+  version: number;
+  runtime?: Runtime;
+  provider: string;
+  model: string;
+  timeout_seconds?: number;
+  resource_class: string;
+  max_concurrent: number;
+  enabled: boolean;
+  healthy: boolean;
+  health_reason?: string;
+  synthetic_worker_id?: string;
+}
+
+export interface ExecutionSnapshot {
+  profile_id: string;
+  profile_version: number;
+  backend: ExecutionBackend;
+  runtime: Runtime;
+  provider: string;
+  model: string;
+  timeout_seconds: number;
+  resource_class: string;
+  commit_resolution_policy: "resolve_per_attempt" | "frozen_commit";
+}
 
 export interface RoutineRepository {
   id: string;
@@ -24,6 +54,7 @@ export interface Routine {
   prompt: string;
   prompt_preview?: string;
   runtime: Runtime;
+  execution_profile_id?: string;
   timeout_seconds: number;
   concurrency_limit: number;
   generation: number;
@@ -41,6 +72,7 @@ export interface SaveRoutineInput {
   name: string;
   prompt: string;
   runtime: Runtime;
+  execution_profile_id?: string;
   timeout_seconds: number;
   concurrency_limit: number;
   repository_ids: string[];
@@ -53,6 +85,7 @@ export interface RoutineSnapshot {
   name: string;
   prompt: string;
   runtime: Runtime;
+  execution_profile_id?: string;
   timeout_seconds: number;
   concurrency_limit: number;
   generation: number;
@@ -82,6 +115,7 @@ export interface WorkTarget {
   repository_identity: string;
   resolved_prompt?: string;
   required_runtime: Runtime;
+  execution: ExecutionSnapshot;
   timeout_seconds: number;
   state: WorkTargetState;
   blocked_reason?: string;
@@ -100,6 +134,7 @@ export interface WorkItem {
   id: string;
   routine_id: string;
   routine: RoutineSnapshot;
+  execution: ExecutionSnapshot;
   source: "manual" | "schedule" | "provider_history";
   scheduled_at?: string;
   state: WorkState;

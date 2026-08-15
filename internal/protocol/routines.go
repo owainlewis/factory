@@ -28,22 +28,23 @@ type RoutineRepository struct {
 }
 
 type Routine struct {
-	ID               string              `json:"id"`
-	Name             string              `json:"name"`
-	Prompt           string              `json:"prompt,omitempty"`
-	PromptPreview    string              `json:"prompt_preview,omitempty"`
-	Runtime          string              `json:"runtime"`
-	TimeoutSeconds   int                 `json:"timeout_seconds"`
-	ConcurrencyLimit int                 `json:"concurrency_limit"`
-	Generation       int                 `json:"generation"`
-	Archived         bool                `json:"archived"`
-	ReadOnly         bool                `json:"read_only"`
-	Repositories     []RoutineRepository `json:"repositories"`
-	RepositoryCount  int                 `json:"repository_count"`
-	Schedule         RoutineSchedule     `json:"schedule"`
-	LastWorkState    string              `json:"last_work_state,omitempty"`
-	CreatedAt        time.Time           `json:"created_at"`
-	UpdatedAt        time.Time           `json:"updated_at"`
+	ID                 string              `json:"id"`
+	Name               string              `json:"name"`
+	Prompt             string              `json:"prompt,omitempty"`
+	PromptPreview      string              `json:"prompt_preview,omitempty"`
+	Runtime            string              `json:"runtime"`
+	ExecutionProfileID string              `json:"execution_profile_id,omitempty"`
+	TimeoutSeconds     int                 `json:"timeout_seconds"`
+	ConcurrencyLimit   int                 `json:"concurrency_limit"`
+	Generation         int                 `json:"generation"`
+	Archived           bool                `json:"archived"`
+	ReadOnly           bool                `json:"read_only"`
+	Repositories       []RoutineRepository `json:"repositories"`
+	RepositoryCount    int                 `json:"repository_count"`
+	Schedule           RoutineSchedule     `json:"schedule"`
+	LastWorkState      string              `json:"last_work_state,omitempty"`
+	CreatedAt          time.Time           `json:"created_at"`
+	UpdatedAt          time.Time           `json:"updated_at"`
 }
 
 // WorkExecution is the worker-facing execution record for one Work target.
@@ -83,6 +84,7 @@ type SaveRoutineRequest struct {
 	Name               string          `json:"name"`
 	Prompt             string          `json:"prompt"`
 	Runtime            string          `json:"runtime"`
+	ExecutionProfileID string          `json:"execution_profile_id,omitempty"`
 	TimeoutSeconds     int             `json:"timeout_seconds"`
 	ConcurrencyLimit   int             `json:"concurrency_limit"`
 	RepositoryIDs      []string        `json:"repository_ids"`
@@ -96,7 +98,8 @@ type SetRoutineArchivedRequest struct {
 }
 
 type RunRoutineRequest struct {
-	RequestKey string `json:"request_key"`
+	RequestKey         string `json:"request_key"`
+	ExecutionProfileID string `json:"execution_profile_id,omitempty"`
 }
 
 type DiscardRoutineOccurrenceRequest struct {
@@ -128,55 +131,122 @@ const (
 )
 
 type RoutineSnapshot struct {
-	ID               string              `json:"id"`
-	Name             string              `json:"name"`
-	Prompt           string              `json:"prompt,omitempty"`
-	Runtime          string              `json:"runtime"`
-	TimeoutSeconds   int                 `json:"timeout_seconds,omitempty"`
-	ConcurrencyLimit int                 `json:"concurrency_limit,omitempty"`
-	Generation       int                 `json:"generation"`
-	Repositories     []RoutineRepository `json:"repositories,omitempty"`
-	ScheduleCron     string              `json:"cron,omitempty"`
-	ScheduleTimezone string              `json:"timezone,omitempty"`
+	ID                 string              `json:"id"`
+	Name               string              `json:"name"`
+	Prompt             string              `json:"prompt,omitempty"`
+	Runtime            string              `json:"runtime"`
+	ExecutionProfileID string              `json:"execution_profile_id,omitempty"`
+	TimeoutSeconds     int                 `json:"timeout_seconds,omitempty"`
+	ConcurrencyLimit   int                 `json:"concurrency_limit,omitempty"`
+	Generation         int                 `json:"generation"`
+	Repositories       []RoutineRepository `json:"repositories,omitempty"`
+	ScheduleCron       string              `json:"cron,omitempty"`
+	ScheduleTimezone   string              `json:"timezone,omitempty"`
+}
+
+const (
+	PersistentAutoProfileID = "persistent-auto"
+	BackendPersistent       = "persistent"
+	BackendFakeCloudRun     = "fake_cloud_run"
+	CommitResolvePerAttempt = "resolve_per_attempt"
+	CommitFrozen            = "frozen_commit"
+)
+
+type ExecutionSnapshot struct {
+	ProfileID              string `json:"profile_id"`
+	ProfileVersion         int    `json:"profile_version"`
+	Backend                string `json:"backend"`
+	Runtime                string `json:"runtime"`
+	Provider               string `json:"provider"`
+	Model                  string `json:"model"`
+	TimeoutSeconds         int    `json:"timeout_seconds"`
+	ResourceClass          string `json:"resource_class"`
+	CommitResolutionPolicy string `json:"commit_resolution_policy"`
+}
+
+type ExecutionProfile struct {
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	Kind              string    `json:"kind"`
+	Version           int       `json:"version"`
+	Runtime           string    `json:"runtime"`
+	Provider          string    `json:"provider"`
+	Model             string    `json:"model"`
+	TimeoutSeconds    int       `json:"timeout_seconds"`
+	ResourceClass     string    `json:"resource_class"`
+	MaxConcurrent     int       `json:"max_concurrent"`
+	Enabled           bool      `json:"enabled"`
+	Healthy           bool      `json:"healthy"`
+	HealthReason      string    `json:"health_reason,omitempty"`
+	FakeOutcome       string    `json:"fake_outcome,omitempty"`
+	FakeResult        string    `json:"fake_result,omitempty"`
+	FakeError         string    `json:"fake_error,omitempty"`
+	SyntheticWorkerID string    `json:"synthetic_worker_id"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+type SaveExecutionProfileRequest struct {
+	Name            string `json:"name"`
+	Kind            string `json:"kind"`
+	Runtime         string `json:"runtime"`
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	TimeoutSeconds  int    `json:"timeout_seconds"`
+	ResourceClass   string `json:"resource_class"`
+	MaxConcurrent   int    `json:"max_concurrent"`
+	Enabled         bool   `json:"enabled"`
+	Healthy         bool   `json:"healthy"`
+	HealthReason    string `json:"health_reason,omitempty"`
+	FakeOutcome     string `json:"fake_outcome,omitempty"`
+	FakeResult      string `json:"fake_result,omitempty"`
+	FakeError       string `json:"fake_error,omitempty"`
+	ExpectedVersion int    `json:"expected_version,omitempty"`
+}
+
+type ExecutionProfilePage struct {
+	Profiles []ExecutionProfile `json:"profiles"`
 }
 
 type WorkTarget struct {
-	ID                    string          `json:"id"`
-	WorkID                string          `json:"work_id"`
-	RepositoryID          string          `json:"repository_id"`
-	RepositoryIdentity    string          `json:"repository_identity"`
-	ResolvedPrompt        string          `json:"resolved_prompt,omitempty"`
-	RequiredRuntime       string          `json:"required_runtime"`
-	TimeoutSeconds        int             `json:"timeout_seconds"`
-	State                 WorkTargetState `json:"state"`
-	BlockedReason         string          `json:"blocked_reason,omitempty"`
-	AssignedWorkerID      string          `json:"assigned_worker_id,omitempty"`
-	CancellationRequested bool            `json:"cancellation_requested"`
-	RetryMayRepeatEffects bool            `json:"retry_may_repeat_effects"`
-	AdmittedAt            time.Time       `json:"admitted_at"`
-	StartedAt             *time.Time      `json:"started_at,omitempty"`
-	TerminalAt            *time.Time      `json:"terminal_at,omitempty"`
-	Result                string          `json:"result,omitempty"`
-	FailureReason         string          `json:"failure_reason,omitempty"`
-	Attempts              []Attempt       `json:"attempts,omitempty"`
+	ID                    string            `json:"id"`
+	WorkID                string            `json:"work_id"`
+	RepositoryID          string            `json:"repository_id"`
+	RepositoryIdentity    string            `json:"repository_identity"`
+	ResolvedPrompt        string            `json:"resolved_prompt,omitempty"`
+	RequiredRuntime       string            `json:"required_runtime"`
+	Execution             ExecutionSnapshot `json:"execution"`
+	TimeoutSeconds        int               `json:"timeout_seconds"`
+	State                 WorkTargetState   `json:"state"`
+	BlockedReason         string            `json:"blocked_reason,omitempty"`
+	AssignedWorkerID      string            `json:"assigned_worker_id,omitempty"`
+	CancellationRequested bool              `json:"cancellation_requested"`
+	RetryMayRepeatEffects bool              `json:"retry_may_repeat_effects"`
+	AdmittedAt            time.Time         `json:"admitted_at"`
+	StartedAt             *time.Time        `json:"started_at,omitempty"`
+	TerminalAt            *time.Time        `json:"terminal_at,omitempty"`
+	Result                string            `json:"result,omitempty"`
+	FailureReason         string            `json:"failure_reason,omitempty"`
+	Attempts              []Attempt         `json:"attempts,omitempty"`
 }
 
 type Work struct {
-	ID             string          `json:"id"`
-	RoutineID      string          `json:"routine_id"`
-	Routine        RoutineSnapshot `json:"routine"`
-	Source         string          `json:"source"`
-	ScheduledAt    *time.Time      `json:"scheduled_at,omitempty"`
-	State          WorkState       `json:"state"`
-	NeedsAttention bool            `json:"needs_attention"`
-	TargetCount    int             `json:"target_count"`
-	SucceededCount int             `json:"succeeded_count"`
-	FailedCount    int             `json:"failed_count"`
-	CancelledCount int             `json:"cancelled_count"`
-	ActiveCount    int             `json:"active_count"`
-	AdmittedAt     time.Time       `json:"admitted_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
-	TerminalAt     *time.Time      `json:"terminal_at,omitempty"`
+	ID             string            `json:"id"`
+	RoutineID      string            `json:"routine_id"`
+	Routine        RoutineSnapshot   `json:"routine"`
+	Execution      ExecutionSnapshot `json:"execution"`
+	Source         string            `json:"source"`
+	ScheduledAt    *time.Time        `json:"scheduled_at,omitempty"`
+	State          WorkState         `json:"state"`
+	NeedsAttention bool              `json:"needs_attention"`
+	TargetCount    int               `json:"target_count"`
+	SucceededCount int               `json:"succeeded_count"`
+	FailedCount    int               `json:"failed_count"`
+	CancelledCount int               `json:"cancelled_count"`
+	ActiveCount    int               `json:"active_count"`
+	AdmittedAt     time.Time         `json:"admitted_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
+	TerminalAt     *time.Time        `json:"terminal_at,omitempty"`
 }
 
 type WorkDetail struct {

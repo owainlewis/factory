@@ -72,17 +72,20 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		return nil, unavailable(err)
 	}
 
-	var capacity, healthy, workClaimProtocolVersion int
+	var capacity, healthy, workClaimProtocolVersion, synthetic int
 	var lastHeartbeat int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT capacity, health = 'healthy', last_heartbeat, work_claim_protocol_version
+		SELECT capacity, health = 'healthy', last_heartbeat, work_claim_protocol_version, synthetic
 		FROM workers WHERE id = ?
-	`, workerID).Scan(&capacity, &healthy, &lastHeartbeat, &workClaimProtocolVersion)
+	`, workerID).Scan(&capacity, &healthy, &lastHeartbeat, &workClaimProtocolVersion, &synthetic)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, unavailable(err)
+	}
+	if synthetic != 0 {
+		return nil, conflict("synthetic_worker_isolated", "synthetic cloud Workers cannot use Worker claim routes")
 	}
 	if workClaimProtocolVersion != protocol.WorkClaimProtocolVersion {
 		return nil, conflict(

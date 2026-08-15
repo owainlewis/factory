@@ -45,7 +45,7 @@ func (s *Store) AdmitDueRoutines(ctx context.Context, limit int) error {
 			return nil
 		}
 		requestKey := fmt.Sprintf("schedule:%s:%d:%d", id, snapshot.Generation, due.UnixMilli())
-		_, _, admissionErr := s.admitRoutine(ctx, id, "schedule", requestKey, &due, &snapshot)
+		_, _, admissionErr := s.admitRoutine(ctx, id, "schedule", requestKey, &due, &snapshot, "")
 		if admissionErr == nil {
 			if err := s.finishRoutineOccurrence(ctx, id, due, true, nil); err != nil {
 				return err
@@ -126,11 +126,11 @@ func (s *Store) claimDueRoutine(ctx context.Context) (string, time.Time, protoco
 func loadCurrentRoutineSnapshot(ctx context.Context, tx *sql.Tx, id string) (protocol.RoutineSnapshot, error) {
 	var snapshot protocol.RoutineSnapshot
 	err := tx.QueryRowContext(ctx, `
-		SELECT id, name, prompt, runtime, timeout_seconds, concurrency_limit, generation,
+		SELECT id, name, prompt, runtime, COALESCE(execution_profile_id, ''), timeout_seconds, concurrency_limit, generation,
 		       cron, timezone
 		FROM routines WHERE id = ?
 	`, id).Scan(&snapshot.ID, &snapshot.Name, &snapshot.Prompt, &snapshot.Runtime,
-		&snapshot.TimeoutSeconds, &snapshot.ConcurrencyLimit, &snapshot.Generation,
+		&snapshot.ExecutionProfileID, &snapshot.TimeoutSeconds, &snapshot.ConcurrencyLimit, &snapshot.Generation,
 		&snapshot.ScheduleCron, &snapshot.ScheduleTimezone)
 	if err != nil {
 		return snapshot, unavailable(err)

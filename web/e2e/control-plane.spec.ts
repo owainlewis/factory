@@ -31,6 +31,9 @@ test("creates a Routine and completes its Work", async ({ page }) => {
   const routine = page.locator("article").filter({ hasText: routineName });
   await expect(routine).toContainText("1 repos");
   await routine.getByRole("button", { name: "Run now" }).click();
+  const runDialog = page.getByRole("dialog", { name: `Run ${routineName}` });
+  await expect(runDialog.getByLabel("Run on")).toHaveValue("persistent-auto");
+  await runDialog.getByRole("button", { name: "Run now" }).click();
 
   await expect(page).toHaveURL(/\/work\/[0-9a-f-]+$/);
   await expect(page.getByRole("heading", { name: routineName })).toBeVisible();

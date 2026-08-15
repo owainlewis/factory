@@ -3,19 +3,48 @@ import { Archive, CalendarClock, Eye, GitBranch, Pencil, Play, Plus, X } from "l
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { timeAgo } from "./format";
-import type { ManagedRepository, Routine, Runtime, SaveRoutineInput } from "./types";
+import type { ExecutionProfile, ManagedRepository, Routine, Runtime, SaveRoutineInput } from "./types";
 import { EmptyState, ErrorState, InlineError, LoadingState, StatusBadge, ViewHeader } from "./ui";
+
+const persistentAutoProfileID = "persistent-auto";
+
+function profileName(profile: ExecutionProfile): string {
+  return profile.id === persistentAutoProfileID ? "Automatic persistent Worker" : profile.name;
+}
+
+function profileIssue(profile: ExecutionProfile | undefined, runtime: Runtime): string {
+  if (!profile) return "The selected execution profile is no longer available.";
+  if (profile.id === persistentAutoProfileID) return "";
+  const compatibilityIssue = profileCompatibilityIssue(profile, runtime);
+  if (compatibilityIssue) return compatibilityIssue;
+  if (!profile.enabled) return "This execution profile is disabled.";
+  if (!profile.healthy) return profile.health_reason || "This execution profile is unhealthy.";
+  return "";
+}
+
+function profileCompatibilityIssue(profile: ExecutionProfile | undefined, runtime: Runtime): string {
+  if (!profile) return "The selected execution profile is no longer available.";
+  if (profile.id !== persistentAutoProfileID && profile.runtime !== runtime) return `Requires ${profile.runtime}; this Routine uses ${runtime}.`;
+  return "";
+}
+
+function profileDescription(profile: ExecutionProfile | undefined): string {
+  if (!profile || profile.id === persistentAutoProfileID) return "Factory selects the least-loaded eligible local or VM Worker.";
+  return `${profile.runtime} · ${profile.provider} / ${profile.model}`;
+}
 
 export function RoutinesView({ initialID, createOpen, onWork }: { initialID?: string; createOpen?: boolean; onWork: (id: string) => void }) {
   const client = useQueryClient();
   const [editing, setEditing] = useState<Routine | "new" | null>(createOpen ? "new" : null);
+  const [running, setRunning] = useState<Routine | null>(null);
   const [showArchived, setShowArchived] = useState(false);
-  const runRequests = useRef(new Map<string, { generation: number; requestKey: string }>());
+  const runRequests = useRef(new Map<string, { generation: number; profileID: string; requestKey: string }>());
   const query = useQuery({ queryKey: ["routines", showArchived], queryFn: () => api.routines(showArchived) });
   const run = useMutation({
-    mutationFn: ({ id, requestKey }: { id: string; generation: number; requestKey: string }) => api.runRoutine(id, requestKey),
+    mutationFn: ({ id, requestKey, profileID }: { id: string; generation: number; requestKey: string; profileID: string }) => api.runRoutine(id, requestKey, profileID),
     onSuccess: (detail, request) => {
       runRequests.current.delete(request.id);
+      setRunning(null);
       void client.invalidateQueries({ queryKey: ["overview"] });
       void client.invalidateQueries({ queryKey: ["work"] });
       onWork(detail.work.id);
@@ -64,25 +93,53 @@ export function RoutinesView({ initialID, createOpen, onWork }: { initialID?: st
           <div className="routine-last"><span>{routine.last_work_state ? <StatusBadge state={routine.last_work_state} /> : "No Work yet"}</span><small>Edited {timeAgo(routine.updated_at)}</small></div>
           <div className="routine-actions">
             <button className="icon-button" aria-label={`${routine.read_only ? "View" : "Edit"} ${routine.name}`} onClick={() => openRoutine(routine.id)}>{routine.read_only ? <Eye size={15} /> : <Pencil size={15} />}</button>
-            <button className="button button-secondary" title={routine.repository_count === 0 ? "Add a repository before running" : undefined} disabled={routine.read_only || routine.archived || routine.repository_count === 0 || run.isPending} onClick={() => {
-              const previous = runRequests.current.get(routine.id);
-              const requestKey = previous?.generation === routine.generation ? previous.requestKey : crypto.randomUUID();
-              runRequests.current.set(routine.id, { generation: routine.generation, requestKey });
-              run.mutate({ id: routine.id, generation: routine.generation, requestKey });
-            }}><Play size={14} /> Run now</button>
+            <button className="button button-secondary" title={routine.repository_count === 0 ? "Add a repository before running" : undefined} disabled={routine.read_only || routine.archived || routine.repository_count === 0 || run.isPending} onClick={() => { run.reset(); setRunning(routine); }}><Play size={14} /> Run now</button>
           </div>
         </article>)}
       </div>}
     {editing && <RoutineComposer routine={editing === "new" ? undefined : editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void client.invalidateQueries({ queryKey: ["routines"] }); void client.invalidateQueries({ queryKey: ["overview"] }); }} onArchive={(routine) => archive.mutate(routine)} archiveError={archive.error} archivePending={archive.isPending} />}
+    {running && <RunRoutineDialog routine={running} pending={run.isPending} error={run.error} onClose={() => setRunning(null)} onRun={(profileID) => {
+      const previous = runRequests.current.get(running.id);
+      const requestKey = previous?.generation === running.generation && previous.profileID === profileID ? previous.requestKey : crypto.randomUUID();
+      runRequests.current.set(running.id, { generation: running.generation, profileID, requestKey });
+      run.mutate({ id: running.id, generation: running.generation, profileID, requestKey });
+    }} />}
+  </div>;
+}
+
+function RunRoutineDialog({ routine, pending, error, onClose, onRun }: { routine: Routine; pending: boolean; error: Error | null; onClose: () => void; onRun: (profileID: string) => void }) {
+  const profiles = useQuery({ queryKey: ["execution-profiles"], queryFn: api.executionProfiles });
+  const [profileID, setProfileID] = useState(routine.execution_profile_id || persistentAutoProfileID);
+  const profile = profiles.data?.find((value) => value.id === profileID);
+  const issue = profiles.isSuccess ? profileIssue(profile, routine.runtime) : "";
+  return <div className="modal-layer" role="presentation">
+    <button className="modal-scrim" aria-label="Close Run dialog" onClick={onClose} />
+    <section className="modal run-routine-modal" role="dialog" aria-modal="true" aria-labelledby="run-routine-title">
+      <header className="modal-header"><div><h2 id="run-routine-title">Run {routine.name}</h2><p>Choose where this run should execute.</p></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={17} /></button></header>
+      <div className="modal-body">
+        <label className="field"><span>Run on</span><select aria-label="Run on" value={profileID} disabled={profiles.isPending || profiles.isError || pending} onChange={(event) => setProfileID(event.target.value)}>
+          {!profiles.data?.some((value) => value.id === profileID) && <option value={profileID}>Loading saved destination…</option>}
+          {(profiles.data ?? []).map((value) => {
+            const unavailable = profileIssue(value, routine.runtime);
+            return <option key={value.id} value={value.id} disabled={Boolean(unavailable)}>{profileName(value)}{unavailable ? " · unavailable" : ""}</option>;
+          })}
+        </select><small className={issue ? "field-error" : "field-hint"}>{issue || profileDescription(profile)}</small></label>
+        <p className="run-routine-note">This choice applies only to this run. Scheduled runs keep the Routine default.</p>
+        <InlineError error={error ?? profiles.error} />
+      </div>
+      <footer className="modal-footer"><button className="button button-secondary" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={pending || profiles.isPending || profiles.isError || Boolean(issue)} onClick={() => onRun(profileID)}><Play size={14} /> {pending ? "Starting…" : "Run now"}</button></footer>
+    </section>
   </div>;
 }
 
 function RoutineComposer({ routine, onClose, onSaved, onArchive, archiveError, archivePending }: { routine?: Routine; onClose: () => void; onSaved: () => void; onArchive: (routine: Routine) => void; archiveError: Error | null; archivePending: boolean }) {
   const repositories = useQuery({ queryKey: ["repositories"], queryFn: api.repositories });
+  const profiles = useQuery({ queryKey: ["execution-profiles"], queryFn: api.executionProfiles });
   const readOnly = routine?.read_only ?? false;
   const [name, setName] = useState(routine?.name ?? "");
   const [prompt, setPrompt] = useState(routine?.prompt ?? "");
   const [runtime, setRuntime] = useState<Runtime>(routine?.runtime ?? "codex");
+  const [profileID, setProfileID] = useState(routine?.execution_profile_id ?? persistentAutoProfileID);
   const [timeout, setTimeoutValue] = useState(routine?.timeout_seconds ?? 7200);
   const [concurrency, setConcurrency] = useState(routine?.concurrency_limit ?? 10);
   const [selected, setSelected] = useState<string[]>(routine?.repositories?.map((repository) => repository.id) ?? []);
@@ -93,6 +150,7 @@ function RoutineComposer({ routine, onClose, onSaved, onArchive, archiveError, a
     mutationFn: () => {
       const input: SaveRoutineInput = {
         name, prompt, runtime, timeout_seconds: timeout,
+        execution_profile_id: profileID === persistentAutoProfileID ? undefined : profileID,
         concurrency_limit: concurrency, repository_ids: selected,
         schedule: { enabled: scheduled, cron: scheduled ? cron : undefined, timezone: scheduled ? timezone : undefined },
         expected_generation: routine?.generation,
@@ -101,6 +159,9 @@ function RoutineComposer({ routine, onClose, onSaved, onArchive, archiveError, a
     },
     onSuccess: onSaved,
   });
+  const selectedProfile = profiles.data?.find((profile) => profile.id === profileID);
+  const selectedProfileIssue = profiles.isSuccess ? profileIssue(selectedProfile, runtime) : "";
+  const selectedProfileCompatibilityIssue = profiles.isSuccess ? profileCompatibilityIssue(selectedProfile, runtime) : "";
   const discard = useMutation({
     mutationFn: () => api.discardRoutineOccurrence(routine!.id, routine!.schedule.pending_due_at!),
     onSuccess: onSaved,
@@ -118,15 +179,22 @@ function RoutineComposer({ routine, onClose, onSaved, onArchive, archiveError, a
           <div className="field"><span>Timeout</span><div className="choice-control timeout-control">{[[1800, "30m"], [3600, "1h"], [7200, "2h"], [14400, "4h"], [28800, "8h"]].map(([value, label]) => <button type="button" key={value} disabled={readOnly} aria-pressed={timeout === value} onClick={() => setTimeoutValue(Number(value))}>{label}</button>)}</div></div>
           <label className="field"><span>Parallel targets</span><input type="number" min={1} max={100} disabled={readOnly} value={concurrency} onChange={(event) => setConcurrency(Number(event.target.value))} /></label>
         </div>
+        <label className="field"><span>Run on</span><select aria-label="Run on" disabled={readOnly || profiles.isPending || profiles.isError} value={profileID} onChange={(event) => setProfileID(event.target.value)}>
+          {!profiles.data?.some((profile) => profile.id === profileID) && <option value={profileID}>Loading saved destination…</option>}
+          {(profiles.data ?? []).map((profile) => {
+            const issue = profileIssue(profile, runtime);
+            return <option key={profile.id} value={profile.id} disabled={Boolean(issue)}>{profileName(profile)}{issue ? " · unavailable" : ""}</option>;
+          })}
+        </select><small className={selectedProfileIssue ? "field-error" : "field-hint"}>{selectedProfileIssue || profileDescription(selectedProfile)} This is also used by scheduled runs.</small></label>
         <div className="field"><span>Repositories</span><div className="repository-picker">{(repositories.data ?? []).map((repository: ManagedRepository) => <button type="button" key={repository.id} disabled={readOnly} className={selected.includes(repository.id) ? "selected" : ""} onClick={() => toggleRepository(repository.id)}><span className="check-mark">{selected.includes(repository.id) ? "✓" : ""}</span><GitBranch size={14} />{repository.remote_identity}</button>)}</div></div>
         <div className="schedule-card">
           <label className="switch-line"><span><strong>Schedule</strong><small>Run automatically using a five-field cron schedule.</small></span><input type="checkbox" disabled={readOnly} checked={scheduled} onChange={(event) => setScheduled(event.target.checked)} /></label>
           {scheduled && <div className="routine-settings schedule-fields"><label className="field"><span>Cron</span><input className="mono" disabled={readOnly} value={cron} onChange={(event) => setCron(event.target.value)} /></label><label className="field"><span>Timezone</span><input disabled={readOnly} value={timezone} onChange={(event) => setTimezone(event.target.value)} /></label></div>}
           {routine?.schedule.pending_due_at && <div className="pending-occurrence"><span><strong>{routine.schedule.health_status === "disabled" ? "Occurrence paused" : "Occurrence blocked"}</strong><small>{routine.schedule.health_message}</small></span>{!readOnly && (routine.schedule.health_status === "blocked" || routine.schedule.health_status === "disabled") && <button className="button button-danger-secondary" disabled={discard.isPending} onClick={() => discard.mutate()}>{discard.isPending ? "Discarding…" : "Discard occurrence"}</button>}</div>}
         </div>
-        <InlineError error={save.error ?? archiveError ?? discard.error ?? repositories.error} />
+        <InlineError error={save.error ?? archiveError ?? discard.error ?? repositories.error ?? profiles.error} />
       </div>
-      <footer className="modal-footer">{routine && !readOnly && <button className="button button-danger-secondary" disabled={archivePending} onClick={() => onArchive(routine)}><Archive size={14} /> {archivePending ? (routine.archived ? "Restoring…" : "Archiving…") : (routine.archived ? "Restore" : "Archive")}</button>}<span /><button className="button button-secondary" onClick={onClose}>{readOnly ? "Close" : "Cancel"}</button>{!readOnly && <button className="button button-primary" disabled={save.isPending || !name.trim() || !prompt.trim() || (scheduled && selected.length === 0)} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save Routine"}</button>}</footer>
+      <footer className="modal-footer">{routine && !readOnly && <button className="button button-danger-secondary" disabled={archivePending} onClick={() => onArchive(routine)}><Archive size={14} /> {archivePending ? (routine.archived ? "Restoring…" : "Archiving…") : (routine.archived ? "Restore" : "Archive")}</button>}<span /><button className="button button-secondary" onClick={onClose}>{readOnly ? "Close" : "Cancel"}</button>{!readOnly && <button className="button button-primary" disabled={save.isPending || !name.trim() || !prompt.trim() || (scheduled && selected.length === 0) || Boolean(selectedProfileCompatibilityIssue)} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save Routine"}</button>}</footer>
     </section>
   </div>;
 }

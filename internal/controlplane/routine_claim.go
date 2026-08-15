@@ -26,6 +26,7 @@ func (s *Store) materializeBlockedTargetForWorker(
 			JOIN work ON work.id = target.work_id
 			JOIN repositories repository ON repository.id = target.repository_id
 			WHERE target.state = 'blocked'
+			  AND target.execution_backend = 'persistent'
 			  AND (repository.centrally_managed = 0 OR repository.enabled = 1)
 			  AND (? = '' OR target.admitted_at > ? OR (target.admitted_at = ? AND target.id > ?))
 			  AND (
@@ -112,6 +113,7 @@ func (s *Store) rerouteQueuedTargetForWorker(
 			FROM work_targets target
 			JOIN executions execution ON execution.work_target_id = target.id
 			WHERE target.state = 'queued' AND execution.state = 'queued'
+			  AND target.execution_backend = 'persistent'
 			  AND execution.assigned_worker_id != ?
 			  AND (? = '' OR target.admitted_at > ? OR (target.admitted_at = ? AND target.id > ?))
 			ORDER BY target.admitted_at, target.id LIMIT 50

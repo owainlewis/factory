@@ -158,6 +158,7 @@ type Worker struct {
 	ActiveCount                int                `json:"active_count"`
 	Health                     string             `json:"health"`
 	Online                     bool               `json:"online"`
+	Synthetic                  bool               `json:"synthetic"`
 	Repositories               []Repository       `json:"repositories"`
 	SourceAccess               []SourceAccess     `json:"source_access,omitempty"`
 	AcceptsManagedRepositories bool               `json:"accepts_managed_repositories,omitempty"`

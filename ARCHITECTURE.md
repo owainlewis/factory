@@ -31,9 +31,11 @@ The operator API is loopback-only. Workers make outbound polling requests to
 the server. Remote VM Workers use a separate TLS listener and per-Worker bearer
 credential. No server connection into a Worker host is required.
 
-Cloud Run is not implemented. The proposed backend keeps Factory as the source
-of truth and replaces a persistent Worker process with one disposable Job
-execution plus a verified recovery artifact.
+The Cloud Run backend contract is implemented behind immutable execution
+profiles and a deterministic fake provider. Real Google Cloud dispatch,
+artifacts, and credentials are not implemented yet. The contract keeps Factory
+as the source of truth and preserves the persistent Worker path as the built-in
+`persistent-auto` default.
 
 ## 2. System context
 
@@ -76,6 +78,10 @@ A Routine is a reusable definition containing:
 - optional cron schedule and IANA timezone;
 - mutable generation and archived state.
 
+A Routine may also save an execution-profile ID. Missing profile data means
+`persistent-auto`, so existing rows need no migration. Manual Run requests may
+override the saved profile; scheduled Work uses the saved default.
+
 Updates use an expected generation. Admission snapshots the Routine so later
 edits do not change existing Work. A manual run uses an idempotency key.
 Scheduled admission polls every ten seconds and preserves the frozen pending
@@ -84,9 +90,11 @@ snapshot while retrying a failed admission.
 ### Work and Target
 
 One Routine admission creates one Work and one Target per selected repository.
-Work stores the Routine snapshot, source (`manual` or `schedule`), schedule time,
-and aggregate state. A Target stores its resolved prompt, repository identity,
-required runtime, timeout, assigned Worker, result, and failure state.
+Work stores the Routine snapshot, immutable execution-profile version, backend,
+runtime, provider, model, timeout, resource class, commit-resolution policy,
+source (`manual` or `schedule`), schedule time, and aggregate state. A Target
+stores the same frozen execution choice with its resolved prompt, repository
+identity, assigned Worker, result, and failure state.
 
 Target states are `blocked`, `queued`, `preparing`, `running`, `succeeded`,
 `failed`, and `cancelled`. Work state is derived from all Targets as `blocked`,
@@ -115,6 +123,11 @@ A Worker has one durable ID, display name, labels, capacity, health, runtime
 capabilities, source access, repository advertisements, and retained-worktree
 inventory. One Worker can advertise several runtimes and run 1 to 100 Attempts,
 with ten slots by default.
+
+Each fake cloud profile projects into one stable synthetic Worker named
+`cloud-run-<profile-id>`. The control plane creates Attempts internally for
+that Worker. Synthetic Workers cannot enroll, register, heartbeat, poll claims,
+or hold a remote Worker credential.
 
 The control plane owns a catalog of managed GitHub repositories. Eligible
 Workers clone them on demand with `gh`, keep at most 100 cache entries, fetch

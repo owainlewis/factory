@@ -97,6 +97,29 @@ describe("RoutineWork", () => {
     expect(events).toHaveBeenCalledTimes(2);
     expect(events).toHaveBeenLastCalledWith("attempt-1", 0);
   });
+
+  it("shows the frozen execution destination in Work detail", async () => {
+    const cloud = workDetail();
+    cloud.work = {
+      ...cloud.work,
+      execution: {
+        profile_id: "profile-cloud-1",
+        profile_version: 1,
+        backend: "fake_cloud_run",
+        runtime: "codex",
+        provider: "openrouter",
+        model: "deepseek/test",
+        timeout_seconds: 7200,
+        resource_class: "standard",
+        commit_resolution_policy: "frozen_commit",
+      },
+    };
+    vi.spyOn(api, "workItem").mockResolvedValue(cloud);
+    const client = testClient();
+    render(<QueryClientProvider client={client}><RoutineWorkDetail id={headWork.id} onBack={() => undefined} /></QueryClientProvider>);
+
+    expect(await screen.findByText(/Cloud Run · openrouter \/ deepseek\/test/)).toBeVisible();
+  });
 });
 
 function testClient(): QueryClient {
@@ -118,6 +141,17 @@ function workItem(id: string, name: string, state: WorkItem["state"]): WorkItem 
       concurrency_limit: 10,
       generation: 1,
       repositories: [],
+    },
+    execution: {
+      profile_id: "persistent-auto",
+      profile_version: 1,
+      backend: "persistent",
+      runtime: "codex",
+      provider: "worker",
+      model: "worker-default",
+      timeout_seconds: 7200,
+      resource_class: "worker",
+      commit_resolution_policy: "resolve_per_attempt",
     },
     source: "manual",
     state,
@@ -141,6 +175,7 @@ function workDetail(attemptState: "running" | "succeeded" = "running"): WorkDeta
       repository_id: "repository-1",
       repository_identity: "github.com/example/factory",
       required_runtime: "codex",
+      execution: headWork.execution,
       timeout_seconds: 7200,
       state: "running",
       assigned_worker_id: "worker-1",

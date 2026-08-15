@@ -798,6 +798,7 @@ button { color: inherit; }
 @keyframes modal-in { from { transform: translateY(6px); opacity: 0; } }
 
 .field { margin-bottom: 14px; }
+.field > span { display: block; margin-bottom: 6px; color: var(--fg-2); font-size: 13px; }
 .field label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--fg-2); }
 .field input, .field textarea, .field select {
   width: 100%;
@@ -950,6 +951,10 @@ button { color: inherit; }
 .pending-occurrence strong, .pending-occurrence small { display: block; }
 .pending-occurrence small { margin-top: 3px; color: var(--failed); font-size: 11px; }
 .routine-modal .modal-footer > span { flex: 1; }
+.run-routine-modal { width: min(500px, calc(100vw - 28px)); }
+.run-routine-modal .modal-header { height: auto; min-height: 62px; padding-block: 8px; }
+.run-routine-modal .modal-header p { margin: 3px 0 0; color: var(--fg-3); font-size: 11px; }
+.run-routine-note { margin: 0; color: var(--fg-3); font-size: 11px; line-height: 1.5; }
 
 .work-table { overflow: hidden; }
 .work-table-row { width: 100%; display: grid; grid-template-columns: minmax(220px, 1.5fr) minmax(130px, .8fr) 110px 110px 120px 100px; align-items: center; gap: 14px; min-height: 56px; padding: 9px 13px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--fg-2); text-align: left; font-size: 12px; }

@@ -1,10 +1,36 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
 import { RoutinesView } from "./Routines";
-import type { Routine } from "./types";
+import type { ExecutionProfile, Routine, WorkDetailV2 } from "./types";
+
+const executionProfiles: ExecutionProfile[] = [{
+  id: "persistent-auto",
+  name: "Persistent auto",
+  kind: "persistent",
+  version: 1,
+  provider: "worker",
+  model: "worker-default",
+  resource_class: "worker",
+  max_concurrent: 100,
+  enabled: true,
+  healthy: true,
+}, {
+  id: "profile-cloud-1",
+  name: "Cloud Run test profile",
+  kind: "fake_cloud_run",
+  version: 1,
+  runtime: "codex",
+  provider: "openrouter",
+  model: "deepseek/test",
+  resource_class: "standard",
+  max_concurrent: 10,
+  enabled: true,
+  healthy: true,
+  synthetic_worker_id: "cloud-run-profile-cloud-1",
+}];
 
 const routine: Routine = {
   id: "routine-1",
@@ -25,6 +51,10 @@ const routine: Routine = {
 };
 
 describe("RoutinesView", () => {
+  beforeEach(() => {
+    vi.spyOn(api, "executionProfiles").mockResolvedValue(executionProfiles);
+  });
+
   it("reuses the Run request key after an ambiguous failure", async () => {
     const runnable = { ...routine, repository_count: 1 };
     vi.spyOn(api, "routines").mockResolvedValue([runnable]);
@@ -33,10 +63,13 @@ describe("RoutinesView", () => {
     render(<QueryClientProvider client={client}><RoutinesView onWork={() => undefined} /></QueryClientProvider>);
 
     await userEvent.click(await screen.findByRole("button", { name: "Run now" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("The response was lost.");
-    await userEvent.click(screen.getByRole("button", { name: "Run now" }));
+    const dialog = await screen.findByRole("dialog", { name: `Run ${runnable.name}` });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Run now" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("The response was lost.");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Run now" }));
     expect(runRoutine).toHaveBeenCalledTimes(2);
     expect(runRoutine.mock.calls[1][1]).toBe(runRoutine.mock.calls[0][1]);
+    expect(runRoutine).toHaveBeenLastCalledWith(runnable.id, expect.any(String), "persistent-auto");
   });
 
   it("uses a new Run request key after the Routine generation changes", async () => {
@@ -47,12 +80,59 @@ describe("RoutinesView", () => {
     render(<QueryClientProvider client={client}><RoutinesView onWork={() => undefined} /></QueryClientProvider>);
 
     await userEvent.click(await screen.findByRole("button", { name: "Run now" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("The response was lost.");
+    let dialog = await screen.findByRole("dialog", { name: `Run ${runnable.name}` });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Run now" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("The response was lost.");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     client.setQueryData(["routines", false], [{ ...runnable, name: "Updated Routine", generation: runnable.generation + 1 }]);
     expect(await screen.findByText("Updated Routine")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Run now" }));
+    dialog = await screen.findByRole("dialog", { name: "Run Updated Routine" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Run now" }));
     expect(runRoutine).toHaveBeenCalledTimes(2);
     expect(runRoutine.mock.calls[1][1]).not.toBe(runRoutine.mock.calls[0][1]);
+  });
+
+  it("uses a new Run request key when the execution destination changes", async () => {
+    const runnable = { ...routine, repository_count: 1 };
+    vi.spyOn(api, "routines").mockResolvedValue([runnable]);
+    const runRoutine = vi.spyOn(api, "runRoutine").mockRejectedValue(new Error("The response was lost."));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><RoutinesView onWork={() => undefined} /></QueryClientProvider>);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Run now" }));
+    let dialog = await screen.findByRole("dialog", { name: `Run ${runnable.name}` });
+    await userEvent.selectOptions(within(dialog).getByLabelText("Run on"), "profile-cloud-1");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Run now" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("The response was lost.");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Run now" }));
+    dialog = await screen.findByRole("dialog", { name: `Run ${runnable.name}` });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Run now" }));
+
+    expect(runRoutine.mock.calls[0][2]).toBe("profile-cloud-1");
+    expect(runRoutine.mock.calls[1][2]).toBe("persistent-auto");
+    expect(runRoutine.mock.calls[1][1]).not.toBe(runRoutine.mock.calls[0][1]);
+  });
+
+  it("lets a manual run override the saved execution destination", async () => {
+    const runnable = { ...routine, repository_count: 1 };
+    vi.spyOn(api, "routines").mockResolvedValue([runnable]);
+    const result = { work: { id: "work-cloud-1" }, targets: [] } as unknown as WorkDetailV2;
+    const runRoutine = vi.spyOn(api, "runRoutine").mockResolvedValue(result);
+    const onWork = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><RoutinesView onWork={onWork} /></QueryClientProvider>);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Run now" }));
+    const dialog = await screen.findByRole("dialog", { name: `Run ${runnable.name}` });
+    await userEvent.selectOptions(within(dialog).getByLabelText("Run on"), "profile-cloud-1");
+    expect(within(dialog).getByText("codex · openrouter / deepseek/test")).toBeVisible();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Run now" }));
+
+    expect(runRoutine).toHaveBeenCalledWith(runnable.id, expect.any(String), "profile-cloud-1");
+    expect(onWork).toHaveBeenCalledWith("work-cloud-1");
   });
 
   it("keeps the editor open and shows archive failures", async () => {
@@ -94,5 +174,39 @@ describe("RoutinesView", () => {
 
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("The pending occurrence changed.");
     expect(screen.getByRole("dialog", { name: "Edit Routine" })).toBeVisible();
+  });
+
+  it("preserves the saved execution profile when editing a Routine", async () => {
+    const cloudRoutine: Routine = { ...routine, execution_profile_id: "profile-cloud-1" };
+    vi.spyOn(api, "routines").mockResolvedValue([cloudRoutine]);
+    vi.spyOn(api, "routine").mockResolvedValue(cloudRoutine);
+    vi.spyOn(api, "repositories").mockResolvedValue([]);
+    const updateRoutine = vi.spyOn(api, "updateRoutine").mockResolvedValue(cloudRoutine);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><RoutinesView initialID={cloudRoutine.id} onWork={() => undefined} /></QueryClientProvider>);
+
+    const dialog = await screen.findByRole("dialog", { name: "Edit Routine" });
+    expect(within(dialog).getByLabelText("Run on")).toHaveValue("profile-cloud-1");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save Routine" }));
+
+    expect(updateRoutine).toHaveBeenCalledWith(cloudRoutine.id, expect.objectContaining({
+      execution_profile_id: "profile-cloud-1",
+    }));
+  });
+
+  it("saves a selected default execution destination on a new Routine", async () => {
+    vi.spyOn(api, "routines").mockResolvedValue([]);
+    vi.spyOn(api, "repositories").mockResolvedValue([]);
+    const createRoutine = vi.spyOn(api, "createRoutine").mockResolvedValue({ ...routine, execution_profile_id: "profile-cloud-1" });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><RoutinesView createOpen onWork={() => undefined} /></QueryClientProvider>);
+
+    const dialog = await screen.findByRole("dialog", { name: "New Routine" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Cloud review");
+    await userEvent.type(within(dialog).getByLabelText("Prompt"), "Review the repository.");
+    await userEvent.selectOptions(within(dialog).getByLabelText("Run on"), "profile-cloud-1");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save Routine" }));
+
+    expect(createRoutine).toHaveBeenCalledWith(expect.objectContaining({ execution_profile_id: "profile-cloud-1" }));
   });
 });

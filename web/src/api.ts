@@ -1,6 +1,7 @@
 import type {
   APIErrorBody,
   AttemptEventPage,
+  ExecutionProfile,
   ManagedRepository,
   ManagedRepositoryReadiness,
   Routine,
@@ -46,6 +47,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   overview: () => request<RoutineOverview>("/api/v1/overview"),
+  executionProfiles: async () => (await request<{ profiles: ExecutionProfile[] | null }>("/api/v1/execution-profiles")).profiles ?? [],
   routines: async (includeArchived = false) => {
     const routines: Routine[] = [];
     let cursor = "";
@@ -68,8 +70,8 @@ export const api = {
   archiveRoutine: (id: string, archived: boolean, expectedGeneration: number) => request<Routine>(`/api/v1/routines/${encodeURIComponent(id)}/archived`, {
     method: "PUT", body: JSON.stringify({ archived, expected_generation: expectedGeneration }),
   }),
-  runRoutine: (id: string, requestKey: string) => request<WorkDetailV2>(`/api/v1/routines/${encodeURIComponent(id)}/run`, {
-    method: "POST", body: JSON.stringify({ request_key: requestKey }),
+  runRoutine: (id: string, requestKey: string, executionProfileID?: string) => request<WorkDetailV2>(`/api/v1/routines/${encodeURIComponent(id)}/run`, {
+    method: "POST", body: JSON.stringify({ request_key: requestKey, execution_profile_id: executionProfileID }),
   }),
   discardRoutineOccurrence: (id: string, pendingDueAt: string) => request<Routine>(`/api/v1/routines/${encodeURIComponent(id)}/discard-occurrence`, {
     method: "POST", body: JSON.stringify({ pending_due_at: pendingDueAt }),
