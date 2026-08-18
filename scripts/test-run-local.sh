@@ -327,3 +327,189 @@ async function verifySignal(signal, suffix, listenVariable) {
 EOF
 
 echo "Factory launcher honors bootstrap listen settings, rejects unhealthy workers, retired-state writes, server loss, and stalled readiness responses; signals stop cleanly."
+
+set +e
+output=$(
+  FACTORY_BUILD_DIR="$temporary/bin" \
+    FACTORY_DATA_HOME="$temporary/data" \
+    FACTORY_SKIP_BUILD=1 \
+    "$root/scripts/run-worker.sh" "$temporary/missing-worker.toml" 2>&1
+)
+status=$?
+set -e
+if [ "$status" -ne 1 ] ||
+  ! printf '%s\n' "$output" |
+    grep -Fq "Factory worker configuration does not exist: $temporary/missing-worker.toml"; then
+  echo "worker launcher did not reject a missing configuration" >&2
+  echo "$output" >&2
+  exit 1
+fi
+
+set +e
+output=$(
+  FACTORY_BUILD_DIR="$temporary/bin" \
+    FACTORY_DATA_HOME="$temporary/data" \
+    FACTORY_LISTEN="127.0.0.1:1" \
+    FACTORY_SKIP_BUILD=1 \
+    FACTORY_TEST_WORKER_MARKER="$temporary/worker-started-detached" \
+    "$root/scripts/run-worker.sh" "$temporary/worker.toml" 2>&1
+)
+status=$?
+set -e
+if [ "$status" -ne 1 ] ||
+  ! printf '%s\n' "$output" |
+    grep -q "Factory control plane is not reachable at http://127.0.0.1:1/"; then
+  echo "worker launcher did not report a missing control plane" >&2
+  echo "$output" >&2
+  exit 1
+fi
+if [ -e "$temporary/worker-started-detached" ]; then
+  echo "worker launcher started a worker without a control plane" >&2
+  exit 1
+fi
+
+node - "$root" "$temporary" "$temporary/worker.toml" <<'EOF'
+const { existsSync, readFileSync, rmSync } = require("node:fs");
+const { createServer } = require("node:net");
+const { spawn } = require("node:child_process");
+const { join } = require("node:path");
+
+const root = process.argv[2];
+const temporary = process.argv[3];
+const config = process.argv[4];
+
+function availablePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const port = server.address().port;
+      server.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
+}
+
+function isAlive(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+function pidFrom(path) {
+  if (!existsSync(path)) return null;
+  return Number(readFileSync(path, "utf8").trim());
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitForHealth(port) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/healthz`);
+      if (response.ok) return;
+    } catch {}
+    await delay(50);
+  }
+  throw new Error("fake control plane never became healthy");
+}
+
+(async () => {
+  const marker = join(temporary, "worker-started-attached");
+  const workerPidFile = join(temporary, "worker-attached.pid");
+  rmSync(marker, { force: true });
+  rmSync(workerPidFile, { force: true });
+  const port = await availablePort();
+
+  const controlPlane = spawn(join(temporary, "bin/factory-server"), ["-listen", `127.0.0.1:${port}`], {
+    env: {
+      ...process.env,
+      FACTORY_DATA_HOME: join(temporary, "data"),
+      FACTORY_TEST_HEALTHY_WORKER: "1",
+      FACTORY_TEST_WORKER_MARKER: marker
+    },
+    stdio: ["ignore", "ignore", "inherit"]
+  });
+
+  let output = "";
+  let signalled = false;
+  let timedOut = false;
+  try {
+    await waitForHealth(port);
+
+    const launcher = spawn(join(root, "scripts/run-worker.sh"), [config], {
+      env: {
+        ...process.env,
+        FACTORY_BUILD_DIR: join(temporary, "bin"),
+        FACTORY_DATA_HOME: join(temporary, "data"),
+        FACTORY_LISTEN: `127.0.0.1:${port}`,
+        FACTORY_SKIP_BUILD: "1",
+        FACTORY_TEST_WORKER_MARKER: marker,
+        FACTORY_TEST_WORKER_PID_FILE: workerPidFile,
+        FACTORY_WORKER_READY_SECONDS: "5"
+      },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    const capture = (chunk) => {
+      output += chunk;
+      if (!signalled && output.includes("joined")) {
+        signalled = true;
+        launcher.kill("SIGTERM");
+      }
+    };
+    launcher.stdout.on("data", capture);
+    launcher.stderr.on("data", capture);
+
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      launcher.kill("SIGKILL");
+      const pid = pidFrom(workerPidFile);
+      if (isAlive(pid)) process.kill(pid, "SIGTERM");
+    }, 10000);
+
+    const result = await new Promise((resolve, reject) => {
+      launcher.once("error", reject);
+      launcher.once("close", (code, exitSignal) => resolve({ code, exitSignal }));
+    });
+    clearTimeout(timeout);
+
+    const workerPid = pidFrom(workerPidFile);
+    const leakedWorker = isAlive(workerPid);
+    if (leakedWorker) process.kill(workerPid, "SIGTERM");
+
+    if (timedOut) throw new Error(`worker launcher shutdown exceeded 10 seconds\n${output}`);
+    if (!signalled) throw new Error(`worker launcher never joined the control plane\n${output}`);
+    if (!output.includes(`Factory worker new-unhealthy-worker joined http://127.0.0.1:${port}/`)) {
+      throw new Error(`worker launcher did not report the running control plane\n${output}`);
+    }
+    if (output.includes("Starting Factory server")) {
+      throw new Error(`worker launcher started a second control plane\n${output}`);
+    }
+    if (result.code !== 0 || result.exitSignal !== null) {
+      throw new Error(`worker shutdown returned code=${result.code} signal=${result.exitSignal}\n${output}`);
+    }
+    if (output.includes("stopped unexpectedly")) {
+      throw new Error(`worker shutdown was reported as unexpected\n${output}`);
+    }
+    if (leakedWorker) throw new Error(`worker launcher leaked its worker\n${output}`);
+    if (controlPlane.exitCode !== null) {
+      throw new Error(`worker launcher stopped the control plane\n${output}`);
+    }
+  } finally {
+    controlPlane.kill("SIGTERM");
+  }
+})().catch((error) => {
+  console.error(error.message);
+  process.exitCode = 1;
+});
+EOF
+
+echo "Factory worker launcher validates its configuration, requires a running control plane, joins it without starting another, and leaves it running after Ctrl-C."

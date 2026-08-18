@@ -144,8 +144,20 @@ To start with a different Worker config:
 just run ~/.factory/claude-worker.toml
 ```
 
-To run more than one Worker, start the control plane once and then start each
-additional Worker directly:
+To run more than one Worker, start the control plane once with `just run` and
+then start each additional Worker against it:
+
+```sh
+just run-worker ~/.factory/claude-worker.toml
+```
+
+`just run-worker` never starts a second control plane. It builds the binaries
+when they are missing, checks that the control plane answers, waits for the
+Worker to register as healthy, and stops only that Worker on Ctrl+C. It reads
+the same `FACTORY_DATA_HOME` and `FACTORY_BUILD_DIR` settings as `just run`, and
+uses `~/.factory/worker.toml` when no config path is given.
+
+You can also start the Worker binary directly:
 
 ```sh
 ~/.factory/bin/factory-worker \

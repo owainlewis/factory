@@ -18,6 +18,10 @@ build:
 run config="":
     @if [[ -n "{{config}}" ]]; then ./scripts/run-local.sh "{{config}}"; else ./scripts/run-local.sh; fi
 
+# Start one worker against a control plane that is already running.
+run-worker config="":
+    @if [[ -n "{{config}}" ]]; then ./scripts/run-worker.sh "{{config}}"; else ./scripts/run-worker.sh; fi
+
 # Install pinned UI dependencies.
 ui-install:
     cd web && npm ci
