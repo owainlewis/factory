@@ -337,9 +337,9 @@ func TestClaudeResultCapture(t *testing.T) {
 		},
 		{
 			name:       "escape sequences",
-			lines:      []string{`{"type":"result","result":"a\nb\tc\\d\"e\/fA"}`},
+			lines:      []string{`{"type":"result","result":"a\nb\tc\\d\"e\/f\u0041"}`},
 			wantFound:  true,
-			wantResult: "a\nb\tc\\d\"e/f" + "A",
+			wantResult: "a\nb\tc\\d\"e/fA",
 		},
 		{
 			name:       "control escapes",
@@ -349,7 +349,7 @@ func TestClaudeResultCapture(t *testing.T) {
 		},
 		{
 			name:       "surrogate pair",
-			lines:      []string{`{"type":"result","result":"😀"}`},
+			lines:      []string{`{"type":"result","result":"\ud83d\ude00"}`},
 			wantFound:  true,
 			wantResult: "\U0001F600",
 		},
@@ -740,19 +740,37 @@ func TestAwaitReady(t *testing.T) {
 		}
 	})
 
-	invalid := []supervisorMessage{
-		{Type: "output", SupervisorPID: 11, ProcessIdentity: "s", ProcessGroupID: 12, GroupIdentity: "g"},
-		{Type: "ready", SupervisorPID: 0, ProcessIdentity: "s", ProcessGroupID: 12, GroupIdentity: "g"},
-		{Type: "ready", SupervisorPID: 11, ProcessIdentity: "s", ProcessGroupID: 0, GroupIdentity: "g"},
-		{Type: "ready", SupervisorPID: 11, ProcessIdentity: "", ProcessGroupID: 12, GroupIdentity: "g"},
-		{Type: "ready", SupervisorPID: 11, ProcessIdentity: "s", ProcessGroupID: 12, GroupIdentity: ""},
+	invalid := []struct {
+		name    string
+		message supervisorMessage
+	}{
+		{
+			name:    "wrong message type",
+			message: supervisorMessage{Type: "output", SupervisorPID: 11, ProcessIdentity: "s", ProcessGroupID: 12, GroupIdentity: "g"},
+		},
+		{
+			name:    "no supervisor pid",
+			message: supervisorMessage{Type: "ready", SupervisorPID: 0, ProcessIdentity: "s", ProcessGroupID: 12, GroupIdentity: "g"},
+		},
+		{
+			name:    "no process group",
+			message: supervisorMessage{Type: "ready", SupervisorPID: 11, ProcessIdentity: "s", ProcessGroupID: 0, GroupIdentity: "g"},
+		},
+		{
+			name:    "no process identity",
+			message: supervisorMessage{Type: "ready", SupervisorPID: 11, ProcessIdentity: "", ProcessGroupID: 12, GroupIdentity: "g"},
+		},
+		{
+			name:    "no group identity",
+			message: supervisorMessage{Type: "ready", SupervisorPID: 11, ProcessIdentity: "s", ProcessGroupID: 12, GroupIdentity: ""},
+		},
 	}
-	for index, message := range invalid {
-		t.Run("invalid readiness", func(t *testing.T) {
+	for _, testCase := range invalid {
+		t.Run(testCase.name, func(t *testing.T) {
 			process := newTestSupervisorProcess()
-			process.messages <- message
+			process.messages <- testCase.message
 			if err := process.awaitReady(context.Background()); err == nil {
-				t.Fatalf("case %d accepted %+v", index, message)
+				t.Fatalf("awaitReady accepted %+v", testCase.message)
 			}
 		})
 	}

@@ -318,15 +318,16 @@ func TestRunSupervisorCancelsARunningRuntime(t *testing.T) {
 func TestRunSupervisorStopsARuntimeAtItsTimeout(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
-	pidPath := filepath.Join(directory, "runtime.pid")
-	script := writeRuntimeScript(t, directory, "runtime",
-		"echo $$ > '"+pidPath+"'\nsleep 300\n")
+	script := writeRuntimeScript(t, directory, "runtime", "sleep 300\n")
+	// The runtime is stopped one second after it starts, which is too early to
+	// wait on anything the fake runtime writes, so this test asserts on the
+	// process group rather than on an individual runtime process. The
+	// cancellation and parent-lost tests cover per-process reaping.
 	init := newSupervisorInit(t, protocol.RuntimePi, script, 1)
 
 	session := startSupervisorSession(t, init)
 	ready := session.awaitReady()
 	session.send("start")
-	runtimePID := readRuntimePID(t, pidPath)
 
 	exit, err := session.awaitExit()
 	if err != nil {
@@ -335,9 +336,6 @@ func TestRunSupervisorStopsARuntimeAtItsTimeout(t *testing.T) {
 	if exit.Reason != "timeout" || exit.Error != "Work timeout reached" {
 		t.Fatalf("exit message = %+v", exit)
 	}
-	waitFor(t, 30*time.Second, "the runtime process to be reaped", func() bool {
-		return !processAlive(runtimePID)
-	})
 	waitFor(t, 30*time.Second, "the attempt process group to be torn down", func() bool {
 		return !processGroupAlive(int(ready.ProcessGroupID))
 	})
@@ -372,7 +370,7 @@ func TestRunSupervisorStopsWhenItsParentGoesAway(t *testing.T) {
 	})
 }
 
-func TestRunSupervisorStopsWhenTheLeaseDeadlinePasses(t *testing.T) {
+func TestRunSupervisorStopsWhenTheLeaseDeadlinePassesBeforeStart(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
 	script := writeRuntimeScript(t, directory, "runtime", "sleep 300\n")
@@ -395,24 +393,92 @@ func TestRunSupervisorStopsWhenTheLeaseDeadlinePasses(t *testing.T) {
 	})
 }
 
-func TestRunSupervisorReportsPreparationFailureBeforeStart(t *testing.T) {
-	t.Parallel()
-	directory := t.TempDir()
-	script := writeRuntimeScript(t, directory, "runtime", "sleep 300\n")
-	session := startSupervisorSession(t, newSupervisorInit(t, protocol.RuntimePi, script, 600))
-	ready := session.awaitReady()
+func TestRunSupervisorHandlesStopCommandsBeforeStart(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		reason  string
+		message string
+	}{
+		{name: "cancel", command: "cancel", reason: "cancelled", message: "attempt cancelled"},
+		{name: "lease lost", command: "lease_lost", reason: "lease_lost", message: "control-plane lease was lost"},
+		{name: "preparation failure", command: "fail", reason: "supervisor_error", message: "attempt preparation failed"},
+		{name: "timeout", command: "timeout", reason: "timeout", message: "Work timeout reached"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			directory := t.TempDir()
+			script := writeRuntimeScript(t, directory, "runtime", "sleep 300\n")
+			session := startSupervisorSession(t, newSupervisorInit(t, protocol.RuntimePi, script, 600))
+			ready := session.awaitReady()
 
-	session.send("fail")
-	exit, err := session.awaitExit()
-	if err != nil {
-		t.Fatal(err)
+			session.send(testCase.command)
+			exit, err := session.awaitExit()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if exit.Reason != testCase.reason || exit.Error != testCase.message {
+				t.Fatalf("exit message = %+v", exit)
+			}
+			waitFor(t, 30*time.Second, "the attempt process group to be torn down", func() bool {
+				return !processGroupAlive(int(ready.ProcessGroupID))
+			})
+		})
 	}
-	if exit.Reason != "supervisor_error" || exit.Error != "attempt preparation failed" {
-		t.Fatalf("exit message = %+v", exit)
+}
+
+func TestRunSupervisorHandlesStopCommandsWhileRunning(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		reason  string
+		message string
+	}{
+		{name: "preparation failure", command: "fail", reason: "supervisor_error", message: "attempt supervisor failed"},
+		{
+			name:    "lease lost",
+			command: "lease_lost",
+			reason:  "lease_lost",
+			message: "control-plane lease renewal deadline passed",
+		},
+		{
+			// A renewal this short leaves no room for the termination grace, so
+			// the lease deadline passes almost immediately.
+			name:    "renewal deadline",
+			command: "renew 1",
+			reason:  "lease_lost",
+			message: "control-plane lease renewal deadline passed",
+		},
 	}
-	waitFor(t, 30*time.Second, "the attempt process group to be torn down", func() bool {
-		return !processGroupAlive(int(ready.ProcessGroupID))
-	})
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			directory := t.TempDir()
+			pidPath := filepath.Join(directory, "runtime.pid")
+			script := writeRuntimeScript(t, directory, "runtime",
+				"echo $$ > '"+pidPath+"'\nsleep 300\n")
+			session := startSupervisorSession(t, newSupervisorInit(t, protocol.RuntimePi, script, 600))
+			ready := session.awaitReady()
+			session.send("start")
+			runtimePID := readRuntimePID(t, pidPath)
+
+			session.send(testCase.command)
+			exit, err := session.awaitExit()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if exit.Reason != testCase.reason || exit.Error != testCase.message {
+				t.Fatalf("exit message = %+v", exit)
+			}
+			waitFor(t, 30*time.Second, "the runtime process to be reaped", func() bool {
+				return !processAlive(runtimePID)
+			})
+			waitFor(t, 30*time.Second, "the attempt process group to be torn down", func() bool {
+				return !processGroupAlive(int(ready.ProcessGroupID))
+			})
+		})
+	}
 }
 
 func TestRunSupervisorRejectsAnUnknownControlCommand(t *testing.T) {
@@ -689,7 +755,9 @@ func startTestProcessGroup(t *testing.T) (*exec.Cmd, string, int) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if anchor.Process != nil {
+		// Only signal a group that is still alive, so a reaped group's recycled
+		// process-group ID is never signalled by mistake.
+		if anchor.Process != nil && processGroupAlive(anchor.Process.Pid) {
 			_ = forceStopStartedProcessGroup(anchor.Process.Pid)
 		}
 	})
@@ -725,6 +793,9 @@ func TestWaitForSupervisorCommand(t *testing.T) {
 			t.Fatal(err)
 		}
 		pid := command.Process.Pid
+		// waitForSupervisorCommand kills the process, not its group, so the
+		// forked sleep would otherwise outlive the test.
+		t.Cleanup(func() { _ = forceStopStartedProcessGroup(pid) })
 		err := waitForSupervisorCommand(command, 100*time.Millisecond)
 		if err == nil || !strings.Contains(err.Error(), "did not exit within") {
 			t.Fatalf("waitForSupervisorCommand returned %v", err)
