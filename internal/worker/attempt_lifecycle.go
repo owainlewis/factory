@@ -50,11 +50,11 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 	}()
 	go manager.heartbeatAttempt(handle, claim.Attempt.ID, token)
 
-	workDeadline := claim.Attempt.CreatedAt.Add(time.Duration(claim.Session.TimeoutSeconds) * time.Second)
-	workTimer := time.AfterFunc(time.Until(workDeadline), func() {
+	sessionDeadline := claim.Attempt.CreatedAt.Add(time.Duration(claim.Session.TimeoutSeconds) * time.Second)
+	sessionTimer := time.AfterFunc(time.Until(sessionDeadline), func() {
 		handle.stop("timeout")
 	})
-	defer workTimer.Stop()
+	defer sessionTimer.Stop()
 	if err := manager.validateClaim(claim); err != nil {
 		manager.finishWithoutWorktree(claim, token, handle, "failed", err)
 		return
@@ -162,7 +162,7 @@ func (manager *Manager) runAttempt(parent context.Context, claim protocol.Claim,
 		Worktree:          value.Path,
 		ResultPath:        path,
 		Prompt:            prompt,
-		TimeoutSeconds:    remainingTimeoutSeconds(workDeadline),
+		TimeoutSeconds:    remainingTimeoutSeconds(sessionDeadline),
 		RunID:             claim.Session.RunID,
 		SessionID:         claim.Session.ID,
 	}, os.Stderr)

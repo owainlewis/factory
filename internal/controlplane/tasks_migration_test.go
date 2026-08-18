@@ -716,8 +716,8 @@ INSERT INTO executions(
 ) VALUES ('execution-1', 'target-1', 'worker-1', 'codex', 'queued', 10, 10);
 `
 
-// openMigrationTestDatabase mirrors the pragmas Open sets in production, so a
-// migration test enforces the same constraints a real upgrade does.
+// openMigrationTestDatabase enables foreign keys, as Open does in production,
+// so a migration test enforces the same constraints a real upgrade does.
 func openMigrationTestDatabase(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout%285000%29&_pragma=foreign_keys%281%29")
