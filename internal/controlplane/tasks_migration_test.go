@@ -762,6 +762,11 @@ func TestTaskRenameMigrationPreservesPopulatedRows(t *testing.T) {
 	if claimProtocolVersion == protocol.ClaimProtocolVersion {
 		t.Fatal("a pre-rename Worker registration is still accepted by the claim protocol")
 	}
+	if _, err := store.Claim(ctx, "worker-1", protocol.ClaimRequest{
+		RequestID: "migrated-claim", LeaseToken: tokenA,
+	}); !serviceErrorCode(err, "worker_upgrade_required") {
+		t.Fatalf("migrated Worker claim error = %v, want worker_upgrade_required", err)
+	}
 	if _, err := db.ExecContext(ctx, `SELECT json_extract(task_snapshot, '$.name') FROM runs`); err != nil {
 		t.Fatalf("renamed run snapshot column: %v", err)
 	}
