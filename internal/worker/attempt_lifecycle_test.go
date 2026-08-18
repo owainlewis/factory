@@ -8,18 +8,18 @@ import (
 
 func TestBuildPromptIncludesGrammaticalSafetyInstruction(t *testing.T) {
 	claim := protocol.Claim{
-		Target: protocol.ClaimedWorkTarget{
-			RoutineName: "Fix the prompt",
-			Prompt:      "Keep the change focused.",
+		Session: protocol.ClaimedSession{
+			TaskName: "Fix the prompt",
+			Prompt:   "Keep the change focused.",
 		},
 		Repository: protocol.Repository{RemoteIdentity: "github.com/owainlewis/factory"},
 	}
 	value := worktree{Branch: "factory/123456789abc-abcdef123456", BaseBranch: "main"}
 
 	want := "You are running in a Factory managed Git worktree.\n" +
-		"Work only on the assigned Work and repository. Preserve unrelated changes and do not touch Factory state or unrelated worktrees. " +
-		"Do not switch, create, rename, or delete branches or worktrees. Complete and verify the Work before returning a concise result.\n\n" +
-		"Routine: Fix the prompt\n" +
+		"Work only on the assigned Session and repository. Preserve unrelated changes and do not touch Factory state or unrelated worktrees. " +
+		"Do not switch, create, rename, or delete branches or worktrees. Complete and verify the Session before returning a concise result.\n\n" +
+		"Task: Fix the prompt\n" +
 		"Repository: github.com/owainlewis/factory\n" +
 		"Working branch: factory/123456789abc-abcdef123456\n" +
 		"Target base branch: main\n\n" +

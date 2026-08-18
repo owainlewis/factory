@@ -70,10 +70,10 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		SELECT attempt.id, execution.id
 		FROM attempts attempt
 		JOIN executions execution ON execution.id = attempt.execution_id
-		JOIN work_targets target ON target.id = execution.work_target_id
-		WHERE target.execution_backend = 'fake_cloud_run'
+		JOIN sessions session ON session.id = execution.session_id
+		WHERE session.execution_backend = 'fake_cloud_run'
 		  AND attempt.state IN ('preparing', 'running')
-		  AND (target.cancellation_requested = 1 OR execution.cancellation_requested = 1)
+		  AND (session.cancellation_requested = 1 OR execution.cancellation_requested = 1)
 		ORDER BY attempt.created_at, attempt.id LIMIT 1
 	`).Scan(&cancelledAttempt, &cancelledExecution)
 	if err == nil {
@@ -89,17 +89,17 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		return false, unavailable(err)
 	}
 
-	// The frozen Target timeout bounds the fake execution just as it will bound
+	// The frozen Session timeout bounds the fake execution just as it will bound
 	// the real cloud wrapper. Resolve timeout before extending the lease.
 	var timedOutAttempt, timedOutExecution string
 	err = tx.QueryRowContext(ctx, `
 		SELECT attempt.id, execution.id
 		FROM attempts attempt
 		JOIN executions execution ON execution.id = attempt.execution_id
-		JOIN work_targets target ON target.id = execution.work_target_id
-		WHERE target.execution_backend = 'fake_cloud_run'
+		JOIN sessions session ON session.id = execution.session_id
+		WHERE session.execution_backend = 'fake_cloud_run'
 		  AND attempt.state IN ('preparing', 'running')
-		  AND attempt.started_at + (target.timeout_seconds * 1000) <= ?
+		  AND attempt.started_at + (session.timeout_seconds * 1000) <= ?
 		ORDER BY attempt.started_at, attempt.id LIMIT 1
 	`, now).Scan(&timedOutAttempt, &timedOutExecution)
 	if err == nil {
@@ -121,41 +121,41 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		WHERE state IN ('preparing', 'running')
 		  AND execution_id IN (
 		      SELECT execution.id FROM executions execution
-		      JOIN work_targets target ON target.id = execution.work_target_id
-		      WHERE target.execution_backend = 'fake_cloud_run'
+		      JOIN sessions session ON session.id = execution.session_id
+		      WHERE session.execution_backend = 'fake_cloud_run'
 		  )
 	`, now+protocol.LeaseDuration.Milliseconds()); err != nil {
 		return false, unavailable(err)
 	}
 
-	// Release the next eligible blocked Target into its frozen pool. This also
-	// reconsiders Work admitted while its profile was disabled or unhealthy.
-	var blockedTarget, blockedProfile, blockedRuntime string
+	// Release the next eligible blocked Session into its frozen pool. This also
+	// reconsiders Run admitted while its profile was disabled or unhealthy.
+	var blockedSession, blockedProfile, blockedRuntime string
 	err = tx.QueryRowContext(ctx, `
-		SELECT target.id, target.execution_profile_id, target.required_runtime
-		FROM work_targets target
-		JOIN work ON work.id = target.work_id
-		JOIN repositories repository ON repository.id = target.repository_id
-		JOIN execution_profiles profile ON profile.id = target.execution_profile_id
+		SELECT session.id, session.execution_profile_id, session.required_runtime
+		FROM sessions session
+		JOIN runs run ON run.id = session.run_id
+		JOIN repositories repository ON repository.id = session.repository_id
+		JOIN execution_profiles profile ON profile.id = session.execution_profile_id
 		JOIN execution_profile_versions version
-		  ON version.profile_id = target.execution_profile_id
-		 AND version.version = target.execution_profile_version
-		WHERE target.execution_backend = 'fake_cloud_run'
-		  AND target.state = 'blocked'
+		  ON version.profile_id = session.execution_profile_id
+		 AND version.version = session.execution_profile_version
+		WHERE session.execution_backend = 'fake_cloud_run'
+		  AND session.state = 'blocked'
 		  AND (repository.centrally_managed = 0 OR repository.enabled = 1)
 		  AND profile.enabled = 1 AND profile.healthy = 1
-		  AND version.runtime = target.required_runtime
+		  AND version.runtime = session.required_runtime
 		  AND (
-		      SELECT COUNT(*) FROM work_targets active
-		      WHERE active.work_id = target.work_id AND active.state IN ('queued','preparing','running')
-		  ) < json_extract(work.routine_snapshot, '$.concurrency_limit')
+		      SELECT COUNT(*) FROM sessions active
+		      WHERE active.run_id = session.run_id AND active.state IN ('queued','preparing','running')
+		  ) < json_extract(run.task_snapshot, '$.concurrency_limit')
 		  AND (
 		      SELECT COUNT(*) FROM attempts active_attempt
-		      WHERE active_attempt.worker_id = 'cloud-run-' || target.execution_profile_id
+		      WHERE active_attempt.worker_id = 'cloud-run-' || session.execution_profile_id
 		        AND active_attempt.state IN ('preparing','running')
 		  ) < version.max_concurrent
-		ORDER BY target.admitted_at, target.id LIMIT 1
-	`).Scan(&blockedTarget, &blockedProfile, &blockedRuntime)
+		ORDER BY session.admitted_at, session.id LIMIT 1
+	`).Scan(&blockedSession, &blockedProfile, &blockedRuntime)
 	if err == nil {
 		executionID, idErr := newID()
 		if idErr != nil {
@@ -163,15 +163,15 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		}
 		workerID := syntheticWorkerID(blockedProfile)
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO executions(id, work_target_id, assigned_worker_id, required_runtime, state, created_at, updated_at)
+			INSERT INTO executions(id, session_id, assigned_worker_id, required_runtime, state, created_at, updated_at)
 			VALUES (?, ?, ?, ?, 'queued', ?, ?)
-		`, executionID, blockedTarget, workerID, blockedRuntime, now, now); err != nil {
+		`, executionID, blockedSession, workerID, blockedRuntime, now, now); err != nil {
 			return false, unavailable(err)
 		}
 		released, err := tx.ExecContext(ctx, `
-			UPDATE work_targets SET state = 'queued', blocked_reason = NULL, assigned_worker_id = ? WHERE id = ?
+			UPDATE sessions SET state = 'queued', blocked_reason = NULL, assigned_worker_id = ? WHERE id = ?
 			  AND state = 'blocked'
-		`, workerID, blockedTarget)
+		`, workerID, blockedSession)
 		if err != nil {
 			return false, unavailable(err)
 		}
@@ -180,7 +180,7 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 			return false, unavailable(err)
 		}
 		if changed != 1 {
-			return false, conflict("target_route_conflict", "Target routing state changed before assignment")
+			return false, conflict("session_route_conflict", "Session routing state changed before assignment")
 		}
 		if err := tx.Commit(); err != nil {
 			return false, unavailable(err)
@@ -191,18 +191,18 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		return false, unavailable(err)
 	}
 
-	var executionID, targetID, workerID, outcome, result, failure string
+	var executionID, sessionID, workerID, outcome, result, failure string
 	err = tx.QueryRowContext(ctx, `
-		SELECT execution.id, target.id, execution.assigned_worker_id,
+		SELECT execution.id, session.id, execution.assigned_worker_id,
 		       version.fake_outcome, version.fake_result, version.fake_error
 		FROM executions execution
-		JOIN work_targets target ON target.id = execution.work_target_id
-		JOIN execution_profiles profile ON profile.id = target.execution_profile_id
+		JOIN sessions session ON session.id = execution.session_id
+		JOIN execution_profiles profile ON profile.id = session.execution_profile_id
 		JOIN execution_profile_versions version
-		  ON version.profile_id = target.execution_profile_id
-		 AND version.version = target.execution_profile_version
-		WHERE target.execution_backend = 'fake_cloud_run'
-		  AND target.state = 'queued' AND execution.state = 'queued'
+		  ON version.profile_id = session.execution_profile_id
+		 AND version.version = session.execution_profile_version
+		WHERE session.execution_backend = 'fake_cloud_run'
+		  AND session.state = 'queued' AND execution.state = 'queued'
 		  AND profile.enabled = 1 AND profile.healthy = 1
 		  AND (
 		      SELECT COUNT(*) FROM attempts active_attempt
@@ -210,7 +210,7 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 		        AND active_attempt.state IN ('preparing','running')
 		  ) < version.max_concurrent
 		ORDER BY execution.created_at, execution.id LIMIT 1
-	`).Scan(&executionID, &targetID, &workerID, &outcome, &result, &failure)
+	`).Scan(&executionID, &sessionID, &workerID, &outcome, &result, &failure)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := tx.Commit(); err != nil {
 			return false, unavailable(err)
@@ -244,7 +244,7 @@ func (s *Store) dispatchOneFakeCloud(ctx context.Context) (bool, error) {
 	if _, err := tx.ExecContext(ctx, `UPDATE executions SET state = 'running', updated_at = ? WHERE id = ? AND state = 'queued'`, now, executionID); err != nil {
 		return false, unavailable(err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE work_targets SET state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ? AND state = 'queued'`, now, targetID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ? AND state = 'queued'`, now, sessionID); err != nil {
 		return false, unavailable(err)
 	}
 	if outcome == "succeeded" || outcome == "failed" {
@@ -284,9 +284,9 @@ func completeFakeCloudAttempt(
 		return unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE work_targets SET state = ?, cancellation_requested = CASE WHEN ? = 'cancelled' THEN 1 ELSE cancellation_requested END,
+		UPDATE sessions SET state = ?, cancellation_requested = CASE WHEN ? = 'cancelled' THEN 1 ELSE cancellation_requested END,
 		       terminal_at = ?, result = ?, failure_reason = ?
-		WHERE id = (SELECT work_target_id FROM executions WHERE id = ?)
+		WHERE id = (SELECT session_id FROM executions WHERE id = ?)
 		  AND state IN ('preparing','running')
 	`, state, state, now, nullString(result), nullString(failure), executionID); err != nil {
 		return unavailable(err)
@@ -300,5 +300,5 @@ func completeFakeCloudAttempt(
 	`, attemptID); err != nil {
 		return unavailable(err)
 	}
-	return updateWorkLifecycle(ctx, tx, executionID, now)
+	return updateRunLifecycle(ctx, tx, executionID, now)
 }

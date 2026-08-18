@@ -1,6 +1,11 @@
 # Software Factory vision
 
 > **Status:** Product direction
+>
+> **Superseded vocabulary:** This document uses Job Definition, Run, and Job.
+> The implemented operator model is Task, Run, and Session; see
+> [Tasks and Runs](../tasks/design.md) and [ARCHITECTURE.md](../../ARCHITECTURE.md).
+> The thesis, scope, principles, and measures below still apply.
 
 Factory is infrastructure for building a software factory. It turns
 software-engineering intent and events into reliable agent jobs across Git

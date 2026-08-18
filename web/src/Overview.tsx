@@ -5,15 +5,15 @@ import { api } from "./api";
 import { duration, timeAgo, timeUntil } from "./format";
 import { ErrorState, LoadingState, StatusBadge, ViewHeader } from "./ui";
 
-export function RoutineOverview({ onWork, onRoutine }: { onWork: (id: string) => void; onRoutine: (id: string) => void }) {
+export function OverviewView({ onRun, onTask }: { onRun: (id: string) => void; onTask: (id: string) => void }) {
   const query = useQuery({ queryKey: ["overview"], queryFn: api.overview, refetchInterval: 10_000 });
   if (query.isPending) return <LoadingState label="Loading overview" />;
   if (query.isError || !query.data) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
   const overview = query.data;
-  return <div className="page routine-overview">
+  return <div className="page task-overview">
     <ViewHeader title="Overview" fetching={query.isFetching} updatedAt={query.dataUpdatedAt} onRefresh={() => void query.refetch()} />
     <section className="overview-facts" aria-label="Factory status">
-      <Fact icon={<Play size={15} />} label="Active work" value={overview.active_work} />
+      <Fact icon={<Play size={15} />} label="Active runs" value={overview.active_runs} />
       <Fact icon={<AlertTriangle size={15} />} label="Needs attention" value={overview.needs_attention} tone={overview.needs_attention ? "danger" : undefined} />
       <Fact icon={<CheckCircle2 size={15} />} label="Completed · 24h" value={overview.completed_last_24h} />
       <Fact icon={<Users size={15} />} label="Workers online" value={`${overview.workers_online}/${overview.workers_total}`} />
@@ -32,23 +32,23 @@ export function RoutineOverview({ onWork, onRoutine }: { onWork: (id: string) =>
     </section>
     <div className="overview-columns">
       <section className="panel clean-panel">
-        <div className="panel-heading"><div><span className="eyebrow">RECENT</span><h2>Work</h2></div><span>{overview.recent_work?.length ?? 0}</span></div>
+        <div className="panel-heading"><div><span className="eyebrow">RECENT</span><h2>Runs</h2></div><span>{overview.recent_runs?.length ?? 0}</span></div>
         <div className="overview-list">
-          {(overview.recent_work ?? []).map((work) => <button key={work.id} className="overview-row" onClick={() => onWork(work.id)}>
-            <span className="overview-row-main"><strong>{work.routine.name}</strong><small>{work.source} · {work.target_count} target{work.target_count === 1 ? "" : "s"}</small></span>
-            <span className="overview-row-meta"><StatusBadge state={work.state} /><small>{work.terminal_at ? duration(work.admitted_at, work.terminal_at) : timeAgo(work.admitted_at)}</small></span>
+          {(overview.recent_runs ?? []).map((run) => <button key={run.id} className="overview-row" onClick={() => onRun(run.id)}>
+            <span className="overview-row-main"><strong>{run.task.name}</strong><small>{run.source} · {run.session_count} session{run.session_count === 1 ? "" : "s"}</small></span>
+            <span className="overview-row-meta"><StatusBadge state={run.state} /><small>{run.terminal_at ? duration(run.admitted_at, run.terminal_at) : timeAgo(run.admitted_at)}</small></span>
           </button>)}
-          {!overview.recent_work?.length && <p className="quiet-empty">Run a Routine to see Work here.</p>}
+          {!overview.recent_runs?.length && <p className="quiet-empty">Run a Task to see Runs here.</p>}
         </div>
       </section>
       <section className="panel clean-panel">
-        <div className="panel-heading"><div><span className="eyebrow">NEXT</span><h2>Scheduled routines</h2></div><Clock3 size={15} /></div>
+        <div className="panel-heading"><div><span className="eyebrow">NEXT</span><h2>Scheduled Tasks</h2></div><Clock3 size={15} /></div>
         <div className="overview-list">
-          {(overview.upcoming_routines ?? []).map((routine) => <button key={routine.id} className="overview-row" onClick={() => onRoutine(routine.id)}>
-            <span className="overview-row-main"><strong>{routine.name}</strong><small>{routine.schedule.cron} · {routine.schedule.timezone}</small></span>
-            <span className="overview-row-meta"><StatusBadge state={routine.schedule.health_status} /><small>{routine.schedule.next_due_at ? timeUntil(routine.schedule.next_due_at) : "Not scheduled"}</small></span>
+          {(overview.upcoming_tasks ?? []).map((task) => <button key={task.id} className="overview-row" onClick={() => onTask(task.id)}>
+            <span className="overview-row-main"><strong>{task.name}</strong><small>{task.schedule.cron} · {task.schedule.timezone}</small></span>
+            <span className="overview-row-meta"><StatusBadge state={task.schedule.health_status} /><small>{task.schedule.next_due_at ? timeUntil(task.schedule.next_due_at) : "Not scheduled"}</small></span>
           </button>)}
-          {!overview.upcoming_routines?.length && <p className="quiet-empty">No scheduled Routines.</p>}
+          {!overview.upcoming_tasks?.length && <p className="quiet-empty">No scheduled Tasks.</p>}
         </div>
       </section>
     </div>

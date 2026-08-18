@@ -114,7 +114,7 @@ export function RepositoriesView({ onRepository }: { onRepository: (id: string) 
         <EmptyState
           icon={<GitBranch size={22} />}
           title="No managed repositories"
-          description="Add a GitHub repository above so healthy workers can acquire routed work for it."
+          description="Add a GitHub repository above so healthy workers can acquire routed run for it."
         />
       ) : (
         <>
@@ -207,7 +207,7 @@ export function RepositoryDetail({
           {confirming ? (
             <div className="confirm-action">
               <span>
-                Disabling rejects new routed work. Queued and active assignments keep their frozen repository.
+                Disabling rejects new routed run. Queued and active assignments keep their frozen repository.
               </span>
               <button className="button button-secondary" onClick={() => setConfirming(false)}>Keep enabled</button>
               <button
@@ -244,12 +244,12 @@ export function RepositoryDetail({
             {!data.enabled
               ? "Routing disabled"
               : readiness.data.routing_ready
-                ? `${readyWorkers.length} worker${readyWorkers.length === 1 ? " is" : "s are"} ready to acquire routed work`
-                : "No worker can currently acquire routed work"}
+                ? `${readyWorkers.length} worker${readyWorkers.length === 1 ? " is" : "s are"} ready to acquire routed run`
+                : "No worker can currently acquire routed run"}
           </strong>
           <span>
             {!data.enabled
-              ? "New Work cannot be routed until this repository is enabled."
+              ? "New Run cannot be routed until this repository is enabled."
               : "The control plane applies the same current worker, reservation, cache, and retention facts used for routing."}
           </span>
         </div>

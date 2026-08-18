@@ -11,8 +11,8 @@ Start with the root [README](../README.md) to run Factory.
   and worktree cleanup.
 - [Remote VM Workers](remote-workers.md): TLS listener, one-time enrollment,
   authentication, and reconnect behavior.
-- [Routines and Work](routines/design.md): implemented authoring, manual and
-  scheduled Work across repositories, lifecycle, and migration decisions.
+- [Tasks and Runs](tasks/design.md): implemented authoring, manual and
+  scheduled Runs across repositories, lifecycle, and migration decisions.
 - [Release guide](release.md): install, verify, upgrade, roll back, reproduce,
   and publish tagged releases.
 - [Changelog](../CHANGELOG.md): user-visible changes and compatibility notes.
@@ -38,20 +38,20 @@ Start with the root [README](../README.md) to run Factory.
 - [Scheduled Automations](scheduled-automations.md): superseded operator guide
   for removed Definitions, Automations, and Definition Runs.
 - [Product model upgrade](product-upgrade.md): completed migration record for
-  converting supported legacy Definitions and Runs into Routines and Work.
+  converting supported legacy Definitions and Runs into the current model.
 - [External GitHub ingest](github-ingest/design.md): replaced by control-plane
   typed Automations, then superseded by the target architecture.
 - [Retired GitHub webhook settings](github-webhooks.md): upgrade note for the
   webhook listener removed with Definitions and Automations.
 - [Reusable workflows and automations](workflows/design.md): design record for
-  the implemented Workflow and typed Automation slices; superseded by Routines
-  and Work.
+  the implemented Workflow and typed Automation slices; superseded by Tasks and
+  Runs.
 - [Coding automation experience](automation-experience/design.md): implemented
-  Runbook-first UX record, superseded by Routines and Work.
+  Runbook-first UX record, superseded by Tasks and Runs.
 - [Software Factory target architecture](software-factory/design.md): proposed
-  Definitions, Triggers, Runs, and Jobs, superseded by Routines and Work.
+  Definitions, Triggers, Runs, and Jobs, superseded by Tasks and Runs.
 - [Unified CLI](cli/design.md): useful process-boundary record whose resource
-  names and command contract must be revised against Routines and Work.
+  names and command contract must be revised against Tasks and Runs.
 
 Current behavior belongs in the root `ARCHITECTURE.md`. Proposed behavior belongs
 in a focused design until it is implemented.

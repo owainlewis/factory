@@ -206,7 +206,7 @@ func runtimeCapabilityWithin(
 	}
 	if err != nil {
 		capability.Status = protocol.CapabilityUnauthenticated
-		capability.Message = fmt.Sprintf("Authenticate %s before running Work.", runtimeDisplayName(runtime))
+		capability.Message = fmt.Sprintf("Authenticate %s before running Sessions.", runtimeDisplayName(runtime))
 		return capability
 	}
 	switch runtime {
@@ -214,7 +214,7 @@ func runtimeCapabilityWithin(
 		lines := strings.Split(strings.TrimSpace(string(stdout)), "\n")
 		if len(lines) < 2 {
 			capability.Status = protocol.CapabilityUnauthenticated
-			capability.Message = "Configure a Pi provider or subscription before running Work."
+			capability.Message = "Configure a Pi provider or subscription before running Sessions."
 		}
 	case protocol.RuntimeClaudeCode:
 		var status struct {
@@ -222,12 +222,12 @@ func runtimeCapabilityWithin(
 		}
 		if json.Unmarshal(stdout, &status) != nil || !status.LoggedIn {
 			capability.Status = protocol.CapabilityUnauthenticated
-			capability.Message = "Authenticate Claude Code before running Work."
+			capability.Message = "Authenticate Claude Code before running Sessions."
 		}
 	default:
 		if strings.TrimSpace(string(stdout))+strings.TrimSpace(string(stderr)) == "" {
 			capability.Status = protocol.CapabilityUnauthenticated
-			capability.Message = "Authenticate Codex before running Work."
+			capability.Message = "Authenticate Codex before running Sessions."
 		}
 	}
 	return capability

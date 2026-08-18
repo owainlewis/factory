@@ -1,7 +1,7 @@
 export type Runtime = "pi" | "codex" | "claude-code";
 export type ExecutionBackend = "persistent" | "fake_cloud_run";
-export type WorkTargetState = "blocked" | "queued" | "preparing" | "running" | "succeeded" | "failed" | "cancelled";
-export type WorkState = "blocked" | "queued" | "running" | "succeeded" | "failed" | "partial" | "cancelled";
+export type SessionState = "blocked" | "queued" | "preparing" | "running" | "succeeded" | "failed" | "cancelled";
+export type RunState = "blocked" | "queued" | "running" | "succeeded" | "failed" | "partial" | "cancelled";
 
 export interface ExecutionProfile {
   id: string;
@@ -32,12 +32,12 @@ export interface ExecutionSnapshot {
   commit_resolution_policy: "resolve_per_attempt" | "frozen_commit";
 }
 
-export interface RoutineRepository {
+export interface TaskRepository {
   id: string;
   remote_identity: string;
 }
 
-export interface RoutineSchedule {
+export interface TaskSchedule {
   enabled: boolean;
   cron?: string;
   timezone?: string;
@@ -48,7 +48,7 @@ export interface RoutineSchedule {
   health_message?: string;
 }
 
-export interface Routine {
+export interface Task {
   id: string;
   name: string;
   prompt: string;
@@ -60,15 +60,15 @@ export interface Routine {
   generation: number;
   archived: boolean;
   read_only: boolean;
-  repositories: RoutineRepository[] | null;
+  repositories: TaskRepository[] | null;
   repository_count: number;
-  schedule: RoutineSchedule;
-  last_work_state?: WorkState;
+  schedule: TaskSchedule;
+  last_run_state?: RunState;
   created_at: string;
   updated_at: string;
 }
 
-export interface SaveRoutineInput {
+export interface SaveTaskInput {
   name: string;
   prompt: string;
   runtime: Runtime;
@@ -80,7 +80,7 @@ export interface SaveRoutineInput {
   expected_generation?: number;
 }
 
-export interface RoutineSnapshot {
+export interface TaskSnapshot {
   id: string;
   name: string;
   prompt: string;
@@ -89,7 +89,7 @@ export interface RoutineSnapshot {
   timeout_seconds: number;
   concurrency_limit: number;
   generation: number;
-  repositories: RoutineRepository[] | null;
+  repositories: TaskRepository[] | null;
   cron?: string;
   timezone?: string;
 }
@@ -108,16 +108,16 @@ export interface Attempt {
   created_at: string;
 }
 
-export interface WorkTarget {
+export interface Session {
   id: string;
-  work_id: string;
+  run_id: string;
   repository_id: string;
   repository_identity: string;
   resolved_prompt?: string;
   required_runtime: Runtime;
   execution: ExecutionSnapshot;
   timeout_seconds: number;
-  state: WorkTargetState;
+  state: SessionState;
   blocked_reason?: string;
   assigned_worker_id?: string;
   cancellation_requested: boolean;
@@ -130,16 +130,16 @@ export interface WorkTarget {
   attempts?: Attempt[] | null;
 }
 
-export interface WorkItem {
+export interface Run {
   id: string;
-  routine_id: string;
-  routine: RoutineSnapshot;
+  task_id: string;
+  task: TaskSnapshot;
   execution: ExecutionSnapshot;
   source: "manual" | "schedule" | "provider_history";
   scheduled_at?: string;
-  state: WorkState;
+  state: RunState;
   needs_attention: boolean;
-  target_count: number;
+  session_count: number;
   succeeded_count: number;
   failed_count: number;
   cancelled_count: number;
@@ -149,18 +149,18 @@ export interface WorkItem {
   terminal_at?: string;
 }
 
-export interface WorkDetailV2 {
-  work: WorkItem;
-  targets: WorkTarget[] | null;
+export interface RunDetail {
+  run: Run;
+  sessions: Session[] | null;
 }
 
-export interface WorkPageV2 {
-  work: WorkItem[] | null;
+export interface RunPage {
+  runs: Run[] | null;
   next_cursor?: string;
 }
 
-export interface RoutineOverview {
-  active_work: number;
+export interface OverviewView {
+  active_runs: number;
   needs_attention: number;
   completed_last_24h: number;
   workers_online: number;
@@ -173,8 +173,8 @@ export interface RoutineOverview {
     average_queue_time_seconds: number | null;
     average_cycle_time_seconds: number | null;
   };
-  recent_work: WorkItem[] | null;
-  upcoming_routines: Routine[] | null;
+  recent_runs: Run[] | null;
+  upcoming_tasks: Task[] | null;
   generated_at: string;
 }
 
@@ -220,7 +220,7 @@ export interface Worker {
   retained_worktrees: RetainedWorktree[];
   registered_at: string;
   last_heartbeat: string;
-  current_work_title?: string;
+  current_run_title?: string;
 }
 
 export interface ManagedRepository {

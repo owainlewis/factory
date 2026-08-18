@@ -3,33 +3,33 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { api } from "./api";
-import { RoutineWorkDetail, RoutineWorkView } from "./RoutineWork";
-import type { AttemptEvent, WorkDetailV2, WorkItem } from "./types";
+import { RunDetailView, RunsView } from "./Runs";
+import type { AttemptEvent, RunDetail, Run } from "./types";
 
-const headWork = workItem("work-head", "Current Work", "running");
-const olderWork = workItem("work-older", "Older Work", "succeeded");
+const headRun = run("run-head", "Current Run", "running");
+const olderRun = run("run-older", "Older Run", "succeeded");
 
-describe("RoutineWork", () => {
-  it("loads Work history one cursor-bounded page at a time", async () => {
-    const workItems = vi.spyOn(api, "workItems").mockImplementation(async (cursor = "") => cursor ? {
-      work: [olderWork],
+describe("Runs", () => {
+  it("loads Run history one cursor-bounded page at a time", async () => {
+    const runs = vi.spyOn(api, "runs").mockImplementation(async (cursor = "") => cursor ? {
+      runs: [olderRun],
       next_cursor: null,
     } : {
-      work: [headWork],
+      runs: [headRun],
       next_cursor: "older-cursor",
     });
     const client = testClient();
-    render(<QueryClientProvider client={client}><RoutineWorkView mode="table" onMode={() => undefined} onWork={() => undefined} /></QueryClientProvider>);
+    render(<QueryClientProvider client={client}><RunsView mode="table" onMode={() => undefined} onRun={() => undefined} /></QueryClientProvider>);
 
-    expect(await screen.findByText("Current Work")).toBeVisible();
-    expect(screen.queryByText("Older Work")).not.toBeInTheDocument();
-    expect(workItems).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Current Run")).toBeVisible();
+    expect(screen.queryByText("Older Run")).not.toBeInTheDocument();
+    expect(runs).toHaveBeenCalledTimes(1);
 
-    await userEvent.click(await screen.findByRole("button", { name: "Load more Work" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Load more Runs" }));
 
-    expect(await screen.findByText("Older Work")).toBeVisible();
-    expect(workItems).toHaveBeenNthCalledWith(2, "older-cursor");
-    expect(screen.queryByRole("button", { name: "Load more Work" })).not.toBeInTheDocument();
+    expect(await screen.findByText("Older Run")).toBeVisible();
+    expect(runs).toHaveBeenNthCalledWith(2, "older-cursor");
+    expect(screen.queryByRole("button", { name: "Load more Runs" })).not.toBeInTheDocument();
   });
 
   it("polls active attempt output after the last cached event", async () => {
@@ -45,14 +45,14 @@ describe("RoutineWork", () => {
       payload: "Second update",
       server_time: "2026-08-11T12:00:01Z",
     };
-    vi.spyOn(api, "workItem").mockResolvedValue(workDetail());
+    vi.spyOn(api, "run").mockResolvedValue(runDetail());
     const events = vi.spyOn(api, "events").mockImplementation(async (_attemptID, after) => after < 0 ? {
       events: [eventZero], next_after: 0, has_more: false,
     } : {
       events: after === 0 ? [eventOne] : [], next_after: Math.max(after, 1), has_more: false,
     });
     const client = testClient();
-    render(<QueryClientProvider client={client}><RoutineWorkDetail id={headWork.id} onBack={() => undefined} /></QueryClientProvider>);
+    render(<QueryClientProvider client={client}><RunDetailView id={headRun.id} onBack={() => undefined} /></QueryClientProvider>);
 
     await userEvent.click(await screen.findByText("github.com/example/factory"));
     expect(await screen.findByText("First update")).toBeVisible();
@@ -78,30 +78,30 @@ describe("RoutineWork", () => {
       server_time: "2026-08-11T12:00:01Z",
     };
     let attemptState: "running" | "succeeded" = "running";
-    vi.spyOn(api, "workItem").mockImplementation(async () => workDetail(attemptState));
+    vi.spyOn(api, "run").mockImplementation(async () => runDetail(attemptState));
     const events = vi.spyOn(api, "events").mockImplementation(async (_attemptID, after) => after < 0 ? {
       events: [eventZero], next_after: 0, has_more: false,
     } : {
       events: after === 0 ? [finalEvent] : [], next_after: Math.max(after, 1), has_more: false,
     });
     const client = testClient();
-    render(<QueryClientProvider client={client}><RoutineWorkDetail id={headWork.id} onBack={() => undefined} /></QueryClientProvider>);
+    render(<QueryClientProvider client={client}><RunDetailView id={headRun.id} onBack={() => undefined} /></QueryClientProvider>);
 
     await userEvent.click(await screen.findByText("github.com/example/factory"));
     expect(await screen.findByText("Still working")).toBeVisible();
 
     attemptState = "succeeded";
-    await client.refetchQueries({ queryKey: ["work", headWork.id] });
+    await client.refetchQueries({ queryKey: ["runs", headRun.id] });
 
     expect(await screen.findByText("Finished")).toBeVisible();
     expect(events).toHaveBeenCalledTimes(2);
     expect(events).toHaveBeenLastCalledWith("attempt-1", 0);
   });
 
-  it("shows the frozen execution destination in Work detail", async () => {
-    const cloud = workDetail();
-    cloud.work = {
-      ...cloud.work,
+  it("shows the frozen execution destination in Run detail", async () => {
+    const cloud = runDetail();
+    cloud.run = {
+      ...cloud.run,
       execution: {
         profile_id: "profile-cloud-1",
         profile_version: 1,
@@ -114,9 +114,9 @@ describe("RoutineWork", () => {
         commit_resolution_policy: "frozen_commit",
       },
     };
-    vi.spyOn(api, "workItem").mockResolvedValue(cloud);
+    vi.spyOn(api, "run").mockResolvedValue(cloud);
     const client = testClient();
-    render(<QueryClientProvider client={client}><RoutineWorkDetail id={headWork.id} onBack={() => undefined} /></QueryClientProvider>);
+    render(<QueryClientProvider client={client}><RunDetailView id={headRun.id} onBack={() => undefined} /></QueryClientProvider>);
 
     expect(await screen.findByText(/Cloud Run · openrouter \/ deepseek\/test/)).toBeVisible();
   });
@@ -128,12 +128,12 @@ function testClient(): QueryClient {
   });
 }
 
-function workItem(id: string, name: string, state: WorkItem["state"]): WorkItem {
+function run(id: string, name: string, state: Run["state"]): Run {
   return {
     id,
-    routine_id: "routine-1",
-    routine: {
-      id: "routine-1",
+    task_id: "task-1",
+    task: {
+      id: "task-1",
       name,
       prompt: "Review.",
       runtime: "codex",
@@ -156,7 +156,7 @@ function workItem(id: string, name: string, state: WorkItem["state"]): WorkItem 
     source: "manual",
     state,
     needs_attention: false,
-    target_count: 1,
+    session_count: 1,
     succeeded_count: state === "succeeded" ? 1 : 0,
     failed_count: 0,
     cancelled_count: 0,
@@ -166,16 +166,16 @@ function workItem(id: string, name: string, state: WorkItem["state"]): WorkItem 
   };
 }
 
-function workDetail(attemptState: "running" | "succeeded" = "running"): WorkDetailV2 {
+function runDetail(attemptState: "running" | "succeeded" = "running"): RunDetail {
   return {
-    work: headWork,
-    targets: [{
-      id: "target-1",
-      work_id: headWork.id,
+    run: headRun,
+    sessions: [{
+      id: "session-1",
+      run_id: headRun.id,
       repository_id: "repository-1",
       repository_identity: "github.com/example/factory",
       required_runtime: "codex",
-      execution: headWork.execution,
+      execution: headRun.execution,
       timeout_seconds: 7200,
       state: "running",
       assigned_worker_id: "worker-1",

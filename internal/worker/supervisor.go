@@ -35,8 +35,8 @@ type supervisorInit struct {
 	ResultPath        string `json:"result_path"`
 	Prompt            string `json:"prompt"`
 	TimeoutSeconds    int    `json:"timeout_seconds"`
-	WorkID            string `json:"work_id,omitempty"`
-	WorkTargetID      string `json:"work_target_id,omitempty"`
+	RunID             string `json:"run_id,omitempty"`
+	SessionID         string `json:"session_id,omitempty"`
 }
 
 type supervisorMessage struct {
@@ -94,8 +94,8 @@ func RunSupervisor(control *os.File, input io.Reader, output, errorOutput io.Wri
 		init.Worktree == "" || init.ResultPath == "" || init.TimeoutSeconds < 1 {
 		return errors.New("supervisor input is incomplete")
 	}
-	if (init.WorkID == "") != (init.WorkTargetID == "") {
-		return errors.New("supervisor Work and target identities must be supplied together")
+	if (init.RunID == "") != (init.SessionID == "") {
+		return errors.New("supervisor Run and Session identities must be supplied together")
 	}
 	if init.TimeoutSeconds > int(protocol.MaxTimeout/time.Second) {
 		return errors.New("supervisor timeout exceeds eight hours")
@@ -179,7 +179,7 @@ func RunSupervisor(control *os.File, input io.Reader, output, errorOutput io.Wri
 			case "timeout":
 				_ = stopStartedSupervisorGroup(anchor, anchorIdentity, terminationGrace)
 				_ = anchor.Wait()
-				return writer.send(supervisorMessage{Type: "exit", Reason: "timeout", Error: "Work timeout reached"})
+				return writer.send(supervisorMessage{Type: "exit", Reason: "timeout", Error: "Session timeout reached"})
 			case "start":
 				return superviseRuntime(init, anchor, anchorIdentity, groupID, commands, controlErrors, leaseTimer, writer)
 			}
@@ -231,7 +231,7 @@ func superviseRuntime(
 	displayName := runtimeDisplayName(init.Runtime)
 	command := exec.Command(init.RuntimeExecutable, arguments...)
 	command.Dir = init.Worktree
-	command.Env = runtimeEnvironment(init.WorkID, init.WorkTargetID)
+	command.Env = runtimeEnvironment(init.RunID, init.SessionID)
 	configureExistingProcessGroup(command, groupID)
 	stdin, err := command.StdinPipe()
 	if err != nil {
@@ -409,7 +409,7 @@ func superviseRuntime(
 			"cancelled":        "attempt cancelled",
 			"parent_lost":      "worker parent process exited",
 			"lease_lost":       "control-plane lease renewal deadline passed",
-			"timeout":          "Work timeout reached",
+			"timeout":          "Session timeout reached",
 			"supervisor_error": "attempt supervisor failed",
 		}[reason]
 	}
@@ -426,16 +426,16 @@ func superviseRuntime(
 	return writer.send(message)
 }
 
-func runtimeEnvironment(workID, workTargetID string) []string {
+func runtimeEnvironment(runID, sessionID string) []string {
 	environment := make([]string, 0, len(os.Environ())+2)
 	for _, value := range os.Environ() {
 		key, _, _ := strings.Cut(value, "=")
-		if key != "FACTORY_WORK_ID" && key != "FACTORY_WORK_TARGET_ID" {
+		if key != "FACTORY_RUN_ID" && key != "FACTORY_SESSION_ID" {
 			environment = append(environment, value)
 		}
 	}
-	if workID != "" {
-		environment = append(environment, "FACTORY_WORK_ID="+workID, "FACTORY_WORK_TARGET_ID="+workTargetID)
+	if runID != "" {
+		environment = append(environment, "FACTORY_RUN_ID="+runID, "FACTORY_SESSION_ID="+sessionID)
 	}
 	return environment
 }

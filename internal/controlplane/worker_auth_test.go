@@ -22,7 +22,7 @@ func TestEnrolledWorkerAuthenticatesBeforeFirstRegistration(t *testing.T) {
 		t.Fatalf("pre-registration authentication = %q, err %v", workerID, err)
 	}
 	worker, err := store.RegisterWorker(context.Background(), workerID, protocol.WorkerRegistration{
-		Name: "Remote Worker", WorkerVersion: "test", WorkClaimProtocolVersion: protocol.WorkClaimProtocolVersion,
+		Name: "Remote Worker", WorkerVersion: "test", ClaimProtocolVersion: protocol.ClaimProtocolVersion,
 		Runtime: protocol.RuntimeCodex, RuntimeVersion: "codex-test", Capacity: 1, Health: "healthy",
 	})
 	if err != nil || worker.ID != enrollment.WorkerID {

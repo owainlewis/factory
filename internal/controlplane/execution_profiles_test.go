@@ -20,7 +20,7 @@ func TestExecutionProfileAndManualOverrideAPI(t *testing.T) {
 	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
 		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
-	routine := createProfileRoutine(t, store, worker.Repositories[0].ID, "")
+	task := createProfileTask(t, store, worker.Repositories[0].ID, "")
 	handler := NewHandler(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	doJSON := func(method, path string, body any) *httptest.ResponseRecorder {
 		t.Helper()
@@ -48,18 +48,18 @@ func TestExecutionProfileAndManualOverrideAPI(t *testing.T) {
 	if err := json.Unmarshal(profileResponse.Body.Bytes(), &profile); err != nil {
 		t.Fatal(err)
 	}
-	runResponse := doJSON(http.MethodPost, "/api/v1/routines/"+routine.ID+"/run", protocol.RunRoutineRequest{
+	runResponse := doJSON(http.MethodPost, "/api/v1/tasks/"+task.ID+"/run", protocol.RunTaskRequest{
 		RequestKey: "api-cloud-override", ExecutionProfileID: profile.ID,
 	})
 	if runResponse.Code != http.StatusCreated {
 		t.Fatalf("run status %d: %s", runResponse.Code, runResponse.Body.String())
 	}
-	var work protocol.WorkDetail
-	if err := json.Unmarshal(runResponse.Body.Bytes(), &work); err != nil {
+	var run protocol.RunDetail
+	if err := json.Unmarshal(runResponse.Body.Bytes(), &run); err != nil {
 		t.Fatal(err)
 	}
-	if work.Work.Execution.ProfileID != profile.ID || work.Targets[0].AssignedWorkerID != profile.SyntheticWorkerID {
-		t.Fatalf("API override Work = %#v", work)
+	if run.Run.Execution.ProfileID != profile.ID || run.Sessions[0].AssignedWorkerID != profile.SyntheticWorkerID {
+		t.Fatalf("API override Run = %#v", run)
 	}
 }
 
@@ -77,9 +77,9 @@ func createFakeProfile(t *testing.T, store *Store, name, runtime, outcome string
 	return profile
 }
 
-func createProfileRoutine(t *testing.T, store *Store, repositoryID, profileID string) protocol.Routine {
+func createProfileTask(t *testing.T, store *Store, repositoryID, profileID string) protocol.Task {
 	t.Helper()
-	routine, err := store.CreateRoutine(context.Background(), protocol.SaveRoutineRequest{
+	task, err := store.CreateTask(context.Background(), protocol.SaveTaskRequest{
 		Name: "Profile routing", Prompt: "Review the repository.", Runtime: protocol.RuntimeCodex,
 		TimeoutSeconds: 3600, ConcurrencyLimit: 2, RepositoryIDs: []string{repositoryID},
 		ExecutionProfileID: profileID,
@@ -87,7 +87,7 @@ func createProfileRoutine(t *testing.T, store *Store, repositoryID, profileID st
 	if err != nil {
 		t.Fatal(err)
 	}
-	return routine
+	return task
 }
 
 func TestExecutionProfileManualOverrideUsesExistingLifecycle(t *testing.T) {
@@ -96,39 +96,39 @@ func TestExecutionProfileManualOverrideUsesExistingLifecycle(t *testing.T) {
 		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
 	profile := createFakeProfile(t, store, "Cloud burst", protocol.RuntimeCodex, "succeeded")
-	routine := createProfileRoutine(t, store, worker.Repositories[0].ID, "")
+	task := createProfileTask(t, store, worker.Repositories[0].ID, "")
 
-	persistent, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "persistent-default"})
+	persistent, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{RequestKey: "persistent-default"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if persistent.Work.Execution.ProfileID != protocol.PersistentAutoProfileID ||
-		persistent.Targets[0].AssignedWorkerID != worker.ID || persistent.Work.State != protocol.WorkQueued {
+	if persistent.Run.Execution.ProfileID != protocol.PersistentAutoProfileID ||
+		persistent.Sessions[0].AssignedWorkerID != worker.ID || persistent.Run.State != protocol.RunQueued {
 		t.Fatalf("persistent default = %#v", persistent)
 	}
 
-	cloud, created, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{
+	cloud, created, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{
 		RequestKey: "cloud-override", ExecutionProfileID: profile.ID,
 	})
 	if err != nil || !created {
 		t.Fatalf("cloud admission = %#v, created %v, err %v", cloud, created, err)
 	}
-	if cloud.Work.Execution.ProfileID != profile.ID || cloud.Work.Execution.ProfileVersion != 1 ||
-		cloud.Work.Execution.Backend != protocol.BackendFakeCloudRun ||
-		cloud.Targets[0].AssignedWorkerID != profile.SyntheticWorkerID || cloud.Work.State != protocol.WorkQueued {
+	if cloud.Run.Execution.ProfileID != profile.ID || cloud.Run.Execution.ProfileVersion != 1 ||
+		cloud.Run.Execution.Backend != protocol.BackendFakeCloudRun ||
+		cloud.Sessions[0].AssignedWorkerID != profile.SyntheticWorkerID || cloud.Run.State != protocol.RunQueued {
 		t.Fatalf("cloud override = %#v", cloud)
 	}
 	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	cloud, err = store.Work(context.Background(), cloud.Work.ID)
-	if err != nil || cloud.Work.State != protocol.WorkSucceeded || len(cloud.Targets[0].Attempts) != 1 ||
-		cloud.Targets[0].Attempts[0].WorkerID != profile.SyntheticWorkerID {
+	cloud, err = store.Run(context.Background(), cloud.Run.ID)
+	if err != nil || cloud.Run.State != protocol.RunSucceeded || len(cloud.Sessions[0].Attempts) != 1 ||
+		cloud.Sessions[0].Attempts[0].WorkerID != profile.SyntheticWorkerID {
 		t.Fatalf("completed cloud lifecycle = %#v, err %v", cloud, err)
 	}
 
 	claim, err := store.Claim(context.Background(), worker.ID, protocol.ClaimRequest{RequestID: "persistent-claim", LeaseToken: tokenA})
-	if err != nil || claim == nil || claim.Target.WorkID != persistent.Work.ID {
+	if err != nil || claim == nil || claim.Session.RunID != persistent.Run.ID {
 		t.Fatalf("persistent claim after cloud run = %#v, err %v", claim, err)
 	}
 }
@@ -139,30 +139,30 @@ func TestExecutionProfileRunReplayIncludesManualOverride(t *testing.T) {
 		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
 	profile := createFakeProfile(t, store, "Replay cloud", protocol.RuntimeCodex, "succeeded")
-	routine := createProfileRoutine(t, store, worker.Repositories[0].ID, "")
-	input := protocol.RunRoutineRequest{RequestKey: "profile-replay", ExecutionProfileID: profile.ID}
-	created, wasCreated, err := store.RunRoutine(context.Background(), routine.ID, input)
+	task := createProfileTask(t, store, worker.Repositories[0].ID, "")
+	input := protocol.RunTaskRequest{RequestKey: "profile-replay", ExecutionProfileID: profile.ID}
+	created, wasCreated, err := store.RunTask(context.Background(), task.ID, input)
 	if err != nil || !wasCreated {
 		t.Fatalf("create = %#v, %v, %v", created, wasCreated, err)
 	}
-	replayed, wasCreated, err := store.RunRoutine(context.Background(), routine.ID, input)
-	if err != nil || wasCreated || replayed.Work.ID != created.Work.ID {
+	replayed, wasCreated, err := store.RunTask(context.Background(), task.ID, input)
+	if err != nil || wasCreated || replayed.Run.ID != created.Run.ID {
 		t.Fatalf("replay = %#v, %v, %v", replayed, wasCreated, err)
 	}
-	if _, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{
+	if _, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{
 		RequestKey: "profile-replay", ExecutionProfileID: protocol.PersistentAutoProfileID,
 	}); !serviceErrorCode(err, "request_key_conflict") {
 		t.Fatalf("changed override replay error = %v", err)
 	}
 }
 
-func TestPersistentAutoManualOverrideBeatsCloudRoutineDefault(t *testing.T) {
+func TestPersistentAutoManualOverrideBeatsCloudTaskDefault(t *testing.T) {
 	store := newTestStore(t)
 	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
 		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
 	profile := createFakeProfile(t, store, "Cloud default", protocol.RuntimeCodex, "succeeded")
-	routine, err := store.CreateRoutine(context.Background(), protocol.SaveRoutineRequest{
+	task, err := store.CreateTask(context.Background(), protocol.SaveTaskRequest{
 		Name: "Persistent override", Prompt: "Review the repository.", Runtime: protocol.RuntimeCodex,
 		TimeoutSeconds: 3600, ConcurrencyLimit: 1, RepositoryIDs: []string{worker.Repositories[0].ID},
 		ExecutionProfileID: profile.ID,
@@ -170,15 +170,15 @@ func TestPersistentAutoManualOverrideBeatsCloudRoutineDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	work, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{
+	run, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{
 		RequestKey: "persistent-override", ExecutionProfileID: protocol.PersistentAutoProfileID,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if work.Work.Execution.ProfileID != protocol.PersistentAutoProfileID ||
-		work.Work.Execution.Backend != protocol.BackendPersistent || work.Targets[0].AssignedWorkerID != worker.ID {
-		t.Fatalf("persistent manual override = %#v", work)
+	if run.Run.Execution.ProfileID != protocol.PersistentAutoProfileID ||
+		run.Run.Execution.Backend != protocol.BackendPersistent || run.Sessions[0].AssignedWorkerID != worker.ID {
+		t.Fatalf("persistent manual override = %#v", run)
 	}
 }
 
@@ -188,17 +188,17 @@ func TestFakeCloudRetryReusesFrozenProfileVersion(t *testing.T) {
 		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
 	profile := createFakeProfile(t, store, "Immutable cloud", protocol.RuntimeCodex, "failed")
-	routine := createProfileRoutine(t, store, worker.Repositories[0].ID, profile.ID)
-	work, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "frozen-profile"})
+	task := createProfileTask(t, store, worker.Repositories[0].ID, profile.ID)
+	run, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{RequestKey: "frozen-profile"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	work, _ = store.Work(context.Background(), work.Work.ID)
-	if work.Work.State != protocol.WorkFailed || len(work.Targets[0].Attempts) != 1 {
-		t.Fatalf("first failed Attempt = %#v", work)
+	run, _ = store.Run(context.Background(), run.Run.ID)
+	if run.Run.State != protocol.RunFailed || len(run.Sessions[0].Attempts) != 1 {
+		t.Fatalf("first failed Attempt = %#v", run)
 	}
 	if processed, err := store.DispatchFakeCloud(context.Background(), 10); err != nil || processed != 0 {
 		t.Fatalf("native retry occurred: processed %d, err %v", processed, err)
@@ -213,7 +213,7 @@ func TestFakeCloudRetryReusesFrozenProfileVersion(t *testing.T) {
 	if err != nil || disabled.Version != 2 {
 		t.Fatalf("disabled profile update = %#v, err %v", disabled, err)
 	}
-	if _, err := store.RetryWorkTarget(context.Background(), work.Work.ID, work.Targets[0].ID); !serviceErrorCode(err, "execution_profile_version_unavailable") {
+	if _, err := store.RetrySession(context.Background(), run.Run.ID, run.Sessions[0].ID); !serviceErrorCode(err, "execution_profile_version_unavailable") {
 		t.Fatalf("retry with disabled profile error = %v", err)
 	}
 	updated, err := store.UpdateExecutionProfile(context.Background(), profile.ID, protocol.SaveExecutionProfileRequest{
@@ -225,40 +225,40 @@ func TestFakeCloudRetryReusesFrozenProfileVersion(t *testing.T) {
 	if err != nil || updated.Version != 3 {
 		t.Fatalf("profile update = %#v, err %v", updated, err)
 	}
-	if _, err := store.RetryWorkTarget(context.Background(), work.Work.ID, work.Targets[0].ID); err != nil {
+	if _, err := store.RetrySession(context.Background(), run.Run.ID, run.Sessions[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	work, _ = store.Work(context.Background(), work.Work.ID)
-	if work.Work.Execution.ProfileVersion != 1 || work.Work.Execution.Model != profile.Model ||
-		work.Work.State != protocol.WorkFailed || len(work.Targets[0].Attempts) != 2 {
-		t.Fatalf("retry did not reuse frozen version = %#v", work)
+	run, _ = store.Run(context.Background(), run.Run.ID)
+	if run.Run.Execution.ProfileVersion != 1 || run.Run.Execution.Model != profile.Model ||
+		run.Run.State != protocol.RunFailed || len(run.Sessions[0].Attempts) != 2 {
+		t.Fatalf("retry did not reuse frozen version = %#v", run)
 	}
 
-	newWork, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "new-profile-version"})
+	newRun, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{RequestKey: "new-profile-version"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	newWork, _ = store.Work(context.Background(), newWork.Work.ID)
-	if newWork.Work.Execution.ProfileVersion != 3 || newWork.Work.Execution.Model != "deepseek/new" ||
-		newWork.Work.State != protocol.WorkSucceeded {
-		t.Fatalf("new Work did not freeze new version = %#v", newWork)
+	newRun, _ = store.Run(context.Background(), newRun.Run.ID)
+	if newRun.Run.Execution.ProfileVersion != 3 || newRun.Run.Execution.Model != "deepseek/new" ||
+		newRun.Run.State != protocol.RunSucceeded {
+		t.Fatalf("new Run did not freeze new version = %#v", newRun)
 	}
 }
 
-func TestFakeCloudDoesNotStartQueuedWorkWhileProfileIsUnready(t *testing.T) {
+func TestFakeCloudDoesNotStartQueuedRunWhileProfileIsUnready(t *testing.T) {
 	store := newTestStore(t)
 	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
 		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
 	profile := createFakeProfile(t, store, "Dispatch health", protocol.RuntimeCodex, "succeeded")
-	routine := createProfileRoutine(t, store, worker.Repositories[0].ID, profile.ID)
-	work, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "dispatch-health"})
+	task := createProfileTask(t, store, worker.Repositories[0].ID, profile.ID)
+	run, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{RequestKey: "dispatch-health"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,9 +274,9 @@ func TestFakeCloudDoesNotStartQueuedWorkWhileProfileIsUnready(t *testing.T) {
 	if processed, err := store.DispatchFakeCloud(context.Background(), 10); err != nil || processed != 0 {
 		t.Fatalf("disabled dispatch = %d, err %v", processed, err)
 	}
-	work, _ = store.Work(context.Background(), work.Work.ID)
-	if work.Work.State != protocol.WorkQueued || len(work.Targets[0].Attempts) != 0 {
-		t.Fatalf("Work started while profile disabled = %#v", work)
+	run, _ = store.Run(context.Background(), run.Run.ID)
+	if run.Run.State != protocol.RunQueued || len(run.Sessions[0].Attempts) != 0 {
+		t.Fatalf("Run started while profile disabled = %#v", run)
 	}
 	if _, err := store.UpdateExecutionProfile(context.Background(), profile.ID, protocol.SaveExecutionProfileRequest{
 		Name: profile.Name, Kind: profile.Kind, Runtime: profile.Runtime, Provider: profile.Provider,
@@ -289,10 +289,10 @@ func TestFakeCloudDoesNotStartQueuedWorkWhileProfileIsUnready(t *testing.T) {
 	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	work, _ = store.Work(context.Background(), work.Work.ID)
-	if work.Work.State != protocol.WorkSucceeded || work.Work.Execution.ProfileVersion != 1 ||
-		len(work.Targets[0].Attempts) != 1 {
-		t.Fatalf("re-enabled frozen Work = %#v", work)
+	run, _ = store.Run(context.Background(), run.Run.ID)
+	if run.Run.State != protocol.RunSucceeded || run.Run.Execution.ProfileVersion != 1 ||
+		len(run.Sessions[0].Attempts) != 1 {
+		t.Fatalf("re-enabled frozen Run = %#v", run)
 	}
 }
 
@@ -305,9 +305,9 @@ func TestFakeCloudDoesNotReleaseOrRetryDisabledRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile := createFakeProfile(t, store, "Repository gate", protocol.RuntimeCodex, "failed")
-	routine := createProfileRoutine(t, store, repository.ID, profile.ID)
+	task := createProfileTask(t, store, repository.ID, profile.ID)
 
-	queued, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "disable-before-dispatch"})
+	queued, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{RequestKey: "disable-before-dispatch"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,30 +317,30 @@ func TestFakeCloudDoesNotReleaseOrRetryDisabledRepository(t *testing.T) {
 	if processed, err := store.DispatchFakeCloud(context.Background(), 10); err != nil || processed != 0 {
 		t.Fatalf("disabled repository release = %d, err %v", processed, err)
 	}
-	queued, _ = store.Work(context.Background(), queued.Work.ID)
-	if queued.Work.State != protocol.WorkBlocked || queued.Targets[0].BlockedReason != "Repository is disabled." ||
-		len(queued.Targets[0].Attempts) != 0 {
-		t.Fatalf("disabled queued Work = %#v", queued)
+	queued, _ = store.Run(context.Background(), queued.Run.ID)
+	if queued.Run.State != protocol.RunBlocked || queued.Sessions[0].BlockedReason != "Repository is disabled." ||
+		len(queued.Sessions[0].Attempts) != 0 {
+		t.Fatalf("disabled queued Run = %#v", queued)
 	}
 
 	if _, err := store.SetManagedRepositoryEnabled(context.Background(), repository.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	failed, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "disable-before-retry"})
+	failed, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{RequestKey: "disable-before-retry"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	failed, _ = store.Work(context.Background(), failed.Work.ID)
-	if failed.Work.State != protocol.WorkFailed {
-		t.Fatalf("failed Work before retry = %#v", failed)
+	failed, _ = store.Run(context.Background(), failed.Run.ID)
+	if failed.Run.State != protocol.RunFailed {
+		t.Fatalf("failed Run before retry = %#v", failed)
 	}
 	if _, err := store.SetManagedRepositoryEnabled(context.Background(), repository.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RetryWorkTarget(context.Background(), failed.Work.ID, failed.Targets[0].ID); !serviceErrorCode(err, "repository_not_available") {
+	if _, err := store.RetrySession(context.Background(), failed.Run.ID, failed.Sessions[0].ID); !serviceErrorCode(err, "repository_not_available") {
 		t.Fatalf("retry with disabled repository error = %v", err)
 	}
 }
@@ -351,27 +351,27 @@ func TestFakeCloudCancellationIsFactoryOwned(t *testing.T) {
 		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
 	profile := createFakeProfile(t, store, "Cancellable cloud", protocol.RuntimeCodex, "running")
-	routine := createProfileRoutine(t, store, worker.Repositories[0].ID, profile.ID)
-	work, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "cancel-cloud"})
+	task := createProfileTask(t, store, worker.Repositories[0].ID, profile.ID)
+	run, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{RequestKey: "cancel-cloud"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	work, _ = store.Work(context.Background(), work.Work.ID)
-	if work.Work.State != protocol.WorkRunning || work.Targets[0].Attempts[0].State != "running" {
-		t.Fatalf("running fake Attempt = %#v", work)
+	run, _ = store.Run(context.Background(), run.Run.ID)
+	if run.Run.State != protocol.RunRunning || run.Sessions[0].Attempts[0].State != "running" {
+		t.Fatalf("running fake Attempt = %#v", run)
 	}
-	if _, err := store.CancelWork(context.Background(), work.Work.ID); err != nil {
+	if _, err := store.CancelRun(context.Background(), run.Run.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	work, _ = store.Work(context.Background(), work.Work.ID)
-	if work.Work.State != protocol.WorkCancelled || work.Targets[0].Attempts[0].State != "cancelled" {
-		t.Fatalf("cancelled fake Attempt = %#v", work)
+	run, _ = store.Run(context.Background(), run.Run.ID)
+	if run.Run.State != protocol.RunCancelled || run.Sessions[0].Attempts[0].State != "cancelled" {
+		t.Fatalf("cancelled fake Attempt = %#v", run)
 	}
 }
 
@@ -391,27 +391,27 @@ func TestFakeCloudRunningAttemptHonorsFrozenTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	routine := createProfileRoutine(t, store, worker.Repositories[0].ID, profile.ID)
-	work, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "timeout-cloud"})
+	task := createProfileTask(t, store, worker.Repositories[0].ID, profile.ID)
+	run, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{RequestKey: "timeout-cloud"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	work, _ = store.Work(context.Background(), work.Work.ID)
-	if work.Work.State != protocol.WorkRunning || work.Targets[0].TimeoutSeconds != 1 {
-		t.Fatalf("running fake Attempt = %#v", work)
+	run, _ = store.Run(context.Background(), run.Run.ID)
+	if run.Run.State != protocol.RunRunning || run.Sessions[0].TimeoutSeconds != 1 {
+		t.Fatalf("running fake Attempt = %#v", run)
 	}
 
 	now = now.Add(2 * time.Second)
 	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	work, _ = store.Work(context.Background(), work.Work.ID)
-	if work.Work.State != protocol.WorkFailed || work.Targets[0].FailureReason != fakeCloudTimeoutReason ||
-		len(work.Targets[0].Attempts) != 1 || work.Targets[0].Attempts[0].State != "failed" {
-		t.Fatalf("timed-out fake Attempt = %#v", work)
+	run, _ = store.Run(context.Background(), run.Run.ID)
+	if run.Run.State != protocol.RunFailed || run.Sessions[0].FailureReason != fakeCloudTimeoutReason ||
+		len(run.Sessions[0].Attempts) != 1 || run.Sessions[0].Attempts[0].State != "failed" {
+		t.Fatalf("timed-out fake Attempt = %#v", run)
 	}
 }
 
@@ -423,17 +423,17 @@ func TestFakeCloudRunningAttemptSurvivesStartupLeaseSweep(t *testing.T) {
 		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
 	profile := createFakeProfile(t, store, "Restarted cloud", protocol.RuntimeCodex, "running")
-	routine := createProfileRoutine(t, store, worker.Repositories[0].ID, profile.ID)
-	work, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "restart-cloud"})
+	task := createProfileTask(t, store, worker.Repositories[0].ID, profile.ID)
+	run, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{RequestKey: "restart-cloud"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	work, _ = store.Work(context.Background(), work.Work.ID)
-	if work.Work.State != protocol.WorkRunning || len(work.Targets[0].Attempts) != 1 {
-		t.Fatalf("running fake Attempt = %#v", work)
+	run, _ = store.Run(context.Background(), run.Run.ID)
+	if run.Run.State != protocol.RunRunning || len(run.Sessions[0].Attempts) != 1 {
+		t.Fatalf("running fake Attempt = %#v", run)
 	}
 
 	now = now.Add(protocol.LeaseDuration + time.Second)
@@ -447,10 +447,10 @@ func TestFakeCloudRunningAttemptSurvivesStartupLeaseSweep(t *testing.T) {
 	if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	work, _ = store.Work(context.Background(), work.Work.ID)
-	if work.Work.State != protocol.WorkRunning || work.Targets[0].Attempts[0].State != "running" ||
-		!work.Targets[0].Attempts[0].LeaseExpiresAt.After(now) {
-		t.Fatalf("recovered fake Attempt = %#v", work)
+	run, _ = store.Run(context.Background(), run.Run.ID)
+	if run.Run.State != protocol.RunRunning || run.Sessions[0].Attempts[0].State != "running" ||
+		!run.Sessions[0].Attempts[0].LeaseExpiresAt.After(now) {
+		t.Fatalf("recovered fake Attempt = %#v", run)
 	}
 }
 
@@ -461,8 +461,8 @@ func TestStartupLeaseSweepStillExpiresPersistentAttempts(t *testing.T) {
 	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
 		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
-	routine := createProfileRoutine(t, store, worker.Repositories[0].ID, "")
-	work, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "expire-persistent"})
+	task := createProfileTask(t, store, worker.Repositories[0].ID, "")
+	run, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{RequestKey: "expire-persistent"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,10 +481,10 @@ func TestStartupLeaseSweepStillExpiresPersistentAttempts(t *testing.T) {
 	if len(expired) != 1 || expired[0].AttemptID != claim.Attempt.ID {
 		t.Fatalf("expired persistent Attempts = %#v", expired)
 	}
-	work, _ = store.Work(context.Background(), work.Work.ID)
-	if work.Work.State != protocol.WorkFailed || work.Targets[0].Attempts[0].State != "lost" ||
-		work.Targets[0].FailureReason != "lease expired" {
-		t.Fatalf("expired persistent Work = %#v", work)
+	run, _ = store.Run(context.Background(), run.Run.ID)
+	if run.Run.State != protocol.RunFailed || run.Sessions[0].Attempts[0].State != "lost" ||
+		run.Sessions[0].FailureReason != "lease expired" {
+		t.Fatalf("expired persistent Run = %#v", run)
 	}
 }
 
@@ -501,27 +501,27 @@ func TestUnhealthyAndIncompatibleProfilesBlockWithoutAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	incompatible := createFakeProfile(t, store, "Pi only cloud", protocol.RuntimePi, "succeeded")
-	routine := createProfileRoutine(t, store, worker.Repositories[0].ID, "")
+	task := createProfileTask(t, store, worker.Repositories[0].ID, "")
 	for _, test := range []struct {
 		key, profile, reason string
 	}{
 		{key: "unhealthy", profile: unhealthy.ID, reason: "model secret missing"},
 		{key: "incompatible", profile: incompatible.ID, reason: "does not support runtime codex"},
 	} {
-		work, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{
+		run, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{
 			RequestKey: test.key, ExecutionProfileID: test.profile,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if work.Work.State != protocol.WorkBlocked || len(work.Targets[0].Attempts) != 0 ||
-			work.Targets[0].AssignedWorkerID != "" || !strings.Contains(work.Targets[0].BlockedReason, test.reason) {
-			t.Fatalf("blocked profile Work = %#v", work)
+		if run.Run.State != protocol.RunBlocked || len(run.Sessions[0].Attempts) != 0 ||
+			run.Sessions[0].AssignedWorkerID != "" || !strings.Contains(run.Sessions[0].BlockedReason, test.reason) {
+			t.Fatalf("blocked profile Run = %#v", run)
 		}
 	}
 }
 
-func TestFakeCloudProfileBlockedWorkRecoversWhenProfileIsReady(t *testing.T) {
+func TestFakeCloudProfileBlockedRunRecoversWhenProfileIsReady(t *testing.T) {
 	for _, test := range []struct {
 		name          string
 		enabled       bool
@@ -546,14 +546,14 @@ func TestFakeCloudProfileBlockedWorkRecoversWhenProfileIsReady(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			routine := createProfileRoutine(t, store, worker.Repositories[0].ID, profile.ID)
-			work, _, err := store.RunRoutine(context.Background(), routine.ID, protocol.RunRoutineRequest{RequestKey: "recover-cloud"})
+			task := createProfileTask(t, store, worker.Repositories[0].ID, profile.ID)
+			run, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{RequestKey: "recover-cloud"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if work.Work.State != protocol.WorkBlocked || len(work.Targets[0].Attempts) != 0 ||
-				!strings.Contains(work.Targets[0].BlockedReason, test.blockedReason) {
-				t.Fatalf("profile-blocked Work = %#v", work)
+			if run.Run.State != protocol.RunBlocked || len(run.Sessions[0].Attempts) != 0 ||
+				!strings.Contains(run.Sessions[0].BlockedReason, test.blockedReason) {
+				t.Fatalf("profile-blocked Run = %#v", run)
 			}
 
 			updated, err := store.UpdateExecutionProfile(context.Background(), profile.ID, protocol.SaveExecutionProfileRequest{
@@ -568,17 +568,17 @@ func TestFakeCloudProfileBlockedWorkRecoversWhenProfileIsReady(t *testing.T) {
 			if _, err := store.DispatchFakeCloud(context.Background(), 10); err != nil {
 				t.Fatal(err)
 			}
-			work, _ = store.Work(context.Background(), work.Work.ID)
-			if work.Work.State != protocol.WorkSucceeded || work.Work.Execution.ProfileVersion != 1 ||
-				work.Work.Execution.Model != "deepseek/frozen" || work.Targets[0].Result != "frozen result" ||
-				len(work.Targets[0].Attempts) != 1 {
-				t.Fatalf("recovered frozen Work = %#v", work)
+			run, _ = store.Run(context.Background(), run.Run.ID)
+			if run.Run.State != protocol.RunSucceeded || run.Run.Execution.ProfileVersion != 1 ||
+				run.Run.Execution.Model != "deepseek/frozen" || run.Sessions[0].Result != "frozen result" ||
+				len(run.Sessions[0].Attempts) != 1 {
+				t.Fatalf("recovered frozen Run = %#v", run)
 			}
 		})
 	}
 }
 
-func TestScheduledWorkUsesSavedExecutionProfile(t *testing.T) {
+func TestScheduledRunUsesSavedExecutionProfile(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Date(2026, time.August, 15, 8, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
@@ -586,22 +586,22 @@ func TestScheduledWorkUsesSavedExecutionProfile(t *testing.T) {
 		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
 	profile := createFakeProfile(t, store, "Scheduled cloud", protocol.RuntimeCodex, "succeeded")
-	_, err := store.CreateRoutine(context.Background(), protocol.SaveRoutineRequest{
+	_, err := store.CreateTask(context.Background(), protocol.SaveTaskRequest{
 		Name: "Scheduled profile", Prompt: "Review.", Runtime: protocol.RuntimeCodex,
 		RepositoryIDs: []string{worker.Repositories[0].ID}, ExecutionProfileID: profile.ID,
-		Schedule: protocol.RoutineSchedule{Enabled: true, Cron: "0 9 * * *", Timezone: "UTC"},
+		Schedule: protocol.TaskSchedule{Enabled: true, Cron: "0 9 * * *", Timezone: "UTC"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(2 * time.Hour)
-	if err := store.AdmitDueRoutines(context.Background(), 10); err != nil {
+	if err := store.AdmitDueTasks(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
-	page, err := store.WorkPage(context.Background(), 10, "")
-	if err != nil || len(page.Work) != 1 || page.Work[0].Source != "schedule" ||
-		page.Work[0].Execution.ProfileID != profile.ID {
-		t.Fatalf("scheduled profile Work = %#v, err %v", page, err)
+	page, err := store.RunPage(context.Background(), 10, "")
+	if err != nil || len(page.Runs) != 1 || page.Runs[0].Source != "schedule" ||
+		page.Runs[0].Execution.ProfileID != profile.ID {
+		t.Fatalf("scheduled profile Run = %#v, err %v", page, err)
 	}
 }
 
@@ -616,7 +616,7 @@ func TestSyntheticWorkerCannotUseWorkerRoutes(t *testing.T) {
 		t.Fatalf("synthetic enrollment error = %v", err)
 	}
 	if _, err := store.RegisterWorker(context.Background(), worker.ID, protocol.WorkerRegistration{
-		Name: "spoof", WorkerVersion: "test", WorkClaimProtocolVersion: protocol.WorkClaimProtocolVersion,
+		Name: "spoof", WorkerVersion: "test", ClaimProtocolVersion: protocol.ClaimProtocolVersion,
 		Runtime: protocol.RuntimeCodex, RuntimeVersion: "test", Capacity: 1, Health: "healthy",
 	}); !serviceErrorCode(err, "synthetic_worker_isolated") {
 		t.Fatalf("synthetic registration error = %v", err)

@@ -5,16 +5,16 @@
 Factory is currently in *developer preview* and is iterating rapidly.
 **THERE WILL BE COMPATIBILITY-BREAKING CHANGES.**
 
-Factory runs repeatable software-engineering Work across Git repositories and
-compute. Operators save prompts as Routines, run them now, or schedule them
-across one or more repositories. Its Go control plane coordinates Work and a
+Factory runs repeatable software-engineering Runs across Git repositories and
+compute. Operators save prompts as Tasks, run them now, or schedule them
+across one or more repositories. Its Go control plane coordinates Runs and a
 fleet of Workers that provide Pi, Codex, or Claude Code runtimes.
 
 The browser UI provides:
 
-- an operational overview of active, completed, and attention-needed Work;
-- Routines with prompts, repositories, runtime settings, and optional schedules;
-- table, list, and board views of Work, with per-repository Target details;
+- an operational overview of active, completed, and attention-needed Runs;
+- Tasks with prompts, repositories, runtime settings, and optional schedules;
+- table, list, and board views of Runs, with per-repository Session details;
 - registered worker and repository status;
 
 Factory is local-first. Its browser and operator API accept loopback connections
@@ -22,14 +22,14 @@ only. An optional, separate TLS-authenticated endpoint accepts Workers on remote
 VMs.
 
 Factory starts with coding agents on machines you control and is intended to
-scale to elastic cloud execution without rewriting a Routine or splitting its
-Work history. Existing Routines remain persistent by default. Once the proposed
+scale to elastic cloud execution without rewriting a Task or splitting its
+Run history. Existing Tasks remain persistent by default. Once the proposed
 cloud backend is implemented, a manual run will be able to select a compatible
 elastic profile. Persistent local and VM Workers remain the rich path for
 subscription authentication, warm repository caches, and inspectable
 worktrees. A proposed
 Cloud Run backend adds disposable, API-backed agent containers for bursty and
-parallel Work. Read the
+parallel Runs. Read the
 [Cloud Run agent backend design](docs/cloud-run-agents/design.md) for the
 planned boundary, security model, and rollout.
 
@@ -52,7 +52,7 @@ Requirements:
 Node.js is only needed when changing the UI. Normal builds use the committed,
 embedded UI assets.
 
-Managed GitHub repository checkout and Routines that allow the `gh` tool depend
+Managed GitHub repository checkout and Tasks that allow the `gh` tool depend
 on the GitHub CLI. Factory does not include a separate GitHub API client.
 Install and authenticate [`gh`](https://cli.github.com/) on the control-plane
 host and each eligible Worker host:
@@ -80,7 +80,7 @@ just run
 Open [http://127.0.0.1:7337](http://127.0.0.1:7337).
 
 Database migration 27 converts supported pre-launch Definitions, schedules,
-and execution history into Routines and Work after the database is backed up.
+and execution history into Tasks and Runs after the database is backed up.
 Unsupported legacy provider admission is blocked and reported instead of being
 silently discarded.
 
@@ -108,7 +108,7 @@ Browser
    | HTTP + JSON
    v
 Go control plane
-  SQLite, Routine scheduler, Work admission, embedded UI
+  SQLite, Task scheduler, Run admission, embedded UI
    ^
    | registration, claim, heartbeat, events, completion
    |
@@ -157,11 +157,11 @@ security boundaries.
 Implemented:
 
 - Go control-plane API and embedded React UI;
-- durable Routines, Work, Targets, executions, attempts, leases, events, and
+- durable Tasks, Runs, Sessions, executions, attempts, leases, events, and
   cancellation;
 - Pi, Codex, and Claude Code Worker capabilities;
-- manual and scheduled Routine admission across one or more repositories;
-- versioned Routine prompts, execution settings, repository scope, and optional
+- manual and scheduled Task admission across one or more repositories;
+- versioned Task prompts, execution settings, repository scope, and optional
   schedules;
 - a central managed-repository catalog, bounded worker caches, and isolated Git
   worktrees;

@@ -27,15 +27,15 @@ func TestBackupAndRestorePreserveDurableControlPlaneState(t *testing.T) {
 	worker := registerTestWorker(t, store, workerA, 1, protocol.RepositoryRegistration{
 		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
 	})
-	routine, err := store.CreateRoutine(ctx, protocol.SaveRoutineRequest{
-		Name: "Recovery routine", Prompt: "Preserve this Work.", Runtime: protocol.RuntimeCodex,
+	task, err := store.CreateTask(ctx, protocol.SaveTaskRequest{
+		Name: "Recovery task", Prompt: "Preserve this Run.", Runtime: protocol.RuntimeCodex,
 		TimeoutSeconds: 3600, ConcurrencyLimit: 1,
 		RepositoryIDs: []string{worker.Repositories[0].ID},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	work, _, err := store.RunRoutine(ctx, routine.ID, protocol.RunRoutineRequest{RequestKey: "recovery-work"})
+	run, _, err := store.RunTask(ctx, task.ID, protocol.RunTaskRequest{RequestKey: "recovery-run"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,13 +83,13 @@ func TestBackupAndRestorePreserveDurableControlPlaneState(t *testing.T) {
 		t.Fatalf("run restored server startup sweep: %v", err)
 	}
 
-	restoredWork, err := restored.Work(ctx, work.Work.ID)
+	restoredRun, err := restored.Run(ctx, run.Run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(restoredWork.Targets) != 1 || len(restoredWork.Targets[0].Attempts) != 1 ||
-		restoredWork.Targets[0].Attempts[0].ID != claim.Attempt.ID {
-		t.Fatalf("restored Work = %#v", restoredWork)
+	if len(restoredRun.Sessions) != 1 || len(restoredRun.Sessions[0].Attempts) != 1 ||
+		restoredRun.Sessions[0].Attempts[0].ID != claim.Attempt.ID {
+		t.Fatalf("restored Run = %#v", restoredRun)
 	}
 	events, err := restored.Events(ctx, claim.Attempt.ID, -1, 100)
 	if err != nil {
@@ -98,8 +98,8 @@ func TestBackupAndRestorePreserveDurableControlPlaneState(t *testing.T) {
 	if len(events.Events) != 1 || string(events.Events[0].Payload) != `{"text":"durable recovery event"}` {
 		t.Fatalf("restored events = %#v", events.Events)
 	}
-	if _, err := restored.Routine(ctx, routine.ID); err != nil {
-		t.Fatalf("restore Routine: %v", err)
+	if _, err := restored.Task(ctx, task.ID); err != nil {
+		t.Fatalf("restore Task: %v", err)
 	}
 }
 

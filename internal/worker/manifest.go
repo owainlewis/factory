@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const manifestSchemaVersion = 2
+const manifestSchemaVersion = 3
 const disposalJournalSchemaVersion = 1
 
 const (
@@ -39,10 +39,10 @@ const (
 type attemptManifest struct {
 	SchemaVersion int `json:"schema_version"`
 
-	WorkerID     string `json:"worker_id"`
-	WorkTargetID string `json:"work_target_id"`
-	ExecutionID  string `json:"execution_id"`
-	AttemptID    string `json:"attempt_id"`
+	WorkerID    string `json:"worker_id"`
+	SessionID   string `json:"session_id"`
+	ExecutionID string `json:"execution_id"`
+	AttemptID   string `json:"attempt_id"`
 
 	RepositoryID   string `json:"repository_id"`
 	RepositoryKey  string `json:"repository_key"`
@@ -72,6 +72,11 @@ type attemptManifest struct {
 type attemptManifestV1 struct {
 	attemptManifest
 	TaskID string `json:"task_id"`
+}
+
+type attemptManifestV2 struct {
+	attemptManifest
+	WorkTargetID string `json:"work_target_id"`
 }
 
 type disposalJournal struct {
@@ -482,7 +487,15 @@ func (store *manifestStore) readLocked(path string) (attemptManifest, error) {
 		}
 		manifest = legacy.attemptManifest
 		manifest.SchemaVersion = manifestSchemaVersion
-		manifest.WorkTargetID = legacy.TaskID
+		manifest.SessionID = legacy.TaskID
+	} else if header.SchemaVersion == 2 {
+		var legacy attemptManifestV2
+		if err := decoder.Decode(&legacy); err != nil {
+			return attemptManifest{}, fmt.Errorf("decode version 2 attempt manifest: %w", err)
+		}
+		manifest = legacy.attemptManifest
+		manifest.SchemaVersion = manifestSchemaVersion
+		manifest.SessionID = legacy.WorkTargetID
 	} else if err := decoder.Decode(&manifest); err != nil {
 		return attemptManifest{}, fmt.Errorf("decode attempt manifest: %w", err)
 	}
@@ -592,7 +605,7 @@ func (store *manifestStore) validate(manifest attemptManifest) error {
 		return fmt.Errorf("unsupported attempt manifest schema version %d", manifest.SchemaVersion)
 	}
 	for name, value := range map[string]string{
-		"worker_id": manifest.WorkerID, "work_target_id": manifest.WorkTargetID,
+		"worker_id": manifest.WorkerID, "session_id": manifest.SessionID,
 		"execution_id": manifest.ExecutionID, "attempt_id": manifest.AttemptID,
 		"repository_id": manifest.RepositoryID,
 	} {
@@ -616,10 +629,10 @@ func (store *manifestStore) validate(manifest attemptManifest) error {
 	if manifest.WorktreePath != expectedPath {
 		return errors.New("attempt manifest worktree path is not the owned Factory path")
 	}
-	expectedBranch := "factory/" + manifest.WorkTargetID[:12] + "-" + manifest.AttemptID[:12]
-	previewBranch := "factory-v2/" + manifest.WorkTargetID[:12] + "-" + manifest.AttemptID[:12]
+	expectedBranch := "factory/" + manifest.SessionID[:12] + "-" + manifest.AttemptID[:12]
+	previewBranch := "factory-v2/" + manifest.SessionID[:12] + "-" + manifest.AttemptID[:12]
 	if manifest.Branch != expectedBranch && manifest.Branch != previewBranch {
-		return errors.New("attempt manifest branch does not match its Work target and attempt")
+		return errors.New("attempt manifest branch does not match its Session and attempt")
 	}
 	allowedLifecycle := map[string]bool{
 		manifestPreparing: true, manifestWorktreeCreated: true, manifestSupervisorReady: true,

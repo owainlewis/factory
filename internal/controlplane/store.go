@@ -490,7 +490,7 @@ func (s *Store) applyForeignKeyRebuildMigration(
 		return fmt.Errorf("begin migration %s: %w", name, err)
 	}
 	if _, err = tx.ExecContext(ctx, string(body)); err == nil && name == "027_routines_work.sql" {
-		err = normalizeMigratedRoutineTitleKeys(ctx, tx)
+		err = normalizeMigratedTaskTitleKeys(ctx, tx)
 	}
 	if err == nil {
 		var rows *sql.Rows
@@ -900,17 +900,17 @@ func (s *Store) WorkerRepositoryOptions(
 		           SELECT COUNT(*)
 		           FROM attempts active_attempt
 		           JOIN executions active_execution ON active_execution.id = active_attempt.execution_id
-		           JOIN work_targets active_target ON active_target.id = active_execution.work_target_id
+		           JOIN sessions active_session ON active_session.id = active_execution.session_id
 		           WHERE active_attempt.worker_id = ?
-		             AND active_target.repository_id = repository.id
+		             AND active_session.repository_id = repository.id
 		             AND active_attempt.state IN ('preparing', 'running')
 		       ) + (
 		           SELECT COUNT(*)
 		           FROM attempts terminal_attempt
 		           JOIN executions terminal_execution ON terminal_execution.id = terminal_attempt.execution_id
-		           JOIN work_targets terminal_target ON terminal_target.id = terminal_execution.work_target_id
+		           JOIN sessions terminal_session ON terminal_session.id = terminal_execution.session_id
 		           WHERE terminal_attempt.worker_id = ?
-		             AND terminal_target.repository_id = repository.id
+		             AND terminal_session.repository_id = repository.id
 		             AND terminal_attempt.state IN ('succeeded', 'failed', 'cancelled', 'lost')
 		             AND terminal_attempt.capacity_acknowledged = 0
 		       )
@@ -992,17 +992,17 @@ func (s *Store) ManagedRepositoryReadiness(
 		           SELECT COUNT(*)
 		           FROM attempts active_attempt
 		           JOIN executions active_execution ON active_execution.id = active_attempt.execution_id
-		           JOIN work_targets active_target ON active_target.id = active_execution.work_target_id
+		           JOIN sessions active_session ON active_session.id = active_execution.session_id
 		           WHERE active_attempt.worker_id = w.id
-		             AND active_target.repository_id = ?
+		             AND active_session.repository_id = ?
 		             AND active_attempt.state IN ('preparing', 'running')
 		       ) + (
 		           SELECT COUNT(*)
 		           FROM attempts terminal_attempt
 		           JOIN executions terminal_execution ON terminal_execution.id = terminal_attempt.execution_id
-		           JOIN work_targets terminal_target ON terminal_target.id = terminal_execution.work_target_id
+		           JOIN sessions terminal_session ON terminal_session.id = terminal_execution.session_id
 		           WHERE terminal_attempt.worker_id = w.id
-		             AND terminal_target.repository_id = ?
+		             AND terminal_session.repository_id = ?
 		             AND terminal_attempt.state IN ('succeeded', 'failed', 'cancelled', 'lost')
 		             AND terminal_attempt.capacity_acknowledged = 0
 		       )
@@ -1118,34 +1118,34 @@ func (s *Store) SetManagedRepositoryEnabled(
 	if !enabled {
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM executions
-			WHERE state = 'queued' AND work_target_id IN (
-				SELECT id FROM work_targets WHERE repository_id = ? AND state = 'queued'
+			WHERE state = 'queued' AND session_id IN (
+				SELECT id FROM sessions WHERE repository_id = ? AND state = 'queued'
 			)
 		`, repositoryID); err != nil {
 			return protocol.ManagedRepository{}, unavailable(err)
 		}
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE work_targets SET state = 'blocked', assigned_worker_id = NULL,
+			UPDATE sessions SET state = 'blocked', assigned_worker_id = NULL,
 			       blocked_reason = 'Repository is disabled.'
 			WHERE repository_id = ? AND state = 'queued'
 		`, repositoryID); err != nil {
 			return protocol.ManagedRepository{}, unavailable(err)
 		}
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE routines SET schedule_health_status = 'blocked',
+			UPDATE tasks SET schedule_health_status = 'blocked',
 			       schedule_health_code = 'repository_disabled',
 			       schedule_health_message = 'Enable every selected repository before the next occurrence can run.'
 			WHERE schedule_enabled = 1 AND id IN (
-				SELECT routine_id FROM routine_repositories WHERE repository_id = ?
+				SELECT task_id FROM task_repositories WHERE repository_id = ?
 			)
 		`, repositoryID); err != nil {
 			return protocol.ManagedRepository{}, unavailable(err)
 		}
 	} else if _, err := tx.ExecContext(ctx, `
-		UPDATE routines SET schedule_health_status = 'healthy',
+		UPDATE tasks SET schedule_health_status = 'healthy',
 		       schedule_health_code = '', schedule_health_message = ''
 		WHERE schedule_enabled = 1 AND pending_due_at IS NULL
-		  AND id IN (SELECT routine_id FROM routine_repositories WHERE repository_id = ?)
+		  AND id IN (SELECT task_id FROM task_repositories WHERE repository_id = ?)
 	`, repositoryID); err != nil {
 		return protocol.ManagedRepository{}, unavailable(err)
 	}
@@ -1272,10 +1272,10 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	if input.Name == "" || len(input.Name) > 200 {
 		return protocol.Worker{}, invalid("invalid_worker", "worker name is required and must be at most 200 bytes")
 	}
-	if input.WorkClaimProtocolVersion != protocol.WorkClaimProtocolVersion {
+	if input.ClaimProtocolVersion != protocol.ClaimProtocolVersion {
 		return protocol.Worker{}, conflict(
 			"worker_upgrade_required",
-			"the Worker uses an incompatible Work claim protocol; upgrade it before reconnecting",
+			"the Worker uses an incompatible Run claim protocol; upgrade it before reconnecting",
 		)
 	}
 	labels, err := normalizeWorkerLabels(input.Labels)
@@ -1498,7 +1498,7 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO workers(
-			id, name, labels_json, worker_version, work_claim_protocol_version,
+			id, name, labels_json, worker_version, claim_protocol_version,
 			runtime, runtime_version, capacity, active_count,
 			health, capabilities_json, source_access_json, accepts_managed_repositories,
 			managed_repository_ids_json, retained_worktrees_json,
@@ -1508,7 +1508,7 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 		ON CONFLICT(id) DO UPDATE SET
 			name=excluded.name, labels_json=excluded.labels_json,
 			worker_version=excluded.worker_version,
-			work_claim_protocol_version=excluded.work_claim_protocol_version,
+			claim_protocol_version=excluded.claim_protocol_version,
 			runtime_version=excluded.runtime_version,
 			capacity=excluded.capacity, active_count=excluded.active_count, health=excluded.health,
 			capabilities_json=excluded.capabilities_json,
@@ -1519,7 +1519,7 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 			weekly_limit_used_percent=excluded.weekly_limit_used_percent,
 			weekly_limit_resets_at=excluded.weekly_limit_resets_at,
 			last_heartbeat=excluded.last_heartbeat
-	`, workerID, input.Name, labelsJSON, input.WorkerVersion, input.WorkClaimProtocolVersion,
+	`, workerID, input.Name, labelsJSON, input.WorkerVersion, input.ClaimProtocolVersion,
 		input.Runtime, input.RuntimeVersion,
 		input.Capacity, input.ActiveCount, input.Health, capabilitiesJSON, sourceAccessJSON,
 		input.AcceptsManagedRepositories, managedRepositoryIDsJSON, retained,
@@ -1652,9 +1652,9 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 			  AND NOT EXISTS (
 			      SELECT 1
 			      FROM executions execution
-			      JOIN work_targets target ON target.id = execution.work_target_id
+			      JOIN sessions session ON session.id = execution.session_id
 			      WHERE execution.assigned_worker_id = ?
-			        AND target.repository_id = ?
+			        AND session.repository_id = ?
 			        AND execution.state IN ('queued', 'preparing', 'running')
 			  )
 		`, now, workerID, repositoryID, workerID, repositoryID)
@@ -1710,8 +1710,8 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 			  AND execution_id IN (
 			      SELECT e.id
 			      FROM executions e
-			      JOIN work_targets target ON target.id = e.work_target_id
-			      WHERE target.repository_id = ?
+			      JOIN sessions session ON session.id = e.session_id
+			      WHERE session.repository_id = ?
 			  )
 		`, workerID, input.ActiveCount, canBulkAcknowledge, repositoryID); err != nil {
 			return protocol.Worker{}, unavailable(err)
@@ -1726,8 +1726,8 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 				  AND execution_id IN (
 				      SELECT e.id
 				      FROM executions e
-				      JOIN work_targets target ON target.id = e.work_target_id
-				      WHERE target.repository_id = ?
+				      JOIN sessions session ON session.id = e.session_id
+				      WHERE session.repository_id = ?
 				  )
 			`, attemptID, workerID, repositoryID); err != nil {
 				return protocol.Worker{}, unavailable(err)
@@ -1823,10 +1823,10 @@ func (s *Store) Workers(ctx context.Context) ([]protocol.Worker, error) {
 		       w.retained_worktrees_json,
 		       w.synthetic, w.registered_at, w.last_heartbeat,
 		       COALESCE((
-		           SELECT json_extract(work.routine_snapshot, '$.name')
+		           SELECT json_extract(run.task_snapshot, '$.name')
 		           FROM executions e
-		           JOIN work_targets target ON target.id = e.work_target_id
-		           JOIN work ON work.id = target.work_id
+		           JOIN sessions session ON session.id = e.session_id
+		           JOIN runs run ON run.id = session.run_id
 		           WHERE e.assigned_worker_id = w.id AND e.state IN ('preparing', 'running')
 		           ORDER BY e.updated_at DESC, e.id DESC
 		           LIMIT 1
@@ -1869,10 +1869,10 @@ func (s *Store) Worker(ctx context.Context, id string) (protocol.Worker, error) 
 		       w.retained_worktrees_json,
 		       w.synthetic, w.registered_at, w.last_heartbeat,
 		       COALESCE((
-		           SELECT json_extract(work.routine_snapshot, '$.name')
+		           SELECT json_extract(run.task_snapshot, '$.name')
 		           FROM executions e
-		           JOIN work_targets target ON target.id = e.work_target_id
-		           JOIN work ON work.id = target.work_id
+		           JOIN sessions session ON session.id = e.session_id
+		           JOIN runs run ON run.id = session.run_id
 		           WHERE e.assigned_worker_id = w.id AND e.state IN ('preparing', 'running')
 		           ORDER BY e.updated_at DESC, e.id DESC
 		           LIMIT 1
@@ -1903,7 +1903,7 @@ func scanWorker(row scanner, now time.Time) (protocol.Worker, error) {
 		&worker.Capacity, &worker.ActiveCount, &worker.Health, &capabilities, &sourceAccess,
 		&acceptsManagedRepositories, &managedRepositoryIDs,
 		&retained, &synthetic, &registered, &heartbeat,
-		&worker.CurrentWorkTitle); err != nil {
+		&worker.CurrentRunTitle); err != nil {
 		return worker, err
 	}
 	if err := json.Unmarshal(labels, &worker.Labels); err != nil {
@@ -1955,12 +1955,12 @@ func (s *Store) workerRepositories(ctx context.Context, workerID string) ([]prot
 	return repos, rows.Err()
 }
 
-type workRoute struct {
+type runRoute struct {
 	repositoryRemoteIdentity string
 	sourceAccess             protocol.SourceAccess
 }
 
-type workRouteCandidate struct {
+type runRouteCandidate struct {
 	workerID                   string
 	repositoryID               string
 	runtime                    string
@@ -1995,7 +1995,7 @@ func preferredReadyRuntime(primary string, capabilities []protocol.Capability) s
 	return ""
 }
 
-func normalizeWorkRoute(route *workRoute) error {
+func normalizeRunRoute(route *runRoute) error {
 	route.repositoryRemoteIdentity = normalizeRemote(route.repositoryRemoteIdentity)
 	values, err := normalizeSourceAccess([]protocol.SourceAccess{route.sourceAccess})
 	if err != nil {
@@ -2030,23 +2030,23 @@ func hasSourceAccess(values []protocol.SourceAccess, required protocol.SourceAcc
 	return false
 }
 
-func betterRoute(candidate, current workRouteCandidate) bool {
+func betterRoute(candidate, current runRouteCandidate) bool {
 	left := candidate.load * current.capacity
 	right := current.load * candidate.capacity
 	return left < right || (left == right && candidate.workerID < current.workerID)
 }
 
-func (s *Store) selectWorkRoute(
+func (s *Store) selectRunRoute(
 	ctx context.Context,
 	tx *sql.Tx,
-	route workRoute,
+	route runRoute,
 	selectedRepositoryID string,
 	now int64,
 	requireSourceAccess bool,
 	allowStaticRepository bool,
 	workerID string,
 	requiredRuntime string,
-) (workRouteCandidate, error) {
+) (runRouteCandidate, error) {
 	repositoryPredicate := "r.remote_identity = ?"
 	repositoryLookup := route.repositoryRemoteIdentity
 	if selectedRepositoryID != "" {
@@ -2072,13 +2072,13 @@ func (s *Store) selectWorkRoute(
 			  )
 	`, repositoryLookup, allowStaticRepository).Scan(&repositoryID, &repositoryIdentity, &repositoryEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
-		return workRouteCandidate{}, conflict(
+		return runRouteCandidate{}, conflict(
 			"repository_not_managed",
 			"repository is not enabled in the control-plane managed repository catalog",
 		)
 	}
 	if err != nil {
-		return workRouteCandidate{}, unavailable(err)
+		return runRouteCandidate{}, unavailable(err)
 	}
 	workerRepositoryIdentity := route.repositoryRemoteIdentity
 	if workerRepositoryIdentity == "" {
@@ -2102,7 +2102,7 @@ func (s *Store) selectWorkRoute(
 		  ON wr.worker_id = w.id AND wr.repository_id = ?
 		WHERE w.health = 'healthy'
 		  AND w.synthetic = 0
-		  AND w.work_claim_protocol_version = ?
+		  AND w.claim_protocol_version = ?
 		  AND w.last_heartbeat >= ?
 		  AND (? = '' OR w.id = ?)
 		  AND (? = 0 OR COALESCE(wr.advertised, 0) = 1)
@@ -2145,35 +2145,35 @@ func (s *Store) selectWorkRoute(
 		      SELECT COUNT(*)
 		      FROM attempts active_attempt
 		      JOIN executions active_execution ON active_execution.id = active_attempt.execution_id
-		      JOIN work_targets active_target ON active_target.id = active_execution.work_target_id
+		      JOIN sessions active_session ON active_session.id = active_execution.session_id
 		      WHERE active_attempt.worker_id = w.id
-		        AND active_target.repository_id = ?
+		        AND active_session.repository_id = ?
 		        AND active_attempt.state IN ('preparing', 'running')
 		  ) + (
 		      SELECT COUNT(*)
 		      FROM attempts terminal_attempt
 		      JOIN executions terminal_execution ON terminal_execution.id = terminal_attempt.execution_id
-		      JOIN work_targets terminal_target ON terminal_target.id = terminal_execution.work_target_id
+		      JOIN sessions terminal_session ON terminal_session.id = terminal_execution.session_id
 		      WHERE terminal_attempt.worker_id = w.id
-		        AND terminal_target.repository_id = ?
+		        AND terminal_session.repository_id = ?
 		        AND terminal_attempt.state IN ('succeeded', 'failed', 'cancelled', 'lost')
 		        AND terminal_attempt.capacity_acknowledged = 0
 		  ) < ?
 		ORDER BY w.id
-	`, repositoryID, protocol.WorkClaimProtocolVersion,
+	`, repositoryID, protocol.ClaimProtocolVersion,
 		now-protocol.WorkerOnlineWindow.Milliseconds(), workerID, workerID,
 		requireAdvertisedRepository,
 		workerRepositoryIdentity, repositoryID,
 		repositoryID, protocol.MaxRepositoryCacheEntries,
 		repositoryID, repositoryID, protocol.MaxRetainedPerRepo)
 	if err != nil {
-		return workRouteCandidate{}, unavailable(err)
+		return runRouteCandidate{}, unavailable(err)
 	}
 	defer rows.Close()
-	var best workRouteCandidate
+	var best runRouteCandidate
 	found := false
 	for rows.Next() {
-		var candidate workRouteCandidate
+		var candidate runRouteCandidate
 		var active, queued, repositoryAdvertised, acceptsManagedRepositories int
 		var primaryRuntime string
 		var encoded, encodedCapabilities []byte
@@ -2182,18 +2182,18 @@ func (s *Store) selectWorkRoute(
 			&active, &encoded, &repositoryAdvertised, &acceptsManagedRepositories, &queued,
 		); err != nil {
 			rows.Close()
-			return workRouteCandidate{}, unavailable(err)
+			return runRouteCandidate{}, unavailable(err)
 		}
 		candidate.repositoryID = repositoryID
 		candidate.repositoryAdvertised = repositoryAdvertised != 0
 		candidate.acceptsManagedRepositories = acceptsManagedRepositories != 0
 		var access []protocol.SourceAccess
 		if err := json.Unmarshal(encoded, &access); err != nil {
-			return workRouteCandidate{}, unavailable(err)
+			return runRouteCandidate{}, unavailable(err)
 		}
 		var capabilities []protocol.Capability
 		if err := json.Unmarshal(encodedCapabilities, &capabilities); err != nil {
-			return workRouteCandidate{}, unavailable(err)
+			return runRouteCandidate{}, unavailable(err)
 		}
 		candidate.runtime = requiredRuntime
 		if candidate.runtime == "" {
@@ -2214,24 +2214,24 @@ func (s *Store) selectWorkRoute(
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return workRouteCandidate{}, unavailable(err)
+		return runRouteCandidate{}, unavailable(err)
 	}
 	if err := rows.Close(); err != nil {
-		return workRouteCandidate{}, unavailable(err)
+		return runRouteCandidate{}, unavailable(err)
 	}
 	if !found {
 		message := "no healthy online worker can acquire the repository and access its source provider"
 		if !requireSourceAccess {
 			message = "no healthy online worker can acquire the repository"
 		}
-		return workRouteCandidate{}, conflict(
+		return runRouteCandidate{}, conflict(
 			"no_eligible_worker",
 			message,
 		)
 	}
 	if !best.repositoryAdvertised {
 		if !best.acceptsManagedRepositories {
-			return workRouteCandidate{}, unavailable(errors.New("selected worker cannot acquire managed repositories"))
+			return runRouteCandidate{}, unavailable(errors.New("selected worker cannot acquire managed repositories"))
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO worker_repositories(
@@ -2246,13 +2246,13 @@ func (s *Store) selectWorkRoute(
 				dynamic=1,
 				updated_at=excluded.updated_at
 		`, best.workerID, workerRepositoryIdentity, repositoryID, workerRepositoryIdentity, now); err != nil {
-			return workRouteCandidate{}, unavailable(err)
+			return runRouteCandidate{}, unavailable(err)
 		}
 	}
 	return best, nil
 }
 
-func (s *Store) selectWorkTargetRoute(
+func (s *Store) selectSessionRoute(
 	ctx context.Context,
 	tx *sql.Tx,
 	repositoryID string,
@@ -2260,27 +2260,27 @@ func (s *Store) selectWorkTargetRoute(
 	now int64,
 	workerID string,
 	requiredRuntime string,
-) (workRouteCandidate, error) {
+) (runRouteCandidate, error) {
 	var currentIdentity string
 	var enabled, centrallyManaged int
 	err := tx.QueryRowContext(ctx, `
 		SELECT remote_identity, enabled, centrally_managed FROM repositories WHERE id = ?
 	`, repositoryID).Scan(&currentIdentity, &enabled, &centrallyManaged)
 	if errors.Is(err, sql.ErrNoRows) {
-		return workRouteCandidate{}, conflict("repository_not_available", "repository is not configured on a Worker or enabled for managed acquisition")
+		return runRouteCandidate{}, conflict("repository_not_available", "repository is not configured on a Worker or enabled for managed acquisition")
 	}
 	if err != nil {
-		return workRouteCandidate{}, unavailable(err)
+		return runRouteCandidate{}, unavailable(err)
 	}
 	if repositoryIdentity == "" {
 		repositoryIdentity = currentIdentity
 	}
-	route := workRoute{
+	route := runRoute{
 		repositoryRemoteIdentity: repositoryIdentity,
 		sourceAccess:             protocol.SourceAccess{Provider: "local", Hostname: "localhost"},
 	}
 	if centrallyManaged != 0 && enabled == 0 {
-		return workRouteCandidate{}, conflict(
+		return runRouteCandidate{}, conflict(
 			"repository_not_managed", "repository is not enabled in the control-plane managed repository catalog",
 		)
 	}
@@ -2289,10 +2289,10 @@ func (s *Store) selectWorkTargetRoute(
 		route.sourceAccess = protocol.SourceAccess{Provider: "github", Hostname: "github.com"}
 		requireSourceAccess = true
 	}
-	if err := normalizeWorkRoute(&route); err != nil {
-		return workRouteCandidate{}, err
+	if err := normalizeRunRoute(&route); err != nil {
+		return runRouteCandidate{}, err
 	}
-	return s.selectWorkRoute(
+	return s.selectRunRoute(
 		ctx, tx, route, repositoryID, now, requireSourceAccess, true, workerID, requiredRuntime,
 	)
 }

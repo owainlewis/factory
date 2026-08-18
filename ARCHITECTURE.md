@@ -7,15 +7,15 @@
 > **Future direction:** The proposed
 > [Cloud Run agent backend](docs/cloud-run-agents/design.md) adds elastic
 > execution without changing Factory's product lifecycle. The Software Factory
-> target architecture is a historical proposal superseded by Routines and Work.
+> target architecture is a historical proposal superseded by Tasks and Runs.
 > This document describes code that exists today.
 
 ## 1. Executive summary
 
 Factory is a local-first control plane for repeatable software-engineering
-agents. An operator saves a prompt and execution settings as a Routine. Running
-or scheduling that Routine creates Work with one Target per repository. A
-persistent Worker claims each Target, prepares an isolated Git worktree, runs
+agents. An operator saves a prompt and execution settings as a Task. Running
+or scheduling that Task creates a Run with one Session per repository. A
+persistent Worker claims each Session, prepares an isolated Git worktree, runs
 Pi, Codex, or Claude Code, streams events, and reports one terminal result.
 
 The implementation has three main parts:
@@ -24,7 +24,7 @@ The implementation has three main parts:
   the embedded browser UI.
 - `factory-worker` owns runtime health, repository caches, worktrees, agent
   processes, and cleanup or retention.
-- SQLite stores Routines, Work, Targets, executions, Attempts, events, Workers,
+- SQLite stores Tasks, Runs, Sessions, executions, Attempts, events, Workers,
   and repositories.
 
 The operator API is loopback-only. Workers make outbound polling requests to
@@ -45,7 +45,7 @@ Operator browser
       | loopback HTTP and JSON
       v
 factory-server
-  |-- Routine scheduler and Work admission
+  |-- Task scheduler and Run admission
   |-- routing and lease state machine
   |-- embedded React UI
   `-- SQLite
@@ -67,49 +67,49 @@ child process and does not receive a control-plane operator credential.
 
 ## 3. Current product model
 
-### Routine
+### Task
 
-A Routine is a reusable definition containing:
+A Task is a reusable definition containing:
 
 - name and prompt;
 - runtime: `pi`, `codex`, or `claude-code`;
-- timeout and per-Work concurrency limit;
+- timeout and per-Run concurrency limit;
 - one or more managed repositories;
 - optional cron schedule and IANA timezone;
 - mutable generation and archived state.
 
-A Routine may also save an execution-profile ID. Missing profile data means
+A Task may also save an execution-profile ID. Missing profile data means
 `persistent-auto`, so existing rows need no migration. Manual Run requests may
-override the saved profile; scheduled Work uses the saved default.
+override the saved profile; scheduled Runs use the saved default.
 
-Updates use an expected generation. Admission snapshots the Routine so later
-edits do not change existing Work. A manual run uses an idempotency key.
+Updates use an expected generation. Admission snapshots the Task so later
+edits do not change existing Runs. A manual run uses an idempotency key.
 Scheduled admission polls every ten seconds and preserves the frozen pending
 snapshot while retrying a failed admission.
 
-### Work and Target
+### Run and Session
 
-One Routine admission creates one Work and one Target per selected repository.
-Work stores the Routine snapshot, immutable execution-profile version, backend,
+One Task admission creates one Run and one Session per selected repository.
+A Run stores the Task snapshot, immutable execution-profile version, backend,
 runtime, provider, model, timeout, resource class, commit-resolution policy,
-source (`manual` or `schedule`), schedule time, and aggregate state. A Target
+source (`manual` or `schedule`), schedule time, and aggregate state. A Session
 stores the same frozen execution choice with its resolved prompt, repository
 identity, assigned Worker, result, and failure state.
 
-Target states are `blocked`, `queued`, `preparing`, `running`, `succeeded`,
-`failed`, and `cancelled`. Work state is derived from all Targets as `blocked`,
+Session states are `blocked`, `queued`, `preparing`, `running`, `succeeded`,
+`failed`, and `cancelled`. Run state is derived from all Sessions as `blocked`,
 `queued`, `running`, `succeeded`, `failed`, `partial`, or `cancelled`.
 
-A Target starts blocked when no eligible Worker can currently accept it. A
+A Session starts blocked when no eligible Worker can currently accept it. A
 later claim can route it when a healthy Worker advertises the runtime and
-repository access. Routine concurrency limits how many sibling Targets may be
+repository access. Task concurrency limits how many sibling Sessions may be
 queued or active at once.
 
 ### Execution and Attempt
 
-An Execution is the durable assignment of one Target to one Worker and runtime.
+An Execution is the durable assignment of one Session to one Worker and runtime.
 An Attempt is one leased try of that Execution. An explicit retry of a failed or
-cancelled Target requeues its Execution, increments retry history, and warns
+cancelled Session requeues its Execution, increments retry history, and warns
 that external effects may repeat.
 
 An Attempt begins in `preparing`, moves to `running` after the Worker reports
@@ -136,7 +136,7 @@ static repository paths remain readable through Worker configuration.
 
 ## 4. Architectural invariants
 
-1. SQLite and the control plane are the authority for Work and Attempt state.
+1. SQLite and the control plane are the authority for Run and Attempt state.
 2. A claim is assigned only to its selected, healthy, online Worker with a ready
    runtime, free capacity, and repository availability.
 3. A random lease token owns one active Attempt. The server stores its digest,
@@ -154,7 +154,7 @@ static repository paths remain readable through Worker configuration.
 8. Plain HTTP accepts loopback clients only. Remote Workers require TLS,
    one-time enrollment bound to a stable Worker ID, and a stored bearer
    credential.
-9. Routine admission snapshots prompt, runtime, repositories, timeout,
+9. Task admission snapshots prompt, runtime, repositories, timeout,
    concurrency, generation, and schedule context.
 10. Operator builds embed committed `web/dist` assets and do not require Node.js
     at runtime.
@@ -164,11 +164,11 @@ static repository paths remain readable through Worker configuration.
 ### Control plane
 
 `cmd/factory-server` loads optional bootstrap TOML, opens SQLite, applies
-embedded migrations, sweeps expired leases, starts the Routine scheduler,
+embedded migrations, sweeps expired leases, starts the Task scheduler,
 serves the local API and UI, and optionally starts the remote Worker TLS
 listener. Shutdown stops schedulers first and gives HTTP servers ten seconds.
 
-`internal/controlplane` owns validation, transactions, Work admission, routing,
+`internal/controlplane` owns validation, transactions, Run admission, routing,
 claiming, leases, event ingestion, completion, cancellation, retry, pagination,
 overview aggregates, Worker authentication, and backup or restore validation.
 
@@ -214,7 +214,7 @@ most 64 KiB; one Attempt stores at most 10 MiB of events. Results are at most
 ### Browser UI
 
 `web/src` is a React and TypeScript single-page application. It exposes
-Overview, Routines, Work, Workers, and Repositories, with detail views for each
+Overview, Tasks, Runs, Workers, and Repositories, with detail views for each
 operational resource. It polls the same-origin API.
 
 `web/dist` is generated, committed, and embedded by `web/embed.go`. The server
@@ -223,24 +223,24 @@ security headers. Node.js is needed only when UI source changes.
 
 ## 6. Critical flows
 
-### Routine admission
+### Task admission
 
-1. The operator runs a Routine with a request key, or the scheduler claims a
+1. The operator runs a Task with a request key, or the scheduler claims a
    due occurrence.
-2. The server freezes the Routine generation and repository list.
-3. One Work and one Target per repository are inserted transactionally.
-4. Routing selects compatible Workers where possible. Unroutable Targets stay
+2. The server freezes the Task generation and repository list.
+3. One Run and one Session per repository are inserted transactionally.
+4. Routing selects compatible Workers where possible. Unroutable Sessions stay
    blocked with a reason.
 5. The same manual request key or scheduled occurrence cannot admit duplicate
-   Work.
+   Runs.
 
 ### Claim and execution
 
 1. A healthy Worker registers capabilities and polls with a fresh claim request
    ID and lease token.
 2. In one transaction, the server may materialize a blocked route or reroute a
-   queued Target, checks capacity and Routine concurrency, creates an Attempt,
-   and moves Execution and Target to `preparing`.
+   queued Session, checks capacity and Task concurrency, creates an Attempt,
+   and moves Execution and Session to `preparing`.
 3. The Worker acquires or refreshes the repository, resolves its base commit,
    creates a branch and worktree, writes a manifest, then starts the supervisor.
 4. The Worker reports process identity and the server moves the lifecycle to
@@ -253,20 +253,20 @@ security headers. Node.js is needed only when UI source changes.
 
 ### Cancellation, lease loss, and retry
 
-Queued or blocked Targets cancel immediately. Active cancellation is stored on
-the Target and Execution, returned by the next heartbeat, and enforced by the
+Queued or blocked Sessions cancel immediately. Active cancellation is stored on
+the Session and Execution, returned by the next heartbeat, and enforced by the
 supervisor. If lease renewal fails or the 30-second deadline passes, the
 supervisor stops the process group and the control plane marks the Attempt
 lost. Startup and periodic sweeps recover expired leases after server failure.
 
-Only failed or cancelled Targets can be retried. Retry preserves the Target and
+Only failed or cancelled Sessions can be retried. Retry preserves the Session and
 Attempt history, selects a currently eligible Worker, and creates the next
 Attempt when claimed.
 
 ## 7. API and security boundaries
 
 The local listener exposes health plus operator and Worker routes under
-`/api/v1`: Workers, repositories, Routines, Work, overview, Attempts, and event
+`/api/v1`: Workers, repositories, Tasks, Runs, overview, Attempts, and event
 history. It rejects non-loopback clients before route handling.
 
 The optional remote listener exposes only health, enrollment exchange, Worker
@@ -283,14 +283,16 @@ describe a Worker as a security sandbox.
 ## 8. Persistence and migration
 
 Migrations are embedded from `migrations/` and applied in order. Migration 27
-introduces the current Routines and Work model. Migration 28 adds the current
-Work-only claim protocol and rejects incompatible old Workers. Supported legacy
+introduces the current lifecycle model. Migration 28 adds the current
+single-claim protocol and rejects incompatible old Workers. Migration 30 renames
+the operator model to Tasks, Runs, and Sessions without changing behaviour, and
+refuses to apply if the new table names are already in use. Supported legacy
 Definitions, schedules, repositories, and execution history are converted;
 unsupported legacy provider admission is blocked and reported rather than
 silently discarded.
 
-Current lifecycle tables include `routines`, `routine_repositories`, `work`,
-`work_targets`, `executions`, `attempts`, `attempt_events`, `workers`,
+Current lifecycle tables include `tasks`, `task_repositories`, `runs`,
+`sessions`, `executions`, `attempts`, `attempt_events`, `workers`,
 `repositories`, Worker repository state, claim request deduplication, and
 Worker enrollment or credentials. Older migration tables may remain for
 history and upgrade compatibility but are not part of the current UI or
@@ -308,7 +310,7 @@ The product direction separates three choices:
 
 Persistent Workers remain the best path for subscription sessions, warm
 caches, and inspectable worktrees. Cloud Run is intended for bursty parallel
-Work where a disposable container and API-backed model are acceptable.
+Runs where a disposable container and API-backed model are acceptable.
 
 The proposed adapter does not make Cloud Run the scheduler or database.
 Factory still owns frozen input, Attempt identity, retry, cancellation, events,
@@ -337,13 +339,13 @@ outbound control, least-privilege identity, failure recovery, and rollout.
 | --- | --- |
 | Server startup and config | `cmd/factory-server/main.go`, `cmd/factory-server/config.go` |
 | HTTP routes and auth | `internal/controlplane/http.go`, `internal/controlplane/worker_auth.go` |
-| Routine and Work model | `internal/controlplane/routines.go`, `internal/protocol/routines.go` |
-| Schedule admission | `internal/controlplane/routine_scheduler.go`, `internal/controlplane/schedule_cron.go` |
-| Routing and claims | `internal/controlplane/routine_claim.go`, `internal/controlplane/state.go` |
+| Task and Run model | `internal/controlplane/tasks.go`, `internal/protocol/tasks.go` |
+| Schedule admission | `internal/controlplane/task_scheduler.go`, `internal/controlplane/schedule_cron.go` |
+| Routing and claims | `internal/controlplane/task_claim.go`, `internal/controlplane/state.go` |
 | Lease sweep and recovery | `internal/controlplane/server.go`, `internal/controlplane/recovery.go` |
 | Worker manager | `internal/worker/manager.go`, `internal/worker/registration.go`, `internal/worker/claiming.go` |
 | Attempt execution | `internal/worker/attempt_lifecycle.go`, `internal/worker/supervisor.go`, `internal/worker/events.go` |
 | Git and worktrees | `internal/worker/git.go`, `internal/worker/repository_cache.go`, `internal/worker/reconcile.go` |
 | Protocol limits and types | `internal/protocol/types.go`, `internal/protocol/prompt.go` |
-| Schema | `migrations/027_routines_work.sql`, `migrations/028_work_claim_protocol.sql` |
-| Browser UI | `web/src/App.tsx`, `web/src/Routines.tsx`, `web/src/RoutineWork.tsx`, `web/src/Workers.tsx`, `web/src/Repositories.tsx` |
+| Schema | `migrations/027_routines_work.sql`, `migrations/030_task_run_session.sql` |
+| Browser UI | `web/src/App.tsx`, `web/src/Tasks.tsx`, `web/src/Runs.tsx`, `web/src/Workers.tsx`, `web/src/Repositories.tsx` |

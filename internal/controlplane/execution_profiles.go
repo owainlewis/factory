@@ -45,7 +45,7 @@ func normalizeExecutionProfile(input protocol.SaveExecutionProfileRequest) (norm
 		return value, invalid("invalid_execution_profile_model", "provider and model are required and limited to 200 bytes")
 	}
 	if value.timeoutSeconds == 0 {
-		value.timeoutSeconds = int(defaultRoutineTimeout.Seconds())
+		value.timeoutSeconds = int(defaultTaskTimeout.Seconds())
 	}
 	if value.timeoutSeconds < 1 || value.timeoutSeconds > int(protocol.MaxTimeout.Seconds()) {
 		return value, invalid("invalid_execution_profile_timeout", "timeout_seconds must be between 1 and 28800")
@@ -200,7 +200,7 @@ func upsertSyntheticWorker(ctx context.Context, tx *sql.Tx, profileID string, ve
 	workerID := syntheticWorkerID(profileID)
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO workers(
-			id, name, labels_json, worker_version, work_claim_protocol_version, runtime, runtime_version,
+			id, name, labels_json, worker_version, claim_protocol_version, runtime, runtime_version,
 			capacity, active_count, health, capabilities_json, source_access_json,
 			accepts_managed_repositories, managed_repository_ids_json, retained_worktrees_json,
 			registered_at, last_heartbeat, synthetic

@@ -6,7 +6,7 @@ import (
 	"errors"
 )
 
-func (s *Store) materializeBlockedTargetForWorker(
+func (s *Store) materializeBlockedSessionForWorker(
 	ctx context.Context,
 	tx *sql.Tx,
 	workerID string,
@@ -20,20 +20,20 @@ func (s *Store) materializeBlockedTargetForWorker(
 	var cursorID string
 	for {
 		rows, err := tx.QueryContext(ctx, `
-			SELECT target.id, target.repository_id, target.repository_identity,
-			       target.required_runtime, target.admitted_at
-			FROM work_targets target
-			JOIN work ON work.id = target.work_id
-			JOIN repositories repository ON repository.id = target.repository_id
-			WHERE target.state = 'blocked'
-			  AND target.execution_backend = 'persistent'
+			SELECT session.id, session.repository_id, session.repository_identity,
+			       session.required_runtime, session.admitted_at
+			FROM sessions session
+			JOIN runs run ON run.id = session.run_id
+			JOIN repositories repository ON repository.id = session.repository_id
+			WHERE session.state = 'blocked'
+			  AND session.execution_backend = 'persistent'
 			  AND (repository.centrally_managed = 0 OR repository.enabled = 1)
-			  AND (? = '' OR target.admitted_at > ? OR (target.admitted_at = ? AND target.id > ?))
+			  AND (? = '' OR session.admitted_at > ? OR (session.admitted_at = ? AND session.id > ?))
 			  AND (
-			      SELECT COUNT(*) FROM work_targets active
-			      WHERE active.work_id = target.work_id AND active.state IN ('queued', 'preparing', 'running')
-			  ) < json_extract(work.routine_snapshot, '$.concurrency_limit')
-			ORDER BY target.admitted_at, target.id LIMIT 50
+			      SELECT COUNT(*) FROM sessions active
+			      WHERE active.run_id = session.run_id AND active.state IN ('queued', 'preparing', 'running')
+			  ) < json_extract(run.task_snapshot, '$.concurrency_limit')
+			ORDER BY session.admitted_at, session.id LIMIT 50
 		`, cursorID, cursorAdmitted, cursorAdmitted, cursorID)
 		if err != nil {
 			return unavailable(err)
@@ -55,7 +55,7 @@ func (s *Store) materializeBlockedTargetForWorker(
 			return unavailable(err)
 		}
 		for _, value := range candidates {
-			selection, err := s.selectWorkTargetRoute(
+			selection, err := s.selectSessionRoute(
 				ctx, tx, value.repositoryID, value.identity, now, workerID, value.runtime,
 			)
 			if err != nil {
@@ -69,20 +69,20 @@ func (s *Store) materializeBlockedTargetForWorker(
 				return unavailable(err)
 			}
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO executions(id, work_target_id, assigned_worker_id, required_runtime, state, created_at, updated_at)
+				INSERT INTO executions(id, session_id, assigned_worker_id, required_runtime, state, created_at, updated_at)
 				VALUES (?, ?, ?, ?, 'queued', ?, ?)
 			`, executionID, value.id, selection.workerID, value.runtime, now, now); err != nil {
 				return unavailable(err)
 			}
 			result, err := tx.ExecContext(ctx, `
-				UPDATE work_targets SET state = 'queued', blocked_reason = NULL, assigned_worker_id = ?
+				UPDATE sessions SET state = 'queued', blocked_reason = NULL, assigned_worker_id = ?
 				WHERE id = ? AND state = 'blocked'
 			`, selection.workerID, value.id)
 			if err != nil {
 				return unavailable(err)
 			}
 			if changed, _ := result.RowsAffected(); changed != 1 {
-				return conflict("target_route_conflict", "Target routing state changed before assignment")
+				return conflict("session_route_conflict", "Session routing state changed before assignment")
 			}
 			return nil
 		}
@@ -94,29 +94,29 @@ func (s *Store) materializeBlockedTargetForWorker(
 	}
 }
 
-func (s *Store) rerouteQueuedTargetForWorker(
+func (s *Store) rerouteQueuedSessionForWorker(
 	ctx context.Context,
 	tx *sql.Tx,
 	workerID string,
 	now int64,
 ) error {
 	type candidate struct {
-		targetID, executionID, repositoryID, identity, runtime, assigned string
-		admittedAt                                                       int64
+		sessionID, executionID, repositoryID, identity, runtime, assigned string
+		admittedAt                                                        int64
 	}
 	var cursorAdmitted int64
 	var cursorID string
 	for {
 		rows, err := tx.QueryContext(ctx, `
-			SELECT target.id, execution.id, target.repository_id, target.repository_identity,
-			       target.required_runtime, execution.assigned_worker_id, target.admitted_at
-			FROM work_targets target
-			JOIN executions execution ON execution.work_target_id = target.id
-			WHERE target.state = 'queued' AND execution.state = 'queued'
-			  AND target.execution_backend = 'persistent'
+			SELECT session.id, execution.id, session.repository_id, session.repository_identity,
+			       session.required_runtime, execution.assigned_worker_id, session.admitted_at
+			FROM sessions session
+			JOIN executions execution ON execution.session_id = session.id
+			WHERE session.state = 'queued' AND execution.state = 'queued'
+			  AND session.execution_backend = 'persistent'
 			  AND execution.assigned_worker_id != ?
-			  AND (? = '' OR target.admitted_at > ? OR (target.admitted_at = ? AND target.id > ?))
-			ORDER BY target.admitted_at, target.id LIMIT 50
+			  AND (? = '' OR session.admitted_at > ? OR (session.admitted_at = ? AND session.id > ?))
+			ORDER BY session.admitted_at, session.id LIMIT 50
 		`, workerID, cursorID, cursorAdmitted, cursorAdmitted, cursorID)
 		if err != nil {
 			return unavailable(err)
@@ -124,7 +124,7 @@ func (s *Store) rerouteQueuedTargetForWorker(
 		var candidates []candidate
 		for rows.Next() {
 			var value candidate
-			if err := rows.Scan(&value.targetID, &value.executionID, &value.repositoryID, &value.identity,
+			if err := rows.Scan(&value.sessionID, &value.executionID, &value.repositoryID, &value.identity,
 				&value.runtime, &value.assigned, &value.admittedAt); err != nil {
 				rows.Close()
 				return unavailable(err)
@@ -139,12 +139,12 @@ func (s *Store) rerouteQueuedTargetForWorker(
 			return unavailable(err)
 		}
 		for _, value := range candidates {
-			if _, err := s.selectWorkTargetRoute(ctx, tx, value.repositoryID, value.identity, now, value.assigned, value.runtime); err == nil {
+			if _, err := s.selectSessionRoute(ctx, tx, value.repositoryID, value.identity, now, value.assigned, value.runtime); err == nil {
 				continue
 			} else if !serviceErrorCode(err, "no_eligible_worker") && !serviceErrorCode(err, "repository_not_managed") {
 				return err
 			}
-			selection, err := s.selectWorkTargetRoute(ctx, tx, value.repositoryID, value.identity, now, workerID, value.runtime)
+			selection, err := s.selectSessionRoute(ctx, tx, value.repositoryID, value.identity, now, workerID, value.runtime)
 			if err != nil {
 				var service *ServiceError
 				if errors.As(err, &service) && (service.Code == "no_eligible_worker" || service.Code == "repository_not_managed") {
@@ -160,7 +160,7 @@ func (s *Store) rerouteQueuedTargetForWorker(
 				return unavailable(err)
 			}
 			if changed, _ := result.RowsAffected(); changed == 1 {
-				if _, err := tx.ExecContext(ctx, `UPDATE work_targets SET assigned_worker_id = ? WHERE id = ?`, selection.workerID, value.targetID); err != nil {
+				if _, err := tx.ExecContext(ctx, `UPDATE sessions SET assigned_worker_id = ? WHERE id = ?`, selection.workerID, value.sessionID); err != nil {
 					return unavailable(err)
 				}
 				return nil
@@ -170,30 +170,30 @@ func (s *Store) rerouteQueuedTargetForWorker(
 			return nil
 		}
 		last := candidates[len(candidates)-1]
-		cursorAdmitted, cursorID = last.admittedAt, last.targetID
+		cursorAdmitted, cursorID = last.admittedAt, last.sessionID
 	}
 }
 
-func updateWorkLifecycle(ctx context.Context, tx *sql.Tx, executionID string, now int64) error {
-	var workID string
+func updateRunLifecycle(ctx context.Context, tx *sql.Tx, executionID string, now int64) error {
+	var runID string
 	err := tx.QueryRowContext(ctx, `
-		SELECT target.work_id
+		SELECT session.run_id
 		FROM executions execution
-		JOIN work_targets target ON target.id = execution.work_target_id
+		JOIN sessions session ON session.id = execution.session_id
 		WHERE execution.id = ?
-	`, executionID).Scan(&workID)
+	`, executionID).Scan(&runID)
 	if err != nil {
 		return unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE work SET updated_at = ?, terminal_at = CASE
+		UPDATE runs SET updated_at = ?, terminal_at = CASE
 			WHEN NOT EXISTS (
-				SELECT 1 FROM work_targets target
-				WHERE target.work_id = work.id
-				  AND target.state IN ('blocked','queued','preparing','running')
+				SELECT 1 FROM sessions session
+				WHERE session.run_id = runs.id
+				  AND session.state IN ('blocked','queued','preparing','running')
 			) THEN ? ELSE NULL END
 		WHERE id = ?
-	`, now, now, workID); err != nil {
+	`, now, now, runID); err != nil {
 		return unavailable(err)
 	}
 	return nil

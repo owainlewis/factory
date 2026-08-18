@@ -4,17 +4,17 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "./api";
 import { RepositoriesView, RepositoryDetail } from "./Repositories";
-import { RoutineOverview } from "./RoutineOverview";
-import { RoutinesView } from "./Routines";
-import { RoutineWorkDetail, RoutineWorkView, type WorkViewMode } from "./RoutineWork";
+import { OverviewView } from "./Overview";
+import { TasksView } from "./Tasks";
+import { RunDetailView, RunsView, type RunViewMode } from "./Runs";
 import { WorkersView, WorkerDetail } from "./Workers";
 import { useVisibleInterval } from "./polling";
 
 type Route =
   | { page: "overview" }
-  | { page: "routines"; id?: string; create?: boolean }
-  | { page: "work"; mode: WorkViewMode }
-  | { page: "work-detail"; id: string; mode: WorkViewMode }
+  | { page: "tasks"; id?: string; create?: boolean }
+  | { page: "runs"; mode: RunViewMode }
+  | { page: "run-detail"; id: string; mode: RunViewMode }
   | { page: "workers" }
   | { page: "worker"; id: string }
   | { page: "repositories" }
@@ -23,10 +23,10 @@ type Route =
 function readRoute(): Route {
   const parts = window.location.pathname.split("/").filter(Boolean);
   const search = new URLSearchParams(window.location.search);
-  const mode = workMode(search.get("view"));
-  if (parts[0] === "routines") return { page: "routines", id: parts[1], create: search.get("new") === "true" };
-  if (parts[0] === "work" && parts[1]) return { page: "work-detail", id: parts[1], mode };
-  if (parts[0] === "work") return { page: "work", mode };
+  const mode = runMode(search.get("view"));
+  if (parts[0] === "tasks") return { page: "tasks", id: parts[1], create: search.get("new") === "true" };
+  if (parts[0] === "runs" && parts[1]) return { page: "run-detail", id: parts[1], mode };
+  if (parts[0] === "runs") return { page: "runs", mode };
   if (parts[0] === "workers" && parts[1]) return { page: "worker", id: parts[1] };
   if (parts[0] === "workers") return { page: "workers" };
   if (parts[0] === "repositories" && parts[1]) return { page: "repository", id: parts[1] };
@@ -34,15 +34,15 @@ function readRoute(): Route {
   return { page: "overview" };
 }
 
-function workMode(value: string | null): WorkViewMode {
+function runMode(value: string | null): RunViewMode {
   return value === "list" || value === "kanban" ? value : "table";
 }
 
 function routePath(route: Route): string {
   switch (route.page) {
-    case "routines": return `/routines${route.id ? `/${route.id}` : ""}${route.create ? "?new=true" : ""}`;
-    case "work": return `/work${route.mode === "table" ? "" : `?view=${route.mode}`}`;
-    case "work-detail": return `/work/${route.id}${route.mode === "table" ? "" : `?view=${route.mode}`}`;
+    case "tasks": return `/tasks${route.id ? `/${route.id}` : ""}${route.create ? "?new=true" : ""}`;
+    case "runs": return `/runs${route.mode === "table" ? "" : `?view=${route.mode}`}`;
+    case "run-detail": return `/runs/${route.id}${route.mode === "table" ? "" : `?view=${route.mode}`}`;
     case "workers": return "/workers";
     case "worker": return `/workers/${route.id}`;
     case "repositories": return "/repositories";
@@ -67,15 +67,15 @@ export function App() {
     setMobileNavOpen(false);
     window.scrollTo({ top: 0, behavior: "instant" });
   };
-  const activeWorkMode = route.page === "work" || route.page === "work-detail" ? route.mode : "table";
+  const activeRunMode = route.page === "runs" || route.page === "run-detail" ? route.mode : "table";
   return <div className="app-shell">
     <aside className={`sidebar ${mobileNavOpen ? "sidebar-open" : ""}`}>
       <div className="brand"><div className="brand-mark" aria-hidden="true"><Boxes size={18} strokeWidth={2.2} /></div><div><span className="brand-name">Factory</span><span className="brand-subtitle">control plane</span></div></div>
       <nav aria-label="Primary navigation">
         <div className="nav-items">
           <Nav active={route.page === "overview"} icon={<Gauge size={17} />} label="Overview" onClick={() => navigate({ page: "overview" })} />
-          <Nav active={route.page === "routines"} icon={<Repeat2 size={17} />} label="Routines" onClick={() => navigate({ page: "routines" })} />
-          <Nav active={route.page === "work" || route.page === "work-detail"} icon={<ListChecks size={17} />} label="Work" onClick={() => navigate({ page: "work", mode: activeWorkMode })} />
+          <Nav active={route.page === "tasks"} icon={<Repeat2 size={17} />} label="Tasks" onClick={() => navigate({ page: "tasks" })} />
+          <Nav active={route.page === "runs" || route.page === "run-detail"} icon={<ListChecks size={17} />} label="Runs" onClick={() => navigate({ page: "runs", mode: activeRunMode })} />
         </div>
         <div className="nav-section" role="group" aria-labelledby="infrastructure-nav-label">
           <div className="nav-section-label" id="infrastructure-nav-label">Infrastructure</div>
@@ -88,12 +88,12 @@ export function App() {
       <div className="sidebar-foot"><span className="local-dot" aria-hidden="true" /> Local control plane</div>
     </aside>
     <div className="main-shell">
-      <header className="topbar"><button className="icon-button mobile-menu" aria-label="Toggle navigation" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen((open) => !open)}>{mobileNavOpen ? <X size={19} /> : <Menu size={19} />}</button><div className="topbar-title">{pageTitle(route)}</div><button className="button button-primary" onClick={() => navigate({ page: "routines", create: true })}><Plus size={15} /> New Routine</button></header>
+      <header className="topbar"><button className="icon-button mobile-menu" aria-label="Toggle navigation" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen((open) => !open)}>{mobileNavOpen ? <X size={19} /> : <Menu size={19} />}</button><div className="topbar-title">{pageTitle(route)}</div><button className="button button-primary" onClick={() => navigate({ page: "tasks", create: true })}><Plus size={15} /> New Task</button></header>
       <main>
-        {route.page === "overview" && <RoutineOverview onWork={(id) => navigate({ page: "work-detail", id, mode: "table" })} onRoutine={(id) => navigate({ page: "routines", id })} />}
-        {route.page === "routines" && <RoutinesView key={`${route.id ?? "list"}:${route.create ?? false}`} initialID={route.id} createOpen={route.create} onWork={(id) => navigate({ page: "work-detail", id, mode: "table" })} />}
-        {route.page === "work" && <RoutineWorkView mode={route.mode} onMode={(mode) => navigate({ page: "work", mode })} onWork={(id) => navigate({ page: "work-detail", id, mode: route.mode })} />}
-        {route.page === "work-detail" && <RoutineWorkDetail id={route.id} onBack={() => navigate({ page: "work", mode: route.mode })} />}
+        {route.page === "overview" && <OverviewView onRun={(id) => navigate({ page: "run-detail", id, mode: "table" })} onTask={(id) => navigate({ page: "tasks", id })} />}
+        {route.page === "tasks" && <TasksView key={`${route.id ?? "list"}:${route.create ?? false}`} initialID={route.id} createOpen={route.create} onRun={(id) => navigate({ page: "run-detail", id, mode: "table" })} />}
+        {route.page === "runs" && <RunsView mode={route.mode} onMode={(mode) => navigate({ page: "runs", mode })} onRun={(id) => navigate({ page: "run-detail", id, mode: route.mode })} />}
+        {route.page === "run-detail" && <RunDetailView id={route.id} onBack={() => navigate({ page: "runs", mode: route.mode })} />}
         {route.page === "workers" && <WorkersView workers={workers.data} pending={workers.isPending} error={workers.error} fetching={workers.isFetching} updatedAt={workers.dataUpdatedAt} onWorker={(id) => navigate({ page: "worker", id })} onRefresh={() => void workers.refetch()} />}
         {route.page === "worker" && <WorkerDetail id={route.id} legacyReadOnly onBack={() => navigate({ page: "workers" })} onDelegate={() => {}} />}
         {route.page === "repositories" && <RepositoriesView onRepository={(id) => navigate({ page: "repository", id })} />}
@@ -109,7 +109,7 @@ function Nav({ active, icon, label, onClick }: { active: boolean; icon: ReactNod
 }
 
 function pageTitle(route: Route): string {
-  if (route.page === "work-detail") return "Work detail";
+  if (route.page === "run-detail") return "Run detail";
   if (route.page === "worker") return "Worker detail";
   if (route.page === "repository") return "Repository detail";
   return route.page[0].toUpperCase() + route.page.slice(1);

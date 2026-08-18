@@ -39,7 +39,7 @@ func registerTestWorker(
 ) protocol.Worker {
 	t.Helper()
 	worker, err := store.RegisterWorker(context.Background(), id, protocol.WorkerRegistration{
-		Name: id, WorkerVersion: "test", WorkClaimProtocolVersion: protocol.WorkClaimProtocolVersion,
+		Name: id, WorkerVersion: "test", ClaimProtocolVersion: protocol.ClaimProtocolVersion,
 		Runtime:        protocol.RuntimeCodex,
 		RuntimeVersion: "codex-test", Capacity: capacity, Health: "healthy",
 		Repositories: repositories,

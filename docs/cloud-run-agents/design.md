@@ -10,7 +10,7 @@ subscription CLIs, reuse repository caches, and retain failed worktrees, but an
 operator must provide and maintain enough machines for peak demand.
 
 This design adds Cloud Run Jobs as a second execution backend. Factory will
-start one disposable container for one Work Target, run Pi, Codex, or Claude
+start one disposable container for one Run Session, run Pi, Codex, or Claude
 Code with API-backed model access, ingest ordered events, preserve a recovery
 artifact, and stop paying for compute when the Job exits. The existing control
 plane remains the source of truth. Cloud Run provides managed compute, not a
@@ -18,7 +18,7 @@ second scheduler or product model.
 
 The first hosted deployment runs `factory-server` on a dedicated Compute
 Engine VM. Its attached dispatcher service account supplies metadata-backed
-workload credentials to Google client libraries. Factory calls Cloud Run and the
+runload credentials to Google client libraries. Factory calls Cloud Run and the
 Attempt gateway directly and never shells out to `gcloud` or loads a downloaded
 service-account key. Coding agents do not run on this VM because any process on
 it could otherwise request the attached identity from the metadata server.
@@ -46,7 +46,7 @@ proved a narrower path against the Factory repository:
 - Write mode produced an exact patch without pushing a branch.
 - The final read-only execution completed in 55 seconds, including a 33-second
   start, with $0.00209 of model usage. At the current published default Cloud
-  Run Jobs rates, its one-minute minimum would cost about $0.00132 before the
+  Cloud Run Jobs rates, its one-minute minimum would cost about $0.00132 before the
   free tier.
 
 That experiment proves container execution, not the Factory lifecycle. It does
@@ -60,7 +60,7 @@ every cloud provider.
 
 ```mermaid
 flowchart LR
-    O["Operator through SSH tunnel"] --> R["Routine and Work"]
+    O["Operator through SSH tunnel"] --> R["Task and Runs"]
     R --> CP["Factory control plane"]
     IAM["Attached dispatcher identity"] --> CP
     CP --> PW["Persistent Worker backend"]
@@ -75,7 +75,7 @@ flowchart LR
     CR --> GH
 ```
 
-Factory owns Routines, Work, Target and Attempt identity, the frozen prompt and
+Factory owns Tasks, Runs, Sessions, and Attempt identity, the frozen prompt and
 commit, scheduling, capacity, retries, cancellation, events, results, cost
 history, and terminal outcomes. The persistent Worker owns its cache,
 worktrees, agent processes, and local cleanup. The Cloud Run adapter owns cloud
@@ -101,26 +101,26 @@ process from using the dispatcher VM's attached Google identity.
 
 ## 4. Proposed design
 
-### How it works
+### How it runs
 
-An operator runs a Routine against one repository and supplies the configured
+An operator runs a Task against one repository and supplies the configured
 `Cloud Run Europe` profile as a manual run override. Factory creates ordinary
-Work and Target records. A cloud repository input resolver turns the configured
-source ref into a full Git commit SHA before the Target queues. Factory freezes
+Run and Session records. A cloud repository input resolver turns the configured
+source ref into a full Git commit SHA before the Session queues. Factory freezes
 that commit, the complete prompt, runtime, provider and model selection,
-repository identity, and execution-profile version on the cloud Target. Every
-cloud Attempt and explicit retry for that Target reuses those inputs.
+repository identity, and execution-profile version on the cloud Session. Every
+cloud Attempt and explicit retry for that Session reuses those inputs.
 
 The embedded Cloud Run dispatcher creates an Attempt and a backend dispatch
 record in one transaction. The record contains a random non-secret run ID and
 starts in `dispatching`. Factory writes the immutable input and gateway
 registration, then asks the gateway to create the initial short-lived authority
 document using the gateway clock and an object-generation precondition. That
-response also fixes `work_started_at` to gateway server time and
-`work_deadline_at` to `work_started_at + timeout_seconds`; both are persisted in
+response also fixes `run_started_at` to gateway server time and
+`run_deadline_at` to `run_started_at + timeout_seconds`; both are persisted in
 the dispatch before the Run call and bound into the authority object. Factory
 records local monotonic time immediately before that gateway request and
-anchors the returned remaining Work duration to the earlier instant. That
+anchors the returned remaining Session duration to the earlier instant. That
 conservative monotonic deadline drives the live dispatcher even if later
 gateway responses are delayed or unavailable. Factory
 calls one immutable, versioned Cloud Run Job resource with the Attempt ID, run
@@ -144,7 +144,7 @@ execution. It does not prevent trusted repository code from tampering with its
 own Attempt, which is part of the initial trusted-repository boundary.
 
 The Job wrapper starts a monotonic pre-fence timer when its process starts and
-sets it to the smaller of five minutes and the trusted remaining Work duration.
+sets it to the smaller of five minutes and the trusted remaining Session duration.
 It exits without an agent if that timer expires. It records local monotonic time
 immediately before requesting the Attempt and run-ID start fence.
 If a lost API response causes Factory to launch a duplicate, only one execution
@@ -152,9 +152,9 @@ can win that fence; every duplicate exits without running an agent. The gateway
 serializes the fence and revocation through a conditional authority-object
 update, then publishes `started.json` as immutable evidence. The successful
 response includes gateway server time and the persisted
-`work_deadline_at`. The wrapper anchors `work_deadline_at - server_time` to the
+`run_deadline_at`. The wrapper anchors `run_deadline_at - server_time` to the
 earlier pre-request monotonic instant, so Cloud Run startup and response delay
-consume rather than extend the frozen Work timeout. The winning wrapper verifies
+consume rather than extend the frozen Session timeout. The winning wrapper verifies
 the input, checks out only the frozen commit, and starts the selected runtime in
 the checkout. Checkout and agent execution share that deadline. After it
 expires, the wrapper kills the process group and exits nonzero. It cannot
@@ -165,7 +165,7 @@ bounded evidence uploaded before authority expired.
 The dispatcher requests an authority refresh every ten seconds while it owns
 the Attempt. The gateway performs the conditional write and computes
 `valid_until` as the earlier of 30 seconds from its own server clock and the
-frozen Work deadline. The wrapper checks authority before agent launch and at
+frozen Session deadline. The wrapper checks authority before agent launch and at
 most every five seconds while the process runs. An expired, cancelled,
 mismatched, or timed-out Attempt starts shutdown of the runtime process group.
 This preserves
@@ -218,18 +218,18 @@ The setup screen reports image digest, region, available capacity, supported
 runtimes and models, secret readiness, artifact retention, and the latest
 validation. It never labels the backend as infrastructure-free or unlimited.
 A disabled or unhealthy profile remains visible with an actionable reason and
-cannot receive new Work.
+cannot receive new Runs.
 
-Routine authoring keeps its current runtime field and gains an optional default
+Task authoring keeps its current runtime field and gains an optional default
 execution profile. A missing profile means the built-in `persistent-auto`
-profile, so every existing Routine keeps its current behavior without a data
+profile, so every existing Task keeps its current behavior without a data
 migration. A manual Run request may override the default with any compatible
-profile without creating a new Routine generation. Scheduled Work uses the
-Routine default. Work freezes the effective profile version, runtime, provider,
+profile without creating a new Task generation. A scheduled Run uses the
+Task default. A Run freezes the effective profile version, runtime, provider,
 and model at admission. A retry cannot change backend, and Factory does not
 automatically fail over between backends in the first release.
 
-Work and Attempt detail show the selected backend, but lists and metrics
+Run and Attempt detail show the selected backend, but lists and metrics
 continue to use one product lifecycle across both backends.
 
 ### Google Cloud deployment and authentication
@@ -252,7 +252,7 @@ directly from the Compute Engine metadata server. It does not use the generic
 which could prefer a credential file over the attached identity.
 
 Local development uses a separate `impersonated_adc` mode. Its ADC file must be
-an impersonated-service-account configuration targeting the expected
+an impersonated-service-account configuration sessioning the expected
 dispatcher subject. Factory rejects `service_account` key files and plain
 `authorized_user` ADC for dispatch. A human developer receives Token Creator
 on only the dispatcher service account. Validation-only setup may use the
@@ -319,7 +319,7 @@ The work ships in six independently reviewable slices:
 
 1. **Backend contract.** Add immutable execution-profile versions, a manual Run
    override, cloud repository input resolution, and a fake cloud backend behind
-   the current Work and Attempt state machine. Existing Persistent Worker
+   the current Run and Attempt state machine. Existing Persistent Worker
    configuration and commit-resolution behavior remain compatible.
 2. **Artifact protocol.** Define canonical input, authority, start fence,
    ordered event batches, recovery artifacts, checksums, size limits, retention,
@@ -344,17 +344,17 @@ the real-project acceptance suite passes.
 ### Components and responsibilities
 
 The execution router owns backend selection from the effective profile frozen
-in the immutable Work snapshot and compatible capacity. The Routine default or
+in the immutable Run snapshot and compatible capacity. The Task default or
 manual Run override chooses that profile before admission. The router depends
 on configured backend profiles. It does not interpret runtime output or call
-cloud APIs, and it does not move an admitted Target to another backend.
+cloud APIs, and it does not move an admitted Session to another backend.
 
 The cloud repository input resolver owns mutable-ref resolution for Cloud Run.
 It records the requested source ref, resolved full commit, resolver identity,
-and resolution time on each cloud Work Target before that Target can queue. A
+and resolution time on each cloud Run Session before that Session can queue. A
 cloud retry never resolves the ref again. Persistent Workers keep the current
 `resolve_per_attempt` behavior in the first release, including resolving the
-base again on explicit retry. Work records the resolution policy so the
+base again on explicit retry. The Run records the resolution policy so the
 difference is visible rather than implied to be uniform.
 
 One enabled Cloud Run profile projects into one stable synthetic Worker pool in
@@ -407,16 +407,16 @@ nonterminal cloud dispatches.
 
 #### Two backends, one product contract
 
-Persistent Workers and Cloud Run Jobs produce the same Work, Target, Attempt,
+Persistent Workers and Cloud Run Jobs produce the same Run, Session, Attempt,
 event, result, cancellation, and retry experience. We reject a separate
-"cloud task" product because execution location must not split Routine history
+"cloud task" product because execution location must not split Task history
 or metrics.
 
-#### Backend choice freezes on Work
+#### Backend choice freezes on the Run
 
-An existing Routine defaults to `persistent-auto`. A Routine may save another
-default, and a manual Run may override it without editing the Routine. The
-effective profile version freezes on Work admission and every Target and retry
+An existing Task defaults to `persistent-auto`. A Task may save another
+default, and a manual Run may override it without editing the Task. The
+effective profile version freezes on Run admission and every Session and retry
 uses it. We reject automatic cross-backend failover because the credential,
 commit-resolution, and recovery contracts differ and a retry may repeat
 external effects.
@@ -439,7 +439,7 @@ without changing Attempt identity.
 
 Cloud Run task retries are zero. Every operator retry creates a new Factory
 Attempt, run ID, run capability, and cloud execution while reusing the original
-frozen Work input. We reject native task retries because an agent may already
+frozen Run input. We reject native task retries because an agent may already
 have made external side effects and Factory must preserve one visible retry
 history.
 
@@ -470,12 +470,12 @@ and stronger controls.
 Cloud Run Run overrides cannot change an image or service identity. Every
 execution-profile edit that affects the image digest, service account, mounted
 secret version, resources, timeout, or wrapper configuration creates a new
-immutable profile version and a distinct versioned Job resource. Work freezes
+immutable profile version and a distinct versioned Job resource. A Run freezes
 that version before dispatch. Referenced versions cannot be deleted. An
 explicit retry uses the same version; if it is unavailable, Factory blocks the
 retry instead of silently running different code.
 
-#### Direct APIs with attached workload identity
+#### Direct APIs with attached runload identity
 
 Factory uses Google client libraries and direct v2 APIs. Hosted mode obtains
 credentials only from Compute Engine metadata, while development dispatch uses
@@ -483,7 +483,7 @@ explicit service-account impersonation through ADC. We reject invoking `gcloud`
 from the dispatcher because CLI configuration, output, and subprocess state are
 not a durable runtime contract. We also reject downloaded service-account keys
 because they are long-lived bearer credentials that add rotation and leakage
-risk. The cost is that setup must attach and validate a dedicated workload
+risk. The cost is that setup must attach and validate a dedicated runload
 identity before a cloud profile can be enabled.
 
 #### Dedicated control-plane VM
@@ -500,9 +500,9 @@ design.
 
 ### Invariants
 
-- `INV-1`: Factory is the sole authority for Work, Attempt, retry,
+- `INV-1`: Factory is the sole authority for Run, Attempt, retry,
   cancellation, and terminal state.
-- `INV-2`: Every cloud Work Target freezes one full commit SHA, prompt, runtime,
+- `INV-2`: Every cloud Run Session freezes one full commit SHA, prompt, runtime,
   provider, model, and execution-profile version before its first dispatch;
   every cloud retry reuses them.
 - `INV-3`: At most one agent process can pass the start fence for one Attempt
@@ -522,13 +522,13 @@ design.
   supervision or cancel every nonterminal cloud execution.
 - `INV-10`: The Job receives no operator API credential or broad cloud
   administration role.
-- `INV-11`: Cloud and persistent backends use the same user-facing Routine,
-  Work, Target, result, retry, and cancellation concepts.
+- `INV-11`: Cloud and persistent backends use the same user-facing Task,
+  Run, Session, result, retry, and cancellation concepts.
 - `INV-12`: Cloud execution never weakens the loopback-only operator API.
 - `INV-13`: A Job identity and run capability can access only its own Attempt
   protocol and cannot read or mutate a sibling Attempt.
-- `INV-14`: The gateway refuses to start an agent at or after the frozen Work
-  deadline. Factory times out and cancels an accepted execution that has not
+- `INV-14`: The gateway refuses to start an agent at or after the frozen
+  Session deadline. Factory times out and cancels an accepted execution that has not
   started by then. A running wrapper starts process-group shutdown at the same
   deadline and sends SIGKILL no later than ten seconds afterward, independent
   of the longer profile or Cloud Run Job timeout.
@@ -552,15 +552,15 @@ design.
   account, dedicated model-secret resource, artifact gateway, capacity limit,
   trust tier, and
   supported runtime and provider capabilities.
-- A Routine stores an optional default backend profile. A manual Run may supply
-  a compatible override. The admitted Work snapshot records the effective
+- A Task stores an optional default backend profile. A manual Run may supply
+  a compatible override. The admitted Run snapshot records the effective
   profile version, runtime, provider, model, timeout, resource class, and commit
-  resolution policy. Editing a Routine or profile does not change existing
-  Work.
+  resolution policy. Editing a Task or profile does not change existing
+  Runs.
 - Dispatch stores the Attempt ID, non-secret run ID, run-capability digest,
   envelope-encrypted run-capability ciphertext, state, immutable profile
   version, every observed Cloud operation and execution name, timestamps,
-  gateway-derived `work_started_at` and `work_deadline_at`, the last acknowledged
+  gateway-derived `run_started_at` and `run_deadline_at`, the last acknowledged
   authority generation, an early fail-closed client deadline, a conservative
   authority-expiry upper bound, any single outstanding refresh request ID,
   error, and reconciliation deadline.
@@ -570,7 +570,7 @@ design.
   name, template digest, image digest, service account, model-secret resource
   and version, task count of one, and native retry count of zero against the
   frozen profile version. It also requires current authority and a conservative
-  monotonic Work deadline that has not expired. Drift or expiry blocks dispatch.
+  monotonic Session deadline that has not expired. Drift or expiry blocks dispatch.
   The wrapper repeats the verifiable checks and binds the effective values into
   its final manifest.
 - Dispatch and reconciliation respect the profile capacity and Google Cloud
@@ -583,7 +583,7 @@ design.
 - The wrapper checks authority at most five seconds apart. Authority remains
   valid for no more than 30 seconds without a dispatcher refresh.
 - The immutable input includes `timeout_seconds`. The gateway start-fence
-  response supplies trusted server time and the persisted `work_deadline_at`
+  response supplies trusted server time and the persisted `run_deadline_at`
   established before the Run call. The wrapper anchors the remaining duration
   to the monotonic instant recorded before the request, producing a conservative
   deadline shared by Cloud Run startup, checkout, and agent execution. At the
@@ -591,9 +591,9 @@ design.
   the ten-second process-group kill rule, stops all Job-originated gateway
   writes, and exits nonzero. Gateway control-plane authority revocation remains
   permitted. A wrapper has no more than five minutes from process start to
-  acquire its fence and never beyond `work_deadline_at`. The versioned Cloud Run
-  Job timeout is at least the maximum Work timeout plus ten seconds and is a
-  platform safety limit, not the Work timeout.
+  acquire its fence and never beyond `run_deadline_at`. The versioned Cloud Run
+  Job timeout is at least the maximum Session timeout plus ten seconds and is a
+  platform safety limit, not the Session timeout.
 - Event and completion sizes reuse the existing Attempt limits. Artifact size
   defaults to 64 MiB and has a 512 MiB maximum. Completion is rejected when the
   configured bound is exceeded.
@@ -660,7 +660,7 @@ registration stores the expected Job service-account principal, SHA-256 digest
 of the run capability, non-secret run ID, exact Attempt prefix, input digest,
 frozen `timeout_seconds`, protocol version, and absolute registration expiry.
 The gateway uses that registered duration and its own server time to establish
-`work_started_at` and `work_deadline_at`; neither the Job nor a later refresh can
+`run_started_at` and `run_deadline_at`; neither the Job nor a later refresh can
 change them. The Job sends the raw capability only to the gateway. The gateway
 hashes it, uses its own bucket identity to load the registration and authority,
 and never exposes list or arbitrary object operations. Authority revocation
@@ -676,7 +676,7 @@ shutdown. The gateway discards its request copy after each operation.
 A backend profile receives one random stable ID when it is created. Its
 synthetic Worker ID is `cloud-run-<profile-id>` and never changes when the
 display name, image, region settings, or capabilities change. Deleting and
-recreating a profile creates a new identity. Existing Work continues to point
+recreating a profile creates a new identity. An existing Run continues to point
 at the frozen old profile and synthetic Worker record.
 
 Google service accounts are stored by full resource name, email, and immutable
@@ -700,8 +700,8 @@ run_id
 run_capability_digest
 run_capability_ciphertext
 state
-work_started_at
-work_deadline_at
+run_started_at
+run_deadline_at
 provider_search_not_before
 provider_search_unbounded
 cloud_operation_name
@@ -734,7 +734,7 @@ inspect executions is restricted to the dispatcher and operators who may
 inspect model credentials. Factory never stores raw plaintext: SQLite stores
 only `run_capability_ciphertext`, and the artifact store keeps only
 `run_capability_digest`. A restart decrypts the ciphertext to retry or reconcile
-the same dispatch. A missing or invalid encryption key blocks new cloud Work,
+the same dispatch. A missing or invalid encryption key blocks new cloud Run,
 revokes authority, and fails active dispatches closed rather than minting a new
 capability. Cloud operation and execution names are observations returned by
 Google and never replace Factory identity. Missing names keep the record in
@@ -772,16 +772,16 @@ user-facing lifecycle.
 ### Normative state machine
 
 Factory is the only state-machine writer. GCS objects and Cloud Run status are
-evidence that permit one Factory transition; they never transition Work by
+evidence that permit one Factory transition; they never transition a Run by
 themselves.
 
 | Factory dispatch state | Required evidence | Allowed next states |
 | --- | --- | --- |
-| `dispatching` | Committed Attempt, run ID, immutable input; after authority creation, an unexpired monotonic Work deadline | `starting`, `timeout_requested`, `cancel_requested`, `terminal` |
-| `starting` | Accepted Run operation or matching start fence, before `work_deadline_at` | `running`, `reconciling`, `timeout_requested`, `cancel_requested`, `terminal` |
+| `dispatching` | Committed Attempt, run ID, immutable input; after authority creation, an unexpired monotonic Session deadline | `starting`, `timeout_requested`, `cancel_requested`, `terminal` |
+| `starting` | Accepted Run operation or matching start fence, before `run_deadline_at` | `running`, `reconciling`, `timeout_requested`, `cancel_requested`, `terminal` |
 | `running` | Matching start fence and valid authority generation | `reconciling`, `timeout_requested`, `cancel_requested`, `terminal` |
-| `reconciling` | Incomplete or conflicting cloud observation; an unexpired Work deadline before returning to `starting` or `running` | `starting`, `running`, `timeout_requested`, `cancel_requested`, `terminal` |
-| `timeout_requested` | Expired conservative monotonic Work deadline; refresh and Run calls disabled | `terminal` after confirmed revocation, elapsed conservative authority-uncertainty deadline, or provider-terminal proof for the matching execution set |
+| `reconciling` | Incomplete or conflicting cloud observation; an unexpired Session deadline before returning to `starting` or `running` | `starting`, `running`, `timeout_requested`, `cancel_requested`, `terminal` |
+| `timeout_requested` | Expired conservative monotonic Session deadline; refresh and Run calls disabled | `terminal` after confirmed revocation, elapsed conservative authority-uncertainty deadline, or provider-terminal proof for the matching execution set |
 | `cancel_requested` | Durable cancellation time; refresh and Run calls disabled | `terminal` after confirmed revocation, elapsed conservative authority-uncertainty deadline, or provider-terminal proof for the matching execution set |
 | `terminal` | One stored Factory outcome | none |
 
@@ -826,8 +826,8 @@ Artifact ingestion and verification do not decide the terminal race. Three
 SQLite transactions compete. Successful completion loads the verified manifest
 evidence and first obtains a fresh gateway authority-state response. Factory
 records local monotonic time immediately before that request and derives the
-conservative remaining Work duration from the returned gateway time and
-`work_deadline_at`. The single serialized SQLite statement that conditionally
+conservative remaining Session duration from the returned gateway time and
+`run_deadline_at`. The single serialized SQLite statement that conditionally
 writes terminal success invokes a registered suspend-aware monotonic clock
 function and requires `now < deadline` together with the checks that neither
 cancellation nor timeout intent is committed. The clock uses an operating-system
@@ -837,11 +837,11 @@ serialized transaction first preserves any existing terminal, cancellation, or
 timeout owner. Only when no owner exists and the time predicate fails does it
 record timeout intent instead of success. A stale, missing, or failed gateway
 read does not by itself own the outcome. While the last trusted suspend-aware
-Work deadline remains unexpired, Factory leaves completion in `reconciling` and
+Session deadline remains unexpired, Factory leaves completion in `reconciling` and
 retries the authority read without accepting success. Once that deadline has
 expired, the same conditional timeout branch applies. An expired response also
 uses that branch. None can replace an existing owner. Prior manifest publication
-cannot extend the Work. Explicit
+cannot extend the Session. Explicit
 cancellation checks that neither a terminal outcome nor timeout intent is
 committed and atomically records `cancellation_requested_at`. Timeout checks
 that neither a terminal outcome nor cancellation is committed and atomically
@@ -859,7 +859,7 @@ wins.
 The dispatcher is the sole authority decision-maker, and the gateway is the
 sole physical authority-object writer. `authority.json` contains the Attempt
 ID, run ID, run-capability digest, monotonically increasing revision, input
-digest, `work_deadline_at`, `valid_until`, winning execution identity when
+digest, `run_deadline_at`, `valid_until`, winning execution identity when
 fenced, a complete `last_refresh_receipt`, revocation reason, and previous object
 generation. The receipt contains the request ID, expected storage generation,
 gateway processing time, resulting `valid_until`, and deterministic resulting
@@ -877,7 +877,7 @@ expected generation, but no caller-supplied time. Factory allows only one
 outstanding refresh per dispatch and commits its request ID before sending. The
 gateway accepts it only while its own clock is before the current object's
 `valid_until`. It computes the new `valid_until` as the earlier of 30 seconds
-after its own server time and `work_deadline_at`, then writes the authority and
+after its own server time and `run_deadline_at`, then writes the authority and
 receipt with one GCS `ifGenerationMatch`. Replaying the request ID in the current
 receipt returns that exact receipt and never performs another compare-and-set or
 extends authority again, including after a later revocation. An older resolved
@@ -890,7 +890,7 @@ timeout or cancellation intent owns the outcome. Factory cannot issue the next
 request until it has received and persisted that result. Thus one lost or
 delayed refresh can extend authority at most one 30-second window beyond the
 last acknowledged deadline; it cannot form an unbounded chain. At or after
-`work_deadline_at`, the
+`run_deadline_at`, the
 gateway refuses refresh and start-fence requests and conditionally revokes any
 remaining authority. A precondition failure moves the dispatch to
 `reconciling` and stops refresh because another writer or stale state exists. A
@@ -924,10 +924,10 @@ control-plane authority-revocation compare-and-set requested by Factory.
 Factory asks the gateway to refresh authority only while the same Attempt lease
 and dispatch record remain active. Every gateway response includes server time.
 Factory records local monotonic time immediately before every request and
-anchors `work_deadline_at - server_time` to that earlier instant. During
+anchors `run_deadline_at - server_time` to that earlier instant. During
 dispatch and reconciliation, the shortest such monotonic deadline determines
 whether an accepted execution may continue; neither Factory wall time nor a
-delayed response can extend the Work. Once that deadline arrives, Factory stops
+delayed response can extend the Session. Once that deadline arrives, Factory stops
 refresh and Run calls, atomically records `timeout_requested`, and asks the
 gateway to revoke authority even when no start fence exists. Fence and
 revocation requests compete through the same authority generation. On a
@@ -992,7 +992,7 @@ with a two-minute deadline.
 ## 7. Failure behavior and lifecycle
 
 At startup, each enabled cloud profile must complete authentication validation
-before the dispatcher admits cloud Work. A disallowed credential source, a
+before the dispatcher admits cloud Run. A disallowed credential source, a
 principal mismatch, an invalid gateway audience, or a missing required or
 present forbidden permission marks the profile unhealthy with a specific
 reason. Factory does not try another local credential, invoke `gcloud`, read a
@@ -1004,7 +1004,7 @@ reconciling. The wrapper stops when its last verified authority expires.
 Factory retries profile validation no more than once every 30 seconds with
 jitter. Restored credentials permit cleanup and reconciliation first. An agent
 whose authority expired is failed and cancelled rather than resumed. New cloud
-Work starts only after the complete profile validation passes again.
+A Run starts only after the complete profile validation passes again.
 
 Replacing the VM's attached service account, deleting and recreating a service
 account under the same email, or changing the gateway audience creates an
@@ -1024,14 +1024,14 @@ with an actionable storage or permission error.
 If the Run API accepts a request but its response is lost, Factory keeps the
 same run ID and capability and enumerates matching executions as specified in
 section 6. It persists and supervises the complete matching set. A repeated API
-call is allowed only before the same monotonic Work deadline and may create
+call is allowed only before the same monotonic Session deadline and may create
 another container, but only the execution that creates `started.json` can
 launch the agent. Other executions exit successfully without agent side
 effects, are recorded as duplicates, and are cancelled if they remain active.
 
 If container startup exceeds 30 seconds, the dispatcher continues renewing the
 Factory lease and cloud authority only while gateway time remains before the
-persisted `work_deadline_at` and Factory's conservative monotonic deadline has
+persisted `run_deadline_at` and Factory's conservative monotonic deadline has
 not expired. The gateway caps every authority lease at that deadline. When the
 monotonic deadline arrives, Factory records timeout intent and conditionally
 revokes gateway authority. After revocation is confirmed, it records the
@@ -1040,7 +1040,7 @@ not started. A container that starts after that terminal decision cannot
 acquire the start fence or valid authority and exits without checkout or an
 agent process.
 
-If the frozen Work timeout expires during checkout or agent execution, the
+If the frozen Session timeout expires during checkout or agent execution, the
 wrapper sends SIGTERM immediately, sends SIGKILL after ten seconds, and exits
 nonzero without attempting a final event. Factory's durable record supplies the
 same timed-out failure semantics as the persistent backend. The profile-wide
@@ -1061,7 +1061,7 @@ agent. Factory cancels the cloud execution when access returns and fails the
 Attempt rather than reviving it.
 
 If Factory restarts, it loads every nonterminal dispatch before admitting more
-cloud work. It verifies profile identity, authority generation, start fence,
+cloud run. It verifies profile identity, authority generation, start fence,
 Cloud Run execution state, and artifacts. It resumes supervision only when the
 same Attempt still owns valid authority. Otherwise it revokes authority,
 cancels the execution, and records the outcome owned by the durable decision:
@@ -1082,7 +1082,7 @@ it.
 
 Server shutdown stops new dispatch, revokes authority for active Jobs, requests
 Cloud Run cancellation, and waits for up to 30 seconds. On restart, Factory
-reconciles every nonterminal cloud dispatch before admitting new cloud work.
+reconciles every nonterminal cloud dispatch before admitting new cloud run.
 The two-minute reconciliation deadline never replaces a durable terminal owner
 or bypasses authority-expiry proof. A dispatch with timeout or cancellation
 intent remains nonterminal until the gateway confirms revocation or absolute
@@ -1097,7 +1097,7 @@ authority keeps the agent stopped throughout.
 ## 8. Security, privacy, and operations
 
 The initial trust boundary is one trusted Factory operator, trusted repository
-configuration, trusted Routine instructions, and untrusted external context
+configuration, trusted Task instructions, and untrusted external context
 embedded inside that prompt. The Job may execute repository code. That code can
 read credentials available to the agent process, request tokens for permissions
 granted to the Job service account, and use permitted network egress.
@@ -1168,9 +1168,9 @@ Cloud Logging retention are diagnostic and are never the only retained record.
 
 ## 9. Acceptance criteria
 
-- `AC-1`: One unchanged Routine can run through its persistent default or a
-  compatible Cloud Run manual override and produces the same user-facing Work
-  lifecycle. Existing Routines need no migration and remain persistent by
+- `AC-1`: One unchanged Task can run through its persistent default or a
+  compatible Cloud Run manual override and produces the same user-facing Run
+  lifecycle. Existing Tasks need no migration and remain persistent by
   default.
 - `AC-2`: A cloud Attempt runs the frozen full commit and rejects a mutable or
   mismatched Git reference.
@@ -1183,7 +1183,7 @@ Cloud Logging retention are diagnostic and are never the only retained record.
   process by 40 seconds. One unacknowledged refresh increases those conservative
   bounds to 60 and 70 seconds; it cannot chain another extension.
 - `AC-5`: Factory restart reconciles every nonterminal execution before it
-  admits new cloud work.
+  admits new cloud run.
 - `AC-6`: Native Cloud Run retries are zero and only an explicit Factory retry
   creates another Attempt.
 - `AC-7`: Events remain ordered, bounded, and duplicate-safe across delayed or
@@ -1205,7 +1205,7 @@ Cloud Logging retention are diagnostic and are never the only retained record.
 - `AC-13`: Two concurrent Attempts using one profile cannot read, overwrite,
   fence, publish, or cancel each other's protocol data.
 - `AC-14`: Cloud Run startup, checkout, and agent execution share one frozen
-  Work timeout established before the Run call. At its deadline Factory times
+  Session timeout established before the Run call. At its deadline Factory times
   out and cancels an accepted but unstarted execution, the gateway rejects a
   late start fence, and a running wrapper starts agent shutdown immediately,
   kills the process group within ten seconds, and publishes no success.
@@ -1220,7 +1220,7 @@ Cloud Logging retention are diagnostic and are never the only retained record.
   token or gateway-authorization failure during an Attempt stops authority
   refresh within ten seconds of the first observable authentication failure,
   lets authority expire, stops the agent, and reconciles cleanup before
-  admitting new Work. An attached-identity change made while the VM is stopped
+  admitting new Runs. An attached-identity change made while the VM is stopped
   fails startup validation after restart.
 - `AC-17`: Effective IAM analysis, including inherited bindings, custom-role
   contents, and service-account policies, gives the dispatcher, gateway, and
@@ -1229,12 +1229,12 @@ Cloud Logging retention are diagnostic and are never the only retained record.
   token for the wrong audience, surface, or service-account subject.
 - `AC-18`: The supported Google Cloud deployment runs no `factory-worker`,
   coding-agent process, or repository hook on the dispatcher VM. Persistent
-  Workers on separate hosts can complete Work without access to the dispatcher
+  Workers on separate hosts can complete Runs without access to the dispatcher
   service account.
 
 ## 10. Test approach
 
-State-machine tests will admit the same Routine once through its persistent
+State-machine tests will admit the same Task once through its persistent
 default and once through a Cloud Run manual override. They will prove
 `INV-1`, `INV-5`, `INV-11`, `AC-1`, `AC-6`, and `AC-11`. Cloud-specific input
 tests will prove `INV-2` and `AC-2`, including exact-commit reuse on retry.
@@ -1244,14 +1244,14 @@ startup, API outages, stale generations, restart with the encrypted capability,
 missing or invalid encryption keys, Factory clocks ahead of and behind the
 gateway, delayed gateway responses, and quota failures to prove `INV-3`,
 `INV-4`, `INV-9`, `AC-3`, `AC-4`, and `AC-5`. A container-start delay beyond
-`work_deadline_at` must produce a timed-out Attempt, a Cloud Run cancellation
+`run_deadline_at` must produce a timed-out Attempt, a Cloud Run cancellation
 request, no successful start fence, and no authority refresh beyond the
 deadline. A delayed gateway response that shortens Factory's monotonic deadline
 must persist timeout intent, race a late container start through one authority
 generation, confirm revocation before terminal timeout, and prevent any fence
 after that terminal commit. Delay tests anchor timers to the pre-request
-monotonic instant and prove startup and response transit cannot extend Work or
-authority deadlines. Lost-launch tests skew the Factory clock in both
+monotonic instant and prove startup and response transit cannot extend Session
+or authority deadlines. Lost-launch tests skew the Factory clock in both
 directions, place the accepted execution inside the provider-clock margin, and
 remove the provider timestamp entirely. They must still discover the exact
 Attempt and run ID before another Run call; the no-timestamp case must fall back
@@ -1271,7 +1271,7 @@ that later signals can perform cleanup without replacing it. Success tests will
 verify that a manifest published before the deadline is still rejected when
 gateway response delay, scheduler delay, SQLite contention, host suspension, or
 restart makes the conservative monotonic deadline expire before the conditional
-terminal write. Before the trusted Work deadline, a transient missing or stale
+terminal write. Before the trusted Session deadline, a transient missing or stale
 gateway response must remain `reconciling` and retry rather than record timeout.
 After expiry it must reject success and take the conditional timeout branch.
 Authority tests will make the gateway permanently unreachable after timeout and
@@ -1295,7 +1295,7 @@ deadline. When revocation succeeds, its generation and request-ID fence must
 reject a delayed first delivery. A replay of a refresh consumed before
 revocation must return the original response without changing the current
 generation, revocation marker, or deadline, and Factory must ignore it for
-state transitions. The same replay must work after gateway restart and from a
+state transitions. The same replay must run after gateway restart and from a
 different gateway instance by reading the receipt retained in `authority.json`;
 an older resolved request ID must be rejected without mutation. A crash after
 the authority CAS succeeds but before response delivery, followed by fencing or
@@ -1315,10 +1315,10 @@ artifacts or telemetry, that Cloud Run execution inspection is restricted to
 the intended identities, and that repository code cannot use the Job identity
 to run or cancel Cloud Run resources or access a sibling Attempt through the
 gateway or storage API. The real-project prototype must measure how long Cloud
-Run retains completed execution overrides and feed that value into the profile
+Cloud Run retains completed execution overrides and feed that value into the profile
 retention and operator warning.
 
-Wrapper tests will expire the frozen Work timeout during checkout and agent
+Wrapper tests will expire the frozen Session timeout during checkout and agent
 execution, expire the five-minute pre-fence window, delay start-fence responses,
 make the process ignore SIGTERM, and delay artifact upload to prove `INV-14`
 and `AC-14` independently from the profile-wide Job timeout. After expiry they
@@ -1337,7 +1337,7 @@ mode tests set a valid expected-subject service-account key in
 `GOOGLE_APPLICATION_CREDENTIALS`, install valid user and service-account ADC at
 the well-known path, and confirm that each source is rejected before token
 resolution. Development tests accept only an impersonated-service-account ADC
-file targeting the expected subject. These cases prove `INV-15`, `AC-15`, and
+file sessioning the expected subject. These cases prove `INV-15`, `AC-15`, and
 the direct API path.
 
 Fault tests return token-refresh errors, deny each required permission, grant
@@ -1388,7 +1388,7 @@ source, to prove `INV-18` and `AC-18`.
   that VM dedicated to the control plane, restrict SSH access, and run every
   coding agent on a separate Worker or Cloud Run Job.
 - Google Cloud concepts could leak into the product. Keep them in backend
-  profile setup and Attempt diagnostics, not Routine authoring vocabulary.
+  profile setup and Attempt diagnostics, not Task authoring vocabulary.
 
 ## 12. Open questions
 
@@ -1412,7 +1412,7 @@ source, to prove `INV-18` and `AC-18`.
 - Removing or deprecating local and VM Workers.
 - Running arbitrary untrusted repositories safely.
 - Automatic provider selection based only on price.
-- Native Cloud Run task fan-out for one Work Target.
+- Native Cloud Run task fan-out for one Run Session.
 - GPU agents, interactive terminals, or long-lived cloud development
-  workspaces.
+  runspaces.
 - A general multi-cloud job abstraction before a second provider exists.

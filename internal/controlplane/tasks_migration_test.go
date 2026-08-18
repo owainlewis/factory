@@ -13,7 +13,7 @@ import (
 	"github.com/owainlewis/factory/migrations"
 )
 
-func TestRoutinesMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
+func TestTasksMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", t.TempDir()+"/legacy.sqlite3")
 	if err != nil {
@@ -21,9 +21,9 @@ func TestRoutinesMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 	}
 	store := &Store{db: db, now: time.Now, sweepEvery: 5 * time.Second}
 	t.Cleanup(func() { _ = db.Close() })
-	applyMigrationsBeforeRoutines(t, ctx, store)
+	applyMigrationsBeforeTasks(t, ctx, store)
 
-	_, err = db.ExecContext(ctx, legacyRoutinesFixture)
+	_, err = db.ExecContext(ctx, legacyTasksFixture)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,31 +37,31 @@ func TestRoutinesMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var routineCount, distinctNames int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(DISTINCT name_key) FROM routines WHERE migration_only = 0`).
-		Scan(&routineCount, &distinctNames); err != nil {
+	var taskCount, distinctNames int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(DISTINCT name_key) FROM tasks WHERE migration_only = 0`).
+		Scan(&taskCount, &distinctNames); err != nil {
 		t.Fatal(err)
 	}
-	if routineCount != 4 || distinctNames != 4 {
-		t.Fatalf("operator Routines = %d, distinct names = %d", routineCount, distinctNames)
+	if taskCount != 4 || distinctNames != 4 {
+		t.Fatalf("operator Tasks = %d, distinct names = %d", taskCount, distinctNames)
 	}
-	var routineToolColumns, targetToolColumns int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('routines') WHERE name = 'allowed_tools'`).
-		Scan(&routineToolColumns); err != nil {
+	var taskToolColumns, sessionToolColumns int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name = 'allowed_tools'`).
+		Scan(&taskToolColumns); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('work_targets') WHERE name = 'allowed_tools'`).
-		Scan(&targetToolColumns); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'allowed_tools'`).
+		Scan(&sessionToolColumns); err != nil {
 		t.Fatal(err)
 	}
-	if routineToolColumns != 0 || targetToolColumns != 0 {
-		t.Fatalf("tool configuration survived in product tables: routines %d, targets %d",
-			routineToolColumns, targetToolColumns)
+	if taskToolColumns != 0 || sessionToolColumns != 0 {
+		t.Fatalf("tool configuration survived in product tables: tasks %d, sessions %d",
+			taskToolColumns, sessionToolColumns)
 	}
 	var migratedTaskKey, originalTaskKey string
 	if err := db.QueryRowContext(ctx, `
-		SELECT request_key, json_extract(routine_snapshot, '$.legacy_task_request_key')
-		FROM work WHERE id = 'task-webhook'
+		SELECT request_key, json_extract(task_snapshot, '$.legacy_task_request_key')
+		FROM runs run WHERE id = 'task-webhook'
 	`).Scan(&migratedTaskKey, &originalTaskKey); err != nil {
 		t.Fatal(err)
 	}
@@ -70,8 +70,8 @@ func TestRoutinesMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 	}
 	var migratedRunKey, originalRunKey string
 	if err := db.QueryRowContext(ctx, `
-		SELECT request_key, json_extract(routine_snapshot, '$.legacy_run_request_key')
-		FROM work WHERE id = 'run-scheduled'
+		SELECT request_key, json_extract(task_snapshot, '$.legacy_run_request_key')
+		FROM runs run WHERE id = 'run-scheduled'
 	`).Scan(&migratedRunKey, &originalRunKey); err != nil {
 		t.Fatal(err)
 	}
@@ -80,11 +80,11 @@ func TestRoutinesMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 	}
 	var currentPrompt, historicalPrompt string
 	var currentArchived, currentReadOnly, historicalArchived, historicalReadOnly bool
-	if err := db.QueryRowContext(ctx, `SELECT prompt, archived, read_only FROM routines WHERE id = 'revision-2'`).
+	if err := db.QueryRowContext(ctx, `SELECT prompt, archived, read_only FROM tasks WHERE id = 'revision-2'`).
 		Scan(&currentPrompt, &currentArchived, &currentReadOnly); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(ctx, `SELECT prompt, archived, read_only FROM routines WHERE id = 'revision-1'`).
+	if err := db.QueryRowContext(ctx, `SELECT prompt, archived, read_only FROM tasks WHERE id = 'revision-1'`).
 		Scan(&historicalPrompt, &historicalArchived, &historicalReadOnly); err != nil {
 		t.Fatal(err)
 	}
@@ -96,21 +96,21 @@ func TestRoutinesMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 			currentPrompt, currentArchived, currentReadOnly,
 			historicalPrompt, historicalArchived, historicalReadOnly)
 	}
-	update := protocol.SaveRoutineRequest{
+	update := protocol.SaveTaskRequest{
 		Name: "Changed", Prompt: "Changed", Runtime: "codex", TimeoutSeconds: 7200,
 		ConcurrencyLimit: 10, ExpectedGeneration: 1,
 	}
-	if _, err := store.UpdateRoutine(ctx, "revision-1", update); !serviceErrorCode(err, "routine_read_only") {
+	if _, err := store.UpdateTask(ctx, "revision-1", update); !serviceErrorCode(err, "task_read_only") {
 		t.Fatalf("historical revision update error = %v", err)
 	}
-	if _, err := store.SetRoutineArchived(ctx, "revision-1", protocol.SetRoutineArchivedRequest{
+	if _, err := store.SetTaskArchived(ctx, "revision-1", protocol.SetTaskArchivedRequest{
 		Archived: boolPointer(false), ExpectedGeneration: 1,
-	}); !serviceErrorCode(err, "routine_read_only") {
+	}); !serviceErrorCode(err, "task_read_only") {
 		t.Fatalf("historical revision restore error = %v", err)
 	}
-	if _, _, err := store.RunRoutine(ctx, "revision-1", protocol.RunRoutineRequest{
+	if _, _, err := store.RunTask(ctx, "revision-1", protocol.RunTaskRequest{
 		RequestKey: "historical-revision-run",
-	}); !serviceErrorCode(err, "routine_read_only") {
+	}); !serviceErrorCode(err, "task_read_only") {
 		t.Fatalf("historical revision run error = %v", err)
 	}
 
@@ -120,7 +120,7 @@ func TestRoutinesMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 		SELECT
 			json_extract(provider_snapshot, '$.issue.configured_state'),
 			json_extract(provider_snapshot, '$.issue.required_labels[0]')
-		FROM work WHERE id = 'task-issue'
+		FROM runs run WHERE id = 'task-issue'
 	`).Scan(&issueState, &issueLabels); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestRoutinesMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 			json_extract(provider_snapshot, '$.pull_request.required_labels[0]'),
 			json_extract(provider_snapshot, '$.pull_request.base_branches[0]'),
 			json_extract(provider_snapshot, '$.pull_request.include_drafts')
-		FROM work WHERE id = 'task-pr'
+		FROM runs run WHERE id = 'task-pr'
 	`).Scan(&pullState, &pullLabels, &pullBranches, &includeDrafts); err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestRoutinesMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 			json_extract(provider_snapshot, '$.webhook.base_branch'),
 			json_extract(provider_snapshot, '$.webhook.definition_id'),
 			json_extract(provider_snapshot, '$.webhook.parameters.priority')
-		FROM work WHERE id = 'task-webhook'
+		FROM runs run WHERE id = 'task-webhook'
 	`).Scan(&webhookTitle, &webhookBranch, &webhookDefinition, &webhookParameter); err != nil {
 		t.Fatal(err)
 	}
@@ -155,19 +155,19 @@ func TestRoutinesMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 		t.Fatalf("webhook snapshot = %q, %q, %q, %q", webhookTitle, webhookBranch, webhookDefinition, webhookParameter)
 	}
 
-	var historyRoutine, workflowID, workflowRevision, workflowTitle string
+	var historyTask, workflowID, workflowRevision, workflowTitle string
 	if err := db.QueryRowContext(ctx, `
-		SELECT routine_id,
-			json_extract(routine_snapshot, '$.legacy_workflow_id'),
-			json_extract(routine_snapshot, '$.legacy_workflow_revision_id'),
-			json_extract(routine_snapshot, '$.legacy_workflow_title')
-		FROM work WHERE id = 'task-workflow'
-	`).Scan(&historyRoutine, &workflowID, &workflowRevision, &workflowTitle); err != nil {
+		SELECT task_id,
+			json_extract(task_snapshot, '$.legacy_workflow_id'),
+			json_extract(task_snapshot, '$.legacy_workflow_revision_id'),
+			json_extract(task_snapshot, '$.legacy_workflow_title')
+		FROM runs run WHERE id = 'task-workflow'
+	`).Scan(&historyTask, &workflowID, &workflowRevision, &workflowTitle); err != nil {
 		t.Fatal(err)
 	}
-	if historyRoutine != "00000000-0000-4000-8000-000000000103" || workflowID != "workflow-1" ||
+	if historyTask != "00000000-0000-4000-8000-000000000103" || workflowID != "workflow-1" ||
 		workflowRevision != "revision-1" || workflowTitle != "Shared" {
-		t.Fatalf("workflow history = %q, %q, %q, %q", historyRoutine, workflowID, workflowRevision, workflowTitle)
+		t.Fatalf("workflow history = %q, %q, %q, %q", historyTask, workflowID, workflowRevision, workflowTitle)
 	}
 
 	var pendingDue int64
@@ -177,7 +177,7 @@ func TestRoutinesMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `
 		SELECT pending_due_at, json_extract(pending_snapshot_json, '$.repository_ids[0]'),
 			schedule_retry_at, schedule_health_status
-		FROM routines WHERE id = 'automation-schedule'
+		FROM tasks WHERE id = 'automation-schedule'
 	`).Scan(&pendingDue, &pendingRepository, &retryAt, &scheduleHealth); err != nil {
 		t.Fatal(err)
 	}
@@ -188,12 +188,12 @@ func TestRoutinesMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 	var scheduleOccurrence, scheduleKind, scheduleCron, scheduleTimezone, legacyTool string
 	if err := db.QueryRowContext(ctx, `
 		SELECT scheduled_at,
-			json_extract(routine_snapshot, '$.legacy_schedule_occurrence_id'),
-			json_extract(routine_snapshot, '$.legacy_schedule_kind'),
-			json_extract(routine_snapshot, '$.cron'),
-			json_extract(routine_snapshot, '$.timezone'),
-			json_extract(routine_snapshot, '$.legacy_allowed_tools[0]')
-		FROM work WHERE id = 'run-scheduled'
+			json_extract(task_snapshot, '$.legacy_schedule_occurrence_id'),
+			json_extract(task_snapshot, '$.legacy_schedule_kind'),
+			json_extract(task_snapshot, '$.cron'),
+			json_extract(task_snapshot, '$.timezone'),
+			json_extract(task_snapshot, '$.legacy_allowed_tools[0]')
+		FROM runs run WHERE id = 'run-scheduled'
 	`).Scan(&scheduledAt, &scheduleOccurrence, &scheduleKind, &scheduleCron, &scheduleTimezone, &legacyTool); err != nil {
 		t.Fatal(err)
 	}
@@ -202,21 +202,21 @@ func TestRoutinesMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 		t.Fatalf("admitted schedule snapshot = %d, %q, %q, %q, %q, tool %q",
 			scheduledAt, scheduleOccurrence, scheduleKind, scheduleCron, scheduleTimezone, legacyTool)
 	}
-	throttled, err := store.Work(ctx, "run-throttled")
+	throttled, err := store.Run(ctx, "run-throttled")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if throttled.Work.NeedsAttention || len(throttled.Targets) != 1 ||
-		throttled.Targets[0].BlockedReason != routineConcurrencyBlockedReason {
+	if throttled.Run.NeedsAttention || len(throttled.Sessions) != 1 ||
+		throttled.Sessions[0].BlockedReason != taskConcurrencyBlockedReason {
 		t.Fatalf("migrated concurrency throttle = %#v", throttled)
 	}
 	overview, err := store.Overview(ctx)
-	if err != nil || overview.ActiveWork != 1 || overview.NeedsAttention != 0 {
+	if err != nil || overview.ActiveRuns != 1 || overview.NeedsAttention != 0 {
 		t.Fatalf("migrated throttle Overview = %#v, err %v", overview, err)
 	}
 
-	var targetID, eventPayload, retained string
-	if err := db.QueryRowContext(ctx, `SELECT work_target_id FROM executions WHERE id = 'execution-issue'`).Scan(&targetID); err != nil {
+	var sessionID, eventPayload, retained string
+	if err := db.QueryRowContext(ctx, `SELECT session_id FROM executions WHERE id = 'execution-issue'`).Scan(&sessionID); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRowContext(ctx, `SELECT CAST(payload AS TEXT) FROM attempt_events WHERE attempt_id = 'attempt-issue'`).Scan(&eventPayload); err != nil {
@@ -225,8 +225,8 @@ func TestRoutinesMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT retained_worktrees_json FROM workers WHERE id = 'worker-1'`).Scan(&retained); err != nil {
 		t.Fatal(err)
 	}
-	if targetID != "task-issue" || eventPayload != `{"message":"kept"}` || !strings.Contains(retained, "attempt-issue") {
-		t.Fatalf("lifecycle preservation = target %q, event %q, retained %q", targetID, eventPayload, retained)
+	if sessionID != "task-issue" || eventPayload != `{"message":"kept"}` || !strings.Contains(retained, "attempt-issue") {
+		t.Fatalf("lifecycle preservation = session %q, event %q, retained %q", sessionID, eventPayload, retained)
 	}
 
 	var violations int
@@ -243,7 +243,7 @@ func TestRoutinesMigrationPreservesPopulatedLegacyHistory(t *testing.T) {
 	}
 }
 
-func TestRoutinesMigrationDoesNotCountReadOnlyRevisionHistoryTowardRoutineLimit(t *testing.T) {
+func TestTasksMigrationDoesNotCountReadOnlyRevisionHistoryTowardTaskLimit(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", t.TempDir()+"/legacy.sqlite3")
 	if err != nil {
@@ -251,7 +251,7 @@ func TestRoutinesMigrationDoesNotCountReadOnlyRevisionHistoryTowardRoutineLimit(
 	}
 	store := &Store{db: db, now: time.Now, sweepEvery: 5 * time.Second}
 	t.Cleanup(func() { _ = db.Close() })
-	applyMigrationsBeforeRoutines(t, ctx, store)
+	applyMigrationsBeforeTasks(t, ctx, store)
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -292,7 +292,7 @@ func TestRoutinesMigrationDoesNotCountReadOnlyRevisionHistoryTowardRoutineLimit(
 	var total, editable, historical int
 	if err := db.QueryRowContext(ctx, `
 		SELECT COUNT(*), SUM(read_only = 0), SUM(read_only = 1)
-		FROM routines WHERE migration_only = 0
+		FROM tasks WHERE migration_only = 0
 	`).Scan(&total, &editable, &historical); err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestRoutinesMigrationDoesNotCountReadOnlyRevisionHistoryTowardRoutineLimit(
 	}
 }
 
-func TestRoutinesMigrationNormalizesUnicodeNameKeys(t *testing.T) {
+func TestTasksMigrationNormalizesUnicodeNameKeys(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", t.TempDir()+"/legacy.sqlite3")
 	if err != nil {
@@ -309,8 +309,8 @@ func TestRoutinesMigrationNormalizesUnicodeNameKeys(t *testing.T) {
 	}
 	store := &Store{db: db, now: time.Now, sweepEvery: 5 * time.Second}
 	t.Cleanup(func() { _ = db.Close() })
-	applyMigrationsBeforeRoutines(t, ctx, store)
-	if _, err := db.ExecContext(ctx, legacyRoutinesFixture); err != nil {
+	applyMigrationsBeforeTasks(t, ctx, store)
+	if _, err := db.ExecContext(ctx, legacyTasksFixture); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `
@@ -323,7 +323,7 @@ func TestRoutinesMigrationNormalizesUnicodeNameKeys(t *testing.T) {
 	if err := store.migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := db.QueryContext(ctx, `SELECT name, name_key FROM routines WHERE migration_only = 0`)
+	rows, err := db.QueryContext(ctx, `SELECT name, name_key FROM tasks WHERE migration_only = 0`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestRoutinesMigrationNormalizesUnicodeNameKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 		if want := normalizeTitleKey(name); key != want {
-			t.Fatalf("migrated Routine %q key = %q, want %q", name, key, want)
+			t.Fatalf("migrated Task %q key = %q, want %q", name, key, want)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -342,7 +342,7 @@ func TestRoutinesMigrationNormalizesUnicodeNameKeys(t *testing.T) {
 	}
 	var rewrittenHistoryKeys int
 	if err := db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM routines
+		SELECT COUNT(*) FROM tasks
 		WHERE migration_only = 1 AND name_key NOT GLOB '__migration_*_history__'
 	`).Scan(&rewrittenHistoryKeys); err != nil {
 		t.Fatal(err)
@@ -350,14 +350,14 @@ func TestRoutinesMigrationNormalizesUnicodeNameKeys(t *testing.T) {
 	if rewrittenHistoryKeys != 0 {
 		t.Fatalf("rewrote %d reserved migration history keys", rewrittenHistoryKeys)
 	}
-	if _, err := store.CreateRoutine(ctx, protocol.SaveRoutineRequest{
+	if _, err := store.CreateTask(ctx, protocol.SaveTaskRequest{
 		Name: "éCLAIR · definition 1", Prompt: "Review.", Runtime: protocol.RuntimeCodex,
-	}); !serviceErrorCode(err, "routine_name_conflict") {
-		t.Fatalf("migrated Unicode Routine name conflict error = %v", err)
+	}); !serviceErrorCode(err, "task_name_conflict") {
+		t.Fatalf("migrated Unicode Task name conflict error = %v", err)
 	}
 }
 
-func TestRoutinesMigrationKeepsArchivedDefinitionSchedulesDisabled(t *testing.T) {
+func TestTasksMigrationKeepsArchivedDefinitionSchedulesDisabled(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", t.TempDir()+"/legacy.sqlite3")
 	if err != nil {
@@ -365,8 +365,8 @@ func TestRoutinesMigrationKeepsArchivedDefinitionSchedulesDisabled(t *testing.T)
 	}
 	store := &Store{db: db, now: time.Now, sweepEvery: 5 * time.Second}
 	t.Cleanup(func() { _ = db.Close() })
-	applyMigrationsBeforeRoutines(t, ctx, store)
-	if _, err := db.ExecContext(ctx, legacyRoutinesFixture); err != nil {
+	applyMigrationsBeforeTasks(t, ctx, store)
+	if _, err := db.ExecContext(ctx, legacyTasksFixture); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE definitions SET archived = 1 WHERE id = 'definition-1'`); err != nil {
@@ -383,7 +383,7 @@ func TestRoutinesMigrationKeepsArchivedDefinitionSchedulesDisabled(t *testing.T)
 	if err := db.QueryRowContext(ctx, `
 		SELECT archived, schedule_enabled, cron, timezone, next_due_at, pending_due_at,
 			schedule_health_code, schedule_health_message
-		FROM routines WHERE id = 'automation-schedule'
+		FROM tasks WHERE id = 'automation-schedule'
 	`).Scan(&archived, &scheduleEnabled, &cron, &timezone, &nextDue, &pendingDue, &healthCode, &healthMessage); err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +395,7 @@ func TestRoutinesMigrationKeepsArchivedDefinitionSchedulesDisabled(t *testing.T)
 	}
 }
 
-func TestRoutinesMigrationBlocksInvalidLegacySchedulePrompts(t *testing.T) {
+func TestTasksMigrationBlocksInvalidLegacySchedulePrompts(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*testing.T, context.Context, *sql.DB)
@@ -473,8 +473,8 @@ func TestRoutinesMigrationBlocksInvalidLegacySchedulePrompts(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = db.Close() })
 			store := &Store{db: db, now: time.Now, sweepEvery: 5 * time.Second}
-			applyMigrationsBeforeRoutines(t, ctx, store)
-			if _, err := db.ExecContext(ctx, legacyRoutinesFixture); err != nil {
+			applyMigrationsBeforeTasks(t, ctx, store)
+			if _, err := db.ExecContext(ctx, legacyTasksFixture); err != nil {
 				t.Fatal(err)
 			}
 			test.mutate(t, ctx, db)
@@ -494,7 +494,12 @@ func TestRoutinesMigrationBlocksInvalidLegacySchedulePrompts(t *testing.T) {
 	}
 }
 
-func applyMigrationsBeforeRoutines(t *testing.T, ctx context.Context, store *Store) {
+func applyMigrationsBeforeTasks(t *testing.T, ctx context.Context, store *Store) {
+	t.Helper()
+	applyMigrationsBefore(t, ctx, store, "027_routines_work.sql")
+}
+
+func applyMigrationsBefore(t *testing.T, ctx context.Context, store *Store, stopAt string) {
 	t.Helper()
 	if _, err := store.db.ExecContext(ctx, `CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
 		t.Fatal(err)
@@ -507,7 +512,7 @@ func applyMigrationsBeforeRoutines(t *testing.T, ctx context.Context, store *Sto
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
 		}
-		if entry.Name() == "027_routines_work.sql" {
+		if entry.Name() == stopAt {
 			return
 		}
 		body, err := migrations.Files.ReadFile(entry.Name())
@@ -536,10 +541,10 @@ func applyMigrationsBeforeRoutines(t *testing.T, ctx context.Context, store *Sto
 			t.Fatal(err)
 		}
 	}
-	t.Fatal("027_routines_work.sql not found")
+	t.Fatalf("%s not found", stopAt)
 }
 
-const legacyRoutinesFixture = `
+const legacyTasksFixture = `
 INSERT INTO repositories(id, remote_identity, created_at, updated_at)
 VALUES
   ('repo-1', 'github.com/example/factory', 1, 1),
@@ -587,11 +592,11 @@ INSERT INTO tasks(
   id, request_key, title, description, repository_id, timeout_seconds, created_at,
   workflow_id, workflow_revision_id, workflow_title, workflow_revision_number, context
 ) VALUES
-  ('task-workflow', 'task-workflow-key', 'Workflow Work', 'Workflow prompt', 'repo-1', 3600, 10, 'workflow-1', 'revision-1', 'Shared', 1, ''),
-  ('task-issue', 'task-issue-key', 'Issue Work', 'Issue prompt', 'repo-1', 3600, 11, 'workflow-1', 'revision-1', 'Shared', 1, ''),
-  ('task-pr', 'task-pr-key', 'PR Work', 'PR prompt', 'repo-1', 3600, 12, 'workflow-1', 'revision-1', 'Shared', 1, ''),
-  ('task-webhook', 'task-webhook-key', 'Webhook Work', 'Webhook prompt', 'repo-1', 3600, 13, NULL, NULL, NULL, NULL, ''),
-  ('task-scheduled', 'task-scheduled-key', 'Scheduled Work', 'Scheduled prompt', 'repo-1', 3600, 14, NULL, NULL, NULL, NULL, '');
+  ('task-workflow', 'task-workflow-key', 'Workflow Run', 'Workflow prompt', 'repo-1', 3600, 10, 'workflow-1', 'revision-1', 'Shared', 1, ''),
+  ('task-issue', 'task-issue-key', 'Issue Run', 'Issue prompt', 'repo-1', 3600, 11, 'workflow-1', 'revision-1', 'Shared', 1, ''),
+  ('task-pr', 'task-pr-key', 'PR Run', 'PR prompt', 'repo-1', 3600, 12, 'workflow-1', 'revision-1', 'Shared', 1, ''),
+  ('task-webhook', 'task-webhook-key', 'Webhook Run', 'Webhook prompt', 'repo-1', 3600, 13, NULL, NULL, NULL, NULL, ''),
+  ('task-scheduled', 'task-scheduled-key', 'Scheduled Run', 'Scheduled prompt', 'repo-1', 3600, 14, NULL, NULL, NULL, NULL, '');
 INSERT INTO executions(id, task_id, assigned_worker_id, required_runtime, state, created_at, updated_at)
 VALUES
   ('execution-workflow', 'task-workflow', 'worker-1', 'codex', 'succeeded', 10, 20),
@@ -679,3 +684,125 @@ INSERT INTO automation_schedule_occurrences(
   '["repo-1"]', '{}', 10, NULL
 );
 `
+
+// preRenameFixture populates the Routines, Work, and Target model exactly as
+// migration 029 leaves it, so migration 030 has real rows to rename.
+const preRenameFixture = `
+INSERT INTO repositories(id, remote_identity, created_at, updated_at)
+VALUES ('repo-1', 'github.com/example/factory', 1, 1);
+INSERT INTO workers(
+  id, name, worker_version, work_claim_protocol_version, runtime, runtime_version,
+  capacity, active_count, health, registered_at, last_heartbeat
+) VALUES ('worker-1', 'Worker one', 'test', 1, 'codex', 'codex-test', 1, 0, 'healthy', 1, 1);
+INSERT INTO routines(
+  id, name, name_key, prompt, runtime, timeout_seconds, concurrency_limit,
+  generation, created_at, updated_at
+) VALUES ('routine-1', 'Weekly scan', 'weekly scan', 'Review.', 'codex', 3600, 10, 1, 1, 1);
+INSERT INTO routine_repositories(routine_id, position, repository_id)
+VALUES ('routine-1', 0, 'repo-1');
+INSERT INTO work(
+  id, request_key, request_digest, routine_id, routine_snapshot, source,
+  admitted_at, updated_at
+) VALUES ('work-1', 'key-1', X'01', 'routine-1', '{"id":"routine-1","name":"Weekly scan"}',
+          'manual', 10, 10);
+INSERT INTO work_targets(
+  id, work_id, repository_id, repository_identity, resolved_prompt,
+  required_runtime, timeout_seconds, state, blocked_reason, admitted_at
+) VALUES ('target-1', 'work-1', 'repo-1', 'github.com/example/factory', 'Review.',
+          'codex', 3600, 'blocked', 'Waiting for an available Routine concurrency slot.', 10);
+INSERT INTO executions(
+  id, work_target_id, assigned_worker_id, required_runtime, state, created_at, updated_at
+) VALUES ('execution-1', 'target-1', 'worker-1', 'codex', 'queued', 10, 10);
+`
+
+func TestTaskRenameMigrationPreservesPopulatedRows(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", t.TempDir()+"/pre-rename.sqlite3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{db: db, now: time.Now, sweepEvery: 5 * time.Second}
+	t.Cleanup(func() { _ = db.Close() })
+	applyMigrationsBefore(t, ctx, store, "030_task_run_session.sql")
+	if _, err := db.ExecContext(ctx, preRenameFixture); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var taskID, runID, sessionID, blockedReason string
+	if err := db.QueryRowContext(ctx, `
+		SELECT task.id, run.id, session.id, session.blocked_reason
+		FROM tasks task
+		JOIN runs run ON run.task_id = task.id
+		JOIN sessions session ON session.run_id = run.id
+		JOIN task_repositories link ON link.task_id = task.id
+	`).Scan(&taskID, &runID, &sessionID, &blockedReason); err != nil {
+		t.Fatal(err)
+	}
+	if taskID != "routine-1" || runID != "work-1" || sessionID != "target-1" {
+		t.Fatalf("renamed rows = %q, %q, %q", taskID, runID, sessionID)
+	}
+	if blockedReason != taskConcurrencyBlockedReason {
+		t.Fatalf("blocked reason = %q, want %q", blockedReason, taskConcurrencyBlockedReason)
+	}
+	var executionSessionID string
+	if err := db.QueryRowContext(ctx, `SELECT session_id FROM executions WHERE id = 'execution-1'`).
+		Scan(&executionSessionID); err != nil || executionSessionID != "target-1" {
+		t.Fatalf("execution session = %q, err %v", executionSessionID, err)
+	}
+	var claimProtocolVersion int
+	if err := db.QueryRowContext(ctx, `SELECT claim_protocol_version FROM workers WHERE id = 'worker-1'`).
+		Scan(&claimProtocolVersion); err != nil || claimProtocolVersion != 1 {
+		t.Fatalf("claim protocol version = %d, err %v", claimProtocolVersion, err)
+	}
+	if _, err := db.ExecContext(ctx, `SELECT json_extract(task_snapshot, '$.name') FROM runs`); err != nil {
+		t.Fatalf("renamed run snapshot column: %v", err)
+	}
+	for _, name := range []string{"routines", "routine_repositories", "work", "work_targets"} {
+		var exists int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).
+			Scan(&exists); err != nil || exists != 0 {
+			t.Fatalf("old table %s exists = %d, err %v", name, exists, err)
+		}
+	}
+	for _, name := range []string{
+		"tasks_list_order", "tasks_due", "task_repositories_order",
+		"runs_list_order", "sessions_run_order", "sessions_claim_order",
+		"sessions_backend_claim",
+	} {
+		var exists int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, name).
+			Scan(&exists); err != nil || exists != 1 {
+			t.Fatalf("renamed index %s exists = %d, err %v", name, exists, err)
+		}
+	}
+}
+
+func TestTaskRenameMigrationRefusesWhenNewNameIsTaken(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", t.TempDir()+"/collision.sqlite3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{db: db, now: time.Now, sweepEvery: 5 * time.Second}
+	t.Cleanup(func() { _ = db.Close() })
+	applyMigrationsBefore(t, ctx, store, "030_task_run_session.sql")
+	if _, err := db.ExecContext(ctx, preRenameFixture); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE sessions (id TEXT PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	err = store.migrate(ctx)
+	if err == nil || !strings.Contains(err.Error(), "renaming onto it would lose data") {
+		t.Fatalf("migration error = %v, want a named refusal", err)
+	}
+	var routines int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM routines`).Scan(&routines); err != nil || routines != 1 {
+		t.Fatalf("routines preserved = %d, err %v", routines, err)
+	}
+}

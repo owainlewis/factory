@@ -4,11 +4,11 @@ import type {
   ExecutionProfile,
   ManagedRepository,
   ManagedRepositoryReadiness,
-  Routine,
-  RoutineOverview,
-  SaveRoutineInput,
-  WorkDetailV2,
-  WorkPageV2,
+  Task,
+  OverviewView,
+  SaveTaskInput,
+  RunDetail,
+  RunPage,
   Worker,
 } from "./types";
 
@@ -46,47 +46,47 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  overview: () => request<RoutineOverview>("/api/v1/overview"),
+  overview: () => request<OverviewView>("/api/v1/overview"),
   executionProfiles: async () => (await request<{ profiles: ExecutionProfile[] | null }>("/api/v1/execution-profiles")).profiles ?? [],
-  routines: async (includeArchived = false) => {
-    const routines: Routine[] = [];
+  tasks: async (includeArchived = false) => {
+    const tasks: Task[] = [];
     let cursor = "";
     do {
       const query = new URLSearchParams({ limit: "200", include_archived: String(includeArchived) });
       if (cursor) query.set("cursor", cursor);
-      const page = await request<{ routines: Routine[] | null; next_cursor?: string }>(`/api/v1/routines?${query}`);
-      routines.push(...(page.routines ?? []));
+      const page = await request<{ tasks: Task[] | null; next_cursor?: string }>(`/api/v1/tasks?${query}`);
+      tasks.push(...(page.tasks ?? []));
       cursor = page.next_cursor ?? "";
     } while (cursor);
-    return routines;
+    return tasks;
   },
-  routine: (id: string) => request<Routine>(`/api/v1/routines/${encodeURIComponent(id)}`),
-  createRoutine: (input: SaveRoutineInput) => request<Routine>("/api/v1/routines", {
+  task: (id: string) => request<Task>(`/api/v1/tasks/${encodeURIComponent(id)}`),
+  createTask: (input: SaveTaskInput) => request<Task>("/api/v1/tasks", {
     method: "POST", body: JSON.stringify(input),
   }),
-  updateRoutine: (id: string, input: SaveRoutineInput) => request<Routine>(`/api/v1/routines/${encodeURIComponent(id)}`, {
+  updateTask: (id: string, input: SaveTaskInput) => request<Task>(`/api/v1/tasks/${encodeURIComponent(id)}`, {
     method: "PUT", body: JSON.stringify(input),
   }),
-  archiveRoutine: (id: string, archived: boolean, expectedGeneration: number) => request<Routine>(`/api/v1/routines/${encodeURIComponent(id)}/archived`, {
+  archiveTask: (id: string, archived: boolean, expectedGeneration: number) => request<Task>(`/api/v1/tasks/${encodeURIComponent(id)}/archived`, {
     method: "PUT", body: JSON.stringify({ archived, expected_generation: expectedGeneration }),
   }),
-  runRoutine: (id: string, requestKey: string, executionProfileID?: string) => request<WorkDetailV2>(`/api/v1/routines/${encodeURIComponent(id)}/run`, {
+  runTask: (id: string, requestKey: string, executionProfileID?: string) => request<RunDetail>(`/api/v1/tasks/${encodeURIComponent(id)}/run`, {
     method: "POST", body: JSON.stringify({ request_key: requestKey, execution_profile_id: executionProfileID }),
   }),
-  discardRoutineOccurrence: (id: string, pendingDueAt: string) => request<Routine>(`/api/v1/routines/${encodeURIComponent(id)}/discard-occurrence`, {
+  discardTaskOccurrence: (id: string, pendingDueAt: string) => request<Task>(`/api/v1/tasks/${encodeURIComponent(id)}/discard-occurrence`, {
     method: "POST", body: JSON.stringify({ pending_due_at: pendingDueAt }),
   }),
-  workItems: async (cursor = "") => {
+  runs: async (cursor = "") => {
     const query = new URLSearchParams({ limit: "50" });
     if (cursor) query.set("cursor", cursor);
-    const page = await request<WorkPageV2>(`/api/v1/work?${query}`);
-    return { work: page.work ?? [], next_cursor: page.next_cursor ?? null };
+    const page = await request<RunPage>(`/api/v1/runs?${query}`);
+    return { runs: page.runs ?? [], next_cursor: page.next_cursor ?? null };
   },
-  workItem: (id: string) => request<WorkDetailV2>(`/api/v1/work/${encodeURIComponent(id)}`),
-  cancelWork: (id: string) => request<WorkDetailV2>(`/api/v1/work/${encodeURIComponent(id)}/cancel`, {
+  run: (id: string) => request<RunDetail>(`/api/v1/runs/${encodeURIComponent(id)}`),
+  cancelRun: (id: string) => request<RunDetail>(`/api/v1/runs/${encodeURIComponent(id)}/cancel`, {
     method: "POST", body: "{}",
   }),
-  retryWorkTarget: (workId: string, targetId: string) => request<WorkDetailV2>(`/api/v1/work/${encodeURIComponent(workId)}/targets/${encodeURIComponent(targetId)}/retry`, {
+  retrySession: (runId: string, sessionId: string) => request<RunDetail>(`/api/v1/runs/${encodeURIComponent(runId)}/sessions/${encodeURIComponent(sessionId)}/retry`, {
     method: "POST", body: "{}",
   }),
   events: async (attemptID: string, after: number): Promise<AttemptEventPage> => {
@@ -96,7 +96,7 @@ export const api = {
     );
     return { ...page, events: page.events ?? [] };
   },
-  cancelWorkTarget: (workId: string, targetId: string) => request<WorkDetailV2>(`/api/v1/work/${encodeURIComponent(workId)}/targets/${encodeURIComponent(targetId)}/cancel`, {
+  cancelSession: (runId: string, sessionId: string) => request<RunDetail>(`/api/v1/runs/${encodeURIComponent(runId)}/sessions/${encodeURIComponent(sessionId)}/cancel`, {
     method: "POST", body: "{}",
   }),
   workers: async () => ((await request<{ workers: Worker[] | null }>("/api/v1/workers")).workers ?? []).map(normalizeWorker),

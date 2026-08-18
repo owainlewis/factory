@@ -6,12 +6,12 @@ import (
 )
 
 const (
-	MaxRoutines            = 500
-	MaxRoutineRepositories = 100
-	MaxRoutinePromptBytes  = 64 * 1024
+	MaxTasks            = 500
+	MaxTaskRepositories = 100
+	MaxTaskPromptBytes  = 64 * 1024
 )
 
-type RoutineSchedule struct {
+type TaskSchedule struct {
 	Enabled       bool       `json:"enabled"`
 	Cron          string     `json:"cron,omitempty"`
 	Timezone      string     `json:"timezone,omitempty"`
@@ -22,35 +22,35 @@ type RoutineSchedule struct {
 	HealthMessage string     `json:"health_message,omitempty"`
 }
 
-type RoutineRepository struct {
+type TaskRepository struct {
 	ID             string `json:"id"`
 	RemoteIdentity string `json:"remote_identity"`
 }
 
-type Routine struct {
-	ID                 string              `json:"id"`
-	Name               string              `json:"name"`
-	Prompt             string              `json:"prompt,omitempty"`
-	PromptPreview      string              `json:"prompt_preview,omitempty"`
-	Runtime            string              `json:"runtime"`
-	ExecutionProfileID string              `json:"execution_profile_id,omitempty"`
-	TimeoutSeconds     int                 `json:"timeout_seconds"`
-	ConcurrencyLimit   int                 `json:"concurrency_limit"`
-	Generation         int                 `json:"generation"`
-	Archived           bool                `json:"archived"`
-	ReadOnly           bool                `json:"read_only"`
-	Repositories       []RoutineRepository `json:"repositories"`
-	RepositoryCount    int                 `json:"repository_count"`
-	Schedule           RoutineSchedule     `json:"schedule"`
-	LastWorkState      string              `json:"last_work_state,omitempty"`
-	CreatedAt          time.Time           `json:"created_at"`
-	UpdatedAt          time.Time           `json:"updated_at"`
+type Task struct {
+	ID                 string           `json:"id"`
+	Name               string           `json:"name"`
+	Prompt             string           `json:"prompt,omitempty"`
+	PromptPreview      string           `json:"prompt_preview,omitempty"`
+	Runtime            string           `json:"runtime"`
+	ExecutionProfileID string           `json:"execution_profile_id,omitempty"`
+	TimeoutSeconds     int              `json:"timeout_seconds"`
+	ConcurrencyLimit   int              `json:"concurrency_limit"`
+	Generation         int              `json:"generation"`
+	Archived           bool             `json:"archived"`
+	ReadOnly           bool             `json:"read_only"`
+	Repositories       []TaskRepository `json:"repositories"`
+	RepositoryCount    int              `json:"repository_count"`
+	Schedule           TaskSchedule     `json:"schedule"`
+	LastRunState       string           `json:"last_run_state,omitempty"`
+	CreatedAt          time.Time        `json:"created_at"`
+	UpdatedAt          time.Time        `json:"updated_at"`
 }
 
-// WorkExecution is the worker-facing execution record for one Work target.
-type WorkExecution struct {
+// SessionExecution is the worker-facing execution record for one Session.
+type SessionExecution struct {
 	ID                    string    `json:"id"`
-	WorkTargetID          string    `json:"work_target_id"`
+	SessionID             string    `json:"session_id"`
 	AssignedWorkerID      string    `json:"assigned_worker_id"`
 	RequiredRuntime       string    `json:"required_runtime"`
 	State                 string    `json:"state"`
@@ -59,12 +59,12 @@ type WorkExecution struct {
 	UpdatedAt             time.Time `json:"updated_at"`
 }
 
-// ClaimedWorkTarget contains the immutable input a Worker needs to execute a
-// single repository target. It intentionally uses only the Routines model.
-type ClaimedWorkTarget struct {
+// ClaimedSession contains the immutable input a Worker needs to execute a
+// single repository session. It intentionally uses only the Tasks model.
+type ClaimedSession struct {
 	ID              string    `json:"id"`
-	WorkID          string    `json:"work_id"`
-	RoutineName     string    `json:"routine_name"`
+	RunID           string    `json:"run_id"`
+	TaskName        string    `json:"task_name"`
 	Prompt          string    `json:"prompt"`
 	WorkerID        string    `json:"worker_id"`
 	RepositoryID    string    `json:"repository_id"`
@@ -74,74 +74,74 @@ type ClaimedWorkTarget struct {
 	AdmittedAt      time.Time `json:"admitted_at"`
 }
 
-type RoutinePage struct {
-	Routines   []Routine `json:"routines"`
-	NextCursor string    `json:"next_cursor,omitempty"`
+type TaskPage struct {
+	Tasks      []Task `json:"tasks"`
+	NextCursor string `json:"next_cursor,omitempty"`
 }
 
-type SaveRoutineRequest struct {
-	RequestKey         string          `json:"request_key,omitempty"`
-	Name               string          `json:"name"`
-	Prompt             string          `json:"prompt"`
-	Runtime            string          `json:"runtime"`
-	ExecutionProfileID string          `json:"execution_profile_id,omitempty"`
-	TimeoutSeconds     int             `json:"timeout_seconds"`
-	ConcurrencyLimit   int             `json:"concurrency_limit"`
-	RepositoryIDs      []string        `json:"repository_ids"`
-	Schedule           RoutineSchedule `json:"schedule"`
-	ExpectedGeneration int             `json:"expected_generation,omitempty"`
+type SaveTaskRequest struct {
+	RequestKey         string       `json:"request_key,omitempty"`
+	Name               string       `json:"name"`
+	Prompt             string       `json:"prompt"`
+	Runtime            string       `json:"runtime"`
+	ExecutionProfileID string       `json:"execution_profile_id,omitempty"`
+	TimeoutSeconds     int          `json:"timeout_seconds"`
+	ConcurrencyLimit   int          `json:"concurrency_limit"`
+	RepositoryIDs      []string     `json:"repository_ids"`
+	Schedule           TaskSchedule `json:"schedule"`
+	ExpectedGeneration int          `json:"expected_generation,omitempty"`
 }
 
-type SetRoutineArchivedRequest struct {
+type SetTaskArchivedRequest struct {
 	Archived           *bool `json:"archived"`
 	ExpectedGeneration int   `json:"expected_generation"`
 }
 
-type RunRoutineRequest struct {
+type RunTaskRequest struct {
 	RequestKey         string `json:"request_key"`
 	ExecutionProfileID string `json:"execution_profile_id,omitempty"`
 }
 
-type DiscardRoutineOccurrenceRequest struct {
+type DiscardTaskOccurrenceRequest struct {
 	PendingDueAt time.Time `json:"pending_due_at"`
 }
 
-type WorkTargetState string
+type SessionState string
 
 const (
-	WorkTargetBlocked   WorkTargetState = "blocked"
-	WorkTargetQueued    WorkTargetState = "queued"
-	WorkTargetPreparing WorkTargetState = "preparing"
-	WorkTargetRunning   WorkTargetState = "running"
-	WorkTargetSucceeded WorkTargetState = "succeeded"
-	WorkTargetFailed    WorkTargetState = "failed"
-	WorkTargetCancelled WorkTargetState = "cancelled"
+	SessionBlocked   SessionState = "blocked"
+	SessionQueued    SessionState = "queued"
+	SessionPreparing SessionState = "preparing"
+	SessionRunning   SessionState = "running"
+	SessionSucceeded SessionState = "succeeded"
+	SessionFailed    SessionState = "failed"
+	SessionCancelled SessionState = "cancelled"
 )
 
-type WorkState string
+type RunState string
 
 const (
-	WorkQueued    WorkState = "queued"
-	WorkBlocked   WorkState = "blocked"
-	WorkRunning   WorkState = "running"
-	WorkSucceeded WorkState = "succeeded"
-	WorkFailed    WorkState = "failed"
-	WorkPartial   WorkState = "partial"
-	WorkCancelled WorkState = "cancelled"
+	RunQueued    RunState = "queued"
+	RunBlocked   RunState = "blocked"
+	RunRunning   RunState = "running"
+	RunSucceeded RunState = "succeeded"
+	RunFailed    RunState = "failed"
+	RunPartial   RunState = "partial"
+	RunCancelled RunState = "cancelled"
 )
 
-type RoutineSnapshot struct {
-	ID                 string              `json:"id"`
-	Name               string              `json:"name"`
-	Prompt             string              `json:"prompt,omitempty"`
-	Runtime            string              `json:"runtime"`
-	ExecutionProfileID string              `json:"execution_profile_id,omitempty"`
-	TimeoutSeconds     int                 `json:"timeout_seconds,omitempty"`
-	ConcurrencyLimit   int                 `json:"concurrency_limit,omitempty"`
-	Generation         int                 `json:"generation"`
-	Repositories       []RoutineRepository `json:"repositories,omitempty"`
-	ScheduleCron       string              `json:"cron,omitempty"`
-	ScheduleTimezone   string              `json:"timezone,omitempty"`
+type TaskSnapshot struct {
+	ID                 string           `json:"id"`
+	Name               string           `json:"name"`
+	Prompt             string           `json:"prompt,omitempty"`
+	Runtime            string           `json:"runtime"`
+	ExecutionProfileID string           `json:"execution_profile_id,omitempty"`
+	TimeoutSeconds     int              `json:"timeout_seconds,omitempty"`
+	ConcurrencyLimit   int              `json:"concurrency_limit,omitempty"`
+	Generation         int              `json:"generation"`
+	Repositories       []TaskRepository `json:"repositories,omitempty"`
+	ScheduleCron       string           `json:"cron,omitempty"`
+	ScheduleTimezone   string           `json:"timezone,omitempty"`
 }
 
 const (
@@ -208,16 +208,16 @@ type ExecutionProfilePage struct {
 	Profiles []ExecutionProfile `json:"profiles"`
 }
 
-type WorkTarget struct {
+type Session struct {
 	ID                    string            `json:"id"`
-	WorkID                string            `json:"work_id"`
+	RunID                 string            `json:"run_id"`
 	RepositoryID          string            `json:"repository_id"`
 	RepositoryIdentity    string            `json:"repository_identity"`
 	ResolvedPrompt        string            `json:"resolved_prompt,omitempty"`
 	RequiredRuntime       string            `json:"required_runtime"`
 	Execution             ExecutionSnapshot `json:"execution"`
 	TimeoutSeconds        int               `json:"timeout_seconds"`
-	State                 WorkTargetState   `json:"state"`
+	State                 SessionState      `json:"state"`
 	BlockedReason         string            `json:"blocked_reason,omitempty"`
 	AssignedWorkerID      string            `json:"assigned_worker_id,omitempty"`
 	CancellationRequested bool              `json:"cancellation_requested"`
@@ -230,16 +230,16 @@ type WorkTarget struct {
 	Attempts              []Attempt         `json:"attempts,omitempty"`
 }
 
-type Work struct {
+type Run struct {
 	ID             string            `json:"id"`
-	RoutineID      string            `json:"routine_id"`
-	Routine        RoutineSnapshot   `json:"routine"`
+	TaskID         string            `json:"task_id"`
+	Task           TaskSnapshot      `json:"task"`
 	Execution      ExecutionSnapshot `json:"execution"`
 	Source         string            `json:"source"`
 	ScheduledAt    *time.Time        `json:"scheduled_at,omitempty"`
-	State          WorkState         `json:"state"`
+	State          RunState          `json:"state"`
 	NeedsAttention bool              `json:"needs_attention"`
-	TargetCount    int               `json:"target_count"`
+	SessionCount   int               `json:"session_count"`
 	SucceededCount int               `json:"succeeded_count"`
 	FailedCount    int               `json:"failed_count"`
 	CancelledCount int               `json:"cancelled_count"`
@@ -249,14 +249,14 @@ type Work struct {
 	TerminalAt     *time.Time        `json:"terminal_at,omitempty"`
 }
 
-type WorkDetail struct {
-	Work             Work            `json:"work"`
+type RunDetail struct {
+	Run              Run             `json:"run"`
 	ProviderSnapshot json.RawMessage `json:"provider_snapshot,omitempty"`
-	Targets          []WorkTarget    `json:"targets"`
+	Sessions         []Session       `json:"sessions"`
 }
 
-type WorkPage struct {
-	Work       []Work `json:"work"`
+type RunPage struct {
+	Runs       []Run  `json:"runs"`
 	NextCursor string `json:"next_cursor,omitempty"`
 }
 
@@ -270,13 +270,13 @@ type OverviewRunMetrics struct {
 }
 
 type Overview struct {
-	ActiveWork       int                `json:"active_work"`
+	ActiveRuns       int                `json:"active_runs"`
 	NeedsAttention   int                `json:"needs_attention"`
 	CompletedLast24H int                `json:"completed_last_24h"`
 	WorkersOnline    int                `json:"workers_online"`
 	WorkersTotal     int                `json:"workers_total"`
 	RunMetrics       OverviewRunMetrics `json:"run_metrics"`
-	RecentWork       []Work             `json:"recent_work"`
-	UpcomingRoutines []Routine          `json:"upcoming_routines"`
+	RecentRuns       []Run              `json:"recent_runs"`
+	UpcomingTasks    []Task             `json:"upcoming_tasks"`
 	GeneratedAt      time.Time          `json:"generated_at"`
 }

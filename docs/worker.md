@@ -98,7 +98,7 @@ one empty claim request per polling interval. Each successful claim immediately
 starts another claim while a slot remains, so queued work fills the pool without
 waiting one polling interval per slot. A claim succeeds only when:
 
-- the task targets that worker;
+- the Session is assigned to that worker;
 - the repository assignment is frozen to that worker;
 - worker capacity is available;
 - the repository has fewer than ten retained worktrees, active attempts, and

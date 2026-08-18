@@ -143,7 +143,7 @@ func publishSnapshot(
 	if err := syncDirectory(stagingDirectory); err != nil {
 		return fmt.Errorf("sync recovery staging directory: %w", err)
 	}
-	if err := ensureFreshRecoveryTarget(destination); err != nil {
+	if err := ensureFreshRecoverySession(destination); err != nil {
 		return err
 	}
 	if err := os.Link(staged, destination); err != nil {
@@ -228,13 +228,13 @@ func prepareRecoveryDestination(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := ensureFreshRecoveryTarget(path); err != nil {
+	if err := ensureFreshRecoverySession(path); err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
-func ensureFreshRecoveryTarget(path string) error {
+func ensureFreshRecoverySession(path string) error {
 	if err := recoverInterruptedRecoveryPublication(path); err != nil {
 		return err
 	}
@@ -242,9 +242,9 @@ func ensureFreshRecoveryTarget(path string) error {
 		path, path + ".v2-control-plane", path + "-wal", path + "-shm",
 	} {
 		if _, err := os.Lstat(candidate); err == nil {
-			return fmt.Errorf("refusing to replace existing recovery target: %s", candidate)
+			return fmt.Errorf("refusing to replace existing recovery session: %s", candidate)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("inspect recovery target %s: %w", candidate, err)
+			return fmt.Errorf("inspect recovery session %s: %w", candidate, err)
 		}
 	}
 	return nil

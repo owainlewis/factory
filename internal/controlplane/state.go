@@ -72,12 +72,12 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		return nil, unavailable(err)
 	}
 
-	var capacity, healthy, workClaimProtocolVersion, synthetic int
+	var capacity, healthy, claimProtocolVersion, synthetic int
 	var lastHeartbeat int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT capacity, health = 'healthy', last_heartbeat, work_claim_protocol_version, synthetic
+		SELECT capacity, health = 'healthy', last_heartbeat, claim_protocol_version, synthetic
 		FROM workers WHERE id = ?
-	`, workerID).Scan(&capacity, &healthy, &lastHeartbeat, &workClaimProtocolVersion, &synthetic)
+	`, workerID).Scan(&capacity, &healthy, &lastHeartbeat, &claimProtocolVersion, &synthetic)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -87,10 +87,10 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 	if synthetic != 0 {
 		return nil, conflict("synthetic_worker_isolated", "synthetic cloud Workers cannot use Worker claim routes")
 	}
-	if workClaimProtocolVersion != protocol.WorkClaimProtocolVersion {
+	if claimProtocolVersion != protocol.ClaimProtocolVersion {
 		return nil, conflict(
 			"worker_upgrade_required",
-			"the Worker uses an incompatible Work claim protocol; upgrade it before claiming Work",
+			"the Worker uses an incompatible Run claim protocol; upgrade it before claiming Run",
 		)
 	}
 	var active int
@@ -109,10 +109,10 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		}
 		return nil, nil
 	}
-	if err := s.materializeBlockedTargetForWorker(ctx, tx, workerID, nowMillis); err != nil {
+	if err := s.materializeBlockedSessionForWorker(ctx, tx, workerID, nowMillis); err != nil {
 		return nil, err
 	}
-	if err := s.rerouteQueuedTargetForWorker(ctx, tx, workerID, nowMillis); err != nil {
+	if err := s.rerouteQueuedSessionForWorker(ctx, tx, workerID, nowMillis); err != nil {
 		return nil, err
 	}
 
@@ -120,11 +120,11 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 	err = tx.QueryRowContext(ctx, `
 		SELECT e.id
 		FROM executions e
-		JOIN work_targets target ON target.id = e.work_target_id
-		JOIN work ON work.id = target.work_id
-		JOIN repositories repository ON repository.id = target.repository_id
+		JOIN sessions session ON session.id = e.session_id
+		JOIN runs run ON run.id = session.run_id
+		JOIN repositories repository ON repository.id = session.repository_id
 		JOIN worker_repositories wr
-		  ON wr.worker_id = e.assigned_worker_id AND wr.repository_id = target.repository_id
+		  ON wr.worker_id = e.assigned_worker_id AND wr.repository_id = session.repository_id
 		WHERE e.assigned_worker_id = ?
 		  AND EXISTS (
 		      SELECT 1
@@ -143,27 +143,27 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		  AND e.state = 'queued'
 		  AND (
 		      SELECT COUNT(*)
-		      FROM work_targets sibling
-		      WHERE sibling.work_id = target.work_id
+		      FROM sessions sibling
+		      WHERE sibling.run_id = session.run_id
 		        AND sibling.state IN ('preparing', 'running')
-		  ) < json_extract(work.routine_snapshot, '$.concurrency_limit')
+		  ) < json_extract(run.task_snapshot, '$.concurrency_limit')
 		  AND wr.advertised = 1
 		  AND (repository.centrally_managed = 0 OR repository.enabled = 1)
 		  AND wr.retained_count + (
 		      SELECT COUNT(*)
 		      FROM attempts active_attempt
 		      JOIN executions active_execution ON active_execution.id = active_attempt.execution_id
-		      JOIN work_targets active_target ON active_target.id = active_execution.work_target_id
+		      JOIN sessions active_session ON active_session.id = active_execution.session_id
 		      WHERE active_attempt.worker_id = e.assigned_worker_id
-		        AND active_target.repository_id = target.repository_id
+		        AND active_session.repository_id = session.repository_id
 		        AND active_attempt.state IN ('preparing', 'running')
 		  ) + (
 		      SELECT COUNT(*)
 		      FROM attempts terminal_attempt
 		      JOIN executions terminal_execution ON terminal_execution.id = terminal_attempt.execution_id
-		      JOIN work_targets terminal_target ON terminal_target.id = terminal_execution.work_target_id
+		      JOIN sessions terminal_session ON terminal_session.id = terminal_execution.session_id
 		      WHERE terminal_attempt.worker_id = e.assigned_worker_id
-		        AND terminal_target.repository_id = target.repository_id
+		        AND terminal_session.repository_id = session.repository_id
 		        AND terminal_attempt.state IN ('succeeded', 'failed', 'cancelled', 'lost')
 		        AND terminal_attempt.capacity_acknowledged = 0
 		  ) < ?
@@ -212,8 +212,8 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 		return nil, conflict("claim_conflict", "execution is no longer queued")
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE work_targets SET state = 'preparing', assigned_worker_id = ?, blocked_reason = NULL
-		WHERE id = (SELECT work_target_id FROM executions WHERE id = ?) AND state = 'queued'
+		UPDATE sessions SET state = 'preparing', assigned_worker_id = ?, blocked_reason = NULL
+		WHERE id = (SELECT session_id FROM executions WHERE id = ?) AND state = 'queued'
 	`, workerID, executionID); err != nil {
 		return nil, unavailable(err)
 	}
@@ -258,12 +258,12 @@ func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Cla
 		return claim, unavailable(err)
 	}
 	row = s.db.QueryRowContext(ctx, `
-		SELECT id, work_target_id, assigned_worker_id, required_runtime, state,
+		SELECT id, session_id, assigned_worker_id, required_runtime, state,
 		       cancellation_requested, created_at, updated_at
 		FROM executions WHERE id = ?
 	`, claim.Attempt.ExecutionID)
 	var executionCreatedAt, executionUpdatedAt int64
-	if err = row.Scan(&claim.Execution.ID, &claim.Execution.WorkTargetID,
+	if err = row.Scan(&claim.Execution.ID, &claim.Execution.SessionID,
 		&claim.Execution.AssignedWorkerID, &claim.Execution.RequiredRuntime,
 		&claim.Execution.State, &claim.Execution.CancellationRequested,
 		&executionCreatedAt, &executionUpdatedAt); err != nil {
@@ -272,35 +272,35 @@ func (s *Store) claimDetail(ctx context.Context, attemptID string) (protocol.Cla
 	claim.Execution.CreatedAt = fromMillis(executionCreatedAt)
 	claim.Execution.UpdatedAt = fromMillis(executionUpdatedAt)
 	row = s.db.QueryRowContext(ctx, `
-		SELECT target.id, target.work_id, json_extract(work.routine_snapshot, '$.name'),
-		       target.resolved_prompt, target.repository_id, target.timeout_seconds,
-		       e.assigned_worker_id, e.required_runtime, e.state, target.admitted_at
-		FROM work_targets target
-		JOIN work ON work.id = target.work_id
-		JOIN executions e ON e.work_target_id = target.id
-		WHERE target.id = ?
-	`, claim.Execution.WorkTargetID)
+		SELECT session.id, session.run_id, json_extract(run.task_snapshot, '$.name'),
+		       session.resolved_prompt, session.repository_id, session.timeout_seconds,
+		       e.assigned_worker_id, e.required_runtime, e.state, session.admitted_at
+		FROM sessions session
+		JOIN runs run ON run.id = session.run_id
+		JOIN executions e ON e.session_id = session.id
+		WHERE session.id = ?
+	`, claim.Execution.SessionID)
 	var admittedAt int64
-	if err = row.Scan(&claim.Target.ID, &claim.Target.WorkID, &claim.Target.RoutineName,
-		&claim.Target.Prompt, &claim.Target.RepositoryID, &claim.Target.TimeoutSeconds,
-		&claim.Target.WorkerID, &claim.Target.RequiredRuntime, &claim.Target.State,
+	if err = row.Scan(&claim.Session.ID, &claim.Session.RunID, &claim.Session.TaskName,
+		&claim.Session.Prompt, &claim.Session.RepositoryID, &claim.Session.TimeoutSeconds,
+		&claim.Session.WorkerID, &claim.Session.RequiredRuntime, &claim.Session.State,
 		&admittedAt); err != nil {
 		return claim, unavailable(err)
 	}
-	claim.Target.AdmittedAt = fromMillis(admittedAt)
+	claim.Session.AdmittedAt = fromMillis(admittedAt)
 	err = s.db.QueryRowContext(ctx, `
 		SELECT r.id, wr.display_key,
 		       COALESCE(
-		           NULLIF(target.repository_identity, ''),
+		           NULLIF(session.repository_identity, ''),
 		           NULLIF(wr.worker_remote_identity, ''),
 		           r.remote_identity
 		       ),
 		       wr.retained_count
 		FROM repositories r
 		JOIN worker_repositories wr ON wr.repository_id = r.id
-		JOIN work_targets target ON target.id = ?
+		JOIN sessions session ON session.id = ?
 		WHERE r.id = ? AND wr.worker_id = ?
-	`, claim.Target.ID, claim.Target.RepositoryID, claim.Attempt.WorkerID).Scan(
+	`, claim.Session.ID, claim.Session.RepositoryID, claim.Attempt.WorkerID).Scan(
 		&claim.Repository.ID, &claim.Repository.Key, &claim.Repository.RemoteIdentity, &claim.Repository.RetainedCount)
 	if err != nil {
 		return claim, unavailable(err)
@@ -378,8 +378,8 @@ func (s *Store) StartAttempt(ctx context.Context, attemptID string, input protoc
 			return protocol.Attempt{}, unavailable(err)
 		}
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE work_targets SET state = 'running', started_at = COALESCE(started_at, ?)
-			WHERE id = (SELECT work_target_id FROM executions WHERE id = ?) AND state = 'preparing'
+			UPDATE sessions SET state = 'running', started_at = COALESCE(started_at, ?)
+			WHERE id = (SELECT session_id FROM executions WHERE id = ?) AND state = 'preparing'
 		`, now, lease.executionID); err != nil {
 			return protocol.Attempt{}, unavailable(err)
 		}
@@ -612,13 +612,13 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, input pro
 		return protocol.Attempt{}, unavailable(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE work_targets SET state = ?, terminal_at = ?, result = ?, failure_reason = ?
-		WHERE id = (SELECT work_target_id FROM executions WHERE id = ?)
+		UPDATE sessions SET state = ?, terminal_at = ?, result = ?, failure_reason = ?
+		WHERE id = (SELECT session_id FROM executions WHERE id = ?)
 		  AND state IN ('preparing', 'running')
 	`, input.State, now, nullString(input.Result), nullString(input.Error), lease.executionID); err != nil {
 		return protocol.Attempt{}, unavailable(err)
 	}
-	if err := updateWorkLifecycle(ctx, tx, lease.executionID, now); err != nil {
+	if err := updateRunLifecycle(ctx, tx, lease.executionID, now); err != nil {
 		return protocol.Attempt{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -666,10 +666,10 @@ func (s *Store) SweepExpired(ctx context.Context) ([]ExpiredLease, error) {
 		SELECT attempt.id, attempt.execution_id
 		FROM attempts attempt
 		JOIN executions execution ON execution.id = attempt.execution_id
-		JOIN work_targets target ON target.id = execution.work_target_id
+		JOIN sessions session ON session.id = execution.session_id
 		WHERE attempt.state IN ('preparing', 'running')
 		  AND attempt.lease_expires_at <= ?
-		  AND target.execution_backend = ?
+		  AND session.execution_backend = ?
 	`, now, protocol.BackendPersistent)
 	if err != nil {
 		return nil, unavailable(err)
@@ -693,8 +693,8 @@ func (s *Store) SweepExpired(ctx context.Context) ([]ExpiredLease, error) {
 			  AND execution_id IN (
 			      SELECT execution.id
 			      FROM executions execution
-			      JOIN work_targets target ON target.id = execution.work_target_id
-			      WHERE target.execution_backend = ?
+			      JOIN sessions session ON session.id = execution.session_id
+			      WHERE session.execution_backend = ?
 			  )
 		`, now, value.AttemptID, now, protocol.BackendPersistent)
 		if err != nil {
@@ -709,13 +709,13 @@ func (s *Store) SweepExpired(ctx context.Context) ([]ExpiredLease, error) {
 				return nil, unavailable(err)
 			}
 			if _, err := tx.ExecContext(ctx, `
-				UPDATE work_targets SET state = 'failed', terminal_at = ?, failure_reason = 'lease expired'
-				WHERE id = (SELECT work_target_id FROM executions WHERE id = ?)
+				UPDATE sessions SET state = 'failed', terminal_at = ?, failure_reason = 'lease expired'
+				WHERE id = (SELECT session_id FROM executions WHERE id = ?)
 				  AND state IN ('preparing', 'running')
 			`, now, value.ExecutionID); err != nil {
 				return nil, unavailable(err)
 			}
-			if err := updateWorkLifecycle(ctx, tx, value.ExecutionID, now); err != nil {
+			if err := updateRunLifecycle(ctx, tx, value.ExecutionID, now); err != nil {
 				return nil, err
 			}
 		}

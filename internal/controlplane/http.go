@@ -57,7 +57,7 @@ type legacyWorkerResponse struct {
 	Online            bool                        `json:"online"`
 	Repositories      []protocol.Repository       `json:"repositories"`
 	RetainedWorktrees []protocol.RetainedWorktree `json:"retained_worktrees"`
-	CurrentWorkTitle  string                      `json:"current_work_title,omitempty"`
+	CurrentRunTitle   string                      `json:"current_run_title,omitempty"`
 	RegisteredAt      time.Time                   `json:"registered_at"`
 	LastHeartbeat     time.Time                   `json:"last_heartbeat"`
 }
@@ -86,18 +86,18 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /api/v1/execution-profiles", api.createExecutionProfile)
 	mux.HandleFunc("GET /api/v1/execution-profiles/{profile_id}", api.getExecutionProfile)
 	mux.HandleFunc("PUT /api/v1/execution-profiles/{profile_id}", api.updateExecutionProfile)
-	mux.HandleFunc("GET /api/v1/routines", api.listRoutines)
-	mux.HandleFunc("POST /api/v1/routines", api.createRoutine)
-	mux.HandleFunc("GET /api/v1/routines/{routine_id}", api.getRoutine)
-	mux.HandleFunc("PUT /api/v1/routines/{routine_id}", api.updateRoutine)
-	mux.HandleFunc("PUT /api/v1/routines/{routine_id}/archived", api.setRoutineArchived)
-	mux.HandleFunc("POST /api/v1/routines/{routine_id}/run", api.runRoutine)
-	mux.HandleFunc("POST /api/v1/routines/{routine_id}/discard-occurrence", api.discardRoutineOccurrence)
-	mux.HandleFunc("GET /api/v1/work", api.listWork)
-	mux.HandleFunc("GET /api/v1/work/{work_id}", api.getWork)
-	mux.HandleFunc("POST /api/v1/work/{work_id}/cancel", api.cancelWork)
-	mux.HandleFunc("POST /api/v1/work/{work_id}/targets/{target_id}/cancel", api.cancelWorkTarget)
-	mux.HandleFunc("POST /api/v1/work/{work_id}/targets/{target_id}/retry", api.retryWorkTarget)
+	mux.HandleFunc("GET /api/v1/tasks", api.listTasks)
+	mux.HandleFunc("POST /api/v1/tasks", api.createTask)
+	mux.HandleFunc("GET /api/v1/tasks/{task_id}", api.getTask)
+	mux.HandleFunc("PUT /api/v1/tasks/{task_id}", api.updateTask)
+	mux.HandleFunc("PUT /api/v1/tasks/{task_id}/archived", api.setTaskArchived)
+	mux.HandleFunc("POST /api/v1/tasks/{task_id}/run", api.runTask)
+	mux.HandleFunc("POST /api/v1/tasks/{task_id}/discard-occurrence", api.discardTaskOccurrence)
+	mux.HandleFunc("GET /api/v1/runs", api.listRuns)
+	mux.HandleFunc("GET /api/v1/runs/{run_id}", api.getRun)
+	mux.HandleFunc("POST /api/v1/runs/{run_id}/cancel", api.cancelRun)
+	mux.HandleFunc("POST /api/v1/runs/{run_id}/sessions/{session_id}/cancel", api.cancelSession)
+	mux.HandleFunc("POST /api/v1/runs/{run_id}/sessions/{session_id}/retry", api.retrySession)
 	mux.HandleFunc("GET /api/v1/overview", api.getOverview)
 	mux.HandleFunc("GET /api/v1/attempts/{attempt_id}", api.getAttempt)
 	mux.HandleFunc("POST /api/v1/attempts/{attempt_id}/start", api.startAttempt)
@@ -109,7 +109,7 @@ func NewHandler(store *Store, logger *slog.Logger) http.Handler {
 }
 
 // NewRemoteWorkerHandler exposes only the Worker lifecycle over the optional
-// TLS listener. Operator, repository, Routine, and Work APIs remain local.
+// TLS listener. Operator, repository, Task, and Run APIs remain local.
 func NewRemoteWorkerHandler(store *Store, logger *slog.Logger) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
@@ -318,7 +318,7 @@ func (a *API) registerWorker(w http.ResponseWriter, r *http.Request) {
 			CodexVersion: worker.RuntimeVersion, Capacity: worker.Capacity,
 			ActiveCount: worker.ActiveCount, Health: worker.Health, Online: worker.Online,
 			Repositories: worker.Repositories, RetainedWorktrees: worker.RetainedWorktrees,
-			CurrentWorkTitle: worker.CurrentWorkTitle, RegisteredAt: worker.RegisteredAt,
+			CurrentRunTitle: worker.CurrentRunTitle, RegisteredAt: worker.RegisteredAt,
 			LastHeartbeat: worker.LastHeartbeat,
 		})
 		return

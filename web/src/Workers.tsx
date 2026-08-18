@@ -27,7 +27,7 @@ import {
   type ViewStateProps,
 } from "./ui";
 
-const workerTabs = ["overview", "work", "capabilities", "settings"] as const;
+const workerTabs = ["overview", "run", "capabilities", "settings"] as const;
 type WorkerTab = (typeof workerTabs)[number];
 
 function runtimeCapabilities(worker: Worker) {
@@ -55,7 +55,7 @@ function capabilityName(kind: string, name: string) {
 
 const workerTabLabel: Record<WorkerTab, string> = {
   overview: "Overview",
-  work: "Work",
+  run: "Run",
   capabilities: "Capabilities",
   settings: "Settings",
 };
@@ -132,7 +132,7 @@ export function WorkersView({
                         {stateLabel(worker.health)}
                       </span>
                     </small>
-                    {worker.current_work_title && <em>{worker.current_work_title}</em>}
+                    {worker.current_run_title && <em>{worker.current_run_title}</em>}
                   </span>
                 </span>
                 <span className="capacity-cell">
@@ -233,7 +233,7 @@ export function WorkerDetail({
     </div>
   );
   const activeSessions = `${data.active_count} active session${data.active_count === 1 ? "" : "s"}`;
-  const latestActiveWork = data.active_count > 1 ? `Latest of ${activeSessions}` : activeSessions;
+  const latestActiveRun = data.active_count > 1 ? `Latest of ${activeSessions}` : activeSessions;
   const testConnection = async () => {
 	const priorEvidence = connectionEvidence(data);
 	setConnectionTest({ status: "testing" });
@@ -280,7 +280,7 @@ export function WorkerDetail({
 				Test connection
 			</button>
           {!legacyReadOnly && <button className="button button-primary" onClick={onDelegate}>
-            <Plus size={15} /> Assign work
+            <Plus size={15} /> Assign run
           </button>}
         </div>
       </div>
@@ -331,29 +331,29 @@ export function WorkerDetail({
               </dl>
             </section>
             <section className="panel">
-              <PanelHeading title="Latest active Work" aside={latestActiveWork} />
-              {data.current_work_title ? (
-                <div className="current-work"><LoaderCircle size={17} className="spin" /> {data.current_work_title}</div>
+              <PanelHeading title="Latest active Run" aside={latestActiveRun} />
+              {data.current_run_title ? (
+                <div className="current-run"><LoaderCircle size={17} className="spin" /> {data.current_run_title}</div>
               ) : data.active_count > 0 ? (
-                <div className="quiet-empty">No active Work title is currently reported.</div>
+                <div className="quiet-empty">No active Run title is currently reported.</div>
               ) : (
-				<div className="quiet-empty">This Worker is ready for its next Work.</div>
+				<div className="quiet-empty">This Worker is ready for its next Run.</div>
               )}
             </section>
           </div>
         </>,
       )}
 
-      {tabPanel("work",
+      {tabPanel("run",
         <>
           <section className="panel">
-            <PanelHeading title="Latest active Work" aside={latestActiveWork} />
-            {data.current_work_title ? (
-              <div className="current-work"><LoaderCircle size={17} className="spin" /> {data.current_work_title}</div>
+            <PanelHeading title="Latest active Run" aside={latestActiveRun} />
+            {data.current_run_title ? (
+              <div className="current-run"><LoaderCircle size={17} className="spin" /> {data.current_run_title}</div>
             ) : data.active_count > 0 ? (
-              <div className="quiet-empty">No active Work title is currently reported.</div>
+              <div className="quiet-empty">No active Run title is currently reported.</div>
             ) : (
-			  <div className="quiet-empty">This Worker is ready for its next Work.</div>
+			  <div className="quiet-empty">This Worker is ready for its next Run.</div>
             )}
           </section>
           <section className="panel">

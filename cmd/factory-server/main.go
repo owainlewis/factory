@@ -148,7 +148,7 @@ func run() (returnErr error) {
 	schedulesDone := make(chan struct{})
 	go func() {
 		defer close(schedulesDone)
-		store.RunRoutineScheduler(scheduleContext, logger)
+		store.RunTaskScheduler(scheduleContext, logger)
 	}()
 	defer func() {
 		cancelSchedules()
@@ -300,7 +300,7 @@ func validateNoLegacyServerDefault(newRoot string) error {
 	}
 	if found {
 		return fmt.Errorf(
-			"found preview control-plane state at %s; refusing to abandon durable Work for the new default; set FACTORY_DATA_HOME=%s to keep using it, or archive the old state after resolving its Work",
+			"found preview control-plane state at %s; refusing to abandon durable Runs for the new default; set FACTORY_DATA_HOME=%s to keep using it, or archive the old state after resolving its Runs",
 			legacyState,
 			legacyRoot,
 		)

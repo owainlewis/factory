@@ -12,7 +12,7 @@ const (
 	MaxAgentBranchBytes    = 1 << 10
 )
 
-func ResolveRoutineSchedulePrompt(prompt string, scheduledAt time.Time, cron, timezone string) (string, error) {
+func ResolveTaskSchedulePrompt(prompt string, scheduledAt time.Time, cron, timezone string) (string, error) {
 	occurrence, err := json.Marshal(struct {
 		Type        string    `json:"type"`
 		ScheduledAt time.Time `json:"scheduled_at"`
@@ -24,15 +24,15 @@ func ResolveRoutineSchedulePrompt(prompt string, scheduledAt time.Time, cron, ti
 	}
 	return prompt +
 		"\n\nSchedule instruction:\n\n" +
-		"Execute this Routine for the scheduled occurrence. There is no provider item to revalidate." +
+		"Execute this Task for the scheduled occurrence. There is no provider item to revalidate." +
 		"\n\nTrusted schedule occurrence:\n\n" + string(occurrence), nil
 }
 
 func FormatAgentPrompt(title, repository, workingBranch, targetBaseBranch, resolvedPrompt string) string {
 	return "You are running in a Factory managed Git worktree.\n" +
-		"Work only on the assigned Work and repository. Preserve unrelated changes and do not touch Factory state or unrelated worktrees. " +
-		"Do not switch, create, rename, or delete branches or worktrees. Complete and verify the Work before returning a concise result.\n\n" +
-		"Routine: " + title + "\n" +
+		"Work only on the assigned Session and repository. Preserve unrelated changes and do not touch Factory state or unrelated worktrees. " +
+		"Do not switch, create, rename, or delete branches or worktrees. Complete and verify the Session before returning a concise result.\n\n" +
+		"Task: " + title + "\n" +
 		"Repository: " + repository + "\n" +
 		"Working branch: " + workingBranch + "\n" +
 		"Target base branch: " + targetBaseBranch + "\n\n" +

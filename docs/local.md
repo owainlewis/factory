@@ -171,8 +171,8 @@ In the UI:
 4. Select the worker and repository.
 5. Submit.
 
-The Work view shows the task state. Task detail shows attempts, lifecycle events,
-results, and errors.
+The Runs view shows the Session state. Session detail shows attempts, lifecycle
+events, results, and errors.
 
 The same operation is available through the API:
 
@@ -391,11 +391,11 @@ Legacy poller snapshot changed
 - return to the migration dialog and run a new Preview against the stable
   source. Factory does not partially import or archive a changed snapshot.
 
-Work is retained
+A worktree is retained
 
 Factory keeps worktrees when they are dirty or may contain unpublished work.
 Open the assigned Worker to see retained paths and cleanup commands. Use the
-attempt ID from the task detail or retained worktree card to preview cleanup:
+attempt ID from the Session detail or retained worktree card to preview cleanup:
 
 ```sh
 ~/.factory/bin/factory-worker cleanup ATTEMPT_ID \
