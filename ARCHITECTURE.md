@@ -259,8 +259,8 @@ supervisor. If lease renewal fails or the 30-second deadline passes, the
 supervisor stops the process group and the control plane marks the Attempt
 lost. Startup and periodic sweeps recover expired leases after server failure.
 
-Only failed or cancelled Sessions can be retried. Retry preserves the Session and
-Attempt history, selects a currently eligible Worker, and creates the next
+Only failed or cancelled Sessions can be retried. Retry preserves the Session
+and Attempt history, selects a currently eligible Worker, and creates the next
 Attempt when claimed.
 
 ## 7. API and security boundaries
@@ -284,9 +284,11 @@ describe a Worker as a security sandbox.
 
 Migrations are embedded from `migrations/` and applied in order. Migration 27
 introduces the current lifecycle model. Migration 28 adds the current
-single-claim protocol and rejects incompatible old Workers. Migration 30 renames
-the operator model to Tasks, Runs, and Sessions without changing behaviour, and
-refuses to apply if the new table names are already in use. Supported legacy
+single-claim protocol and rejects incompatible old Workers; that protocol is at
+version 2, because the claim payload replaced its target field with a Session.
+Migration 30 renames the operator model to Tasks, Runs, and Sessions without
+changing behaviour, and refuses to apply if the new table names are already in
+use. Supported legacy
 Definitions, schedules, repositories, and execution history are converted;
 unsupported legacy provider admission is blocked and reported rather than
 silently discarded.
@@ -347,5 +349,5 @@ outbound control, least-privilege identity, failure recovery, and rollout.
 | Attempt execution | `internal/worker/attempt_lifecycle.go`, `internal/worker/supervisor.go`, `internal/worker/events.go` |
 | Git and worktrees | `internal/worker/git.go`, `internal/worker/repository_cache.go`, `internal/worker/reconcile.go` |
 | Protocol limits and types | `internal/protocol/types.go`, `internal/protocol/prompt.go` |
-| Schema | `migrations/027_routines_work.sql`, `migrations/030_task_run_session.sql` |
+| Schema | `migrations/027_routines_work.sql`, `migrations/028_work_claim_protocol.sql`, `migrations/030_task_run_session.sql` |
 | Browser UI | `web/src/App.tsx`, `web/src/Tasks.tsx`, `web/src/Runs.tsx`, `web/src/Workers.tsx`, `web/src/Repositories.tsx` |

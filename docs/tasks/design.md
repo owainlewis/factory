@@ -106,10 +106,9 @@ Repository detail appears after opening the Run.
 
 Active means at least one Session is nonterminal. Needs attention means an
 active Run has an actionable Blocked Session, or a Run reached Failed or
-Partial in the last 24 hours. Task concurrency throttling is not actionable. Completed
-counts Runs that became terminal in the same rolling window.
-These are fixed operational definitions, not user-selectable reporting
-cohorts.
+Partial in the last 24 hours. Task concurrency throttling is not actionable.
+Completed counts Runs that became terminal in the same rolling window. These are
+fixed operational definitions, not user-selectable reporting cohorts.
 
 ### Components and responsibilities
 
@@ -305,14 +304,14 @@ precedence:
 
 A separate `needs_attention` field uses the same Overview predicate: it is true
 when an active Run has an actionable Blocked Session, or when a Run reached
-Failed or Partial in the last 24 hours. Sessions waiting only for a Task concurrency
-slot are normal throttling and do not need attention. The discard-occurrence
-mutation requires a blocked pending occurrence
-or a durably paused pending occurrence on a disabled Task. It is idempotent
-for the same frozen occurrence token, clears only its pending and retry fields,
-records the discarded due instant for audit, and recalculates the first cron
-instant strictly after the current time. A stale token conflicts so an operator
-cannot discard a newer occurrence accidentally.
+Failed or Partial in the last 24 hours. Sessions waiting only for a Task
+concurrency slot are normal throttling and do not need attention. The
+discard-occurrence mutation requires a blocked pending occurrence or a durably
+paused pending occurrence on a disabled Task. It is idempotent for the same
+frozen occurrence token, clears only its pending and retry fields, records the
+discarded due instant for audit, and recalculates the first cron instant
+strictly after the current time. A stale token conflicts so an operator cannot
+discard a newer occurrence accidentally.
 
 The final SQLite model uses these primary tables:
 
@@ -427,17 +426,17 @@ so valid cross-model name collisions never block the frozen migration.
    resolved prompt and all lifecycle links. For an admitted schedule, also copy
    the occurrence ID, kind, scheduled instant or run-now request identity,
    cron, and timezone into the immutable Run snapshot. Preserve `webhook` and
-   other provider Run provenance as a `provider_history` source with its immutable
-   provider kind and occurrence snapshot. Normalize the legacy Run concurrency
-   block reason to the canonical Task concurrency reason so migrated normal
-   throttling does not become an attention alert. A missing block reason remains
-   actionable in both Run detail and Overview.
+   other provider Run provenance as a `provider_history` source with its
+   immutable provider kind and occurrence snapshot. Normalize the legacy Run
+   concurrency block reason to the canonical Task concurrency reason so migrated
+   normal throttling does not become an attention alert. A missing block reason
+   remains actionable in both Run detail and Overview.
 7. Convert every remaining reconstructable legacy Task before dropping legacy
    tables. Create at most three deterministic, archived, migration-only history
-   containers for workflow, direct-manual, and provider legacy-Task history. Point
-   each converted Run at the matching container, but keep its exact prompt,
-   repositories, runtime, timeout, concurrency, legacy source identity, and
-   provider occurrence solely in the immutable Run snapshot. Preserve legacy
+   containers for workflow, direct-manual, and provider legacy-Task history.
+   Point each converted Run at the matching container, but keep its exact
+   prompt, repositories, runtime, timeout, concurrency, legacy source identity,
+   and provider occurrence solely in the immutable Run snapshot. Preserve legacy
    tool restrictions only as read-only audit metadata on migrated Runs. Legacy
    Tasks linked through disabled provider occurrences use `provider_history`;
    other legacy Tasks use manual Runs. Copy every Execution, Attempt, event,
@@ -457,13 +456,13 @@ so valid cross-model name collisions never block the frozen migration.
    lifecycle rows, so it cannot become a truthful Run. A provider occurrence
    that never admitted a legacy Task or Run likewise has audit identity and
    diagnostics but no truthful Run lifecycle. Report every blocked occurrence,
-   retained legacy Task ID snapshot, external identity, and diagnostic instead of silently
-   dropping or relabelling that audit identity.
+   retained legacy Task ID snapshot, external identity, and diagnostic instead
+   of silently dropping or relabelling that audit identity.
 9. Validate counts, identifiers, terminal outcomes, Attempt events, and
    retained-worktree links.
 10. Drop the legacy Definition, Workflow, Automation, Occurrence, Run, Job, and
-   Task tables, indexes, triggers, and mutation ledgers. Rename no legacy table into
-   a compatibility alias.
+   Task tables, indexes, triggers, and mutation ledgers. Rename no legacy table
+   into a compatibility alias.
 11. Commit the migration and retain the backup path in the completion report.
 
 Provider-driven Automation configuration is not silently converted into a

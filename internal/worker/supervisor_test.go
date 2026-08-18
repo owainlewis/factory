@@ -551,17 +551,17 @@ func TestStreamSupervisorOutputIgnoresEmptyStream(t *testing.T) {
 }
 
 func TestRuntimeEnvironment(t *testing.T) {
-	t.Setenv("FACTORY_WORK_ID", "stale-work")
-	t.Setenv("FACTORY_WORK_TARGET_ID", "stale-target")
+	t.Setenv("FACTORY_RUN_ID", "stale-run")
+	t.Setenv("FACTORY_SESSION_ID", "stale-session")
 	t.Setenv("FACTORY_TEST_MARKER", "kept")
 
-	withIdentity := runtimeEnvironment("work-1", "target-1")
-	if countEnvironment(withIdentity, "FACTORY_WORK_ID=") != 1 ||
-		countEnvironment(withIdentity, "FACTORY_WORK_TARGET_ID=") != 1 {
+	withIdentity := runtimeEnvironment("run-1", "session-1")
+	if countEnvironment(withIdentity, "FACTORY_RUN_ID=") != 1 ||
+		countEnvironment(withIdentity, "FACTORY_SESSION_ID=") != 1 {
 		t.Fatalf("environment did not replace stale identity values: %v", identityValues(withIdentity))
 	}
-	if !containsEnvironment(withIdentity, "FACTORY_WORK_ID=work-1") ||
-		!containsEnvironment(withIdentity, "FACTORY_WORK_TARGET_ID=target-1") {
+	if !containsEnvironment(withIdentity, "FACTORY_RUN_ID=run-1") ||
+		!containsEnvironment(withIdentity, "FACTORY_SESSION_ID=session-1") {
 		t.Fatalf("environment missing supplied identity: %v", identityValues(withIdentity))
 	}
 	if !containsEnvironment(withIdentity, "FACTORY_TEST_MARKER=kept") {
@@ -569,8 +569,8 @@ func TestRuntimeEnvironment(t *testing.T) {
 	}
 
 	withoutIdentity := runtimeEnvironment("", "")
-	if countEnvironment(withoutIdentity, "FACTORY_WORK_ID=") != 0 ||
-		countEnvironment(withoutIdentity, "FACTORY_WORK_TARGET_ID=") != 0 {
+	if countEnvironment(withoutIdentity, "FACTORY_RUN_ID=") != 0 ||
+		countEnvironment(withoutIdentity, "FACTORY_SESSION_ID=") != 0 {
 		t.Fatalf("environment kept identity values: %v", identityValues(withoutIdentity))
 	}
 }
@@ -861,7 +861,7 @@ func countEnvironment(environment []string, prefix string) int {
 func identityValues(environment []string) []string {
 	var values []string
 	for _, value := range environment {
-		if strings.HasPrefix(value, "FACTORY_WORK_") {
+		if strings.HasPrefix(value, "FACTORY_RUN_ID=") || strings.HasPrefix(value, "FACTORY_SESSION_ID=") {
 			values = append(values, value)
 		}
 	}

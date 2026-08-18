@@ -46,8 +46,8 @@ proved a narrower path against the Factory repository:
 - Write mode produced an exact patch without pushing a branch.
 - The final read-only execution completed in 55 seconds, including a 33-second
   start, with $0.00209 of model usage. At the current published default Cloud
-  Cloud Run Jobs rates, its one-minute minimum would cost about $0.00132 before the
-  free tier.
+  Cloud Run Jobs rates, its one-minute minimum would cost about $0.00132 before
+  the free tier.
 
 That experiment proves container execution, not the Factory lifecycle. It does
 not prove durable dispatch, lease fencing, restart recovery, prompt
@@ -117,17 +117,17 @@ starts in `dispatching`. Factory writes the immutable input and gateway
 registration, then asks the gateway to create the initial short-lived authority
 document using the gateway clock and an object-generation precondition. That
 response also fixes `session_started_at` to gateway server time and
-`session_deadline_at` to `session_started_at + timeout_seconds`; both are persisted in
-the dispatch before the Run call and bound into the authority object. Factory
-records local monotonic time immediately before that gateway request and
-anchors the returned remaining Session duration to the earlier instant. That
-conservative monotonic deadline drives the live dispatcher even if later
-gateway responses are delayed or unavailable. Factory
-calls one immutable, versioned Cloud Run Job resource with the Attempt ID, run
-ID, and a separate random 256-bit run capability as bounded overrides. The
-capability is sensitive, excluded from logs, and visible only to identities
-already allowed to inspect Cloud Run executions. The prompt, model credential,
-and any cloud credential are not override values.
+`session_deadline_at` to `session_started_at + timeout_seconds`; both are
+persisted in the dispatch before the Run call and bound into the authority
+object. Factory records local monotonic time immediately before that gateway
+request and anchors the returned remaining Session duration to the earlier
+instant. That conservative monotonic deadline drives the live dispatcher even if
+later gateway responses are delayed or unavailable. Factory calls one immutable,
+versioned Cloud Run Job resource with the Attempt ID, run ID, and a separate
+random 256-bit run capability as bounded overrides. The capability is sensitive,
+excluded from logs, and visible only to identities already allowed to inspect
+Cloud Run executions. The prompt, model credential, and any cloud credential are
+not override values.
 
 The Job service account has no access to the artifact bucket, Cloud Run
 administration, or sibling Attempts. Its only data permission is access to the
@@ -144,23 +144,23 @@ execution. It does not prevent trusted repository code from tampering with its
 own Attempt, which is part of the initial trusted-repository boundary.
 
 The Job wrapper starts a monotonic pre-fence timer when its process starts and
-sets it to the smaller of five minutes and the trusted remaining Session duration.
-It exits without an agent if that timer expires. It records local monotonic time
-immediately before requesting the Attempt and run-ID start fence.
+sets it to the smaller of five minutes and the trusted remaining Session
+duration. It exits without an agent if that timer expires. It records local
+monotonic time immediately before requesting the Attempt and run-ID start fence.
 If a lost API response causes Factory to launch a duplicate, only one execution
 can win that fence; every duplicate exits without running an agent. The gateway
 serializes the fence and revocation through a conditional authority-object
 update, then publishes `started.json` as immutable evidence. The successful
-response includes gateway server time and the persisted
-`session_deadline_at`. The wrapper anchors `session_deadline_at - server_time` to the
-earlier pre-request monotonic instant, so Cloud Run startup and response delay
-consume rather than extend the frozen Session timeout. The winning wrapper verifies
-the input, checks out only the frozen commit, and starts the selected runtime in
-the checkout. Checkout and agent execution share that deadline. After it
-expires, the wrapper kills the process group and exits nonzero. It cannot
-publish new evidence, restart the agent, or perform repository tool actions.
-Factory's durable timeout record is authoritative and may reference only
-bounded evidence uploaded before authority expired.
+response includes gateway server time and the persisted `session_deadline_at`.
+The wrapper anchors `session_deadline_at - server_time` to the earlier
+pre-request monotonic instant, so Cloud Run startup and response delay consume
+rather than extend the frozen Session timeout. The winning wrapper verifies the
+input, checks out only the frozen commit, and starts the selected runtime in the
+checkout. Checkout and agent execution share that deadline. After it expires,
+the wrapper kills the process group and exits nonzero. It cannot publish new
+evidence, restart the agent, or perform repository tool actions. Factory's
+durable timeout record is authoritative and may reference only bounded evidence
+uploaded before authority expired.
 
 The dispatcher requests an authority refresh every ten seconds while it owns
 the Attempt. The gateway performs the conditional write and computes
@@ -248,7 +248,8 @@ The hosted profile fixes `credential_mode` to `compute_metadata`. In this mode
 Factory rejects a set `GOOGLE_APPLICATION_CREDENTIALS` variable and a local ADC
 file at Google's well-known path, then obtains short-lived access and ID tokens
 directly from the Compute Engine metadata server. It does not use the generic
-[Application Default Credentials search order](https://docs.cloud.google.com/docs/authentication/application-default-credentials),
+[Application Default Credentials search
+order](https://docs.cloud.google.com/docs/authentication/application-default-credentials),
 which could prefer a credential file over the attached identity.
 
 Local development uses a separate `impersonated_adc` mode. Its ADC file must be
@@ -260,7 +261,8 @@ human's existing Google session, but it cannot enable or run a profile. Neither
 mode makes `gcloud` a Factory runtime dependency. User-managed service-account
 keys are unsupported, and setup recommends enforcing the organization policies
 that disable key creation and upload, following Google's
-[service-account security guidance](https://docs.cloud.google.com/iam/docs/best-practices-service-accounts).
+[service-account security
+guidance](https://docs.cloud.google.com/iam/docs/best-practices-service-accounts).
 
 Factory uses access tokens with Google client libraries and the Cloud Run v2
 API. Gateway calls carry an audience-bound Google-signed ID token in exactly
@@ -270,7 +272,8 @@ repeated Authorization header, or another authentication scheme. Before
 reading a request body, the gateway verifies the Google signature, issuer,
 expiry, exact service URL or configured custom audience, immutable numeric
 `sub`, and the path-specific dispatcher or Job allowlist. This follows Google's
-[service-to-service authentication contract](https://docs.cloud.google.com/run/docs/authenticating/service-to-service)
+[service-to-service authentication
+contract](https://docs.cloud.google.com/run/docs/authenticating/service-to-service)
 while preserving the signed token for application verification.
 
 The identity and binding table is normative:
@@ -297,8 +300,9 @@ and resource bindings after runtime validation; later changes require an
 explicit operator session to grant them again. The runtime bindings above are
 resource-level except `run.operations.get` where Google requires a wider parent.
 Google provides execution and cancellation through the
-[Cloud Run Jobs Executor With Overrides role](https://docs.cloud.google.com/run/docs/reference/iam/roles),
-but Factory uses the documented custom role so drift inspection and
+[Cloud Run Jobs Executor With Overrides
+role](https://docs.cloud.google.com/run/docs/reference/iam/roles), but Factory
+uses the documented custom role so drift inspection and
 [`run.executions.delete`](https://docs.cloud.google.com/run/docs/reference/rest/v2/projects.locations.jobs.executions/delete)
 do not require Cloud Run Developer.
 
@@ -329,7 +333,8 @@ The work ships in six independently reviewable slices:
    quota backoff, and duplicate-start tests against a fake Cloud Run API.
 4. **Managed runner.** Turn the experimental image into the trusted Job wrapper,
    pin its dependencies and image digest, and prove read-only, patch-producing,
-   cancellation, lease-expiry, and corrupt-artifact cases in a real test project.
+   cancellation, lease-expiry, and corrupt-artifact cases in a real test
+   project.
 5. **Product setup.** Add profile configuration, validation, guided resource
    provisioning, health, cost evidence, Attempt diagnostics, and operator
    documentation.
@@ -528,10 +533,10 @@ design.
 - `INV-13`: A Job identity and run capability can access only its own Attempt
   protocol and cannot read or mutate a sibling Attempt.
 - `INV-14`: The gateway refuses to start an agent at or after the frozen
-  Session deadline. Factory times out and cancels an accepted execution that has not
-  started by then. A running wrapper starts process-group shutdown at the same
-  deadline and sends SIGKILL no later than ten seconds afterward, independent
-  of the longer profile or Cloud Run Job timeout.
+  Session deadline. Factory times out and cancels an accepted execution that has
+  not started by then. A running wrapper starts process-group shutdown at the
+  same deadline and sends SIGKILL no later than ten seconds afterward,
+  independent of the longer profile or Cloud Run Job timeout.
 - `INV-15`: Hosted Factory authenticates Google runtime calls only through the
   attached Compute Engine metadata identity and direct APIs. Development
   dispatch permits only explicit ADC service-account impersonation. Neither
@@ -560,19 +565,19 @@ design.
 - Dispatch stores the Attempt ID, non-secret run ID, run-capability digest,
   envelope-encrypted run-capability ciphertext, state, immutable profile
   version, every observed Cloud operation and execution name, timestamps,
-  gateway-derived `session_started_at` and `session_deadline_at`, the last acknowledged
-  authority generation, an early fail-closed client deadline, a conservative
-  authority-expiry upper bound, any single outstanding refresh request ID,
-  error, and reconciliation deadline.
+  gateway-derived `session_started_at` and `session_deadline_at`, the last
+  acknowledged authority generation, an early fail-closed client deadline, a
+  conservative authority-expiry upper bound, any single outstanding refresh
+  request ID, error, and reconciliation deadline.
 - The Job input uses the full commit SHA. Branch names and mutable tags are
   rejected.
 - Before every Run call, the dispatcher reads the Job and verifies its resource
   name, template digest, image digest, service account, model-secret resource
   and version, task count of one, and native retry count of zero against the
   frozen profile version. It also requires current authority and a conservative
-  monotonic Session deadline that has not expired. Drift or expiry blocks dispatch.
-  The wrapper repeats the verifiable checks and binds the effective values into
-  its final manifest.
+  monotonic Session deadline that has not expired. Drift or expiry blocks
+  dispatch. The wrapper repeats the verifiable checks and binds the effective
+  values into its final manifest.
 - Dispatch and reconciliation respect the profile capacity and Google Cloud
   API, CPU, memory, and execution quotas. Quota pressure leaves work queued or
   blocked with an actionable reason; it does not create extra executions.
@@ -591,9 +596,9 @@ design.
   the ten-second process-group kill rule, stops all Job-originated gateway
   writes, and exits nonzero. Gateway control-plane authority revocation remains
   permitted. A wrapper has no more than five minutes from process start to
-  acquire its fence and never beyond `session_deadline_at`. The versioned Cloud Run
-  Job timeout is at least the maximum Session timeout plus ten seconds and is a
-  platform safety limit, not the Session timeout.
+  acquire its fence and never beyond `session_deadline_at`. The versioned Cloud
+  Run Job timeout is at least the maximum Session timeout plus ten seconds and
+  is a platform safety limit, not the Session timeout.
 - Event and completion sizes reuse the existing Attempt limits. Artifact size
   defaults to 64 MiB and has a 512 MiB maximum. Completion is rejected when the
   configured bound is exceeded.
@@ -660,11 +665,11 @@ registration stores the expected Job service-account principal, SHA-256 digest
 of the run capability, non-secret run ID, exact Attempt prefix, input digest,
 frozen `timeout_seconds`, protocol version, and absolute registration expiry.
 The gateway uses that registered duration and its own server time to establish
-`session_started_at` and `session_deadline_at`; neither the Job nor a later refresh can
-change them. The Job sends the raw capability only to the gateway. The gateway
-hashes it, uses its own bucket identity to load the registration and authority,
-and never exposes list or arbitrary object operations. Authority revocation
-closes an otherwise valid registration immediately. The Job sends the
+`session_started_at` and `session_deadline_at`; neither the Job nor a later
+refresh can change them. The Job sends the raw capability only to the gateway.
+The gateway hashes it, uses its own bucket identity to load the registration and
+authority, and never exposes list or arbitrary object operations. Authority
+revocation closes an otherwise valid registration immediately. The Job sends the
 capability only over TLS in an authenticated request body. The Job and gateway
 redact request bodies and authorization data, never place the capability in a
 URL, header echoed by infrastructure, metric, trace, error, or log. The wrapper
@@ -837,22 +842,21 @@ serialized transaction first preserves any existing terminal, cancellation, or
 timeout owner. Only when no owner exists and the time predicate fails does it
 record timeout intent instead of success. A stale, missing, or failed gateway
 read does not by itself own the outcome. While the last trusted suspend-aware
-Session deadline remains unexpired, Factory leaves completion in `reconciling` and
-retries the authority read without accepting success. Once that deadline has
+Session deadline remains unexpired, Factory leaves completion in `reconciling`
+and retries the authority read without accepting success. Once that deadline has
 expired, the same conditional timeout branch applies. An expired response also
 uses that branch. None can replace an existing owner. Prior manifest publication
-cannot extend the Session. Explicit
-cancellation checks that neither a terminal outcome nor timeout intent is
-committed and atomically records `cancellation_requested_at`. Timeout checks
-that neither a terminal outcome nor cancellation is committed and atomically
-records `timeout_requested_at` and the `timeout_requested` dispatch state.
-SQLite serialization makes one transaction the first durable Factory decision.
-If timeout intent wins, a later explicit cancel may accelerate the same gateway
-revocation and Cloud Run cleanup but cannot change the eventual timed-out
-outcome. If cancellation wins, later timeout observation cannot replace
-cancelled. If success wins before its deadline, neither signal can replace
-succeeded. Terminal completion is idempotent and the stored outcome always
-wins.
+cannot extend the Session. Explicit cancellation checks that neither a terminal
+outcome nor timeout intent is committed and atomically records
+`cancellation_requested_at`. Timeout checks that neither a terminal outcome nor
+cancellation is committed and atomically records `timeout_requested_at` and the
+`timeout_requested` dispatch state. SQLite serialization makes one transaction
+the first durable Factory decision. If timeout intent wins, a later explicit
+cancel may accelerate the same gateway revocation and Cloud Run cleanup but
+cannot change the eventual timed-out outcome. If cancellation wins, later
+timeout observation cannot replace cancelled. If success wins before its
+deadline, neither signal can replace succeeded. Terminal completion is
+idempotent and the stored outcome always wins.
 
 ### Authority lease protocol
 
@@ -860,42 +864,41 @@ The dispatcher is the sole authority decision-maker, and the gateway is the
 sole physical authority-object writer. `authority.json` contains the Attempt
 ID, run ID, run-capability digest, monotonically increasing revision, input
 digest, `session_deadline_at`, `valid_until`, winning execution identity when
-fenced, a complete `last_refresh_receipt`, revocation reason, and previous object
-generation. The receipt contains the request ID, expected storage generation,
-gateway processing time, resulting `valid_until`, and deterministic resulting
-logical authority revision. It does not claim the provider-assigned generation
-of the write that contains it, because GCS assigns that value only after
-accepting the payload. The receipt is written atomically with the authority
-extension. Every later non-refresh authority
-mutation, including fencing and revocation, copies it byte-for-byte; the next
-successful refresh atomically replaces it with its own receipt. It remains in
-`authority.json` for the dispatch retention period, so any gateway instance can
-replay the current receipt after restart without process memory.
+fenced, a complete `last_refresh_receipt`, revocation reason, and previous
+object generation. The receipt contains the request ID, expected storage
+generation, gateway processing time, resulting `valid_until`, and deterministic
+resulting logical authority revision. It does not claim the provider-assigned
+generation of the write that contains it, because GCS assigns that value only
+after accepting the payload. The receipt is written atomically with the
+authority extension. Every later non-refresh authority mutation, including
+fencing and revocation, copies it byte-for-byte; the next successful refresh
+atomically replaces it with its own receipt. It remains in `authority.json` for
+the dispatch retention period, so any gateway instance can replay the current
+receipt after restart without process memory.
 
 An authenticated refresh request contains a durable unique request ID and the
 expected generation, but no caller-supplied time. Factory allows only one
 outstanding refresh per dispatch and commits its request ID before sending. The
 gateway accepts it only while its own clock is before the current object's
 `valid_until`. It computes the new `valid_until` as the earlier of 30 seconds
-after its own server time and `session_deadline_at`, then writes the authority and
-receipt with one GCS `ifGenerationMatch`. Replaying the request ID in the current
-receipt returns that exact receipt and never performs another compare-and-set or
-extends authority again, including after a later revocation. An older resolved
-request ID is rejected without mutation. The gateway returns the logical
-receipt together with the separately read current storage generation, current
-logical revision, and revocation state. The receipt is historical evidence, not
-current authority state, and Factory never treats its expected generation as a
-current generation. Factory ignores such a replay after
+after its own server time and `session_deadline_at`, then writes the authority
+and receipt with one GCS `ifGenerationMatch`. Replaying the request ID in the
+current receipt returns that exact receipt and never performs another
+compare-and-set or extends authority again, including after a later revocation.
+An older resolved request ID is rejected without mutation. The gateway returns
+the logical receipt together with the separately read current storage
+generation, current logical revision, and revocation state. The receipt is
+historical evidence, not current authority state, and Factory never treats its
+expected generation as a current generation. Factory ignores such a replay after
 timeout or cancellation intent owns the outcome. Factory cannot issue the next
 request until it has received and persisted that result. Thus one lost or
 delayed refresh can extend authority at most one 30-second window beyond the
 last acknowledged deadline; it cannot form an unbounded chain. At or after
-`session_deadline_at`, the
-gateway refuses refresh and start-fence requests and conditionally revokes any
-remaining authority. A precondition failure moves the dispatch to
-`reconciling` and stops refresh because another writer or stale state exists. A
-timeout or cancellation revocation then reads the new generation and retries
-until revocation is confirmed or the absolute deadline has arrived.
+`session_deadline_at`, the gateway refuses refresh and start-fence requests and
+conditionally revokes any remaining authority. A precondition failure moves the
+dispatch to `reconciling` and stops refresh because another writer or stale
+state exists. A timeout or cancellation revocation then reads the new generation
+and retries until revocation is confirmed or the absolute deadline has arrived.
 
 Every refresh and authority-read response returns the gateway server time,
 `valid_until`, refresh request ID, logical revision, and the storage generation
@@ -927,12 +930,12 @@ Factory records local monotonic time immediately before every request and
 anchors `session_deadline_at - server_time` to that earlier instant. During
 dispatch and reconciliation, the shortest such monotonic deadline determines
 whether an accepted execution may continue; neither Factory wall time nor a
-delayed response can extend the Session. Once that deadline arrives, Factory stops
-refresh and Run calls, atomically records `timeout_requested`, and asks the
-gateway to revoke authority even when no start fence exists. Fence and
+delayed response can extend the Session. Once that deadline arrives, Factory
+stops refresh and Run calls, atomically records `timeout_requested`, and asks
+the gateway to revoke authority even when no start fence exists. Fence and
 revocation requests compete through the same authority generation. On a
-generation conflict, Factory reads the new generation and retries revocation;
-it never refreshes authority. A successful revocation compare-and-set is the
+generation conflict, Factory reads the new generation and retries revocation; it
+never refreshes authority. A successful revocation compare-and-set is the
 gateway fence: a delayed first delivery carrying the older generation is
 rejected, while replay of an already-consumed request ID may return only its
 immutable durable receipt and cannot mutate the revoked object. When the gateway
@@ -941,26 +944,25 @@ proof if a refresh is outstanding. Confirmed revocation, a gateway response
 showing that the absolute deadline has arrived, provider-terminal proof, or
 expiry of a conservative authority-uncertainty deadline permits Factory to
 commit the terminal outcome already owned by timeout or cancellation intent.
-When there is
-no outstanding refresh, that uncertainty deadline is the last acknowledged
-authority-expiry upper bound, not the earlier client-stop deadline. When one
-refresh may be unacknowledged, Factory adds one full 30-second authority window
-to that receipt-anchored upper bound. The single-flight, idempotent refresh rule
-proves that no delayed request can extend authority beyond that later instant.
-Another gateway
-response is not required merely to restate expiry. Factory durably records which
-proof terminalized the outcome, then requests Cloud Run cancellation as
-platform cleanup. Therefore no container can retain valid authority after
-Factory records the terminal timeout or cancellation. After a Factory restart,
-no refresh or Run retry is allowed until a fresh gateway response establishes a
-new conservative monotonic deadline. If the gateway is unreachable, Factory
-first proves exclusive dispatch ownership and waits a full 60 seconds from its
-suspend-aware monotonic startup instant: one maximum currently valid 30-second
-lease plus one possible unacknowledged refresh extension. That conservative
-wait substitutes for the lost pre-restart anchor and may terminalize an already
-owned timeout or cancellation without a fresh gateway response; provider
-terminal state may do the same sooner only when it satisfies the set-wide proof
-below. Gateway failure cannot revive the execution.
+When there is no outstanding refresh, that uncertainty deadline is the last
+acknowledged authority-expiry upper bound, not the earlier client-stop deadline.
+When one refresh may be unacknowledged, Factory adds one full 30-second
+authority window to that receipt-anchored upper bound. The single-flight,
+idempotent refresh rule proves that no delayed request can extend authority
+beyond that later instant. Another gateway response is not required merely to
+restate expiry. Factory durably records which proof terminalized the outcome,
+then requests Cloud Run cancellation as platform cleanup. Therefore no container
+can retain valid authority after Factory records the terminal timeout or
+cancellation. After a Factory restart, no refresh or Run retry is allowed until
+a fresh gateway response establishes a new conservative monotonic deadline. If
+the gateway is unreachable, Factory first proves exclusive dispatch ownership
+and waits a full 60 seconds from its suspend-aware monotonic startup instant:
+one maximum currently valid 30-second lease plus one possible unacknowledged
+refresh extension. That conservative wait substitutes for the lost pre-restart
+anchor and may terminalize an already owned timeout or cancellation without a
+fresh gateway response; provider terminal state may do the same sooner only when
+it satisfies the set-wide proof below. Gateway failure cannot revive the
+execution.
 
 Provider-terminal proof is set-wide, not evidence from any one duplicate. If a
 start-fence winner is known, its Cloud Run execution must be terminal and every
@@ -1031,14 +1033,14 @@ effects, are recorded as duplicates, and are cancelled if they remain active.
 
 If container startup exceeds 30 seconds, the dispatcher continues renewing the
 Factory lease and cloud authority only while gateway time remains before the
-persisted `session_deadline_at` and Factory's conservative monotonic deadline has
-not expired. The gateway caps every authority lease at that deadline. When the
-monotonic deadline arrives, Factory records timeout intent and conditionally
+persisted `session_deadline_at` and Factory's conservative monotonic deadline
+has not expired. The gateway caps every authority lease at that deadline. When
+the monotonic deadline arrives, Factory records timeout intent and conditionally
 revokes gateway authority. After revocation is confirmed, it records the
 timed-out failure and requests Cloud Run cancellation even if the container has
-not started. A container that starts after that terminal decision cannot
-acquire the start fence or valid authority and exits without checkout or an
-agent process.
+not started. A container that starts after that terminal decision cannot acquire
+the start fence or valid authority and exits without checkout or an agent
+process.
 
 If the frozen Session timeout expires during checkout or agent execution, the
 wrapper sends SIGTERM immediately, sends SIGKILL after ten seconds, and exits
@@ -1142,7 +1144,8 @@ privilege restrictions. They are not gVisor sandboxes. The product must call
 this managed isolation, not safe execution of hostile code. Egress restriction,
 per-repository credentials, quota isolation, and a stronger sandbox remain
 required before accepting arbitrary repositories. See Google's
-[container runtime contract](https://docs.cloud.google.com/run/docs/container-contract).
+[container runtime
+contract](https://docs.cloud.google.com/run/docs/container-contract).
 
 As measured on 2026-08-12, one 1 vCPU and 2 GiB Job costs about $0.00132
 per billable minute at the published default Jobs rates before the free tier.
@@ -1151,8 +1154,9 @@ published free tier is 240,000 vCPU-seconds and 450,000 GiB-seconds per billing
 account each month, equivalent to about 62.5 hours at that resource shape before
 other Cloud Run usage. Actual cost also includes model tokens, image builds and
 storage, logs, artifacts, Secret Manager, and network transfer. Region prices
-and quotas vary. Recheck the official [Cloud Run pricing](https://cloud.google.com/run/pricing)
-before using these figures for a budget.
+and quotas vary. Recheck the official [Cloud Run
+pricing](https://cloud.google.com/run/pricing) before using these figures for a
+budget.
 
 Cloud execution is elastic, not infinite. The dispatcher enforces a configured
 capacity below project and regional quotas and rate limits. It reports quota,
@@ -1271,41 +1275,40 @@ that later signals can perform cleanup without replacing it. Success tests will
 verify that a manifest published before the deadline is still rejected when
 gateway response delay, scheduler delay, SQLite contention, host suspension, or
 restart makes the conservative monotonic deadline expire before the conditional
-terminal write. Before the trusted Session deadline, a transient missing or stale
-gateway response must remain `reconciling` and retry rather than record timeout.
-After expiry it must reject success and take the conditional timeout branch.
-Authority tests will make the gateway permanently unreachable after timeout and
-cancellation intent. With no outstanding refresh, expiry of the last
+terminal write. Before the trusted Session deadline, a transient missing or
+stale gateway response must remain `reconciling` and retry rather than record
+timeout. After expiry it must reject success and take the conditional timeout
+branch. Authority tests will make the gateway permanently unreachable after
+timeout and cancellation intent. With no outstanding refresh, expiry of the last
 acknowledged receipt-anchored authority-expiry upper bound terminalizes the
 owned outcome. With one committed unacknowledged refresh, terminalization
 remains blocked for one additional full authority window. Tests delay an
 acknowledged response, then lose a refresh accepted near actual expiry and prove
 Factory waits beyond the real lease plus its possible extension. A separate
-restart test discards the old
-monotonic anchor, makes the gateway unreachable, and proves terminalization
-remains blocked until Factory acquires exclusive dispatcher ownership and
-completes the full 60-second current-plus-unacknowledged-lease wait on a fresh
-suspend-aware clock, including host suspension during that wait. Refresh-race
-tests delay and lose a refresh response, then prove cancellation cannot
-terminalize before the uncertainty deadline, replaying its request ID cannot
-extend authority again, and Factory cannot issue a second refresh while the
-first is unresolved. A request delayed past the current `valid_until` must be
-rejected without changing the authority generation, last request ID, or
-deadline. When revocation succeeds, its generation and request-ID fence must
-reject a delayed first delivery. A replay of a refresh consumed before
-revocation must return the original response without changing the current
-generation, revocation marker, or deadline, and Factory must ignore it for
-state transitions. The same replay must run after gateway restart and from a
-different gateway instance by reading the receipt retained in `authority.json`;
-an older resolved request ID must be rejected without mutation. A crash after
-the authority CAS succeeds but before response delivery, followed by fencing or
-revocation, gateway restart, and cross-instance replay must recover the logical
-receipt while returning the separately observed current generation and
-revocation state; no step may require embedding the provider-assigned resulting
-generation in the original receipt. Duplicate tests
-must prove that one terminal execution cannot
-satisfy provider-terminal proof while the fence winner remains active, and that
-the no-winner case requires every matching execution to be terminal.
+restart test discards the old monotonic anchor, makes the gateway unreachable,
+and proves terminalization remains blocked until Factory acquires exclusive
+dispatcher ownership and completes the full 60-second
+current-plus-unacknowledged-lease wait on a fresh suspend-aware clock, including
+host suspension during that wait. Refresh-race tests delay and lose a refresh
+response, then prove cancellation cannot terminalize before the uncertainty
+deadline, replaying its request ID cannot extend authority again, and Factory
+cannot issue a second refresh while the first is unresolved. A request delayed
+past the current `valid_until` must be rejected without changing the authority
+generation, last request ID, or deadline. When revocation succeeds, its
+generation and request-ID fence must reject a delayed first delivery. A replay
+of a refresh consumed before revocation must return the original response
+without changing the current generation, revocation marker, or deadline, and
+Factory must ignore it for state transitions. The same replay must run after
+gateway restart and from a different gateway instance by reading the receipt
+retained in `authority.json`; an older resolved request ID must be rejected
+without mutation. A crash after the authority CAS succeeds but before response
+delivery, followed by fencing or revocation, gateway restart, and cross-instance
+replay must recover the logical receipt while returning the separately observed
+current generation and revocation state; no step may require embedding the
+provider-assigned resulting generation in the original receipt. Duplicate tests
+must prove that one terminal execution cannot satisfy provider-terminal proof
+while the fence winner remains active, and that the no-winner case requires
+every matching execution to be terminal.
 
 Security tests will inspect the deployed Job configuration, IAM policy, input
 metadata, gateway request logs and traces, structured logs, and container

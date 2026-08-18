@@ -689,7 +689,8 @@ INSERT INTO automation_schedule_occurrences(
 // migration 029 leaves it, so migration 030 has real rows to rename.
 const preRenameFixture = `
 INSERT INTO repositories(id, remote_identity, created_at, updated_at)
-VALUES ('repo-1', 'github.com/example/factory', 1, 1);
+VALUES ('repo-1', 'github.com/example/factory', 1, 1),
+       ('repo-2', 'github.com/example/neo', 1, 1);
 INSERT INTO workers(
   id, name, worker_version, work_claim_protocol_version, runtime, runtime_version,
   capacity, active_count, health, registered_at, last_heartbeat
@@ -715,12 +716,24 @@ INSERT INTO executions(
 ) VALUES ('execution-1', 'target-1', 'worker-1', 'codex', 'queued', 10, 10);
 `
 
-func TestTaskRenameMigrationPreservesPopulatedRows(t *testing.T) {
-	ctx := context.Background()
-	db, err := sql.Open("sqlite", t.TempDir()+"/pre-rename.sqlite3")
+// openMigrationTestDatabase mirrors the pragmas Open sets in production, so a
+// migration test enforces the same constraints a real upgrade does.
+func openMigrationTestDatabase(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout%285000%29&_pragma=foreign_keys%281%29")
 	if err != nil {
 		t.Fatal(err)
 	}
+	var enabled int
+	if err := db.QueryRow(`PRAGMA foreign_keys`).Scan(&enabled); err != nil || enabled != 1 {
+		t.Fatalf("foreign keys enabled = %d, err %v", enabled, err)
+	}
+	return db
+}
+
+func TestTaskRenameMigrationPreservesPopulatedRows(t *testing.T) {
+	ctx := context.Background()
+	db := openMigrationTestDatabase(t, t.TempDir()+"/pre-rename.sqlite3")
 	store := &Store{db: db, now: time.Now, sweepEvery: 5 * time.Second}
 	t.Cleanup(func() { _ = db.Close() })
 	applyMigrationsBefore(t, ctx, store, "030_task_run_session.sql")
@@ -770,6 +783,28 @@ func TestTaskRenameMigrationPreservesPopulatedRows(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `SELECT json_extract(task_snapshot, '$.name') FROM runs`); err != nil {
 		t.Fatalf("renamed run snapshot column: %v", err)
 	}
+	// The operator API must read a migrated database, not just its rows.
+	detail, err := store.Run(ctx, "work-1")
+	if err != nil || detail.Run.TaskID != "routine-1" || len(detail.Sessions) != 1 {
+		t.Fatalf("migrated Run = %#v, err %v", detail, err)
+	}
+	page, err := store.RunPage(ctx, 10, "")
+	if err != nil || len(page.Runs) != 1 || page.Runs[0].ID != "work-1" {
+		t.Fatalf("migrated Run page = %#v, err %v", page, err)
+	}
+	task, err := store.Task(ctx, "routine-1")
+	if err != nil || task.Name != "Weekly scan" || task.RepositoryCount != 1 {
+		t.Fatalf("migrated Task = %#v, err %v", task, err)
+	}
+	overview, err := store.Overview(ctx)
+	if err != nil || len(overview.RecentRuns) != 1 {
+		t.Fatalf("migrated Overview = %#v, err %v", overview, err)
+	}
+	worker, err := store.Worker(ctx, "worker-1")
+	if err != nil || worker.ID != "worker-1" {
+		t.Fatalf("migrated Worker = %#v, err %v", worker, err)
+	}
+
 	for _, name := range []string{"routines", "routine_repositories", "work", "work_targets"} {
 		var exists int
 		if err := db.QueryRowContext(ctx,
@@ -777,6 +812,60 @@ func TestTaskRenameMigrationPreservesPopulatedRows(t *testing.T) {
 			Scan(&exists); err != nil || exists != 0 {
 			t.Fatalf("old table %s exists = %d, err %v", name, exists, err)
 		}
+	}
+	// ALTER TABLE ... RENAME TO must have carried every REFERENCES clause with
+	// it. That rewrite is governed by legacy_alter_table rather than by the
+	// foreign_keys pragma, so assert the outcome instead of the mechanism: read
+	// the stored schema, then prove a write and a live foreign key check.
+	for table, want := range map[string]string{
+		"sessions":          `REFERENCES "runs"(id)`,
+		"executions":        `REFERENCES "sessions"(id)`,
+		"task_repositories": `REFERENCES "tasks"(id)`,
+	} {
+		var schema string
+		if err := db.QueryRowContext(ctx,
+			`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table).
+			Scan(&schema); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(schema, want) {
+			t.Fatalf("%s schema does not contain %s:\n%s", table, want, schema)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO sessions(
+			id, run_id, repository_id, repository_identity, resolved_prompt,
+			required_runtime, timeout_seconds, state, admitted_at
+		) VALUES ('session-2', 'work-1', 'repo-2', 'github.com/example/neo', 'Review.',
+		          'codex', 3600, 'queued', 20)
+	`); err != nil {
+		t.Fatalf("write to the renamed sessions table: %v", err)
+	}
+	// A reference left pointing at the dropped work table would fail with
+	// "no such table", not a foreign key violation.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO sessions(
+			id, run_id, repository_id, repository_identity, resolved_prompt,
+			required_runtime, timeout_seconds, state, admitted_at
+		) VALUES ('session-3', 'missing-run', 'repo-2', 'github.com/example/neo', 'Review.',
+		          'codex', 3600, 'queued', 20)
+	`); err == nil || !strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+		t.Fatalf("session run reference error = %v, want a foreign key violation", err)
+	}
+	rows, err := db.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows.Next() {
+		rows.Close()
+		t.Fatal("migration 030 left a foreign key violation")
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatal(err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
 	}
 	for _, name := range []string{
 		"tasks_list_order", "tasks_due", "task_repositories_order",
@@ -794,10 +883,7 @@ func TestTaskRenameMigrationPreservesPopulatedRows(t *testing.T) {
 
 func TestTaskRenameMigrationRefusesWhenNewNameIsTaken(t *testing.T) {
 	ctx := context.Background()
-	db, err := sql.Open("sqlite", t.TempDir()+"/collision.sqlite3")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openMigrationTestDatabase(t, t.TempDir()+"/collision.sqlite3")
 	store := &Store{db: db, now: time.Now, sweepEvery: 5 * time.Second}
 	t.Cleanup(func() { _ = db.Close() })
 	applyMigrationsBefore(t, ctx, store, "030_task_run_session.sql")
@@ -807,9 +893,33 @@ func TestTaskRenameMigrationRefusesWhenNewNameIsTaken(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `CREATE TABLE sessions (id TEXT PRIMARY KEY)`); err != nil {
 		t.Fatal(err)
 	}
-	err = store.migrate(ctx)
+	err := store.migrate(ctx)
 	if err == nil || !strings.Contains(err.Error(), "renaming onto it would lose data") {
 		t.Fatalf("migration error = %v, want a named refusal", err)
+	}
+	var routines int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM routines`).Scan(&routines); err != nil || routines != 1 {
+		t.Fatalf("routines preserved = %d, err %v", routines, err)
+	}
+}
+
+func TestTaskRenameMigrationRefusesWhenTheSourceModelIsMissing(t *testing.T) {
+	ctx := context.Background()
+	db := openMigrationTestDatabase(t, t.TempDir()+"/incomplete.sqlite3")
+	store := &Store{db: db, now: time.Now, sweepEvery: 5 * time.Second}
+	t.Cleanup(func() { _ = db.Close() })
+	applyMigrationsBefore(t, ctx, store, "030_task_run_session.sql")
+	if _, err := db.ExecContext(ctx, preRenameFixture); err != nil {
+		t.Fatal(err)
+	}
+	// routine_repositories is referenced by nothing, so it can be removed to
+	// simulate a database that never finished the Routines and Work model.
+	if _, err := db.ExecContext(ctx, `DROP TABLE routine_repositories`); err != nil {
+		t.Fatal(err)
+	}
+	err := store.migrate(ctx)
+	if err == nil || !strings.Contains(err.Error(), "must all exist") {
+		t.Fatalf("migration error = %v, want a missing-source refusal", err)
 	}
 	var routines int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM routines`).Scan(&routines); err != nil || routines != 1 {

@@ -44,7 +44,7 @@ test("creates a Task and completes its Run", async ({ page }) => {
   await expect(page.locator(".attempt-events")).toContainText("Inspected the assigned repository.");
 });
 
-test("shows the same Run as a table, list, and board", async ({ page }) => {
+test("shows the same Runs as a table, list, and board", async ({ page }) => {
   await page.goto("/runs");
   await expect(page.getByRole("heading", { name: "Runs", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: new RegExp(taskName) })).toBeVisible();

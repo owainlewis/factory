@@ -226,8 +226,8 @@ func TestRunSupervisorRejectsInvalidInput(t *testing.T) {
 			name:   "timeout above the maximum",
 			mutate: func(init *supervisorInit) { init.TimeoutSeconds = int(protocol.MaxTimeout/time.Second) + 1 },
 		},
-		{name: "work without target", mutate: func(init *supervisorInit) { init.WorkID = "work-1" }},
-		{name: "target without work", mutate: func(init *supervisorInit) { init.WorkTargetID = "target-1" }},
+		{name: "run without session", mutate: func(init *supervisorInit) { init.RunID = "run-1" }},
+		{name: "session without run", mutate: func(init *supervisorInit) { init.SessionID = "session-1" }},
 		{name: "undecodable input", body: "{"},
 		{name: "unknown field", body: `{"runtime":"codex","surprise":true}`},
 	}
@@ -333,7 +333,7 @@ func TestRunSupervisorStopsARuntimeAtItsTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if exit.Reason != "timeout" || exit.Error != "Work timeout reached" {
+	if exit.Reason != "timeout" || exit.Error != "Session timeout reached" {
 		t.Fatalf("exit message = %+v", exit)
 	}
 	waitFor(t, 30*time.Second, "the attempt process group to be torn down", func() bool {
@@ -403,7 +403,7 @@ func TestRunSupervisorHandlesStopCommandsBeforeStart(t *testing.T) {
 		{name: "cancel", command: "cancel", reason: "cancelled", message: "attempt cancelled"},
 		{name: "lease lost", command: "lease_lost", reason: "lease_lost", message: "control-plane lease was lost"},
 		{name: "preparation failure", command: "fail", reason: "supervisor_error", message: "attempt preparation failed"},
-		{name: "timeout", command: "timeout", reason: "timeout", message: "Work timeout reached"},
+		{name: "timeout", command: "timeout", reason: "timeout", message: "Session timeout reached"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -592,7 +592,7 @@ func TestRunSupervisorReadsTheCodexResultFile(t *testing.T) {
 	init := supervisorInit{
 		Runtime: protocol.RuntimeCodex, RuntimeExecutable: script, Worktree: worktree,
 		ResultPath: resultPath, Prompt: "do the work", TimeoutSeconds: 60,
-		WorkID: "work-1", WorkTargetID: "target-1",
+		RunID: "run-1", SessionID: "session-1",
 	}
 
 	session := startSupervisorSession(t, init)
