@@ -38,9 +38,11 @@ function readyRuntimes(worker: Worker) {
 	return runtimeCapabilities(worker).filter((capability) => capability.status === "ready");
 }
 
+// A connection verdict stays valid until the Worker reports something that could
+// change it. Heartbeat timestamps are deliberately excluded: a passing test waits for
+// a fresh heartbeat, so including it would retire every verdict on the next poll.
 function connectionEvidence(worker: Worker) {
 	return JSON.stringify({
-		lastHeartbeat: worker.last_heartbeat,
 		online: worker.online,
 		health: worker.health,
 		capabilities: worker.capabilities ?? [],
