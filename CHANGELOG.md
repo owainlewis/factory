@@ -25,9 +25,11 @@ recorded here. This project follows [Semantic Versioning](https://semver.org/).
   `/work/{id}/targets/{id}` becoming `/runs/{id}/sessions/{id}`. Migration 30
   renames the database tables in place without data loss and refuses to run if
   a `tasks`, `task_repositories`, `runs`, or `sessions` table already exists.
-  Worker registration now sends `claim_protocol_version`, and the agent
-  environment exposes `FACTORY_RUN_ID` and `FACTORY_SESSION_ID`. Upgrade the
-  server and every Worker together.
+  Worker registration now sends `claim_protocol_version`, and the claim protocol
+  moves to version 2 because the claim payload replaced its `target` field with
+  `session`, so a Worker registered before the upgrade must re-register before
+  it can claim. The agent environment exposes `FACTORY_RUN_ID` and
+  `FACTORY_SESSION_ID`. Upgrade the server and every Worker together.
 - Factory has not published a stable release yet. The first tagged release will
   define the initial supported upgrade boundary.
 

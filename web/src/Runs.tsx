@@ -119,14 +119,14 @@ export function RunDetailView({ id, onBack }: { id: string; onBack: () => void }
   const cancel = useMutation({ mutationFn: () => api.cancelRun(id), onSuccess: () => { void query.refetch(); void client.invalidateQueries({ queryKey: ["runs"] }); } });
   const retry = useMutation({ mutationFn: (sessionId: string) => api.retrySession(id, sessionId), onSuccess: () => { void query.refetch(); void client.invalidateQueries({ queryKey: ["runs"] }); } });
   const cancelSession = useMutation({ mutationFn: (sessionId: string) => api.cancelSession(id, sessionId), onSuccess: () => { void query.refetch(); void client.invalidateQueries({ queryKey: ["runs"] }); } });
-  if (query.isPending) return <LoadingState label="Loading Runs" />;
+  if (query.isPending) return <LoadingState label="Loading Run" />;
   if (query.isError || !query.data) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
   const { run, sessions } = query.data;
   const execution = run.execution.backend === "persistent"
     ? "Automatic persistent Worker"
     : `Cloud Run · ${run.execution.provider} / ${run.execution.model}`;
   return <div className="page run-detail-clean">
-    <button className="back-link" onClick={onBack}><ArrowLeft size={14} /> Run</button>
+    <button className="back-link" onClick={onBack}><ArrowLeft size={14} /> Runs</button>
     <div className="detail-heading run-detail-heading"><div><span className="eyebrow">{run.source.replace("_", " ")} · {run.id.slice(0, 8)}</span><h1>{run.task.name}</h1><p>{run.session_count} repository session{run.session_count === 1 ? "" : "s"} · {execution} · started {timeAgo(run.admitted_at)}</p></div><div className="detail-actions"><StatusBadge state={run.state} />{run.active_count > 0 && <button className="button button-danger-secondary" disabled={cancel.isPending} onClick={() => cancel.mutate()}><StopCircle size={14} /> Cancel</button>}</div></div>
     <InlineError error={cancel.error ?? retry.error ?? cancelSession.error} />
     <section className="run-summary-strip"><div><span>Progress</span><strong>{run.succeeded_count + run.failed_count + run.cancelled_count}/{run.session_count}</strong></div><div><span>Succeeded</span><strong>{run.succeeded_count}</strong></div><div><span>Failed</span><strong>{run.failed_count}</strong></div><div><span>Duration</span><strong>{run.terminal_at ? duration(run.admitted_at, run.terminal_at) : "Active"}</strong></div></section>

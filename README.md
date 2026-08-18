@@ -80,9 +80,10 @@ just run
 Open [http://127.0.0.1:7337](http://127.0.0.1:7337).
 
 Database migration 27 converts supported pre-launch Definitions, schedules,
-and execution history into Tasks and Runs after the database is backed up.
-Unsupported legacy provider admission is blocked and reported instead of being
-silently discarded.
+and execution history into the current lifecycle model after the database is
+backed up, and migration 30 renames that schema and its records to Tasks, Runs,
+and Sessions. Unsupported legacy provider admission is blocked and reported
+instead of being silently discarded.
 
 One Worker has one stable identity, a configurable set of coding-agent
 capabilities, and a pool of independent sessions. The pool defaults to ten

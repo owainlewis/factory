@@ -752,10 +752,15 @@ func TestTaskRenameMigrationPreservesPopulatedRows(t *testing.T) {
 		Scan(&executionSessionID); err != nil || executionSessionID != "target-1" {
 		t.Fatalf("execution session = %q, err %v", executionSessionID, err)
 	}
+	// The rename preserves the stored value, and the claim protocol moved to 2,
+	// so a Worker registered before the upgrade must re-register before claiming.
 	var claimProtocolVersion int
 	if err := db.QueryRowContext(ctx, `SELECT claim_protocol_version FROM workers WHERE id = 'worker-1'`).
 		Scan(&claimProtocolVersion); err != nil || claimProtocolVersion != 1 {
 		t.Fatalf("claim protocol version = %d, err %v", claimProtocolVersion, err)
+	}
+	if claimProtocolVersion == protocol.ClaimProtocolVersion {
+		t.Fatal("a pre-rename Worker registration is still accepted by the claim protocol")
 	}
 	if _, err := db.ExecContext(ctx, `SELECT json_extract(task_snapshot, '$.name') FROM runs`); err != nil {
 		t.Fatalf("renamed run snapshot column: %v", err)

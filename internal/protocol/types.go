@@ -34,7 +34,10 @@ const (
 	MaxEventPageSize          = 500
 	MinWorkerCapacity         = 1
 	MaxWorkerCapacity         = 100
-	ClaimProtocolVersion      = 1
+	// ClaimProtocolVersion moved to 2 when the claim payload replaced its
+	// target field with session. A Worker registered under version 1 cannot
+	// decode a version 2 claim, so it must re-register before it can claim.
+	ClaimProtocolVersion = 2
 )
 
 func SupportedRuntime(value string) bool {

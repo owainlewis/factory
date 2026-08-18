@@ -60,7 +60,7 @@ every cloud provider.
 
 ```mermaid
 flowchart LR
-    O["Operator through SSH tunnel"] --> R["Task and Runs"]
+    O["Operator through SSH tunnel"] --> R["Tasks and Runs"]
     R --> CP["Factory control plane"]
     IAM["Attached dispatcher identity"] --> CP
     CP --> PW["Persistent Worker backend"]
@@ -1004,7 +1004,7 @@ reconciling. The wrapper stops when its last verified authority expires.
 Factory retries profile validation no more than once every 30 seconds with
 jitter. Restored credentials permit cleanup and reconciliation first. An agent
 whose authority expired is failed and cancelled rather than resumed. New cloud
-A Run starts only after the complete profile validation passes again.
+Runs start only after the complete profile validation passes again.
 
 Replacing the VM's attached service account, deleting and recreating a service
 account under the same email, or changing the gateway audience creates an
@@ -1061,7 +1061,7 @@ agent. Factory cancels the cloud execution when access returns and fails the
 Attempt rather than reviving it.
 
 If Factory restarts, it loads every nonterminal dispatch before admitting more
-cloud run. It verifies profile identity, authority generation, start fence,
+cloud Runs. It verifies profile identity, authority generation, start fence,
 Cloud Run execution state, and artifacts. It resumes supervision only when the
 same Attempt still owns valid authority. Otherwise it revokes authority,
 cancels the execution, and records the outcome owned by the durable decision:
@@ -1082,7 +1082,7 @@ it.
 
 Server shutdown stops new dispatch, revokes authority for active Jobs, requests
 Cloud Run cancellation, and waits for up to 30 seconds. On restart, Factory
-reconciles every nonterminal cloud dispatch before admitting new cloud run.
+reconciles every nonterminal cloud dispatch before admitting new cloud Runs.
 The two-minute reconciliation deadline never replaces a durable terminal owner
 or bypasses authority-expiry proof. A dispatch with timeout or cancellation
 intent remains nonterminal until the gateway confirms revocation or absolute
@@ -1183,7 +1183,7 @@ Cloud Logging retention are diagnostic and are never the only retained record.
   process by 40 seconds. One unacknowledged refresh increases those conservative
   bounds to 60 and 70 seconds; it cannot chain another extension.
 - `AC-5`: Factory restart reconciles every nonterminal execution before it
-  admits new cloud run.
+  admits new cloud Runs.
 - `AC-6`: Native Cloud Run retries are zero and only an explicit Factory retry
   creates another Attempt.
 - `AC-7`: Events remain ordered, bounded, and duplicate-safe across delayed or
@@ -1315,7 +1315,7 @@ artifacts or telemetry, that Cloud Run execution inspection is restricted to
 the intended identities, and that repository code cannot use the Job identity
 to run or cancel Cloud Run resources or access a sibling Attempt through the
 gateway or storage API. The real-project prototype must measure how long Cloud
-Cloud Run retains completed execution overrides and feed that value into the profile
+Run retains completed execution overrides and feed that value into the profile
 retention and operator warning.
 
 Wrapper tests will expire the frozen Session timeout during checkout and agent
