@@ -3,9 +3,9 @@ import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { api } from "./api";
 import { OverviewView } from "./Overview";
-import type { OverviewView as OverviewViewResponse } from "./types";
+import type { Overview } from "./types";
 
-const overview: OverviewViewResponse = {
+const overview: Overview = {
   active_runs: 1,
   needs_attention: 0,
   completed_last_24h: 2,

@@ -159,7 +159,7 @@ export interface RunPage {
   next_cursor?: string;
 }
 
-export interface OverviewView {
+export interface Overview {
   active_runs: number;
   needs_attention: number;
   completed_last_24h: number;

@@ -5,7 +5,7 @@ import type {
   ManagedRepository,
   ManagedRepositoryReadiness,
   Task,
-  OverviewView,
+  Overview,
   SaveTaskInput,
   RunDetail,
   RunPage,
@@ -46,7 +46,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  overview: () => request<OverviewView>("/api/v1/overview"),
+  overview: () => request<Overview>("/api/v1/overview"),
   executionProfiles: async () => (await request<{ profiles: ExecutionProfile[] | null }>("/api/v1/execution-profiles")).profiles ?? [],
   tasks: async (includeArchived = false) => {
     const tasks: Task[] = [];
