@@ -602,13 +602,13 @@ func (s *Store) admitTask(
 			return protocol.RunDetail{}, false, unavailable(err)
 		}
 		if readOnly != 0 {
-			return protocol.RunDetail{}, false, conflict("task_read_only", "historical Task revisions cannot start Run")
+			return protocol.RunDetail{}, false, conflict("task_read_only", "historical Task revisions cannot start Runs")
 		}
 		if archived != 0 || migrationOnly != 0 {
-			return protocol.RunDetail{}, false, conflict("task_archived", "archived Tasks cannot start Run")
+			return protocol.RunDetail{}, false, conflict("task_archived", "archived Tasks cannot start Runs")
 		}
 		if scheduleEnabled == 0 {
-			return protocol.RunDetail{}, false, conflict("task_schedule_disabled", "disabled Task schedules cannot start Run")
+			return protocol.RunDetail{}, false, conflict("task_schedule_disabled", "disabled Task schedules cannot start Runs")
 		}
 		if scheduledAt == nil || !pendingDue.Valid || pendingDue.Int64 != scheduledAt.UTC().UnixMilli() {
 			return protocol.RunDetail{}, false, conflict("task_occurrence_changed", "the scheduled Task occurrence changed")
@@ -628,10 +628,10 @@ func (s *Store) admitTask(
 			return protocol.RunDetail{}, false, unavailable(err)
 		}
 		if readOnly != 0 {
-			return protocol.RunDetail{}, false, conflict("task_read_only", "historical Task revisions cannot start Run")
+			return protocol.RunDetail{}, false, conflict("task_read_only", "historical Task revisions cannot start Runs")
 		}
 		if archived != 0 || migrationOnly != 0 {
-			return protocol.RunDetail{}, false, conflict("task_archived", "archived Tasks cannot start Run")
+			return protocol.RunDetail{}, false, conflict("task_archived", "archived Tasks cannot start Runs")
 		}
 		rows, err := tx.QueryContext(ctx, `
 			SELECT repository.id, repository.remote_identity

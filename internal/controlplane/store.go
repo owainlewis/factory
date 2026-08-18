@@ -1275,7 +1275,7 @@ func (s *Store) RegisterWorker(ctx context.Context, workerID string, input proto
 	if input.ClaimProtocolVersion != protocol.ClaimProtocolVersion {
 		return protocol.Worker{}, conflict(
 			"worker_upgrade_required",
-			"the Worker uses an incompatible Run claim protocol; upgrade it before reconnecting",
+			"the Worker uses an incompatible claim protocol; upgrade it before reconnecting",
 		)
 	}
 	labels, err := normalizeWorkerLabels(input.Labels)

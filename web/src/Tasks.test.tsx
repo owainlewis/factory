@@ -38,9 +38,9 @@ const executionProfiles: ExecutionProfile[] = [{
 
 const task: Task = {
   id: "task-1",
-  name: "Ship ready run",
-  prompt: "Find ready run.",
-  prompt_preview: "Find ready run.",
+  name: "Ship ready work",
+  prompt: "Find ready work.",
+  prompt_preview: "Find ready work.",
   runtime: "codex",
   timeout_seconds: 7200,
   concurrency_limit: 10,

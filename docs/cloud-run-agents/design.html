@@ -6,7 +6,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
   <meta name="document-kind" content="design">
   <meta name="source-path" content="docs/cloud-run-agents/design.md">
-  <meta name="source-sha256" content="142072305a38a6230879386bb7e2ef766d2c98464d02043ee0f8d47d310cef5d">
+  <meta name="source-sha256" content="30eaaeee526d1aaa23e876da06c888079ba76e09826d58f9d85785af92aff633">
   <meta name="generator" content="blueprint/html-doc@1">
   <title>Elastic Cloud Run agent backend</title>
   <style>:root {
@@ -426,7 +426,7 @@ tbody tr:nth-child(even) { background: #eff3f5; }
     </div>
   </header>
   <div class="page-shell">
-    <aside class="mobile-toc" aria-label="Document navigation"><details><summary>Contents</summary><nav aria-label="Document sections on small screens"><ol><li data-level="2"><a href="#1-executive-summary">1. Executive summary</a></li><li data-level="2"><a href="#2-context-and-scope">2. Context and scope</a></li><li data-level="2"><a href="#3-system-context">3. System context</a></li><li data-level="2"><a href="#4-proposed-design">4. Proposed design</a></li><li data-level="3"><a href="#how-it-runs">How it runs</a></li><li data-level="3"><a href="#guided-setup-and-operator-experience">Guided setup and operator experience</a></li><li data-level="3"><a href="#google-cloud-deployment-and-authentication">Google Cloud deployment and authentication</a></li><li data-level="3"><a href="#delivery-sequence">Delivery sequence</a></li><li data-level="3"><a href="#components-and-responsibilities">Components and responsibilities</a></li><li data-level="3"><a href="#decisions">Decisions</a></li><li data-level="2"><a href="#5-invariants-and-requirements">5. Invariants and requirements</a></li><li data-level="3"><a href="#invariants">Invariants</a></li><li data-level="3"><a href="#requirements">Requirements</a></li><li data-level="2"><a href="#6-interfaces-and-data">6. Interfaces and data</a></li><li data-level="3"><a href="#backend-profile">Backend profile</a></li><li data-level="3"><a href="#naming-and-identity">Naming and identity</a></li><li data-level="3"><a href="#dispatch-record">Dispatch record</a></li><li data-level="3"><a href="#object-layout">Object layout</a></li><li data-level="3"><a href="#dispatch-states">Dispatch states</a></li><li data-level="3"><a href="#normative-state-machine">Normative state machine</a></li><li data-level="3"><a href="#authority-lease-protocol">Authority lease protocol</a></li><li data-level="2"><a href="#7-failure-behavior-and-lifecycle">7. Failure behavior and lifecycle</a></li><li data-level="2"><a href="#8-security-privacy-and-operations">8. Security, privacy, and operations</a></li><li data-level="2"><a href="#9-acceptance-criteria">9. Acceptance criteria</a></li><li data-level="2"><a href="#10-test-approach">10. Test approach</a></li><li data-level="2"><a href="#11-risks-and-tradeoffs">11. Risks and tradeoffs</a></li><li data-level="2"><a href="#12-open-questions">12. Open questions</a></li><li data-level="2"><a href="#13-out-of-scope">13. Out of scope</a></li></ol></nav></details></aside><nav class="toc" aria-label="Document contents"><p class="toc-title">On this page</p><ol><li data-level="2"><a href="#1-executive-summary">1. Executive summary</a></li><li data-level="2"><a href="#2-context-and-scope">2. Context and scope</a></li><li data-level="2"><a href="#3-system-context">3. System context</a></li><li data-level="2"><a href="#4-proposed-design">4. Proposed design</a></li><li data-level="3"><a href="#how-it-runs">How it runs</a></li><li data-level="3"><a href="#guided-setup-and-operator-experience">Guided setup and operator experience</a></li><li data-level="3"><a href="#google-cloud-deployment-and-authentication">Google Cloud deployment and authentication</a></li><li data-level="3"><a href="#delivery-sequence">Delivery sequence</a></li><li data-level="3"><a href="#components-and-responsibilities">Components and responsibilities</a></li><li data-level="3"><a href="#decisions">Decisions</a></li><li data-level="2"><a href="#5-invariants-and-requirements">5. Invariants and requirements</a></li><li data-level="3"><a href="#invariants">Invariants</a></li><li data-level="3"><a href="#requirements">Requirements</a></li><li data-level="2"><a href="#6-interfaces-and-data">6. Interfaces and data</a></li><li data-level="3"><a href="#backend-profile">Backend profile</a></li><li data-level="3"><a href="#naming-and-identity">Naming and identity</a></li><li data-level="3"><a href="#dispatch-record">Dispatch record</a></li><li data-level="3"><a href="#object-layout">Object layout</a></li><li data-level="3"><a href="#dispatch-states">Dispatch states</a></li><li data-level="3"><a href="#normative-state-machine">Normative state machine</a></li><li data-level="3"><a href="#authority-lease-protocol">Authority lease protocol</a></li><li data-level="2"><a href="#7-failure-behavior-and-lifecycle">7. Failure behavior and lifecycle</a></li><li data-level="2"><a href="#8-security-privacy-and-operations">8. Security, privacy, and operations</a></li><li data-level="2"><a href="#9-acceptance-criteria">9. Acceptance criteria</a></li><li data-level="2"><a href="#10-test-approach">10. Test approach</a></li><li data-level="2"><a href="#11-risks-and-tradeoffs">11. Risks and tradeoffs</a></li><li data-level="2"><a href="#12-open-questions">12. Open questions</a></li><li data-level="2"><a href="#13-out-of-scope">13. Out of scope</a></li></ol></nav>
+    <aside class="mobile-toc" aria-label="Document navigation"><details><summary>Contents</summary><nav aria-label="Document sections on small screens"><ol><li data-level="2"><a href="#1-executive-summary">1. Executive summary</a></li><li data-level="2"><a href="#2-context-and-scope">2. Context and scope</a></li><li data-level="2"><a href="#3-system-context">3. System context</a></li><li data-level="2"><a href="#4-proposed-design">4. Proposed design</a></li><li data-level="3"><a href="#how-it-works">How it works</a></li><li data-level="3"><a href="#guided-setup-and-operator-experience">Guided setup and operator experience</a></li><li data-level="3"><a href="#google-cloud-deployment-and-authentication">Google Cloud deployment and authentication</a></li><li data-level="3"><a href="#delivery-sequence">Delivery sequence</a></li><li data-level="3"><a href="#components-and-responsibilities">Components and responsibilities</a></li><li data-level="3"><a href="#decisions">Decisions</a></li><li data-level="2"><a href="#5-invariants-and-requirements">5. Invariants and requirements</a></li><li data-level="3"><a href="#invariants">Invariants</a></li><li data-level="3"><a href="#requirements">Requirements</a></li><li data-level="2"><a href="#6-interfaces-and-data">6. Interfaces and data</a></li><li data-level="3"><a href="#backend-profile">Backend profile</a></li><li data-level="3"><a href="#naming-and-identity">Naming and identity</a></li><li data-level="3"><a href="#dispatch-record">Dispatch record</a></li><li data-level="3"><a href="#object-layout">Object layout</a></li><li data-level="3"><a href="#dispatch-states">Dispatch states</a></li><li data-level="3"><a href="#normative-state-machine">Normative state machine</a></li><li data-level="3"><a href="#authority-lease-protocol">Authority lease protocol</a></li><li data-level="2"><a href="#7-failure-behavior-and-lifecycle">7. Failure behavior and lifecycle</a></li><li data-level="2"><a href="#8-security-privacy-and-operations">8. Security, privacy, and operations</a></li><li data-level="2"><a href="#9-acceptance-criteria">9. Acceptance criteria</a></li><li data-level="2"><a href="#10-test-approach">10. Test approach</a></li><li data-level="2"><a href="#11-risks-and-tradeoffs">11. Risks and tradeoffs</a></li><li data-level="2"><a href="#12-open-questions">12. Open questions</a></li><li data-level="2"><a href="#13-out-of-scope">13. Out of scope</a></li></ol></nav></details></aside><nav class="toc" aria-label="Document contents"><p class="toc-title">On this page</p><ol><li data-level="2"><a href="#1-executive-summary">1. Executive summary</a></li><li data-level="2"><a href="#2-context-and-scope">2. Context and scope</a></li><li data-level="2"><a href="#3-system-context">3. System context</a></li><li data-level="2"><a href="#4-proposed-design">4. Proposed design</a></li><li data-level="3"><a href="#how-it-works">How it works</a></li><li data-level="3"><a href="#guided-setup-and-operator-experience">Guided setup and operator experience</a></li><li data-level="3"><a href="#google-cloud-deployment-and-authentication">Google Cloud deployment and authentication</a></li><li data-level="3"><a href="#delivery-sequence">Delivery sequence</a></li><li data-level="3"><a href="#components-and-responsibilities">Components and responsibilities</a></li><li data-level="3"><a href="#decisions">Decisions</a></li><li data-level="2"><a href="#5-invariants-and-requirements">5. Invariants and requirements</a></li><li data-level="3"><a href="#invariants">Invariants</a></li><li data-level="3"><a href="#requirements">Requirements</a></li><li data-level="2"><a href="#6-interfaces-and-data">6. Interfaces and data</a></li><li data-level="3"><a href="#backend-profile">Backend profile</a></li><li data-level="3"><a href="#naming-and-identity">Naming and identity</a></li><li data-level="3"><a href="#dispatch-record">Dispatch record</a></li><li data-level="3"><a href="#object-layout">Object layout</a></li><li data-level="3"><a href="#dispatch-states">Dispatch states</a></li><li data-level="3"><a href="#normative-state-machine">Normative state machine</a></li><li data-level="3"><a href="#authority-lease-protocol">Authority lease protocol</a></li><li data-level="2"><a href="#7-failure-behavior-and-lifecycle">7. Failure behavior and lifecycle</a></li><li data-level="2"><a href="#8-security-privacy-and-operations">8. Security, privacy, and operations</a></li><li data-level="2"><a href="#9-acceptance-criteria">9. Acceptance criteria</a></li><li data-level="2"><a href="#10-test-approach">10. Test approach</a></li><li data-level="2"><a href="#11-risks-and-tradeoffs">11. Risks and tradeoffs</a></li><li data-level="2"><a href="#12-open-questions">12. Open questions</a></li><li data-level="2"><a href="#13-out-of-scope">13. Out of scope</a></li></ol></nav>
     <main id="document-content" class="document-content" tabindex="-1" data-source-block-count="161">
 <div class="document-intro">
 <section id="elastic-cloud-run-agent-backend" class="source-block"
@@ -469,7 +469,7 @@ model.</p>
 data-source-sha256="9832c0919203341ef732b334dcb47e68075be9ee3444783de4c9b749e8c3b7de">
 <p>The first hosted deployment runs <code>factory-server</code> on a
 dedicated Compute Engine VM. Its attached dispatcher service account
-supplies metadata-backed runload credentials to Google client
+supplies metadata-backed workload credentials to Google client
 libraries. Factory calls Cloud Run and the Attempt gateway directly and
 never shells out to <code>gcloud</code> or loads a downloaded
 service-account key. Coding agents do not run on this VM because any
@@ -615,9 +615,9 @@ data-source-block="20"
 data-source-sha256="cb43280d884b7bd10ddfe1c903a3a3ffc221ebb65bc3295cbb6d512812e2ddb1">
 <h2>4. Proposed design</h2>
 </section>
-<section id="how-it-runs" class="source-block" data-source-block="21"
+<section id="how-it-works" class="source-block" data-source-block="21"
 data-source-sha256="e248d7da23aef6704ac43f3f639e0b91f6c326e9ecb982e008905e4785a6b4ed">
-<h3>How it runs</h3>
+<h3>How it works</h3>
 </section>
 <div class="source-block" data-source-block="22"
 data-source-sha256="7347938118b0c28cf1ea802becf0bf17737fed3376d21ea97aa39de0c651b554">
@@ -638,9 +638,9 @@ non-secret run ID and starts in <code>dispatching</code>. Factory writes
 the immutable input and gateway registration, then asks the gateway to
 create the initial short-lived authority document using the gateway
 clock and an object-generation precondition. That response also fixes
-<code>run_started_at</code> to gateway server time and
-<code>run_deadline_at</code> to
-<code>run_started_at + timeout_seconds</code>; both are persisted in
+<code>session_started_at</code> to gateway server time and
+<code>session_deadline_at</code> to
+<code>session_started_at + timeout_seconds</code>; both are persisted in
 the dispatch before the Run call and bound into the authority object.
 Factory records local monotonic time immediately before that gateway
 request and anchors the returned remaining Session duration to the earlier instant. That conservative monotonic deadline drives the live dispatcher
@@ -680,8 +680,8 @@ every duplicate exits without running an agent. The gateway serializes
 the fence and revocation through a conditional authority-object update,
 then publishes <code>started.json</code> as immutable evidence. The
 successful response includes gateway server time and the persisted
-<code>run_deadline_at</code>. The wrapper anchors
-<code>run_deadline_at - server_time</code> to the earlier pre-request
+<code>session_deadline_at</code>. The wrapper anchors
+<code>session_deadline_at - server_time</code> to the earlier pre-request
 monotonic instant, so Cloud Run startup and response delay consume rather than extend the frozen Session timeout. The winning wrapper verifies
 the input, checks out only the frozen commit, and starts the selected
 runtime in the checkout. Checkout and agent execution share that
@@ -816,7 +816,7 @@ file over the attached identity.</p>
 data-source-sha256="47771c5e7ef8777f58fe03fb2b6d0325920fbfe76842af553b6bb167e2bba74b">
 <p>Local development uses a separate <code>impersonated_adc</code> mode.
 Its ADC file must be an impersonated-service-account configuration
-sessioning the expected dispatcher subject. Factory rejects
+targeting the expected dispatcher subject. Factory rejects
 <code>service_account</code> key files and plain
 <code>authorized_user</code> ADC for dispatch. A human developer
 receives Token Creator on only the dispatcher service account.
@@ -1089,7 +1089,7 @@ Attempt, event, result, cancellation, and retry experience. We reject a
 separate "cloud task" product because execution location must not split
 Task history or metrics.</p>
 </div>
-<section id="backend-choice-freezes-on-run" class="source-block"
+<section id="backend-choice-freezes-on-the-run" class="source-block"
 data-source-block="62"
 data-source-sha256="3aaefd284114e9c5bf1644cf4f0f220199073cc28cd1b3d5b0bf984f0cab046f">
 <h4>Backend choice freezes on the Run</h4>
@@ -1195,10 +1195,10 @@ Referenced versions cannot be deleted. An explicit retry uses the same
 version; if it is unavailable, Factory blocks the retry instead of
 silently running different code.</p>
 </div>
-<section id="direct-apis-with-attached-runload-identity"
+<section id="direct-apis-with-attached-workload-identity"
 class="source-block" data-source-block="78"
 data-source-sha256="6a662ccdd2a65e23df7e47f2d8df51dbf130a86a9dadc8aec490e93ebb34f9a5">
-<h4>Direct APIs with attached runload identity</h4>
+<h4>Direct APIs with attached workload identity</h4>
 </section>
 <div class="source-block" data-source-block="79"
 data-source-sha256="1119e0d4e91074bd98ad97398456a9f352cbb99db3455c3036f88d41a3160a21">
@@ -1209,7 +1209,7 @@ reject invoking <code>gcloud</code> from the dispatcher because CLI
 configuration, output, and subprocess state are not a durable runtime
 contract. We also reject downloaded service-account keys because they
 are long-lived bearer credentials that add rotation and leakage risk.
-The cost is that setup must attach and validate a dedicated runload
+The cost is that setup must attach and validate a dedicated workload
 identity before a cloud profile can be enabled.</p>
 </div>
 <section id="dedicated-control-plane-vm" class="source-block"
@@ -1318,8 +1318,8 @@ not change existing Runs.</li>
 <li>Dispatch stores the Attempt ID, non-secret run ID, run-capability
 digest, envelope-encrypted run-capability ciphertext, state, immutable
 profile version, every observed Cloud operation and execution name,
-timestamps, gateway-derived <code>run_started_at</code> and
-<code>run_deadline_at</code>, the last acknowledged authority
+timestamps, gateway-derived <code>session_started_at</code> and
+<code>session_deadline_at</code>, the last acknowledged authority
 generation, an early fail-closed client deadline, a conservative
 authority-expiry upper bound, any single outstanding refresh request ID,
 error, and reconciliation deadline.</li>
@@ -1344,7 +1344,7 @@ remains valid for no more than 30 seconds without a dispatcher
 refresh.</li>
 <li>The immutable input includes <code>timeout_seconds</code>. The
 gateway start-fence response supplies trusted server time and the
-persisted <code>run_deadline_at</code> established before the Run call.
+persisted <code>session_deadline_at</code> established before the Run call.
 The wrapper anchors the remaining duration to the monotonic instant
 recorded before the request, producing a conservative deadline shared by
 Cloud Run startup, checkout, and agent execution. At the deadline
@@ -1353,7 +1353,7 @@ ten-second process-group kill rule, stops all Job-originated gateway
 writes, and exits nonzero. Gateway control-plane authority revocation
 remains permitted. A wrapper has no more than five minutes from process
 start to acquire its fence and never beyond
-<code>run_deadline_at</code>. The versioned Cloud Run Job timeout is at least the maximum Session timeout plus ten seconds and is a platform safety limit, not the Session timeout.</li>
+<code>session_deadline_at</code>. The versioned Cloud Run Job timeout is at least the maximum Session timeout plus ten seconds and is a platform safety limit, not the Session timeout.</li>
 <li>Event and completion sizes reuse the existing Attempt limits.
 Artifact size defaults to 64 MiB and has a 512 MiB maximum. Completion
 is rejected when the configured bound is exceeded.</li>
@@ -1440,8 +1440,8 @@ service-account principal, SHA-256 digest of the run capability,
 non-secret run ID, exact Attempt prefix, input digest, frozen
 <code>timeout_seconds</code>, protocol version, and absolute
 registration expiry. The gateway uses that registered duration and its
-own server time to establish <code>run_started_at</code> and
-<code>run_deadline_at</code>; neither the Job nor a later refresh can
+own server time to establish <code>session_started_at</code> and
+<code>session_deadline_at</code>; neither the Job nor a later refresh can
 change them. The Job sends the raw capability only to the gateway. The
 gateway hashes it, uses its own bucket identity to load the registration
 and authority, and never exposes list or arbitrary object operations.
@@ -1497,8 +1497,8 @@ run_id
 run_capability_digest
 run_capability_ciphertext
 state
-run_started_at
-run_deadline_at
+session_started_at
+session_deadline_at
 provider_search_not_before
 provider_search_unbounded
 cloud_operation_name
@@ -1615,7 +1615,7 @@ creation, an unexpired monotonic Session deadline</td>
 <tr>
 <td><code>starting</code></td>
 <td>Accepted Run operation or matching start fence, before
-<code>run_deadline_at</code></td>
+<code>session_deadline_at</code></td>
 <td><code>running</code>, <code>reconciling</code>,
 <code>timeout_requested</code>, <code>cancel_requested</code>,
 <code>terminal</code></td>
@@ -1712,7 +1712,7 @@ Three SQLite transactions compete. Successful completion loads the
 verified manifest evidence and first obtains a fresh gateway
 authority-state response. Factory records local monotonic time
 immediately before that request and derives the conservative remaining Session duration from the returned gateway time and
-<code>run_deadline_at</code>. The single serialized SQLite statement
+<code>session_deadline_at</code>. The single serialized SQLite statement
 that conditionally writes terminal success invokes a registered
 suspend-aware monotonic clock function and requires
 <code>now &lt; deadline</code> together with the checks that neither
@@ -1753,7 +1753,7 @@ data-source-sha256="fa4fb90452995445fec9a9321edd3a70b8084714f4af7af05c512a40df50
 is the sole physical authority-object writer.
 <code>authority.json</code> contains the Attempt ID, run ID,
 run-capability digest, monotonically increasing revision, input digest,
-<code>run_deadline_at</code>, <code>valid_until</code>, winning
+<code>session_deadline_at</code>, <code>valid_until</code>, winning
 execution identity when fenced, a complete
 <code>last_refresh_receipt</code>, revocation reason, and previous
 object generation. The receipt contains the request ID, expected storage
@@ -1776,7 +1776,7 @@ only one outstanding refresh per dispatch and commits its request ID
 before sending. The gateway accepts it only while its own clock is
 before the current object's <code>valid_until</code>. It computes the
 new <code>valid_until</code> as the earlier of 30 seconds after its own
-server time and <code>run_deadline_at</code>, then writes the authority
+server time and <code>session_deadline_at</code>, then writes the authority
 and receipt with one GCS <code>ifGenerationMatch</code>. Replaying the
 request ID in the current receipt returns that exact receipt and never
 performs another compare-and-set or extends authority again, including
@@ -1790,7 +1790,7 @@ timeout or cancellation intent owns the outcome. Factory cannot issue
 the next request until it has received and persisted that result. Thus
 one lost or delayed refresh can extend authority at most one 30-second
 window beyond the last acknowledged deadline; it cannot form an
-unbounded chain. At or after <code>run_deadline_at</code>, the gateway
+unbounded chain. At or after <code>session_deadline_at</code>, the gateway
 refuses refresh and start-fence requests and conditionally revokes any
 remaining authority. A precondition failure moves the dispatch to
 <code>reconciling</code> and stops refresh because another writer or
@@ -1833,7 +1833,7 @@ data-source-sha256="82a47b8fcffaeb4b884a8efeea631d2a45ae392d6dc70e73a11313ff71b3
 Attempt lease and dispatch record remain active. Every gateway response
 includes server time. Factory records local monotonic time immediately
 before every request and anchors
-<code>run_deadline_at - server_time</code> to that earlier instant.
+<code>session_deadline_at - server_time</code> to that earlier instant.
 During dispatch and reconciliation, the shortest such monotonic deadline
 determines whether an accepted execution may continue; neither Factory
 wall time nor a delayed response can extend the Runs. Once that deadline
@@ -1968,7 +1968,7 @@ recorded as duplicates, and are cancelled if they remain active.</p>
 data-source-sha256="95cdf1107f979c01c559201cf7c8cd91b7427c322ac20af93fdbf47795f53619">
 <p>If container startup exceeds 30 seconds, the dispatcher continues
 renewing the Factory lease and cloud authority only while gateway time
-remains before the persisted <code>run_deadline_at</code> and Factory's
+remains before the persisted <code>session_deadline_at</code> and Factory's
 conservative monotonic deadline has not expired. The gateway caps every
 authority lease at that deadline. When the monotonic deadline arrives,
 Factory records timeout intent and conditionally revokes gateway
@@ -2259,7 +2259,7 @@ ahead of and behind the gateway, delayed gateway responses, and quota
 failures to prove <code>INV-3</code>, <code>INV-4</code>,
 <code>INV-9</code>, <code>AC-3</code>, <code>AC-4</code>, and
 <code>AC-5</code>. A container-start delay beyond
-<code>run_deadline_at</code> must produce a timed-out Attempt, a Cloud
+<code>session_deadline_at</code> must produce a timed-out Attempt, a Cloud
 Run cancellation request, no successful start fence, and no authority
 refresh beyond the deadline. A delayed gateway response that shortens
 Factory's monotonic deadline must persist timeout intent, race a late
@@ -2369,7 +2369,7 @@ expected-subject service-account key in
 <code>GOOGLE_APPLICATION_CREDENTIALS</code>, install valid user and
 service-account ADC at the well-known path, and confirm that each source
 is rejected before token resolution. Development tests accept only an
-impersonated-service-account ADC file sessioning the expected subject.
+impersonated-service-account ADC file targeting the expected subject.
 These cases prove <code>INV-15</code>, <code>AC-15</code>, and the
 direct API path.</p>
 </div>
@@ -2489,7 +2489,7 @@ another replicated platform.</li>
 <li>Automatic provider selection based only on price.</li>
 <li>Native Cloud Run task fan-out for one Run Session.</li>
 <li>GPU agents, interactive terminals, or long-lived cloud development
-runspaces.</li>
+workspaces.</li>
 <li>A general multi-cloud job abstraction before a second provider
 exists.</li>
 </ul>

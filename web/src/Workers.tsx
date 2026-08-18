@@ -280,7 +280,7 @@ export function WorkerDetail({
 				Test connection
 			</button>
           {!legacyReadOnly && <button className="button button-primary" onClick={onDelegate}>
-            <Plus size={15} /> Assign run
+            <Plus size={15} /> Assign Run
           </button>}
         </div>
       </div>

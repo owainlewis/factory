@@ -90,7 +90,7 @@ func (s *Store) Claim(ctx context.Context, workerID string, input protocol.Claim
 	if claimProtocolVersion != protocol.ClaimProtocolVersion {
 		return nil, conflict(
 			"worker_upgrade_required",
-			"the Worker uses an incompatible Run claim protocol; upgrade it before claiming Run",
+			"the Worker uses an incompatible claim protocol; upgrade it before claiming a Session",
 		)
 	}
 	var active int

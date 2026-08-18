@@ -73,7 +73,7 @@ Task or Run identity.
 
 ## 4. Proposed design
 
-### How it runs
+### How it works
 
 An operator creates a Task called `Weekly bug scan`. They enter one prompt,
 select the coding-agent runtime, select three managed repositories, and keep
@@ -348,7 +348,7 @@ are never authoring resources.
 `tasks.read_only` durably marks archived Workflow revision history. These
 Tasks remain inspectable but cannot be edited, restored, scheduled, or run.
 `task_repositories` stores an explicit position and unique Task and
-Repository pair. `run` stores the Task snapshot as validated JSON.
+Repository pair. `runs` stores the Task snapshot as validated JSON.
 `sessions` stores the repository ID and canonical identity snapshot,
 resolved prompt, state, block reason, assigned Worker, timestamps, result, and
 failure.
