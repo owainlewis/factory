@@ -371,6 +371,74 @@ if [ -e "$temporary/worker-started-detached" ]; then
   exit 1
 fi
 
+mkdir -p "$temporary/exiting-bin"
+cat >"$temporary/exiting-bin/factory-worker" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "identity" ]; then
+  echo "new-unhealthy-worker"
+  exit 0
+fi
+: >"$FACTORY_TEST_WORKER_MARKER"
+exit 0
+EOF
+chmod +x "$temporary/exiting-bin/factory-worker"
+
+printf "server = 'http://127.0.0.1:1'\n" >"$temporary/literal-worker.toml"
+printf 'server = "http://127.0.0.1:1" # production\n' >"$temporary/commented-worker.toml"
+printf 'server = http://127.0.0.1:1\n' >"$temporary/unquoted-worker.toml"
+
+for quoting in literal commented; do
+  set +e
+  output=$(
+    FACTORY_BUILD_DIR="$temporary/exiting-bin" \
+      FACTORY_DATA_HOME="$temporary/data" \
+      FACTORY_SKIP_BUILD=1 \
+      FACTORY_TEST_WORKER_MARKER="$temporary/worker-started-$quoting" \
+      "$root/scripts/run-worker.sh" "$temporary/$quoting-worker.toml" 2>&1
+  )
+  status=$?
+  set -e
+  if [ "$status" -ne 1 ] ||
+    ! printf '%s\n' "$output" |
+      grep -Fq "Factory control plane did not answer http://127.0.0.1:1/healthz"; then
+    echo "worker launcher did not read the $quoting server value" >&2
+    echo "$output" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$output" | grep -Fq "127.0.0.1:7337"; then
+    echo "worker launcher fell back to the default control plane for the $quoting server value" >&2
+    echo "$output" >&2
+    exit 1
+  fi
+done
+
+set +e
+output=$(
+  FACTORY_BUILD_DIR="$temporary/exiting-bin" \
+    FACTORY_DATA_HOME="$temporary/data" \
+    FACTORY_SKIP_BUILD=1 \
+    FACTORY_TEST_WORKER_MARKER="$temporary/worker-started-unquoted" \
+    "$root/scripts/run-worker.sh" "$temporary/unquoted-worker.toml" 2>&1
+)
+status=$?
+set -e
+if [ "$status" -ne 1 ] ||
+  ! printf '%s\n' "$output" |
+    grep -Fq "Factory could not read the server value in $temporary/unquoted-worker.toml"; then
+  echo "worker launcher did not reject an unreadable server value" >&2
+  echo "$output" >&2
+  exit 1
+fi
+if printf '%s\n' "$output" | grep -Fq "127.0.0.1:7337"; then
+  echo "worker launcher defaulted to localhost despite a present server key" >&2
+  echo "$output" >&2
+  exit 1
+fi
+if [ -e "$temporary/worker-started-unquoted" ]; then
+  echo "worker launcher started a worker with an unreadable server value" >&2
+  exit 1
+fi
+
 node - "$root" "$temporary" <<'EOF'
 const { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { createServer } = require("node:net");
@@ -526,4 +594,4 @@ async function waitForHealth(port) {
 });
 EOF
 
-echo "Factory worker launcher needs only the worker binary, joins the control plane its configuration names rather than the local server listen address, names the endpoint it probed, and leaves the control plane running after Ctrl-C."
+echo "Factory worker launcher needs only the worker binary, joins the control plane its configuration names rather than the local server listen address, names the endpoint it probed, reads quoted, literal, and commented server values, refuses an unreadable one instead of defaulting to localhost, and leaves the control plane running after Ctrl-C."

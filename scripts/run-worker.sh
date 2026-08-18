@@ -71,17 +71,36 @@ fi
 
 # The worker configuration is the only authority for the control plane this
 # worker joins. Read its top-level keys, which precede the first table header.
+# An absent key takes its default. A key that is present but unreadable is an
+# error, because defaulting there would silently join the wrong control plane.
 read_config_key() {
-  sed -n "/^[[:space:]]*\[/q; s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\"[[:space:]]*\$/\1/p" "$config" |
-    head -1
+  key=$1
+  line=$(sed -n "/^[[:space:]]*\[/q; /^[[:space:]]*$key[[:space:]]*=/p" "$config" | head -1)
+  if [ -z "$line" ]; then
+    return 0
+  fi
+  value=$(
+    printf '%s\n' "$line" | sed -n \
+      -e "s/^[^=]*=[[:space:]]*\"\([^\"]*\)\"[[:space:]]*\$/\1/p" \
+      -e "s/^[^=]*=[[:space:]]*\"\([^\"]*\)\"[[:space:]]*#.*\$/\1/p" \
+      -e "s/^[^=]*=[[:space:]]*'\([^']*\)'[[:space:]]*\$/\1/p" \
+      -e "s/^[^=]*=[[:space:]]*'\([^']*\)'[[:space:]]*#.*\$/\1/p" |
+      head -1
+  )
+  if [ -z "$value" ]; then
+    echo "Factory could not read the $key value in $config." >&2
+    echo "Write it as a single-line quoted TOML string, such as $key = \"value\"." >&2
+    return 1
+  fi
+  printf '%s' "$value"
 }
 
-server=$(read_config_key server)
+server=$(read_config_key server) || exit 1
 if [ -z "$server" ]; then
   server="http://127.0.0.1:7337"
 fi
 server=${server%/}
-ca_certificate=$(read_config_key ca_certificate)
+ca_certificate=$(read_config_key ca_certificate) || exit 1
 case "$ca_certificate" in
   "" | /*) ;;
   *) ca_certificate="$(CDPATH= cd -- "$(dirname -- "$config")" && pwd)/$ca_certificate" ;;
