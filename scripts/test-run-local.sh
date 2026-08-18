@@ -328,9 +328,12 @@ EOF
 
 echo "Factory launcher honors bootstrap listen settings, rejects unhealthy workers, retired-state writes, server loss, and stalled readiness responses; signals stop cleanly."
 
+mkdir -p "$temporary/worker-only-bin"
+cp "$temporary/bin/factory-worker" "$temporary/worker-only-bin/factory-worker"
+
 set +e
 output=$(
-  FACTORY_BUILD_DIR="$temporary/bin" \
+  FACTORY_BUILD_DIR="$temporary/worker-only-bin" \
     FACTORY_DATA_HOME="$temporary/data" \
     FACTORY_SKIP_BUILD=1 \
     "$root/scripts/run-worker.sh" "$temporary/missing-worker.toml" 2>&1
@@ -345,21 +348,21 @@ if [ "$status" -ne 1 ] ||
   exit 1
 fi
 
+printf 'server = "http://127.0.0.1:1"\n' >"$temporary/detached-worker.toml"
 set +e
 output=$(
-  FACTORY_BUILD_DIR="$temporary/bin" \
+  FACTORY_BUILD_DIR="$temporary/worker-only-bin" \
     FACTORY_DATA_HOME="$temporary/data" \
-    FACTORY_LISTEN="127.0.0.1:1" \
     FACTORY_SKIP_BUILD=1 \
     FACTORY_TEST_WORKER_MARKER="$temporary/worker-started-detached" \
-    "$root/scripts/run-worker.sh" "$temporary/worker.toml" 2>&1
+    "$root/scripts/run-worker.sh" "$temporary/detached-worker.toml" 2>&1
 )
 status=$?
 set -e
 if [ "$status" -ne 1 ] ||
   ! printf '%s\n' "$output" |
-    grep -q "Factory control plane is not reachable at http://127.0.0.1:1/"; then
-  echo "worker launcher did not report a missing control plane" >&2
+    grep -Fq "Factory control plane did not answer http://127.0.0.1:1/healthz"; then
+  echo "worker launcher did not name the control plane endpoint it probed" >&2
   echo "$output" >&2
   exit 1
 fi
@@ -368,15 +371,14 @@ if [ -e "$temporary/worker-started-detached" ]; then
   exit 1
 fi
 
-node - "$root" "$temporary" "$temporary/worker.toml" <<'EOF'
-const { existsSync, readFileSync, rmSync } = require("node:fs");
+node - "$root" "$temporary" <<'EOF'
+const { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { createServer } = require("node:net");
 const { spawn } = require("node:child_process");
 const { join } = require("node:path");
 
 const root = process.argv[2];
 const temporary = process.argv[3];
-const config = process.argv[4];
 
 function availablePort() {
   return new Promise((resolve, reject) => {
@@ -424,14 +426,23 @@ async function waitForHealth(port) {
 (async () => {
   const marker = join(temporary, "worker-started-attached");
   const workerPidFile = join(temporary, "worker-attached.pid");
+  const dataHome = join(temporary, "attached-data");
+  const config = join(temporary, "attached-worker.toml");
   rmSync(marker, { force: true });
   rmSync(workerPidFile, { force: true });
+
+  // The control plane the worker config names must win over the port the local
+  // server configuration would listen on.
   const port = await availablePort();
+  const unusedServerPort = await availablePort();
+  mkdirSync(dataHome, { recursive: true });
+  writeFileSync(join(dataHome, "config.toml"), `listen = "127.0.0.1:${unusedServerPort}"\n`);
+  writeFileSync(config, `server = "http://127.0.0.1:${port}"\n\n[repositories.example]\nserver = "ignored"\n`);
 
   const controlPlane = spawn(join(temporary, "bin/factory-server"), ["-listen", `127.0.0.1:${port}`], {
     env: {
       ...process.env,
-      FACTORY_DATA_HOME: join(temporary, "data"),
+      FACTORY_DATA_HOME: dataHome,
       FACTORY_TEST_HEALTHY_WORKER: "1",
       FACTORY_TEST_WORKER_MARKER: marker
     },
@@ -444,17 +455,20 @@ async function waitForHealth(port) {
   try {
     await waitForHealth(port);
 
+    const environment = {
+      ...process.env,
+      FACTORY_BUILD_DIR: join(temporary, "worker-only-bin"),
+      FACTORY_DATA_HOME: dataHome,
+      FACTORY_SKIP_BUILD: "1",
+      FACTORY_TEST_WORKER_MARKER: marker,
+      FACTORY_TEST_WORKER_PID_FILE: workerPidFile,
+      FACTORY_WORKER_READY_SECONDS: "5"
+    };
+    delete environment.FACTORY_LISTEN;
+    delete environment.FACTORY_V2_LISTEN;
+
     const launcher = spawn(join(root, "scripts/run-worker.sh"), [config], {
-      env: {
-        ...process.env,
-        FACTORY_BUILD_DIR: join(temporary, "bin"),
-        FACTORY_DATA_HOME: join(temporary, "data"),
-        FACTORY_LISTEN: `127.0.0.1:${port}`,
-        FACTORY_SKIP_BUILD: "1",
-        FACTORY_TEST_WORKER_MARKER: marker,
-        FACTORY_TEST_WORKER_PID_FILE: workerPidFile,
-        FACTORY_WORKER_READY_SECONDS: "5"
-      },
+      env: environment,
       stdio: ["ignore", "pipe", "pipe"]
     });
 
@@ -486,9 +500,9 @@ async function waitForHealth(port) {
     if (leakedWorker) process.kill(workerPid, "SIGTERM");
 
     if (timedOut) throw new Error(`worker launcher shutdown exceeded 10 seconds\n${output}`);
-    if (!signalled) throw new Error(`worker launcher never joined the control plane\n${output}`);
+    if (!signalled) throw new Error(`worker launcher never joined the configured control plane\n${output}`);
     if (!output.includes(`Factory worker new-unhealthy-worker joined http://127.0.0.1:${port}/`)) {
-      throw new Error(`worker launcher did not report the running control plane\n${output}`);
+      throw new Error(`worker launcher did not join the control plane named by its configuration\n${output}`);
     }
     if (output.includes("Starting Factory server")) {
       throw new Error(`worker launcher started a second control plane\n${output}`);
@@ -512,4 +526,4 @@ async function waitForHealth(port) {
 });
 EOF
 
-echo "Factory worker launcher validates its configuration, requires a running control plane, joins it without starting another, and leaves it running after Ctrl-C."
+echo "Factory worker launcher needs only the worker binary, joins the control plane its configuration names rather than the local server listen address, names the endpoint it probed, and leaves the control plane running after Ctrl-C."

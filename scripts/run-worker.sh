@@ -3,7 +3,6 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-listen_override=${FACTORY_LISTEN:-${FACTORY_V2_LISTEN:-}}
 data_home=${FACTORY_DATA_HOME:-${FACTORY_V2_DATA_HOME:-}}
 if [ -z "$data_home" ]; then
   if [ -z "${HOME:-}" ]; then
@@ -70,42 +69,65 @@ if ! command -v curl >/dev/null 2>&1; then
   exit 1
 fi
 
-server_binary="$build_directory/factory-server"
+# The worker configuration is the only authority for the control plane this
+# worker joins. Read its top-level keys, which precede the first table header.
+read_config_key() {
+  sed -n "/^[[:space:]]*\[/q; s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\"[[:space:]]*\$/\1/p" "$config" |
+    head -1
+}
+
+server=$(read_config_key server)
+if [ -z "$server" ]; then
+  server="http://127.0.0.1:7337"
+fi
+server=${server%/}
+ca_certificate=$(read_config_key ca_certificate)
+case "$ca_certificate" in
+  "" | /*) ;;
+  *) ca_certificate="$(CDPATH= cd -- "$(dirname -- "$config")" && pwd)/$ca_certificate" ;;
+esac
+
 worker_binary="$build_directory/factory-worker"
 
-if [ "$skip_build" != "1" ] && { [ ! -x "$server_binary" ] || [ ! -x "$worker_binary" ]; }; then
+if [ "$skip_build" != "1" ] && [ ! -x "$worker_binary" ]; then
   if ! command -v just >/dev/null 2>&1; then
     echo "Factory local startup requires just on PATH." >&2
     exit 1
   fi
   FACTORY_BUILD_DIR="$build_directory" \
-    just --justfile "$root/Justfile" --working-directory "$root" build
+    just --justfile "$root/Justfile" --working-directory "$root" build-worker
 fi
 
-if [ ! -x "$server_binary" ] || [ ! -x "$worker_binary" ]; then
-  echo "Factory binaries are missing. Run just build first." >&2
+if [ ! -x "$worker_binary" ]; then
+  echo "The Factory worker binary is missing. Run just build-worker first." >&2
   exit 1
 fi
 
 export FACTORY_DATA_HOME="$data_home"
 
-if [ -n "$listen_override" ]; then
-  listen=$listen_override
-else
-  listen=$("$server_binary" -print-listen)
-fi
-
+response_body=$(mktemp)
 worker_pid=
 
-curl_before_deadline() {
-  endpoint=$1
-  deadline=$2
-  now=$(date +%s)
-  remaining=$((deadline - now))
-  if [ "$remaining" -le 0 ]; then
-    return 1
+curl_control_plane() {
+  timeout=$1
+  endpoint=$2
+  if [ -n "$ca_certificate" ]; then
+    curl --silent --show-error --fail --max-time "$timeout" --cacert "$ca_certificate" "$endpoint"
+  else
+    curl --silent --show-error --fail --max-time "$timeout" "$endpoint"
   fi
-  curl --silent --show-error --fail --max-time "$remaining" "$endpoint"
+}
+
+curl_control_plane_status() {
+  timeout=$1
+  endpoint=$2
+  if [ -n "$ca_certificate" ]; then
+    curl --silent --output "$response_body" --write-out '%{http_code}' \
+      --max-time "$timeout" --cacert "$ca_certificate" "$endpoint"
+  else
+    curl --silent --output "$response_body" --write-out '%{http_code}' \
+      --max-time "$timeout" "$endpoint"
+  fi
 }
 
 stop_processes() {
@@ -116,6 +138,7 @@ stop_processes() {
   if [ -n "$worker_pid" ]; then
     wait "$worker_pid" 2>/dev/null || true
   fi
+  rm -f "$response_body"
 }
 
 stop_after_signal() {
@@ -126,10 +149,9 @@ stop_after_signal() {
 trap stop_after_signal INT TERM
 trap stop_processes EXIT
 
-control_plane_deadline=$(($(date +%s) + 5))
-if ! curl_before_deadline "http://$listen/healthz" "$control_plane_deadline" >/dev/null 2>&1; then
-  echo "Factory control plane is not reachable at http://$listen/." >&2
-  echo "Start it with just run first, or set FACTORY_LISTEN to its address." >&2
+if ! curl_control_plane 5 "$server/healthz" >/dev/null 2>&1; then
+  echo "Factory control plane did not answer $server/healthz." >&2
+  echo "Start it with just run, or correct the server key in $config." >&2
   exit 1
 fi
 
@@ -139,6 +161,7 @@ worker_id=$("$worker_binary" identity --config "$config")
 worker_pid=$!
 
 registered=0
+observable=1
 worker_ready_deadline=$(($(date +%s) + worker_ready_seconds))
 while [ "$(date +%s)" -lt "$worker_ready_deadline" ]; do
   if ! kill -0 "$worker_pid" 2>/dev/null; then
@@ -146,14 +169,30 @@ while [ "$(date +%s)" -lt "$worker_ready_deadline" ]; do
     echo "Factory worker exited during startup. Check the configuration and error above." >&2
     exit 1
   fi
-  if curl_before_deadline "http://$listen/api/v1/workers/$worker_id" "$worker_ready_deadline" |
-	grep -q "\"health\":\"healthy\",\"online\":true"; then
-    registered=1
+  remaining=$((worker_ready_deadline - $(date +%s)))
+  if [ "$remaining" -le 0 ]; then
     break
   fi
+  status=$(curl_control_plane_status "$remaining" "$server/api/v1/workers/$worker_id" || echo 000)
+  case "$status" in
+    200)
+      if grep -q "\"health\":\"healthy\",\"online\":true" "$response_body"; then
+        registered=1
+        break
+      fi
+      ;;
+    401 | 403 | 404)
+      # A remote control plane publishes only the worker lifecycle over TLS, so
+      # its worker status is unavailable here. Keep the worker running.
+      observable=0
+      break
+      ;;
+  esac
   sleep 0.1
 done
-if [ "$registered" != "1" ]; then
+if [ "$observable" = "0" ]; then
+  echo "Factory worker status is not published at $server/api/v1/workers/$worker_id, so its registration was not confirmed."
+elif [ "$registered" != "1" ]; then
   echo "Factory worker did not register as healthy within $worker_ready_seconds seconds. Check its health errors above." >&2
   exit 1
 fi
@@ -163,7 +202,7 @@ if ! kill -0 "$worker_pid" 2>/dev/null; then
   exit 1
 fi
 
-echo "Factory worker $worker_id joined http://$listen/"
+echo "Factory worker $worker_id joined $server/"
 echo "Press Ctrl-C to stop the worker. The control plane keeps running. State remains in $data_home."
 
 while :; do

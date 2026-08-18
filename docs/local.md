@@ -151,11 +151,15 @@ then start each additional Worker against it:
 just run-worker ~/.factory/claude-worker.toml
 ```
 
-`just run-worker` never starts a second control plane. It builds the binaries
-when they are missing, checks that the control plane answers, waits for the
-Worker to register as healthy, and stops only that Worker on Ctrl+C. It reads
-the same `FACTORY_DATA_HOME` and `FACTORY_BUILD_DIR` settings as `just run`, and
-uses `~/.factory/worker.toml` when no config path is given.
+`just run-worker` never starts a second control plane. It joins the control
+plane named by the `server` key in that Worker config, defaulting to
+`http://127.0.0.1:7337`, so it also works for a Worker pointed at a remote
+control plane. It builds the Worker binary when it is missing, needs no
+`factory-server` binary, checks that the control plane answers, waits for the
+Worker to register as healthy where the control plane publishes Worker status,
+and stops only that Worker on Ctrl+C. It reads the same `FACTORY_DATA_HOME` and
+`FACTORY_BUILD_DIR` settings as `just run`, and uses `~/.factory/worker.toml`
+when no config path is given.
 
 You can also start the Worker binary directly:
 
