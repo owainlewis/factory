@@ -49,6 +49,18 @@ function connectionEvidence(worker: Worker) {
 	});
 }
 
+// Health is a stored reading from the Worker's last heartbeat, while online is derived
+// from how long ago that heartbeat was. An offline Worker's health may be days old, so
+// it is reported as unknown rather than dressed as a current healthy or failing state.
+function healthLabel(worker: Worker) {
+	return worker.online ? stateLabel(worker.health) : "Unknown";
+}
+
+function healthTextClass(worker: Worker) {
+	if (!worker.online) return "stale-text";
+	return worker.health === "healthy" ? "healthy-text" : "danger-text";
+}
+
 function capabilityName(kind: string, name: string) {
 	if (kind === "runtime") return runtimeLabel(name);
 	if (name === "gh") return "GitHub CLI";
@@ -130,8 +142,8 @@ export function WorkersView({
 					))}
                     <small>
                       {worker.online ? "Online" : "Offline"} ·{" "}
-                      <span className={worker.health === "healthy" ? "healthy-text" : "danger-text"}>
-                        {stateLabel(worker.health)}
+                      <span className={healthTextClass(worker)}>
+                        {healthLabel(worker)}
                       </span>
                     </small>
                     {worker.current_work_title && <em>{worker.current_work_title}</em>}
@@ -262,7 +274,7 @@ export function WorkerDetail({
               <span className={`presence ${data.online ? "online" : "offline"}`} aria-hidden="true" />
               <span>{data.online ? "Online" : "Offline"}</span>
               <span>·</span>
-              <span className={data.health === "healthy" ? "healthy-text" : "danger-text"}>{stateLabel(data.health)}</span>
+              <span className={healthTextClass(data)}>{healthLabel(data)}</span>
             </div>
             <h1>{data.name}</h1>
             <div className="worker-profile-meta">
@@ -316,7 +328,7 @@ export function WorkerDetail({
       {tabPanel("overview",
         <>
 		  <section className="worker-summary-grid" aria-label="Worker summary">
-            <div><span>Status</span><strong>{data.online ? "Online" : "Offline"}</strong><small>{stateLabel(data.health)}</small></div>
+            <div><span>Status</span><strong>{data.online ? "Online" : "Offline"}</strong><small>{healthLabel(data)}</small></div>
             <div><span>Sessions</span><strong>{data.active_count} / {data.capacity}</strong><small>active capacity</small></div>
             <div><span>Repositories</span><strong>{data.repositories.length}</strong><small>advertised</small></div>
             <div><span>Worktrees</span><strong>{data.retained_worktrees?.length ?? 0}</strong><small>retained</small></div>
