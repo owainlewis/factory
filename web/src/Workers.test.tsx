@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { api } from "./api";
-import { WorkerDetail } from "./Workers";
+import { WorkerDetail, WorkersView } from "./Workers";
 import type { Worker } from "./types";
 
 const worker: Worker = {
@@ -113,5 +113,64 @@ describe("WorkerDetail connection test", () => {
     client.setQueryData(["worker", offline.id], { ...offline, last_heartbeat: "2026-08-18T06:00:30Z" });
 
     expect(await screen.findByText(failureBanner)).toBeVisible();
+  });
+});
+
+describe("stale health for an offline Worker", () => {
+  const offline: Worker = { ...worker, online: false, last_heartbeat: "2026-08-06T06:00:00Z" };
+
+  it("does not present the list row health as a current healthy reading", async () => {
+    const client = newClient();
+    render(
+      <QueryClientProvider client={client}>
+        <WorkersView
+          workers={[offline]}
+          pending={false}
+          error={null}
+          fetching={false}
+          updatedAt={Date.parse("2026-08-18T06:00:30Z")}
+          onWorker={() => undefined}
+          onRefresh={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    const row = screen.getByRole("button", { name: /local-claude/ });
+    expect(within(row).queryByText("Healthy")).toBeNull();
+    const health = within(row).getByText("Unknown");
+    expect(health).not.toHaveClass("healthy-text");
+    expect(health).toHaveClass("stale-text");
+  });
+
+  async function findStateLine(container: HTMLElement) {
+    await screen.findByRole("heading", { name: worker.name });
+    return container.querySelector(".worker-state-line") as HTMLElement;
+  }
+
+  it("does not present the detail heading health as a current healthy reading", async () => {
+    vi.spyOn(api, "worker").mockResolvedValue(offline);
+    const { container } = renderDetail(newClient());
+
+    const stateLine = await findStateLine(container);
+    const health = within(stateLine).getByText("Unknown");
+    expect(health).not.toHaveClass("healthy-text");
+    expect(health).toHaveClass("stale-text");
+    expect(within(stateLine).queryByText("Healthy")).toBeNull();
+  });
+
+  it("keeps the healthy presentation for an online Worker", async () => {
+    vi.spyOn(api, "worker").mockResolvedValue(worker);
+    const { container } = renderDetail(newClient());
+
+    const health = within(await findStateLine(container)).getByText("Healthy");
+    expect(health).toHaveClass("healthy-text");
+  });
+
+  it("keeps the danger presentation for an online unhealthy Worker", async () => {
+    vi.spyOn(api, "worker").mockResolvedValue({ ...worker, health: "unhealthy" });
+    const { container } = renderDetail(newClient());
+
+    const health = within(await findStateLine(container)).getByText("Unhealthy");
+    expect(health).toHaveClass("danger-text");
   });
 });
