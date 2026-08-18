@@ -63,7 +63,17 @@ test:
 
 # Race-check worker coordination and process cancellation paths.
 test-worker-race:
-    go test -timeout 5m -race ./internal/worker -run '^(TestPeriodicRegistrationCannotOvertakeRetainedCapacityHandoff|TestConfigurationStableIdentityLockAndHealthRecovery|TestHealthFailureCancelsRetryingClaimBeforeServerRecovery|TestCommittedClaimBecomesFailedWhenHealthChangesBeforeResponse|TestCancellationStopsCompleteProcessGroup)$'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    log="$(mktemp)"
+    trap 'rm -f "$log"' EXIT
+    go test -timeout 5m -race -v ./internal/worker 2>&1 | tee "$log"
+    count="$(grep -c '^=== RUN   Test' "$log" || true)"
+    if [[ "$count" -eq 0 ]]; then
+        printf 'test-worker-race selected zero tests in ./internal/worker\n' >&2
+        exit 1
+    fi
+    printf 'test-worker-race ran %s tests with the race detector\n' "$count"
 
 # Test the Node-free build and Just command surface.
 test-tooling:
