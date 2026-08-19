@@ -80,9 +80,11 @@ when local CPU, memory, or provider limits require it.
 
 The optional legacy `runtime` field is the default for older clients that do
 not select a runtime. Existing single-runtime files continue to work without a
-`runtimes` field. New configurations can list several runtimes. Factory reports
-each one as ready, missing, unauthenticated, or unhealthy, and the Worker stays
-available while Git and at least one configured runtime are ready.
+`runtimes` field. New configurations can list several runtimes and may omit
+`runtime`, in which case the first listed runtime becomes the primary one.
+Factory reports each one as ready, missing, unauthenticated, or unhealthy, and
+the Worker stays available while Git and at least one configured runtime are
+ready.
 
 Factory migrates existing SQLite databases to the expanded worker capacity
 range when the control plane starts.

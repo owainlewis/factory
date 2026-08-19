@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -44,7 +46,7 @@ func TestLoadConfigAcceptsSeveralCodingAgentRuntimes(t *testing.T) {
 	}
 }
 
-func TestLoadConfigPreservesCodexPrimaryWhenAddingRuntimes(t *testing.T) {
+func TestLoadConfigDefaultsPrimaryToFirstConfiguredRuntime(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "worker.toml")
 	body := "name = \"local\"\nruntimes = [\"pi\", \"codex\", \"claude-code\"]\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -55,8 +57,38 @@ func TestLoadConfigPreservesCodexPrimaryWhenAddingRuntimes(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{protocol.RuntimePi, protocol.RuntimeCodex, protocol.RuntimeClaudeCode}
+	if config.Runtime != protocol.RuntimePi || !reflect.DeepEqual(config.Runtimes, want) {
+		t.Fatalf("upgraded multi-runtime config = %q %#v, want pi %#v", config.Runtime, config.Runtimes, want)
+	}
+}
+
+func TestLoadConfigAcceptsRuntimesWithoutRuntime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "worker.toml")
+	if err := os.WriteFile(path, []byte("name = \"w\"\nruntimes = [\"pi\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{protocol.RuntimePi}
+	if config.Runtime != protocol.RuntimePi || !reflect.DeepEqual(config.Runtimes, want) {
+		t.Fatalf("runtimes-only config = %q %#v, want pi %#v", config.Runtime, config.Runtimes, want)
+	}
+}
+
+func TestLoadConfigDefaultsBothRuntimeFieldsToCodex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "worker.toml")
+	if err := os.WriteFile(path, []byte("name = \"w\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{protocol.RuntimeCodex}
 	if config.Runtime != protocol.RuntimeCodex || !reflect.DeepEqual(config.Runtimes, want) {
-		t.Fatalf("upgraded multi-runtime config = %q %#v, want codex %#v", config.Runtime, config.Runtimes, want)
+		t.Fatalf("empty runtime config = %q %#v, want codex %#v", config.Runtime, config.Runtimes, want)
 	}
 }
 
@@ -108,5 +140,21 @@ func TestLoadConfigRejectsExplicitZeroCapacity(t *testing.T) {
 	}
 	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "between 1 and 100") {
 		t.Fatalf("explicit zero max_concurrent error = %v", err)
+	}
+}
+
+func TestNewDefaultsPrimaryToFirstConfiguredRuntime(t *testing.T) {
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	writeFakeCodex(t, codexPath)
+	manager, err := New(Config{
+		Server: defaultServer, Name: "runtimes-only", Runtimes: []string{protocol.RuntimePi}, MaxConcurrent: 1,
+		DataDirectory: filepath.Join(t.TempDir(), "worker"),
+	}, testOptions(codexPath), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	if manager.config.Runtime != protocol.RuntimePi {
+		t.Fatalf("primary runtime = %q, want pi", manager.config.Runtime)
 	}
 }
