@@ -95,10 +95,10 @@ func New(config Config, options Options, logger *slog.Logger) (*Manager, error) 
 	if err := ensureSupportedPlatform(); err != nil {
 		return nil, err
 	}
-	if config.Runtime == "" {
-		config.Runtime = protocol.RuntimeCodex
-	}
 	config.Runtimes = configuredRuntimes(config)
+	if config.Runtime == "" {
+		config.Runtime = config.Runtimes[0]
+	}
 	if err := validateConfig(config); err != nil {
 		return nil, err
 	}

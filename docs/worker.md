@@ -24,10 +24,11 @@ host = "laptop"
 
 `runtimes` lists the coding agents the Worker should discover. Supported values
 are `pi`, `codex`, and `claude-code`. `runtime` remains the primary capability
-and preserves compatibility with existing single-runtime configurations. Each
-task selects one ready capability and launches a fresh runtime process with its
-own worktree, manifest, lease, and supervisor process group. `max_concurrent`
-accepts values from 1 through 100;
+and preserves compatibility with existing single-runtime configurations. When
+`runtime` is omitted it defaults to the first entry in `runtimes`, or to `codex`
+when neither field is set. Each task selects one ready capability and launches a
+fresh runtime process with its own worktree, manifest, lease, and supervisor
+process group. `max_concurrent` accepts values from 1 through 100;
 preparing attempts consume slots as well as running attempts.
 
 Factory migrates existing SQLite databases to the expanded worker capacity

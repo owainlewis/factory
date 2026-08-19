@@ -75,10 +75,10 @@ func LoadConfig(path string) (Config, error) {
 	for index := range config.Runtimes {
 		config.Runtimes[index] = strings.ToLower(strings.TrimSpace(config.Runtimes[index]))
 	}
-	if config.Runtime == "" {
-		config.Runtime = protocol.RuntimeCodex
-	}
 	config.Runtimes = configuredRuntimes(config)
+	if config.Runtime == "" {
+		config.Runtime = config.Runtimes[0]
+	}
 	if !metadata.IsDefined("max_concurrent") {
 		config.MaxConcurrent = defaultMaxConcurrent
 	}
