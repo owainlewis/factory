@@ -132,4 +132,10 @@ describe("timeUntil", () => {
     expect(timeUntil("2026-08-12T12:00:00Z", now)).toBe("in 1d");
     expect(timeUntil("2026-08-11T11:55:00Z", now)).toBe("5m ago");
   });
+
+  it("derives each unit from the raw remaining time instead of the rounded one", () => {
+    const now = Date.parse("2026-08-11T12:00:00Z");
+    expect(timeUntil("2026-08-11T13:01:00Z", now)).toBe("in 1h");
+    expect(timeUntil("2026-08-12T11:01:00Z", now)).toBe("in 23h");
+  });
 });

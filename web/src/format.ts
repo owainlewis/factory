@@ -28,9 +28,9 @@ export function timeUntil(value: string, now = Date.now()): string {
   if (seconds < 60) return `in ${seconds}s`;
   const minutes = Math.ceil(seconds / 60);
   if (minutes < 60) return `in ${minutes}m`;
-  const hours = Math.ceil(minutes / 60);
+  const hours = Math.round(seconds / 3600);
   if (hours < 24) return `in ${hours}h`;
-  return `in ${Math.ceil(hours / 24)}d`;
+  return `in ${Math.round(seconds / 86400)}d`;
 }
 
 export function duration(start: string, end?: string, now = Date.now()): string {
