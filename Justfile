@@ -14,9 +14,23 @@ build:
     go build -o "$build_directory/factory-worker" ./cmd/factory-worker
     printf 'Factory binaries built in %s\n' "$build_directory"
 
+# Build only the worker binary, for hosts that run no control plane.
+build-worker:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    data_home="${FACTORY_DATA_HOME:-${FACTORY_V2_DATA_HOME:-${HOME:?HOME or FACTORY_DATA_HOME is required}/.factory}}"
+    build_directory="${FACTORY_BUILD_DIR:-${FACTORY_V2_BUILD_DIR:-$data_home/bin}}"
+    mkdir -p "$build_directory"
+    go build -o "$build_directory/factory-worker" ./cmd/factory-worker
+    printf 'Factory worker binary built in %s\n' "$build_directory"
+
 # Start one control plane and worker. Pass a worker config path when needed.
 run config="":
     @if [[ -n "{{config}}" ]]; then ./scripts/run-local.sh "{{config}}"; else ./scripts/run-local.sh; fi
+
+# Start one worker against a control plane that is already running.
+run-worker config="":
+    @if [[ -n "{{config}}" ]]; then ./scripts/run-worker.sh "{{config}}"; else ./scripts/run-worker.sh; fi
 
 # Install pinned UI dependencies.
 ui-install:

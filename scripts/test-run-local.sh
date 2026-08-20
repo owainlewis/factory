@@ -327,3 +327,271 @@ async function verifySignal(signal, suffix, listenVariable) {
 EOF
 
 echo "Factory launcher honors bootstrap listen settings, rejects unhealthy workers, retired-state writes, server loss, and stalled readiness responses; signals stop cleanly."
+
+mkdir -p "$temporary/worker-only-bin"
+cp "$temporary/bin/factory-worker" "$temporary/worker-only-bin/factory-worker"
+
+set +e
+output=$(
+  FACTORY_BUILD_DIR="$temporary/worker-only-bin" \
+    FACTORY_DATA_HOME="$temporary/data" \
+    FACTORY_SKIP_BUILD=1 \
+    "$root/scripts/run-worker.sh" "$temporary/missing-worker.toml" 2>&1
+)
+status=$?
+set -e
+if [ "$status" -ne 1 ] ||
+  ! printf '%s\n' "$output" |
+    grep -Fq "Factory worker configuration does not exist: $temporary/missing-worker.toml"; then
+  echo "worker launcher did not reject a missing configuration" >&2
+  echo "$output" >&2
+  exit 1
+fi
+
+printf 'server = "http://127.0.0.1:1"\n' >"$temporary/detached-worker.toml"
+set +e
+output=$(
+  FACTORY_BUILD_DIR="$temporary/worker-only-bin" \
+    FACTORY_DATA_HOME="$temporary/data" \
+    FACTORY_SKIP_BUILD=1 \
+    FACTORY_TEST_WORKER_MARKER="$temporary/worker-started-detached" \
+    "$root/scripts/run-worker.sh" "$temporary/detached-worker.toml" 2>&1
+)
+status=$?
+set -e
+if [ "$status" -ne 1 ] ||
+  ! printf '%s\n' "$output" |
+    grep -Fq "Factory control plane did not answer http://127.0.0.1:1/healthz"; then
+  echo "worker launcher did not name the control plane endpoint it probed" >&2
+  echo "$output" >&2
+  exit 1
+fi
+if [ -e "$temporary/worker-started-detached" ]; then
+  echo "worker launcher started a worker without a control plane" >&2
+  exit 1
+fi
+
+mkdir -p "$temporary/exiting-bin"
+cat >"$temporary/exiting-bin/factory-worker" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "identity" ]; then
+  echo "new-unhealthy-worker"
+  exit 0
+fi
+: >"$FACTORY_TEST_WORKER_MARKER"
+exit 0
+EOF
+chmod +x "$temporary/exiting-bin/factory-worker"
+
+printf "server = 'http://127.0.0.1:1'\n" >"$temporary/literal-worker.toml"
+printf 'server = "http://127.0.0.1:1" # production\n' >"$temporary/commented-worker.toml"
+printf 'server = http://127.0.0.1:1\n' >"$temporary/unquoted-worker.toml"
+
+for quoting in literal commented; do
+  set +e
+  output=$(
+    FACTORY_BUILD_DIR="$temporary/exiting-bin" \
+      FACTORY_DATA_HOME="$temporary/data" \
+      FACTORY_SKIP_BUILD=1 \
+      FACTORY_TEST_WORKER_MARKER="$temporary/worker-started-$quoting" \
+      "$root/scripts/run-worker.sh" "$temporary/$quoting-worker.toml" 2>&1
+  )
+  status=$?
+  set -e
+  if [ "$status" -ne 1 ] ||
+    ! printf '%s\n' "$output" |
+      grep -Fq "Factory control plane did not answer http://127.0.0.1:1/healthz"; then
+    echo "worker launcher did not read the $quoting server value" >&2
+    echo "$output" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$output" | grep -Fq "127.0.0.1:7337"; then
+    echo "worker launcher fell back to the default control plane for the $quoting server value" >&2
+    echo "$output" >&2
+    exit 1
+  fi
+done
+
+set +e
+output=$(
+  FACTORY_BUILD_DIR="$temporary/exiting-bin" \
+    FACTORY_DATA_HOME="$temporary/data" \
+    FACTORY_SKIP_BUILD=1 \
+    FACTORY_TEST_WORKER_MARKER="$temporary/worker-started-unquoted" \
+    "$root/scripts/run-worker.sh" "$temporary/unquoted-worker.toml" 2>&1
+)
+status=$?
+set -e
+if [ "$status" -ne 1 ] ||
+  ! printf '%s\n' "$output" |
+    grep -Fq "Factory could not read the server value in $temporary/unquoted-worker.toml"; then
+  echo "worker launcher did not reject an unreadable server value" >&2
+  echo "$output" >&2
+  exit 1
+fi
+if printf '%s\n' "$output" | grep -Fq "127.0.0.1:7337"; then
+  echo "worker launcher defaulted to localhost despite a present server key" >&2
+  echo "$output" >&2
+  exit 1
+fi
+if [ -e "$temporary/worker-started-unquoted" ]; then
+  echo "worker launcher started a worker with an unreadable server value" >&2
+  exit 1
+fi
+
+node - "$root" "$temporary" <<'EOF'
+const { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
+const { createServer } = require("node:net");
+const { spawn } = require("node:child_process");
+const { join } = require("node:path");
+
+const root = process.argv[2];
+const temporary = process.argv[3];
+
+function availablePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const port = server.address().port;
+      server.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
+}
+
+function isAlive(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+function pidFrom(path) {
+  if (!existsSync(path)) return null;
+  return Number(readFileSync(path, "utf8").trim());
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitForHealth(port) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/healthz`);
+      if (response.ok) return;
+    } catch {}
+    await delay(50);
+  }
+  throw new Error("fake control plane never became healthy");
+}
+
+(async () => {
+  const marker = join(temporary, "worker-started-attached");
+  const workerPidFile = join(temporary, "worker-attached.pid");
+  const dataHome = join(temporary, "attached-data");
+  const config = join(temporary, "attached-worker.toml");
+  rmSync(marker, { force: true });
+  rmSync(workerPidFile, { force: true });
+
+  // The control plane the worker config names must win over the port the local
+  // server configuration would listen on.
+  const port = await availablePort();
+  const unusedServerPort = await availablePort();
+  mkdirSync(dataHome, { recursive: true });
+  writeFileSync(join(dataHome, "config.toml"), `listen = "127.0.0.1:${unusedServerPort}"\n`);
+  writeFileSync(config, `server = "http://127.0.0.1:${port}"\n\n[repositories.example]\nserver = "ignored"\n`);
+
+  const controlPlane = spawn(join(temporary, "bin/factory-server"), ["-listen", `127.0.0.1:${port}`], {
+    env: {
+      ...process.env,
+      FACTORY_DATA_HOME: dataHome,
+      FACTORY_TEST_HEALTHY_WORKER: "1",
+      FACTORY_TEST_WORKER_MARKER: marker
+    },
+    stdio: ["ignore", "ignore", "inherit"]
+  });
+
+  let output = "";
+  let signalled = false;
+  let timedOut = false;
+  try {
+    await waitForHealth(port);
+
+    const environment = {
+      ...process.env,
+      FACTORY_BUILD_DIR: join(temporary, "worker-only-bin"),
+      FACTORY_DATA_HOME: dataHome,
+      FACTORY_SKIP_BUILD: "1",
+      FACTORY_TEST_WORKER_MARKER: marker,
+      FACTORY_TEST_WORKER_PID_FILE: workerPidFile,
+      FACTORY_WORKER_READY_SECONDS: "5"
+    };
+    delete environment.FACTORY_LISTEN;
+    delete environment.FACTORY_V2_LISTEN;
+
+    const launcher = spawn(join(root, "scripts/run-worker.sh"), [config], {
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    const capture = (chunk) => {
+      output += chunk;
+      if (!signalled && output.includes("joined")) {
+        signalled = true;
+        launcher.kill("SIGTERM");
+      }
+    };
+    launcher.stdout.on("data", capture);
+    launcher.stderr.on("data", capture);
+
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      launcher.kill("SIGKILL");
+      const pid = pidFrom(workerPidFile);
+      if (isAlive(pid)) process.kill(pid, "SIGTERM");
+    }, 10000);
+
+    const result = await new Promise((resolve, reject) => {
+      launcher.once("error", reject);
+      launcher.once("close", (code, exitSignal) => resolve({ code, exitSignal }));
+    });
+    clearTimeout(timeout);
+
+    const workerPid = pidFrom(workerPidFile);
+    const leakedWorker = isAlive(workerPid);
+    if (leakedWorker) process.kill(workerPid, "SIGTERM");
+
+    if (timedOut) throw new Error(`worker launcher shutdown exceeded 10 seconds\n${output}`);
+    if (!signalled) throw new Error(`worker launcher never joined the configured control plane\n${output}`);
+    if (!output.includes(`Factory worker new-unhealthy-worker joined http://127.0.0.1:${port}/`)) {
+      throw new Error(`worker launcher did not join the control plane named by its configuration\n${output}`);
+    }
+    if (output.includes("Starting Factory server")) {
+      throw new Error(`worker launcher started a second control plane\n${output}`);
+    }
+    if (result.code !== 0 || result.exitSignal !== null) {
+      throw new Error(`worker shutdown returned code=${result.code} signal=${result.exitSignal}\n${output}`);
+    }
+    if (output.includes("stopped unexpectedly")) {
+      throw new Error(`worker shutdown was reported as unexpected\n${output}`);
+    }
+    if (leakedWorker) throw new Error(`worker launcher leaked its worker\n${output}`);
+    if (controlPlane.exitCode !== null) {
+      throw new Error(`worker launcher stopped the control plane\n${output}`);
+    }
+  } finally {
+    controlPlane.kill("SIGTERM");
+  }
+})().catch((error) => {
+  console.error(error.message);
+  process.exitCode = 1;
+});
+EOF
+
+echo "Factory worker launcher needs only the worker binary, joins the control plane its configuration names rather than the local server listen address, names the endpoint it probed, reads quoted, literal, and commented server values, refuses an unreadable one instead of defaulting to localhost, and leaves the control plane running after Ctrl-C."
