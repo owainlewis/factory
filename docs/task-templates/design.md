@@ -213,8 +213,9 @@ are two sizes of the same software procedure.
   every copied field that the Task customized at creation.
 - `INV-5`: A Template revision contains no repository IDs, schedule, pending
   occurrence, Task archive state, or Run history.
-- `INV-6`: One retained mutation scope and client request key commits at most
-  one Template mutation, revision, or Task creation.
+- `INV-6`: For one authenticated actor, one retained mutation scope and client
+  request key commits at most one Template mutation, revision, or Task creation.
+  Another actor using the same scope and key is independent.
 - `INV-7`: A starter revision referenced by a Task remains readable after an
   application upgrade.
 - `INV-8`: Template prompts are never exposed in list APIs, logs, metrics, or
@@ -421,11 +422,23 @@ set in the referenced Template Graph and its Stage IDs must equal the complete
 node set in the copied execution Graph. Both sides are unique. A direct Pipeline
 has no Template provenance and a null map.
 
-The storage GET returns all four limits, marking the 20,000 revision-record
-limit as fixed and the other three as configurable. It also returns current
-body, record, and byte use, reclaimable counts, and next mutation-ledger expiry. A compaction
-preview request contains an optional Template ID and `max_actions`, from 1 to
-1,000. This limit counts top-level reclamation actions, not revision members:
+The storage GET returns all four Template limits, marking the 20,000
+revision-record limit as fixed and the other three as configurable. Its matching
+usage fields are the active-or-archived user Template count, retained revision
+body count, total revision-record count, and retained prompt bytes. It also
+returns reclaimable counts and earliest eligibility by action kind. The same
+response exposes every other bounded storage pool: unexpired preview row count,
+preview JSON bytes, and earliest preview expiry; Task replay-snapshot row count,
+snapshot bytes, and earliest snapshot expiry; and separate live
+`mutation_requests` and `mutation_request_aliases` row counts and earliest
+expiry for each, plus their combined count, 100,000-row limit, and minimum
+non-null capacity-return expiry. A missing earliest value is `null`, not zero.
+
+A compaction preview request contains an optional Template ID and optional
+`max_actions`, from 1 to 1,000. Omission defaults to 1,000 before request
+canonicalization, and the persisted original filter and canonical preview
+request store that explicit defaulted value. This limit counts top-level
+reclamation actions, not revision members:
 one `purge_template` aggregate is one action. Each purge action contains the
 Template ID plus the complete ordered array of member revision IDs, digests,
 and content states. Every compacted member also includes its complete ordered
@@ -459,8 +472,9 @@ would still be exceeded.
 
 Apply contains `request_key` and the preview token and uses mutation scope
 `template-storage:compact`. After authentication and authorization, it checks
-`mutation_requests` for the scope, request key, and canonical request digest
-before looking up or expiring the token. A committed exact replay therefore
+`mutation_requests` for the authenticated actor, scope, request key, and
+canonical request digest before looking up or expiring the token. A committed
+exact replay therefore
 returns its receipt even after the ten-minute preview expiry. With no committed
 result, an unknown or expired token returns
 `template_compaction_preview_expired` without work. A first apply loads the
@@ -477,15 +491,19 @@ mutation ledger's 16 KiB result-envelope limit. Replaying the same apply returns
 that exact recorded receipt without needing the preview or any row deleted by
 the compaction.
 
-SQLite also adds `mutation_requests`. Its primary key is `operation_scope` plus
-the SHA-256 hash and byte length of the exact request-key string; it never stores
-the raw key. It also stores the SHA-256 digest of the canonical request, result
-resource kind and ID, canonical
-`result_envelope_json`, and creation time. Stored ledger envelopes are
+SQLite also adds `mutation_requests`. Its primary key is authenticated
+`owner_actor_id`, `operation_scope`, and the SHA-256 hash and byte length of the
+exact request-key string; it never stores the raw key. The actor ID comes from
+the authenticated server context, never from request content. The single-owner
+deployment still uses its stable persisted owner ID. Every replay lookup,
+conflict check, and receipt fetch includes that actor scope. The row also stores
+the SHA-256 digest of the canonical request, result resource kind and ID,
+canonical `result_envelope_json`, and creation time. Stored ledger envelopes are
 reference-and-metadata receipts, never resource detail, and are limited to 16
 KiB. Template mutation clients refetch detail after success. The existing
-`POST /api/v1/tasks` response contract is unchanged during this release: after a
-caller-keyed create, the same transaction inserts one
+`POST /api/v1/tasks` response contract is unchanged during this release: after
+every direct or Template-derived Task create, including a keyless compatibility
+create after its internal key is generated, the same transaction inserts one
 `task_create_replay_snapshots` row keyed to the ledger receipt. It stores the
 exact canonical `protocol.Task` response bytes, HTTP status, stable response
 headers, response digest, and receipt expiry. The snapshot is capped at 2 MiB.
@@ -498,26 +516,34 @@ live snapshot bytes at 1 GiB. If either bound would be exceeded, the whole
 create fails before commit. A keyed replay returns those stored bytes, status,
 and headers without reading mutable Task state, so a later edit cannot change
 the create result.
-Keyless compatibility creates have no replay snapshot because the caller does
-not know their generated key. For a storage apply, the resource kind is
+
+If a keyless caller receives the generated-key response header, it can use that
+key with the frozen original request to retrieve the exact snapshot. A lost
+response remains unrecoverable because the caller never received the key, and a
+second keyless request still creates a new Task. For a storage apply, the
+resource kind is
 `template_compaction` and the resource ID is the new compaction ID. The
 application checks this row before optimistic-concurrency validation. A matching
 replay returns the stored envelope byte-for-byte. A different digest returns
 `request_key_conflict`. The ledger row, result envelope, and resource mutation
-plus any required Task replay snapshot commit in one transaction, so none can
-exist alone. Each row has
+plus the required Task replay snapshot for every Task create must all commit in
+one transaction, so none can exist alone. Each row has
 `expires_at = created_at + 90 days`. Exact replays remain available through that
 instant.
 
 SQLite also adds `mutation_request_aliases` for durable legacy lookup after the
-Pipeline rename. Its primary key is legacy `operation_scope` plus the same exact
-key hash and byte length; it stores no raw key. It also stores the frozen legacy
-request digest, migrated resource kind, ID and location, canonical
+Pipeline rename. Its primary key is authenticated `owner_actor_id`, legacy
+`operation_scope`, and the same exact key hash and byte length; it stores no raw
+key. Migration preserves the original authenticated actor ID. Removed-route and
+scope-specific replay lookup derive the actor from the current authenticated
+context and cannot read another actor's envelope. The row also stores the frozen
+legacy request digest, migrated resource kind, ID and location, canonical
 `api_migrated` result envelope, creation time, and original expiry. The envelope
 is limited to 16 KiB and contains no resource detail. One semantic
-`(operation_scope, request_key)` can identify exactly one alias, and no live
-`mutation_requests` row may retain the same pair. New Pipeline mutation routes
-do not treat a pre-migration request as their own replay; removed legacy routes
+`(owner_actor_id, operation_scope, request_key)` can identify exactly one alias,
+and no live `mutation_requests` row may retain the same triple. New Pipeline
+mutation routes do not treat a pre-migration request as their own replay;
+removed legacy routes
 and scope-specific migration lookups read only the alias envelope.
 
 Hourly maintenance deletes expired aliases, Task response snapshots, and
@@ -530,17 +556,20 @@ unsafe purge. Ledger and alias envelopes never store prompt, summary,
 repository, or schedule bytes. Task create replay snapshots are the narrow
 exception: they contain the same protected Task response already stored by the
 Task service, are never exposed in list APIs, logs, metrics, or errors, and are
-deleted with their receipt expiry. Their 90-day replay guarantee applies to
-caller-keyed authoring mutations; scheduler and Run idempotency retain their
-existing separate contracts.
+deleted with their receipt expiry. Their 90-day replay guarantee applies when
+the caller supplied a key or received the generated compatibility key; a caller
+that lost the keyless response still cannot discover that key. Scheduler and
+Run idempotency retain their existing separate contracts.
 
 Task creation begins using this ledger for both direct and Template-derived
 Tasks. This fixes the current behavior where `SaveTaskRequest.RequestKey` is
 accepted but not enforced. The scope for a Task create is `task:create`; each
 Template operation uses its operation plus Template ID where one exists. Keys
-are not global across unrelated scopes. A keyless compatibility create receives
+are not global across authenticated actors or unrelated scopes. A keyless
+compatibility create receives
 a server-generated internal key before the transaction and is recorded under
-the same scope, but only its response header reveals that key.
+the same scope. The server inserts that key into the canonical request before
+computing its digest and snapshot, but only the response header reveals it.
 
 ### Naming and identity
 
@@ -606,10 +635,12 @@ steps in the same write-frozen transaction that renames Tasks to Pipelines:
    distinct Stage.
 3. For each already compacted revision, preserve `content_state`, source digest,
    source-node IDs, duplicate provenance, and compaction time. Rename the row but
-   leave procedure JSON, `template_graph_json`, and `template_graph_digest`
-   null. Do not derive or verify content from a digest. It remains unavailable
-   through `template_revision_compacted` and follows the same tombstone deletion
-   rules after migration. Populate and verify the separately retained
+   leave procedure JSON and `template_graph_json` null. Preserve an existing
+   non-null `template_graph_digest` exactly when a Graph was derived before the
+   revision was compacted; leave it null only when no Graph was ever derived.
+   Never invent or recompute a Graph digest from the source digest. It remains
+   unavailable through `template_revision_compacted` and follows the same
+   tombstone deletion rules after migration. Populate and verify the separately retained
    `source_node_ids_json` for retained revisions before they can become eligible
    for later compaction; for existing tombstones, validate only the bounded UUID
    set already stored at their original compaction.
@@ -630,8 +661,9 @@ steps in the same write-frozen transaction that renames Tasks to Pipelines:
    `mutation_request_aliases` row. The migration maps the stored result resource
    kind and ID to its Pipeline equivalent, records the new location, renders one
    canonical `api_migrated` envelope, preserves creation time and original
-   expiry, then removes the old ledger row and any Task response snapshot in the
-   same transaction. Task-create preflight verifies the snapshot digest and
+   expiry and authenticated actor ID, then removes the old ledger row and its
+   required Task response snapshot, for every Task create, in the same
+   transaction. Task-create preflight verifies the snapshot digest and
    identity before replacing that legacy Task-shaped replay with the documented
    `api_migrated` alias. A storage
    apply alias embeds its already committed compact receipt, so replay needs
@@ -723,9 +755,11 @@ atomic through the durable mutation ledger. Writes with a caller-supplied key
 are idempotent: a retry with the same scope, request key, and canonical body
 returns the recorded result before checking the request's now-stale expected
 generation. Reusing the key with different content returns
-`request_key_conflict`. A keyless direct compatibility create has only
-transactional atomicity, not client-visible replay, because each request gets a
-new internal key. Database busy and temporary I/O failures return a retryable
+`request_key_conflict`. Repeating a keyless direct compatibility request still
+gets a new internal key and creates a new Task. A caller that received the prior
+generated-key header can instead resend the frozen request with that key and
+receive its stored response snapshot. Database busy and temporary I/O failures
+return a retryable
 error without a resource or ledger orphan.
 
 Archiving a user Template is reversible. Restore uses optimistic concurrency and
@@ -855,7 +889,9 @@ run in linear time over at most one Template revision and one Task request.
 - `AC-7`: For every request with a caller-supplied key, duplicate or
   lost-response retries create at most one Template, revision, duplicate,
   archive transition, or Task. A keyless direct compatibility create retains the
-  documented pre-existing non-idempotent retry behavior.
+  documented pre-existing non-idempotent retry behavior. Identical scope and key
+  values used by two authenticated actors remain independent and cannot reveal
+  or conflict with the other actor's receipt.
 - `AC-8`: List, log, metric, and error surfaces do not expose full Template
   prompts.
 - `AC-9`: An unavailable execution-profile default blocks Task save until the
@@ -866,8 +902,10 @@ run in linear time over at most one Template revision and one Task request.
   scheduling, admission, retries, and history continue without a Template. The
   existing keyless direct-create request still succeeds with a generated
   compatibility key header, RFC 9745 Structured Field Date deprecation header,
-  and unchanged Task-shaped JSON
-  body. A direct request with an existing non-UUID opaque key also succeeds,
+  and unchanged Task-shaped JSON body. Reusing the returned generated key with
+  the frozen request returns that
+  stored response, while another keyless request creates another Task. A direct
+  request with an existing non-UUID opaque key also succeeds,
   while Template-derived creates reject a missing or non-UUID key. The
   later Pipeline release performs its separately approved pre-launch API rename
   and preserves only the bounded replay-only path in section 6.
@@ -875,7 +913,8 @@ run in linear time over at most one Template revision and one Task request.
   and digest and gains a separately hashed one-Agent-node Template Graph with
   its stored source UUID and identical prompt and execution defaults. An already
   compacted fixture remains a content-free tombstone with null procedure and
-  Graph bodies and no invented Graph digest.
+  Graph bodies. A pre-existing Graph digest is preserved exactly, while a
+  never-derived fixture stays null and no digest is invented.
 - `AC-13`: A lost-response replay of every caller-keyed authoring mutation
   returns its recorded result even when its original expected generation is now
   stale; a changed request body returns `request_key_conflict`. A keyed Task
@@ -926,14 +965,17 @@ run in linear time over at most one Template revision and one Task request.
   unexpired. A committed apply
   durably replays the same compact receipt after the token expires and reclaimed
   rows are gone; an uncommitted expired token or changed reference fence performs
-  no partial work.
+  no partial work. Its capacity view reports exact use for all four Template
+  limits, previews, Task replay snapshots, and both mutation-ledger tables,
+  including the specified earliest eligibility or expiry values. An omitted
+  `max_actions` is stored and applied as 1,000.
 
 ## 10. Test approach
 
-Store tests cover revision creation, optimistic concurrency, idempotency,
-archive and restore, stable starter seeding, name conflicts, byte limits, and
-atomic Task provenance. Snapshot comparisons prove `INV-1` through `INV-7` and
-`AC-2` through `AC-7`; metadata-only fixtures prove `AC-20`.
+Store tests cover revision creation, optimistic concurrency, actor-scoped
+idempotency, archive and restore, stable starter seeding, name conflicts, byte
+limits, and atomic Task provenance. Snapshot comparisons prove `INV-1` through
+`INV-7` and `AC-2` through `AC-7`; metadata-only fixtures prove `AC-20`.
 
 HTTP tests cover pagination, prompt omission from lists, full detail access,
 unknown and archived revisions, digest mismatch, request-key conflicts, and
@@ -942,16 +984,17 @@ with distinct generated-key headers, a parseable RFC 9745 Structured Field Date
 deprecation marker exactly equal to the Template-table migration's persisted
 `floor(applied_at / 1000)` value, and the unchanged full Task JSON response.
 Repeated requests, server restart, and backup/restore must retain that exact
-header value. They replay opaque whitespace-sensitive and non-UUID
-direct keys up to the existing body bound, verify raw keys are not persisted,
+header value. A fixture takes a returned generated key and proves a keyed retry
+returns the stored keyless-create snapshot, while two bare keyless requests
+still create distinct Tasks and snapshots. They replay opaque
+whitespace-sensitive and non-UUID direct keys up to the existing body bound,
+verify raw keys are not persisted,
 edit a Task after a keyed create, and prove replay returns the original response
 bytes, status, and headers from the bounded snapshot. A near-1-MiB request with
 a valid repeated cron list, maximum prompt, and 100 repositories proves the
 response stays below the 2 MiB row cap and total snapshots stay below 1 GiB.
-They prove a keyless or
-non-UUID Template-derived create fails while the updated composer supplies a
-UUID. They
-cover duplicate source selection,
+They prove a keyless or non-UUID Template-derived create fails while the updated
+composer supplies a UUID. They cover duplicate source selection,
 profile overrides, archived-source duplication, and the replay-only migrated
 Task route at both sides of expiry. Structured log capture proves `INV-8` and
 `AC-8`; contract assertions prove `AC-16`, `AC-17`, and `AC-19`.
@@ -959,7 +1002,10 @@ Task route at both sides of expiry. Structured log capture proves `INV-8` and
 React tests cover Template search, starter labels, preview, create, edit,
 duplicate, archive, Save as template, Use template, customized markers, newer
 revision notices, unavailable profiles, storage use, compaction preview, stale
-preview recovery, and apply results. These prove `AC-22`. Playwright creates and runs both
+preview recovery, and apply results. Storage fixtures assert every exact usage,
+limit, eligibility, and expiry field, including empty `null` values and both
+mutation tables; preview fixtures prove omitted `max_actions` canonicalizes and
+persists as 1,000. These prove `AC-22`. Playwright creates and runs both
 starter cases against a fixture repository and verifies the selected repository
 and frozen source revision. These prove `AC-1`, `AC-4`, `AC-5`, `AC-9`, and
 `AC-11`.
@@ -968,11 +1014,17 @@ Migration fixtures seed old, reverted, and new starter bodies and compare prior
 Task and Run bytes. They migrate Template and provenance rows across the
 Pipeline rename, include an unreferenced compacted `single_agent_v1` tombstone,
 and prove that its digest, source-node IDs, provenance, and compaction time
-survive while all procedure and Graph content remains null. They atomically move
-retained Task and Template mutation results into durable legacy alias envelopes,
+survive while all procedure and Graph content remains null. Separate compacted
+fixtures preserve an existing Graph digest exactly and keep a never-derived
+digest null. They atomically move retained Task and Template mutation results
+into durable legacy alias envelopes,
 replay them on every removed route and scope-specific lookup, and prove new
-Pipeline mutation routes do not claim those requests. Lookup fixtures send the
-maximum valid opaque key in the JSON body and prove it never appears in the URL
+Pipeline mutation routes do not claim those requests. A keyless compatibility
+Task-create fixture includes its required snapshot, passes preflight, and moves
+to the actor-scoped alias; a missing or mismatched snapshot aborts migration.
+Two-actor fixtures reuse the same scope and key and prove isolation before and
+after alias migration. Lookup fixtures send the maximum valid opaque key in the
+JSON body and prove it never appears in the URL
 or captured logs. A committed storage apply
 fixture migrates after its preview and resource rows are gone and replays the
 same receipt on the removed route; an uncommitted preview is invalidated.
