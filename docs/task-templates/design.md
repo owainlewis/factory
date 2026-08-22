@@ -394,11 +394,14 @@ preview request contains an optional Template ID and `max_actions`, from 1 to
 1,000. This limit counts top-level reclamation actions, not revision members:
 one `purge_template` aggregate is one action. Each purge action contains the
 Template ID plus the complete ordered array of its revision IDs and digests;
-`compact_body` and `delete_tombstone` each contain their one revision ID and
-digest. The total nested revision membership cannot exceed the global 20,000
-revision-record limit. Preview and apply responses contain no names, summaries,
-prompts, or procedure bytes and have a fixed 8 MiB serialized-response limit;
-the bounded UUID and SHA-256 fields keep the 20,000-member maximum below it.
+`compact_body` contains its one revision ID and digest; and
+`delete_tombstone` contains its revision ID, digest, and complete ordered
+`source_node_ids` array. The total nested purge membership cannot exceed the
+global 20,000 revision-record limit, while at most 1,000 tombstone-deletion
+actions each expose the existing maximum of 20 source-node UUIDs. Preview and
+apply responses contain no names, summaries, prompts, or procedure bytes and
+have a fixed 8 MiB serialized-response limit; these field and cardinality bounds
+keep the maximum response below it.
 The response also contains one random opaque token, a ten-minute expiry, the
 database-generation fence, and aggregate bytes and slots. The server stores the
 canonical preview digest; the token does not encode trusted data. Apply contains
@@ -792,7 +795,9 @@ duplicate provenance after body compaction and exercise
 the 1,000-action, 20,000-member, and serialized-response bounds at maximum
 storage. A lost-response fixture deletes the maximum aggregate and proves that
 the replayed apply receipt is byte-identical without consulting deleted rows.
-Privacy assertions prove compacted
+The maximum tombstone-deletion fixture proves every retained source-node UUID is
+present in the preview and that the response stays under 8 MiB. Privacy
+assertions prove compacted
 rows retain no prompt or execution defaults in either source or derived Graph
 storage. Existing
 Linux, macOS, browser, migration, race, security, and release checks remain
