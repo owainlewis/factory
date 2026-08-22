@@ -221,9 +221,11 @@ are two sizes of the same software procedure.
   error text.
 - `INV-9`: Archiving a user Template prevents future Task creation from it but
   preserves its revisions and existing Task provenance.
-- `INV-10`: A `single_agent_v1` revision retains its original canonical bytes
-  and digest while producing exactly one Template-local Agent node with the
-  stored source-node UUID, prompt, and execution defaults.
+- `INV-10`: A retained `single_agent_v1` revision keeps its original canonical
+  bytes and digest while producing exactly one Template-local Agent node with
+  the stored source-node UUID, prompt, and execution defaults. A compacted
+  revision remains a content-free tombstone and never gains reconstructed
+  procedure or Graph bytes.
 - `INV-11`: Every Pipeline created from a Template mints new Pipeline-bound
   Stage UUIDs and records a complete source-node to execution-Stage mapping.
 - `INV-12`: Current, starter, and Task- or Pipeline-referenced revision bodies
@@ -361,9 +363,11 @@ SQLite adds `task_templates`, `task_template_revisions`, and nullable provenance
 columns on `tasks`. A Template row stores ID, normalized name key, display name,
 summary, generation, current revision ID, starter key, starter release version,
 archive state, and timestamps. A revision stores ID, Template ID, revision
-number, optional starter release version, canonical procedure JSON, SHA-256
-digest, nullable immutable `single_agent_source_node_id`, optional duplicate
-provenance, author kind, and creation time. The source-node field is required
+number, optional starter release version, `content_state` (`retained` or
+`compacted`), nullable canonical procedure JSON, SHA-256 source digest, nullable
+immutable `single_agent_source_node_id`, optional duplicate provenance, author
+kind, creation time, and nullable compaction time. Procedure JSON is required
+only while content state is retained. The source-node field is required
 only for `single_agent_v1` and names a node inside that Template revision. For
 `graph_v1`, Template-local node IDs are defined in canonical procedure JSON and
 the single-agent field is null. Neither form is used directly as a Pipeline Stage
@@ -483,21 +487,28 @@ steps in the same write-frozen transaction that renames Tasks to Pipelines:
 1. Rename `task_templates` to `pipeline_templates` and
    `task_template_revisions` to `pipeline_template_revisions`, preserving every
    primary key, revision number, digest, starter version, and archive state.
-2. Keep every `single_agent_v1` procedure JSON and source digest byte-for-byte
-   unchanged. Add a separately stored canonical `template_graph_json` and
-   `template_graph_digest` to the renamed revision. The derived Template Graph
-   has one Agent node named `Execute`, `activation: all`, no Edges, and that node
-   as entry. It uses the revision's immutable
+2. For each retained `single_agent_v1` revision, keep procedure JSON and source
+   digest byte-for-byte unchanged. Add a separately stored canonical
+   `template_graph_json` and `template_graph_digest` to the renamed revision.
+   The derived Template Graph has one Agent node named `Execute`, `activation:
+   all`, no Edges, and that node as entry. It uses the revision's immutable
    `single_agent_source_node_id` UUID. The source digest continues to
    authenticate the original procedure; the Template Graph digest independently
-   authenticates the derived reusable graph recipe. Populate and verify the
-   separately retained `source_node_ids_json` for every revision kind before any
-   procedure body can become eligible for later compaction.
-3. Copy prompt, runtime, execution-profile default, and timeout into the Agent
-   Stage. Map `concurrency_limit` to the Pipeline concurrency default. Leave
-   Stage concurrency and requested token ceiling null. This matches the current
-   Task limit, which bounds Sessions across repositories rather than limiting a
+   authenticates the derived reusable graph recipe. Copy prompt, runtime,
+   execution-profile default, and timeout into the Agent Stage. Map
+   `concurrency_limit` to the Pipeline concurrency default. Leave Stage
+   concurrency and requested token ceiling null. This matches the current Task
+   limit, which bounds Sessions across repositories rather than limiting a
    distinct Stage.
+3. For each already compacted revision, preserve `content_state`, source digest,
+   source-node IDs, duplicate provenance, and compaction time. Rename the row but
+   leave procedure JSON, `template_graph_json`, and `template_graph_digest`
+   null. Do not derive or verify content from a digest. It remains unavailable
+   through `template_revision_compacted` and follows the same tombstone deletion
+   rules after migration. Populate and verify the separately retained
+   `source_node_ids_json` for retained revisions before they can become eligible
+   for later compaction; for existing tombstones, validate only the bounded UUID
+   set already stored at their original compaction.
 4. Rename Task provenance columns to Pipeline provenance columns without
    changing Template ID, revision ID, name snapshot, source digest, or
    customized fields. The migrated Pipeline still owns its complete executable
@@ -699,9 +710,11 @@ run in linear time over at most one Template revision and one Task request.
   scheduling, admission, retries, and history continue without a Template. The
   later Pipeline release performs its separately approved pre-launch API rename
   and preserves only the bounded replay-only path in section 6.
-- `AC-12`: Every `single_agent_v1` fixture retains identical source bytes and
-  digest and gains a separately hashed one-Agent-node Template Graph with its
-  stored source UUID and identical prompt and execution defaults.
+- `AC-12`: Every retained `single_agent_v1` fixture keeps identical source bytes
+  and digest and gains a separately hashed one-Agent-node Template Graph with
+  its stored source UUID and identical prompt and execution defaults. An already
+  compacted fixture remains a content-free tombstone with null procedure and
+  Graph bodies and no invented Graph digest.
 - `AC-13`: A lost-response replay of every authoring mutation returns its
   recorded result even when its original expected generation is now stale; a
   changed request body returns `request_key_conflict`.
@@ -764,8 +777,11 @@ and frozen source revision. These prove `AC-1`, `AC-4`, `AC-5`, `AC-9`, and
 
 Migration fixtures seed old, reverted, and new starter bodies and compare prior
 Task and Run bytes. They migrate Template and provenance rows across the
-Pipeline rename and replay retained Task and Template mutation results on every
-legacy route and scope-specific lookup. A graph-conversion fixture
+Pipeline rename, include an unreferenced compacted `single_agent_v1` tombstone,
+and prove that its digest, source-node IDs, provenance, and compaction time
+survive while all procedure and Graph content remains null. They replay retained
+Task and Template mutation results on every legacy route and scope-specific
+lookup. A graph-conversion fixture
 creates two Pipelines from one revision and proves `INV-10`, `INV-11`, `AC-12`,
 `AC-13`, `AC-14`, `AC-15`, `AC-19`, and `AC-21`. Compaction fixtures race a new
 provenance reference against apply, preserve referenced bytes, verify retained
