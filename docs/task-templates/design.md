@@ -366,7 +366,13 @@ type and embedded composer. The server generates a random internal key, writes
 the Task and ledger receipt normally, returns the unchanged full
 `protocol.Task` JSON body, exposes the generated key only in an
 `X-Factory-Request-Key` response header, and marks the response with
-`Deprecation: true`. A repeated keyless request creates another Task, matching
+`Deprecation: @<unix-seconds>`, where the value is an HTTP Structured Field Date.
+The server derives the value once as
+`floor(schema_migrations.applied_at / 1000)` for the migration that creates the
+Template tables. That existing ledger value is the authoritative time when the
+compatibility path became deprecated on this Factory instance. It is preserved
+by backup and restore, and must not be replaced by request, process-start, build,
+or current time. A repeated keyless request creates another Task, matching
 today's non-idempotent behavior; it cannot recover a lost response. The updated
 embedded composer always sends a client key. The keyless exception disappears
 with the intentional Task-to-Pipeline API rename, so it does not enter the
@@ -859,7 +865,8 @@ run in linear time over at most one Template revision and one Task request.
 - `AC-11`: In the Task Template release, existing direct Task creation, editing,
   scheduling, admission, retries, and history continue without a Template. The
   existing keyless direct-create request still succeeds with a generated
-  compatibility key header, deprecation header, and unchanged Task-shaped JSON
+  compatibility key header, RFC 9745 Structured Field Date deprecation header,
+  and unchanged Task-shaped JSON
   body. A direct request with an existing non-UUID opaque key also succeeds,
   while Template-derived creates reject a missing or non-UUID key. The
   later Pipeline release performs its separately approved pre-launch API rename
@@ -931,8 +938,11 @@ atomic Task provenance. Snapshot comparisons prove `INV-1` through `INV-7` and
 HTTP tests cover pagination, prompt omission from lists, full detail access,
 unknown and archived revisions, digest mismatch, request-key conflicts, and
 existing direct Task compatibility. They prove a keyless direct create succeeds
-with distinct generated-key headers, the deprecation marker, and the unchanged
-full Task JSON response. They replay opaque whitespace-sensitive and non-UUID
+with distinct generated-key headers, a parseable RFC 9745 Structured Field Date
+deprecation marker exactly equal to the Template-table migration's persisted
+`floor(applied_at / 1000)` value, and the unchanged full Task JSON response.
+Repeated requests, server restart, and backup/restore must retain that exact
+header value. They replay opaque whitespace-sensitive and non-UUID
 direct keys up to the existing body bound, verify raw keys are not persisted,
 edit a Task after a keyed create, and prove replay returns the original response
 bytes, status, and headers from the bounded snapshot. A near-1-MiB request with
