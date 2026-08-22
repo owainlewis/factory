@@ -226,8 +226,11 @@ are two sizes of the same software procedure.
   the stored source-node UUID, prompt, and execution defaults. A compacted
   revision remains a content-free tombstone and never gains reconstructed
   procedure or Graph bytes.
-- `INV-11`: Every Pipeline created from a Template mints new Pipeline-bound
-  Stage UUIDs and records a complete source-node to execution-Stage mapping.
+- `INV-11`: Every Pipeline newly instantiated from a Template after the Pipeline
+  release mints new Pipeline-bound Stage UUIDs and records a complete
+  source-node to execution-Stage mapping. The one-time migration of an existing
+  Task is the explicit exception: it preserves that Task's ID as its sole Stage
+  ID under the Pipeline migration contract.
 - `INV-12`: Current, starter, and Task- or Pipeline-referenced revision bodies
   are never independently compacted. Purging an eligible archived user Template
   deletes its complete aggregate, including its current revision, under the
@@ -402,19 +405,42 @@ actions each expose the existing maximum of 20 source-node UUIDs. Preview and
 apply responses contain no names, summaries, prompts, or procedure bytes and
 have a fixed 8 MiB serialized-response limit; these field and cardinality bounds
 keep the maximum response below it.
+
+Action generation is canonical and mutually exclusive. Factory determines
+eligible `purge_template` aggregates first, emits one action per aggregate, and
+excludes every member revision from `compact_body` and `delete_tombstone`.
+Independent revision actions are emitted only for Templates outside the purge
+set, in stable action-kind, Template-ID, and revision-ID order.
+
 The response also contains one random opaque token, a ten-minute expiry, the
-database-generation fence, and aggregate bytes and slots. The server stores the
-canonical preview digest; the token does not encode trusted data. Apply contains
-`request_key` and the preview token. It uses mutation scope
-`template-storage:compact`, rechecks the complete preview transactionally, and
+database-generation fence, and aggregate bytes and slots. SQLite stores the
+token hash, authenticated actor ID, original filter and `max_actions`, canonical
+preview JSON, its SHA-256 digest, database-generation fence, and expiry in
+`template_compaction_previews`; the plaintext token encodes no trusted data.
+Canonical preview JSON is capped at 8 MiB. At most 16 unexpired previews and 128
+MiB of preview JSON may exist. Preview creation removes expired rows and the
+actor's prior unconsumed preview, then fails without a token if either bound
+would still be exceeded.
+
+Apply contains `request_key` and the preview token and uses mutation scope
+`template-storage:compact`. After authentication and authorization, it checks
+`mutation_requests` for the scope, request key, and canonical request digest
+before looking up or expiring the token. A committed exact replay therefore
+returns its receipt even after the ten-minute preview expiry. With no committed
+result, an unknown or expired token returns
+`template_compaction_preview_expired` without work. A first apply loads the
+exact stored preview by token hash and actor, verifies its digest, and rechecks
+its complete canonical action set transactionally. It never recomputes a
+different preview from current eligibility.
+
+A successful first apply deletes its preview row in the same transaction and
 returns a compact receipt containing a new compaction ID, the canonical preview
 digest, committed action and revision-member counts, counts by action kind,
 freed bytes and slots, and commit time. It does not repeat action or revision
 IDs; those belong to the operator-confirmed preview. The receipt is under the
 mutation ledger's 16 KiB result-envelope limit. Replaying the same apply returns
-that exact recorded receipt without needing any row deleted by the compaction.
-An expired token returns
-`template_compaction_preview_expired` and performs no work.
+that exact recorded receipt without needing the preview or any row deleted by
+the compaction.
 
 SQLite also adds `mutation_requests`. Its primary key is the pair of
 `operation_scope` and client-generated `request_key`. It stores the SHA-256
@@ -428,8 +454,20 @@ replay returns the stored envelope byte-for-byte. A different digest returns
 `request_key_conflict`. The ledger row, result envelope, and resource mutation
 commit in one transaction, so none can exist alone. Each row has
 `expires_at = created_at + 90 days`. Exact replays remain available through that
-instant. Hourly maintenance deletes only expired rows in batches of 1,000. At
-100,000 unexpired rows Factory first removes every expired
+instant.
+
+SQLite also adds `mutation_request_aliases` for durable legacy lookup after the
+Pipeline rename. Its primary key is legacy `operation_scope` plus `request_key`;
+it stores the frozen legacy request digest, migrated resource kind, ID and
+location, canonical `api_migrated` result envelope, creation time, and original
+expiry. The envelope is limited to 16 KiB and contains no resource detail. An
+old `(operation_scope, request_key)` can identify exactly one alias, and no live
+`mutation_requests` row may retain the same pair. New Pipeline mutation routes
+do not treat a pre-migration request as their own replay; removed legacy routes
+and scope-specific migration lookups read only the alias envelope.
+
+Hourly maintenance deletes expired aliases and mutation rows in batches of
+1,000. At 100,000 total unexpired rows across both tables, Factory first removes every expired
 batch and then, if still full, stops new Template mutations and Task creates with
 `mutation_request_limit_reached`; exact replays and Runs continue. Health shows
 the row count and earliest expiry, so capacity returns within 90 days without an
@@ -523,11 +561,26 @@ steps in the same write-frozen transaction that renames Tasks to Pipelines:
    Pipeline Graph and its execution digest are computed after this substitution
    and after applying any Task customization. A direct Task with no Template
    provenance has no source-node map.
-5. Rewrite retained mutation-ledger scopes and result resource kinds from Task
-   to Pipeline names while preserving request keys, digests, result identities,
-   expiry, and replay behavior. Also retain the legacy scope and canonical
-   legacy request digest as a lookup alias until that row's original 90-day
-   expiry. A replay after upgrade returns the migrated resource.
+5. For each retained Task or Task Template mutation result, including
+   `template-storage:compact`, atomically move its request key, frozen scope and
+   request digest from `mutation_requests` into one
+   `mutation_request_aliases` row. The migration maps the stored result resource
+   kind and ID to its Pipeline equivalent, records the new location, renders one
+   canonical `api_migrated` envelope, preserves creation time and original
+   expiry, then removes the old ledger row in the same transaction. A storage
+   apply alias embeds its already committed compact receipt, so replay needs
+   neither its deleted preview nor reclaimed rows. Preflight rejects duplicate
+   alias keys, an alias/live-row collision, envelopes over 16 KiB, or any result
+   that cannot be retargeted. Resource-backed Task and Template results must
+   identify an existing migrated resource. A storage apply has no resource row:
+   preflight instead validates its stored receipt schema, compaction ID, preview
+   digest, counts, freed capacity, commit time, and expiry before moving it.
+   Removed legacy routes and migration lookups replay the stored alias envelope
+   byte-for-byte. New Pipeline mutation routes accept only requests first made
+   in the new vocabulary and never claim the pre-migration request as a replay.
+   Uncommitted ten-minute preview rows have no replay guarantee; migration
+   deletes them transactionally and the operator creates a new Pipeline Template
+   storage preview after upgrade.
 6. Replace `/api/v1/task-templates` with `/api/v1/pipeline-templates` and
    `/api/v1/tasks` with `/api/v1/pipelines` in the same server and embedded-UI
    release. **Templates** remains the browser label. This is the intentional
@@ -535,16 +588,19 @@ steps in the same write-frozen transaction that renames Tasks to Pipelines:
    general compatibility alias or new Task admission after upgrade.
 7. Keep narrow replay-only handlers on every removed legacy mutation route until
    the last matching migrated ledger row expires: Task create, Template create,
-   Template edit, duplicate, archive, and restore. Each handler accepts only its
-   frozen legacy body and request key, canonicalizes them with the frozen legacy
-   schema, and queries only that route's retained operation-scope alias. An exact
-   retained match returns an `api_migrated` envelope with the new Pipeline or
-   Pipeline Template ID and location. An unknown or expired key returns HTTP 410
-   with the relevant `*_api_removed` code; a changed body returns
+   Template edit, duplicate, archive, restore, and storage compaction apply. Each
+   handler accepts only its frozen legacy body and request key, canonicalizes it
+   with the frozen legacy schema, and queries only that route's retained
+   operation-scope alias. An exact retained match returns its stored
+   `api_migrated` envelope with the new Pipeline or Pipeline Template identity,
+   location, or compact receipt. An unknown or expired key returns HTTP 410 with
+   the relevant `*_api_removed` code; a changed body returns
    `request_key_conflict`. These handlers cannot create or mutate a resource.
    The new client can retrieve the same result from a scope-specific lookup such
    as `GET /api/v1/mutation-replays/task-create/{request_key}` or
-   `GET /api/v1/mutation-replays/template-edit/{template_id}/{request_key}`.
+   `GET /api/v1/mutation-replays/template-edit/{template_id}/{request_key}`; the
+   fixed storage lookup is
+   `GET /api/v1/mutation-replays/template-storage-compact/{request_key}`.
    Fixed operation-kind routes always query one retained legacy scope, so a key
    reused in another scope cannot collide. Each replay-only route is removed
    automatically after its final legacy expiry and health reports every removal
@@ -559,12 +615,19 @@ provenance. Two Pipelines from one Template therefore share no Stage IDs.
 Editing a migrated `single_agent_v1` revision in the graph editor creates a new
 `graph_v1` revision. It never rewrites the source revision.
 
-Migration preflight rejects an unknown procedure kind, missing referenced
-revision, provenance digest mismatch, missing or non-UUID
-`single_agent_source_node_id`, duplicate Template-local node identity,
-`source_node_ids_json` mismatch, incomplete source-node mapping, Stage-ID
-collision inside a converted Graph, graph digest mismatch, or ledger result that
-cannot be retargeted. The existing owner-only
+Migration preflight branches on procedure kind and content state. A retained
+`single_agent_v1` revision requires a valid `single_agent_source_node_id`, an
+exact singleton `source_node_ids_json`, canonical source bytes matching the
+source digest, and a derived Graph matching its new Graph digest. A retained
+`graph_v1` revision requires a null single-agent field, canonical Graph content,
+an exact one-to-twenty-node identity set, and matching source and Graph digests.
+A compacted revision requires null procedure and Graph content, a valid retained
+source digest, a bounded unique source-node set, and permits a null Graph digest
+when no Graph was ever derived. Common checks reject an unknown kind or state,
+missing referenced revision, provenance digest mismatch, duplicate node
+identity, incomplete source-node mapping where provenance exists, Stage-ID
+collision inside a converted Graph, invalid alias or ledger envelope, or a
+ledger result that cannot be retargeted. The existing owner-only
 backup and offline rollback boundary from the Pipeline design apply. A failure
 leaves the pre-migration database unchanged.
 
@@ -607,11 +670,12 @@ IDs, bytes, reference counts, and a database-generation fence. Apply requires
 that token and operator confirmation. The transaction rechecks every condition:
 
 - An archived user Template may be purged only when no Task or Pipeline points
-  to any of its revisions, no retained duplicate names the Template or any
-  revision as its source, and no unexpired mutation result points to the
-  Template or any revision. `purge_template` is aggregate deletion, not
-  revision compaction: the preview must include every revision ID and digest,
-  and apply deletes the Template plus every revision record transactionally.
+  to any of its revisions, no duplicate revision record, retained or compacted,
+  names the Template or any revision as its source, and no unexpired mutation
+  result points to the Template or any revision. `purge_template` is aggregate
+  deletion, not revision compaction: the preview must include every revision ID
+  and digest, and apply deletes the Template plus every revision record
+  transactionally.
   This includes the current revision and compacted tombstones regardless of
   their individual 90- or 365-day ages. If any revision is omitted or fails an
   external-reference or replay check, the whole Template is ineligible. Starter
@@ -619,18 +683,27 @@ that token and operator confirmation. The transaction rechecks every condition:
   slot, all of its retained-body and prompt-byte use, and all of its total
   revision-record slots.
 - A non-current user revision body may be compacted only when it is at least 90
-  days old, no Task or Pipeline points to it, no retained duplicate names it as
-  its source, and no unexpired mutation result points to it. Compaction retains a
+  days old, no Task or Pipeline points to it, no duplicate revision record,
+  retained or compacted, names it as its source, and no unexpired mutation result
+  points to it. Compaction retains a
   tombstone with Template ID, revision ID, revision number, source digest,
   the separately stored `source_node_ids_json`, creation time, and compaction
   time. It also retains `duplicated_from_template_id` and
   `duplicated_from_revision_id` as non-content provenance columns, so the source
-  remains referenced after the duplicate revision body is compacted. It removes every content-bearing representation, including canonical
-  procedure JSON and any separately derived `template_graph_json`, and disables
-  View changes for that revision. It retains source and Template Graph digests,
-  but no prompt or execution-default bytes. The tombstone does not count toward
-  retained-body or prompt byte limits, but it does count toward the 20,000 total
-  revision-record limit.
+  remains referenced after the duplicate revision body is compacted. It removes
+  every content-bearing representation, including canonical procedure JSON and
+  any separately derived `template_graph_json`, and disables View changes for
+  that revision. It retains source and Template Graph digests, but no prompt or
+  execution-default bytes. The tombstone does not count toward retained-body or
+  prompt byte limits, but it does count toward the 20,000 total revision-record
+  limit.
+- Every duplicate-reference check in purge, body compaction, and tombstone
+  deletion scans provenance columns on both retained revisions and compacted
+  tombstones. A source becomes eligible only after the referencing duplicate
+  record itself is safely purged or permanently deleted.
+- Every replay-reference check scans both live `mutation_requests` receipts and
+  migrated `mutation_request_aliases` until their recorded expiry. Reclamation
+  cannot make either replay envelope point at a deleted resource.
 - A compacted tombstone may be deleted permanently only when it has been
   compacted for at least 365 days and the same Task, Pipeline, duplicate, current,
   starter, and replay reference checks still pass. Its ID, digest, and source
@@ -723,10 +796,12 @@ run in linear time over at most one Template revision and one Task request.
   changed request body returns `request_key_conflict`.
 - `AC-14`: A pre-Pipeline database migrates Template resources, all immutable
   revisions, Task provenance, and mutation-ledger results to Pipeline names
-  without losing or retargeting a source revision.
-- `AC-15`: Creating two Pipelines from one Template revision produces disjoint
-  Pipeline-bound Stage UUID sets, complete source-node maps, and otherwise
-  equivalent executable Graphs.
+  without losing or retargeting a source revision. Each migrated Task preserves
+  its former ID as its sole Stage ID, while every later Template instantiation
+  mints fresh Stage IDs.
+- `AC-15`: Newly creating two Pipelines from one Template revision produces
+  disjoint Pipeline-bound Stage UUID sets, complete source-node maps, and
+  otherwise equivalent executable Graphs.
 - `AC-16`: A Task created from a Template can select an execution profile that
   differs from the Template default; the Task stores and runs that profile and
   provenance records `execution_profile_id` as customized.
@@ -739,6 +814,8 @@ run in linear time over at most one Template revision and one Task request.
   body, record, and byte capacity. Purging an eligible archived user Template
   atomically deletes its current revision and every other revision or tombstone,
   while any omitted aggregate member or external reference rejects the purge.
+  Aggregate purges subsume member actions, and retained or compacted duplicate
+  provenance blocks reclamation of its source.
 - `AC-19`: Through each request's original 90-day expiry, an exact lost-response
   replay on the legacy Task create route returns the migrated Pipeline identity
   without admitting new work; changed, expired, and unknown requests fail as
@@ -747,14 +824,17 @@ run in linear time over at most one Template revision and one Task request.
   creating a revision, changing `current_revision_id`, or showing a newer
   procedure notice on sourced Tasks.
 - `AC-21`: Through each original ledger expiry, every removed Task Template
-  mutation route replays an exact migrated result from its fixed operation scope
-  without admitting a new mutation; changed, expired, and unknown requests fail
-  as specified.
+  mutation route, including storage compaction apply, replays its stored
+  `api_migrated` alias envelope from its fixed legacy scope without admitting a
+  new mutation. A new Pipeline route does not claim that legacy request as its
+  own replay; changed, expired, and unknown legacy requests fail as specified.
 - `AC-22`: The authenticated storage panel previews at most 1,000 exact
   reclamation actions and at most 20,000 nested revision members in an 8 MiB
-  response, applies them idempotently from an unexpired token, durably replays
-  the same compact receipt after the reclaimed rows are gone, and performs no
-  partial work for an expired token or changed reference fence.
+  response, persists the exact bounded preview behind its actor-bound token, and
+  applies it idempotently while the token is unexpired. A committed apply
+  durably replays the same compact receipt after the token expires and reclaimed
+  rows are gone; an uncommitted expired token or changed reference fence performs
+  no partial work.
 
 ## 10. Test approach
 
@@ -782,19 +862,30 @@ Migration fixtures seed old, reverted, and new starter bodies and compare prior
 Task and Run bytes. They migrate Template and provenance rows across the
 Pipeline rename, include an unreferenced compacted `single_agent_v1` tombstone,
 and prove that its digest, source-node IDs, provenance, and compaction time
-survive while all procedure and Graph content remains null. They replay retained
-Task and Template mutation results on every legacy route and scope-specific
-lookup. A graph-conversion fixture
-creates two Pipelines from one revision and proves `INV-10`, `INV-11`, `AC-12`,
+survive while all procedure and Graph content remains null. They atomically move
+retained Task and Template mutation results into durable legacy alias envelopes,
+replay them on every removed route and scope-specific lookup, and prove new
+Pipeline mutation routes do not claim those requests. A committed storage apply
+fixture migrates after its preview and resource rows are gone and replays the
+same receipt on the removed route; an uncommitted preview is invalidated.
+Preflight fixtures cover retained single-agent, retained graph, and
+compacted states independently. A graph-conversion fixture preserves the former
+Task ID for a migrated Stage, then newly creates two Pipelines from one revision
+with fresh IDs and proves `INV-10`, `INV-11`, `AC-12`,
 `AC-13`, `AC-14`, `AC-15`, `AC-19`, and `AC-21`. Compaction fixtures race a new
 provenance reference against apply, preserve referenced bytes, verify retained
 tombstones, purge complete archived aggregates containing current revisions and
-young tombstones, reject incomplete or newly referenced aggregates, exercise
-ledger expiry and cap recovery, and prove `INV-12` and `AC-18`. They retain
-duplicate provenance after body compaction and exercise
+young tombstones, reject incomplete or newly referenced aggregates, prove purge
+actions subsume all member actions, and exercise ledger expiry and cap recovery.
+They prove `INV-12` and `AC-18`, retain duplicate provenance after body
+compaction, block source reclamation from retained and compacted duplicate rows,
+and exercise
 the 1,000-action, 20,000-member, and serialized-response bounds at maximum
 storage. A lost-response fixture deletes the maximum aggregate and proves that
-the replayed apply receipt is byte-identical without consulting deleted rows.
+the replayed apply receipt is byte-identical after token expiry without
+consulting the deleted preview or resource rows. Preview persistence fixtures
+verify actor binding, stored canonical contents and digest, token replacement,
+expiry, and the 16-row and 128 MiB bounds.
 The maximum tombstone-deletion fixture proves every retained source-node UUID is
 present in the preview and that the response stays under 8 MiB. Privacy
 assertions prove compacted
