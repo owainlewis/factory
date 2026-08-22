@@ -31,8 +31,8 @@ describe("Runs", () => {
     render(<QueryClientProvider client={client}><RunsView mode="kanban" onMode={() => undefined} onRun={onRun} /></QueryClientProvider>);
 
     expect(await screen.findByRole("heading", { name: "Work" })).toBeVisible();
-    expect(screen.getByRole("region", { name: "Work summary" })).toHaveTextContent("Needs attention1Running1Queued2Done2");
-    expect(screen.getByRole("region", { name: "Needs attention" })).toContainElement(screen.getByRole("button", { name: /Fix release build, blocked/ }));
+    expect(screen.getByRole("region", { name: "Work summary" })).toHaveTextContent("Queued2Running1Blocked1Done2");
+    expect(screen.getByRole("region", { name: "Blocked" })).toContainElement(screen.getByRole("button", { name: /Fix release build, blocked/ }));
     expect(screen.getByRole("region", { name: "Queued" })).toContainElement(screen.getByRole("button", { name: /Wait for capacity, blocked/ }));
     expect(screen.getByRole("region", { name: "Done" })).toContainElement(screen.getByRole("button", { name: /Old failed run, failed/ }));
     expect(screen.getByText("factory", { exact: true })).toBeVisible();

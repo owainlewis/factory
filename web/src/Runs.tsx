@@ -101,9 +101,9 @@ function RunList({ items, onRun }: { items: Run[]; onRun: (id: string) => void }
 }
 
 const boardColumns: Array<{ key: string; label: string; hint: string }> = [
-  { key: "attention", label: "Needs attention", hint: "Blocked or failed" },
-  { key: "running", label: "Running", hint: "Agents at work" },
   { key: "queued", label: "Queued", hint: "Waiting to start" },
+  { key: "running", label: "Running", hint: "Agents at work" },
+  { key: "attention", label: "Blocked", hint: "Needs attention" },
   { key: "done", label: "Done", hint: "Finished work" },
 ];
 
