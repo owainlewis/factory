@@ -128,6 +128,7 @@ test("public site preserves the product window at intermediate widths", async ({
 
   const windowBounds = await page.locator(".product-window").boundingBox();
   expect(windowBounds).not.toBeNull();
+  expect(windowBounds?.x ?? 0).toBeGreaterThanOrEqual(0);
   expect((windowBounds?.x ?? 0) + (windowBounds?.width ?? 0)).toBeLessThanOrEqual(1120);
   const viewport = await page.evaluate<{ width: number; scrollWidth: number }>(
     "({ width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth })",
