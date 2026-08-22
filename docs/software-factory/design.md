@@ -108,6 +108,11 @@ opaque reference such as `LINEAR-123` requires `--repo` in V1. Factory does not
 fetch Linear. The agent reads the live item with tools available on its Worker,
 or reports `needs-input` when it cannot obtain enough context.
 
+When `--repo` is present, it scopes every opaque reference and every GitHub URL
+in the batch must resolve to that same managed repository. A mismatch rejects
+the complete admission. Omitting `--repo` permits GitHub-only targets from
+multiple managed repositories; it never permits an opaque reference.
+
 The immutable target contains the source reference, repository, and any
 operator-supplied context, not a copy of live provider content. GitHub or Linear
 content read by the agent may change between Attempts. Historical Work records
@@ -403,8 +408,10 @@ model.
   operator explicitly converts its outcome contract.
 - `INV-17`: Agent-owned Work becomes ready only from delivery evidence
   revalidated after its process group has stopped.
-- `INV-18`: An answered Work starts from the exact checkpoint revalidated after
-  the needs-input process group stopped.
+- `INV-18`: Once Work enters `needs-input`, it retains the exact checkpoint
+  revalidated after the process group stopped until an Attempt successfully
+  starts from it. Answer, cancellation, retry, or preparation failure cannot
+  fall back from it.
 - `INV-19`: A Work that has been replaced cannot be retried, and retry admission
   cannot create a second nonterminal Work target for the same retry identity.
 
@@ -459,7 +466,9 @@ Worker Attempt before taking manual ownership.
   expected repository and records the provider-reported branch and SHA.
 - Agent-owned `needs-input` requires a clean worktree and a checkpoint SHA. A
   changed HEAD must equal the fetched publish ref; an unchanged Work uses its
-  exact base SHA. The Worker revalidates after process stop.
+  exact base SHA. The Worker revalidates after process stop, then stores that
+  commit as both historical `checkpoint_sha` and authoritative
+  `pending_resume_sha`.
 - `needs-input`, `failed`, and `no-change` require a message. `needs-input`
   exposes the message as the current operator question.
 - Exactly one Attempt-ending agent report can win. Repeating the same report is
@@ -643,6 +652,7 @@ context_snapshot
 publish_branch
 predecessor_work_id
 checkpoint_sha
+pending_resume_sha
 state
 execution_owner: none | worker_attempt | operator
 waiting_reason
@@ -716,7 +726,9 @@ arrives in a later invocation; a different outcome report conflicts.
 
 Admission validates the complete target set before writing anything. Unknown,
 disabled, duplicate, empty, malformed, or oversized targets create no Run. An
-opaque reference without an explicit repository creates no Run.
+opaque reference without an explicit repository creates no Run. With an
+explicit repository, any GitHub URL for another repository rejects the whole
+batch.
 
 Work waits visibly when no compatible Worker has capacity. A Worker that loses
 its lease stops the agent process group. Infrastructure failure before or after
@@ -727,9 +739,11 @@ opened a pull request.
 
 Retry first transactionally proves that no replacement names this Work as its
 predecessor and that no other nonterminal Work with the retry identity defined
-above exists. Each accepted retry then creates a fresh local worktree. If the
-stable remote publish branch exists, preparation starts from its current fetched
-head. Otherwise it starts from the repository base only when no PR is recorded.
+above exists. Each accepted retry then creates a fresh local worktree. A stored
+`pending_resume_sha` always takes precedence and preparation must start from
+that exact commit. Without one, preparation uses the current fetched head of an
+existing stable remote publish branch, or the repository base only when no PR
+is recorded.
 A missing publish branch for known PR Work fails preparation with a fixed
 recovery message that identifies the PR, ref, and recorded trusted PR head SHA.
 It tells the operator to restore the ref to exactly that SHA or admit warned
@@ -782,12 +796,16 @@ report not already finalized. Cancelling a Run cancels each nonterminal Work
 target without changing terminal siblings.
 
 An operator answer to `needs-input` appends trusted context and requeues the
-same Work. The next Worker claim creates a new Attempt. The agent receives the
-original frozen Procedure, original context, prior question, answer, updates,
-known branch, checkpoint SHA, and PR metadata. Worktree preparation starts from
-that exact checkpoint. A missing or unreachable checkpoint fails preparation
-visibly instead of falling back to repository base. Archiving a Procedure
-prevents new Runs but does not cancel admitted Work.
+same Work while retaining its authoritative `pending_resume_sha`.
+The next Worker claim creates a new Attempt. The agent receives the original
+frozen Procedure, original context, prior question, answer, updates, known
+branch, checkpoint SHA, and PR metadata. Worktree preparation starts from that
+exact checkpoint. A missing or unreachable checkpoint fails preparation visibly
+instead of falling back to the publish ref or repository base. Cancellation,
+failed preparation, and explicit retry retain `pending_resume_sha`. It is cleared
+only after an Attempt successfully starts from that commit; the historical
+`checkpoint_sha` and update remain stored. Archiving a Procedure prevents new
+Runs but does not cancel admitted Work.
 
 Control-plane shutdown stops admission before HTTP shutdown. Workers continue
 until lease renewal fails, then stop active processes. Restart sweeps expired
@@ -860,7 +878,8 @@ remains visible and never silently drops an outcome.
 - `AC-9`: Answering a needs-input question requeues Work with the answer and
   prior history while preserving the original Procedure and context; only the
   next Worker claim creates an Attempt, starting from the revalidated
-  checkpoint SHA.
+  checkpoint SHA. Cancellation, failed preparation, and retry keep that SHA
+  authoritative until an Attempt successfully starts from it.
 - `AC-10`: A warned retry after process start continues from the stable remote
   publish branch when one exists and does not create a second Work record. It is
   rejected without state change when replacement or matching nonterminal Work
@@ -914,7 +933,8 @@ process-exit update rejection, terminal-report races, cancellation, forced exit,
 parent loss, stable publish continuation, preflight and post-stop PR identity
 validation, provider outage, branch movement after report, the 199-progress
 limit with a reserved outcome slot, dirty needs-input rejection, pushed and
-unchanged checkpoints, answer continuation, and cleanup.
+unchanged checkpoints, answer continuation, answer then cancellation or failed
+preparation then retry with moved and missing refs, and cleanup.
 They verify `AC-5`, `AC-7`, `AC-8`, `AC-10`, `AC-12`, and `AC-13`, including
 the race detector.
 They also prove that every valid semantic outcome completes the Attempt while
@@ -926,6 +946,9 @@ prompt size for `AC-4`.
 
 Admission tests prove the exact opaque-reference grammar and reject whitespace,
 prose, Unicode, empty, and overlength values without creating partial Work.
+They prove an explicit repository accepts only matching GitHub URLs, rejects a
+mixed-repository batch transactionally, and that GitHub-only multi-repository
+admission works when `--repo` is absent.
 
 CLI tests use a real loopback server to prove multi-reference admission,
 explicit and generated-key replay across separate CLI processes, pending-journal
