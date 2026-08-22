@@ -467,6 +467,10 @@ Worker Attempt before taking manual ownership.
 - Every update invocation has a random request ID. A transport retry with the
   same Attempt and request ID, or the same operator Work and request ID, returns
   the stored response.
+- Agent update handling first verifies that the presented token digest belongs
+  to the Attempt, then checks for a stored `(attempt_id, request_id)` response.
+  An exact stored request returns that response before lease-expiry or lifecycle
+  rejection. Expiry never authorizes a new request ID or different fields.
 - An admission request key returns the original Run only when its canonical
   caller-input fingerprint matches. This lookup occurs before repository,
   Procedure, default, state-dependent validation, or predecessor selection.
@@ -582,9 +586,10 @@ The socket is created below the Worker data directory with mode `0600`. The
 random update token is valid only while the Attempt owns its active lease. The
 Worker stores only its digest and never forwards the token to the control
 plane. For each invocation, the helper creates a random request ID and reuses it
-for bounded transport retries. The Worker validates the token, Work and Attempt
-identity, request ID, current lifecycle, status, message, and optional PR URL
-before forwarding a typed update under the Worker lease.
+for bounded transport retries. The Worker validates the token digest and Work
+and Attempt identity, performs the exact stored-request lookup, then validates
+the active lease, current lifecycle, request ID, status, message, and optional PR
+URL before forwarding a new typed update under the Worker lease.
 
 The token is a scope and accidental-misuse guard, not a sandbox boundary. V1
 trusts processes running as the Worker operating-system user with the same host
@@ -728,10 +733,12 @@ identifies prior updates, known PR, publish ref, and duplicate-effect risk.
 Factory never force-pushes or deletes the ref. If the ref moves while an Attempt
 is active, the agent must reconcile a normal push or report `needs-input`.
 
-An agent update request with an expired or wrong token is rejected. An exact
-transport retry returns the stored update. A second identical Attempt-ending
-report returns the stored outcome, while a different outcome report conflicts.
-Progress after an outcome report conflicts.
+An agent update request with a wrong token is always rejected. A request with
+the correct but expired token can only return an exact stored update with the
+same request ID and fields; new or different requests are rejected. This replay
+lookup occurs before lease and lifecycle checks. A second identical
+Attempt-ending report returns the stored outcome, while a different outcome
+report conflicts. Progress after an outcome report conflicts.
 
 For `ready`, the Worker performs a bounded GitHub and remote-ref check before
 accepting the report provisionally. A timeout or provider outage returns a
@@ -802,10 +809,11 @@ credentials.
 
 The Attempt update token is separate from the Worker credential and lease. It
 is random, short-lived, stored only as a digest, scoped to one Attempt, removed
-from stale inherited environments, and invalid after process stop, cancellation,
-or lease loss. It prevents accidental cross-Work updates through the injected
-tool; it does not constrain a malicious process with the Worker user's broader
-authority. Update events and messages may contain source code or private ticket
+from stale inherited environments, and invalid for new updates after process
+stop, cancellation, or lease loss. Its retained digest may authenticate only an
+exact stored-response replay. It prevents accidental cross-Work updates through
+the injected tool; it does not constrain a malicious process with the Worker
+user's broader authority. Update events and messages may contain source code or private ticket
 context and receive the same local-data protection as current prompts and agent
 events.
 
@@ -852,7 +860,8 @@ remains visible and never silently drops an outcome.
   exists.
 - `AC-11`: Replaying an admission or update after a lost response returns the
   original stored result without duplication, including when a new CLI process
-  reuses a generated key from its pending-admission journal.
+  reuses a generated key from its pending-admission journal and when an exact
+  stored agent update is retried after its lease expires.
 - `AC-12`: Local and enrolled VM Workers use the same scoped update protocol
   without transmitting the operator credential, Worker credential, or Attempt
   lease token in that protocol.
@@ -893,7 +902,8 @@ normalization, message limits, cursor bounds, and operator updates for `AC-1`,
 
 Worker and supervisor tests prove `INV-5` through `INV-8`, `INV-11`, `INV-17`,
 and `INV-18` with
-wrong tokens, expired leases, terminal-report races, cancellation, forced exit,
+wrong tokens, expired-lease exact replay, expired-lease new-request rejection,
+terminal-report races, cancellation, forced exit,
 parent loss, stable publish continuation, preflight and post-stop PR identity
 validation, provider outage, branch movement after report, the 199-progress
 limit with a reserved outcome slot, dirty needs-input rejection, pushed and
