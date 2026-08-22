@@ -771,7 +771,8 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
 - A PR review Gate freezes `actor_policy: repository_write`. A qualifying event
   must have an actor whom GitHub confirms currently has write, maintain, or
   admin repository permission. Unknown, missing, or unverifiable permission
-  cannot satisfy the Gate.
+  cannot satisfy the Gate, and the observation cannot advance any feed cursor
+  or deduplication state past that unresolved candidate.
 - An omitted Edge condition means unconditional traversal after source success.
   A conditional Edge references its source PR review Gate and one outcome,
   `feedback_requested` or `approved`. No other condition, boolean expression,
@@ -1329,8 +1330,8 @@ the conservative baselines frozen before that publication. A success-like skip
 passes the prior publication identity through unchanged. Each publication
 authorization stores separate inclusive baselines for reviews, review comments,
 and conversation comments before the remote write. Open PR starts from empty
-feed IDs and the authorization time because the pull request does not yet
-exist. The GitHub adapter reads reviews, pull-request review comments, and issue
+feed IDs because the pull request does not yet exist. The GitHub adapter reads
+reviews, pull-request review comments, and issue
 comments through feeds with stable provider creation time and database ID. It
 queries from each inclusive baseline with overlap, paginates to the current
 feed end, and deduplicates immutable IDs. Mutable thread `isResolved` state is
@@ -1349,15 +1350,18 @@ are never compared as chronology. When the newest timestamp contains candidates
 from different feeds, one shared outcome is accepted; conflicting outcomes
 resolve conservatively to `feedback_requested`. A review submission qualifies
 only when its provider commit ID equals the target commit. Review and
-conversation comments qualify when created at or after the frozen publication
-boundary and their immutable provider IDs are not already present in the
-pre-publication inclusive baseline. Boundary-equal candidates participate in
-the same timestamp group and the conservative cross-feed tie rule. Before
+conversation comments qualify when their immutable provider IDs are absent
+from the pre-publication inclusive baseline. Factory never compares its local
+publication time with a provider creation time. Provider timestamps order only
+the unseen candidate set after feed identity establishes eligibility. Before
 ordering candidates, the Worker checks each distinct actor
 through GitHub's repository-permission endpoint. It returns the actor login,
 provider permission, and verification time as typed metadata. Missing access,
-rate limiting, or an unverifiable response leaves the Gate waiting; the control
-plane never infers eligibility from author association or event text. A
+rate limiting, or an unverifiable response leaves the Gate waiting. That result
+commits only bounded health and backoff state: no observed feed cursor, page
+continuation, or deduplicated item ID advances past the unresolved candidate,
+so the next inclusive scan retries its authorization. The control plane never
+infers eligibility from author association or event text. A
 changes-requested review or comment from an eligible actor yields
 `feedback_requested`.
 An explicit approved review yields `approved` and is the observation boundary
@@ -1369,10 +1373,11 @@ than 2,000 events or 4 MiB of scan metadata remains waiting with
 `review_state_too_large` and cannot choose an outcome.
 
 Provider unavailability or rate limiting updates Gate health and uses bounded
-exponential backoff without consuming an execution slot. The result transaction
-advances each observed feed cursor and page continuation, then either remains
-waiting or freezes `approved` or `feedback_requested` and promotes or
-conditionally skips the complete block.
+exponential backoff without consuming an execution slot. A complete authorized
+result transaction advances each observed feed cursor and page continuation,
+then either remains waiting or freezes `approved` or `feedback_requested` and
+promotes or conditionally skips the complete block. A scan with an unresolved
+permission check follows the no-advance rule above.
 Deadline expiry marks the Gate failed and skips successors. Manual retry keeps
 the target commit and baseline, records a new outcome version, clears the old
 lease and failure, and sets a new deadline to `retry time + frozen timeout`.
@@ -1831,9 +1836,10 @@ overflow is actionable rather than retried indefinitely.
   through frozen inclusive baselines and provider ID deduplication. The newest
   qualifying timestamp, with conservative cross-feed tie resolution, determines
   the outcome at the Gate's explicit observation boundary; later events belong
-  to a later review round or Run. A comment exactly at the publication-boundary
-  timestamp is included unless its immutable ID was already frozen in the
-  pre-publication baseline; simultaneous feedback prevents approval.
+  to a later review round or Run. Every unseen provider ID after the frozen
+  baseline is eligible regardless of Factory/provider clock skew. Provider time
+  orders only those unseen candidates, and simultaneous feedback prevents
+  approval.
 - `AC-40`: Approval conditionally skips a complete feedback block, passes
   through the prior publication identity, and lets a later explicit review
   round bind that identity. A feedback path binds the newly updated commit.
@@ -1845,7 +1851,9 @@ overflow is actionable rather than retried indefinitely.
   never presented as snapshot proof.
 - `AC-42`: A public user without write permission cannot approve a Gate or
   trigger Address feedback. A GitHub-confirmed write, maintain, or admin actor
-  can, and permission lookup failure leaves the Gate waiting.
+  can. Permission lookup failure leaves the Gate waiting without advancing any
+  feed cursor, continuation, or deduplicated ID past the unresolved event; a
+  later successful lookup can still choose it.
 - `AC-43`: Object verification snapshots a bounded manifest without waiting for
   unrelated repository agents. A source changed during copy retries visibly
   and can never produce an accepted partial snapshot.
@@ -2084,7 +2092,7 @@ approval and changes-requested events, qualifying review and conversation
 comments, authorized and unauthorized public actors, permission lookup failure,
 empty polls, events during publication response loss, inclusive
 overlap and provider-ID deduplication, multi-page feed completion, within-feed
-ID ordering, publication-boundary-equal comments, cross-feed timestamp ties
+ID ordering, skewed Factory/provider clocks, cross-feed timestamp ties
 with matching and conflicting outcomes,
 explicit event ordering before and after approval, bounded snapshots, rate-limit backoff,
 retry deadlines, untrusted-text prompt framing, response loss before Update PR
@@ -2092,7 +2100,9 @@ completion, stale approved commit with a moved PR head, remote divergence, and
 same-branch feedback updates for `AC-33` through `AC-44`. They prove no command can push the base branch, tags,
 or an operator-owned ref. A two-round fixture proves approval passes through the
 prior publication while requested feedback makes round two target the commit
-published by round one. Credential-isolation fixtures give the host authority
+published by round one. A permission-retry fixture fails authorization once,
+proves every feed cursor and deduplicated ID remains unchanged, then succeeds
+and chooses that same retained event. Credential-isolation fixtures give the host authority
 broker a working provider credential while a real rootless Podman container can
 edit, stage, commit, and run the frozen model adapter through the exact V1 mount
 layout. Agent `git push`, `gh` mutation, credential-helper, SSH-agent, host-home,
