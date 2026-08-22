@@ -1165,16 +1165,24 @@ so the operator does not lose its visible delivery worktree merely because
 Pipeline sequencing finished.
 
 Workers reconcile local Pipeline refs through a cursor-bounded inventory API.
-One scan has a random ID. Before sending page one, the Worker takes its
-repository mutation lock and materializes the complete union of the local ref
-namespace and manifest entries into an immutable, owner-only scan snapshot.
-Attempt preparation, completion, ref publication, recovery, and cleanup use the
-same lock. Snapshot creation waits until no agent process for that repository is
-preparing, running, or finishing; if work remains active, the prior projection
-becomes visibly stale instead of claiming a complete scan. The Worker releases
-the lock after the snapshot is durable, and all pages of at most 500 records
-read only that snapshot. Ref publication after the snapshot appears in the next
-scan and cannot alter or disappear from the current pages.
+One scan has a random ID. Before taking the repository mutation lock, the
+Worker checks its process registry. If an Agent for that repository is
+preparing, running, or finishing, it defers the scan and marks the prior
+projection visibly stale. Otherwise it takes the mutation lock and immediately
+checks the process registry again. If activity won the race, the scanner
+releases the lock without waiting and defers. It never waits for an Agent while
+holding the mutation lock.
+
+An Agent may enter `preparing` only by taking the same mutation lock and first
+recording its active process state. Therefore either the scanner wins and no
+Agent can start until its snapshot is durable, or the Agent wins and the
+scanner's second check defers. With the lock and empty recheck established, the
+Worker materializes the complete union of the local ref namespace and manifest
+entries into an immutable, owner-only scan snapshot. Attempt preparation,
+completion, ref publication, recovery, and cleanup use the same lock. The
+Worker releases the lock after the snapshot is durable, and all pages of at
+most 500 records read only that snapshot. Ref publication after the snapshot
+appears in the next scan and cannot alter or disappear from the current pages.
 
 Paired records contain stored Run, Track, Stage, Attempt, repository, full
 commit, creation time, and manifest state. Before adding a pair to the
@@ -1771,6 +1779,9 @@ overflow is actionable rather than retried indefinitely.
   known age, unknown-age count, orphan, incomplete, and corrupt counts, scan
   health, and freshness. A publication during paginated reporting appears only
   in the next immutable scan and cannot make the current projection partial.
+  A scan racing with Agent start or finish either snapshots before the Agent
+  enters its active state or releases the mutation lock and defers; it never
+  waits for Agent completion while holding that lock.
 - `AC-27`: A crash before or after every manifest and ref transition recovers a
   matching pair or reports the one-sided or conflicting state; no local ref is
   omitted from inventory.
@@ -2017,7 +2028,10 @@ fsync, ref compare-and-swap, and ready transition. They prove recovery and the
 union inventory contract for `AC-27`, including agent-created ref-only state.
 Inventory tests paginate an immutable snapshot while publishing another ref,
 prove the current projection stays internally complete, and prove the next scan
-contains the new ref for `AC-26`.
+contains the new ref for `AC-26`. Lock-order tests pause an Agent before start,
+while running, and while finishing, then race a scan at both activity checks.
+They prove the scanner either snapshots first or releases and defers, and that
+Agent completion never waits behind a scanner waiting for that same Agent.
 
 Workspace-loss tests fail the earliest incomplete Session, fence a concurrent
 completion, and skip its successors. They prove `failed` for a single Track and
