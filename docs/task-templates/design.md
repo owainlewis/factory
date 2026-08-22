@@ -268,6 +268,9 @@ PATCH  /api/v1/task-templates/{template_id}
 PUT    /api/v1/task-templates/{template_id}/archived
 POST   /api/v1/task-templates/{template_id}/duplicate
 GET    /api/v1/task-templates/{template_id}/revisions/{revision_id}
+GET    /api/v1/task-templates/storage
+POST   /api/v1/task-templates/storage/compaction-previews
+POST   /api/v1/task-templates/storage/compactions
 POST   /api/v1/tasks
 ```
 
@@ -378,6 +381,19 @@ Pipeline has Template provenance. Its source IDs must equal the complete node
 set in the referenced Template Graph and its Stage IDs must equal the complete
 node set in the copied execution Graph. Both sides are unique. A direct Pipeline
 has no Template provenance and a null map.
+
+The storage GET returns the four configured limits, current body, record, and
+byte use, reclaimable counts, and next mutation-ledger expiry. A compaction
+preview request contains an optional Template ID and `max_records`, from 1 to
+1,000. The response contains one random opaque token, a ten-minute expiry, the
+database-generation fence, exact eligible IDs, their action (`purge_template`,
+`compact_body`, or `delete_tombstone`), and aggregate bytes and slots. The server
+stores the canonical preview digest; the token does not encode trusted data.
+Apply contains `request_key` and the preview token. It uses mutation scope
+`template-storage:compact`, rechecks the complete preview transactionally, and
+returns the recorded counts, IDs, and bytes. Replaying the same apply returns
+that result. An expired token returns `template_compaction_preview_expired` and
+performs no work.
 
 SQLite also adds `mutation_requests`. Its primary key is the pair of
 `operation_scope` and client-generated `request_key`. It stores the SHA-256
@@ -568,7 +584,9 @@ that token and operator confirmation. The transaction rechecks every condition:
   its source, and no unexpired mutation result points to it. Compaction retains a
   tombstone with Template ID, revision ID, revision number, source digest,
   the separately stored `source_node_ids_json`, creation time, and compaction
-  time. It removes every content-bearing representation, including canonical
+  time. It also retains `duplicated_from_template_id` and
+  `duplicated_from_revision_id` as non-content provenance columns, so the source
+  remains referenced after the duplicate revision body is compacted. It removes every content-bearing representation, including canonical
   procedure JSON and any separately derived `template_graph_json`, and disables
   View changes for that revision. It retains source and Template Graph digests,
   but no prompt or execution-default bytes. The tombstone does not count toward
@@ -686,6 +704,9 @@ run in linear time over at most one Template revision and one Task request.
   mutation route replays an exact migrated result from its fixed operation scope
   without admitting a new mutation; changed, expired, and unknown requests fail
   as specified.
+- `AC-22`: The authenticated storage panel previews at most 1,000 exact
+  reclamation actions, applies them idempotently from an unexpired token, and
+  performs no partial work for an expired token or changed reference fence.
 
 ## 10. Test approach
 
@@ -703,7 +724,8 @@ Task route at both sides of expiry. Structured log capture proves `INV-8` and
 
 React tests cover Template search, starter labels, preview, create, edit,
 duplicate, archive, Save as template, Use template, customized markers, newer
-revision notices, and unavailable profiles. Playwright creates and runs both
+revision notices, unavailable profiles, storage use, compaction preview, stale
+preview recovery, and apply results. These prove `AC-22`. Playwright creates and runs both
 starter cases against a fixture repository and verifies the selected repository
 and frozen source revision. These prove `AC-1`, `AC-4`, `AC-5`, `AC-9`, and
 `AC-11`.
@@ -716,7 +738,8 @@ creates two Pipelines from one revision and proves `INV-10`, `INV-11`, `AC-12`,
 `AC-13`, `AC-14`, `AC-15`, `AC-19`, and `AC-21`. Compaction fixtures race a new
 provenance reference against apply, preserve referenced bytes, verify retained
 tombstones, exercise ledger expiry and cap recovery, and prove `INV-12` and
-`AC-18`. Privacy assertions prove compacted rows retain no prompt or execution
+`AC-18`. They retain duplicate provenance after body compaction and exercise
+bounded preview and idempotent apply APIs. Privacy assertions prove compacted rows retain no prompt or execution
 defaults in either source or derived Graph storage. Existing
 Linux, macOS, browser, migration, race, security, and release checks remain
 required.
