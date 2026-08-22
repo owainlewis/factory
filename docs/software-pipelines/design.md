@@ -224,11 +224,14 @@ Stage.
 **Require origin-enforced checkpoint protection.** Create-only Worker behavior
 and read-back prove one instant, not future immutability. Every repository used
 by a multi-stage Pipeline must protect
-`refs/heads/factory/checkpoints/**` at the Git origin against deletion and
-force update while permitting new refs. A GitHub ruleset, GitLab protected
-branch rule, or equivalent server policy satisfies the contract. Factory
-stores the verified policy identity and version on the repository and rejects
-multi-stage admission when that evidence is missing or stale.
+`refs/heads/factory/checkpoints/**` at the Git origin against every update or
+deletion of an existing ref. Creation is permitted only to a dedicated Factory
+checkpoint principal. Agents and other repository writers cannot create,
+update, or delete refs in the namespace. The Worker uses a separate credential
+for checkpoint publication and never exposes it to the agent process or
+worktree Git configuration. Factory stores the provider-verified policy
+identity and version on the repository and rejects multi-stage admission when
+that evidence is missing or stale.
 
 **Group the graph by Pipeline Run.** A global set of status columns was rejected
 because `running` does not say whether code is being implemented, tested, or
@@ -270,8 +273,9 @@ occupies that graph. This keeps sequence and project context visible together.
   Pipeline snapshot as manual admission.
 - `INV-17`: An accepted output commit descends from the frozen input commit and
   its checkpoint ref exists at the snapshotted repository origin.
-- `INV-18`: The Git origin prevents deletion and force update of accepted
-  checkpoint refs.
+- `INV-18`: The Git origin permits only the dedicated Factory checkpoint
+  principal to create checkpoint refs and prevents every principal from
+  updating or deleting an accepted checkpoint ref.
 
 ### Requirements
 
@@ -293,7 +297,7 @@ occupies that graph. This keeps sequence and project context visible together.
   A one-stage Pipeline retains current persistent, cloud, and fake-cloud
   profile support.
 - Every repository in a multi-stage Pipeline has current evidence for an
-  origin-enforced protected checkpoint namespace.
+  provider-verifiable, origin-enforced protected checkpoint namespace.
 - Pipeline concurrency limits Sessions holding an execution slot in the Run.
   Stage concurrency further limits slot holders for that Stage. Exactly
   `queued`, `preparing`, and `running` Sessions hold slots; `waiting`,
@@ -370,12 +374,22 @@ blocked only by Pipeline or Stage concurrency uses one canonical,
 non-actionable reason so the claim transaction can promote it without operator
 intervention.
 
-Repositories gain checkpoint-protection policy identity, version, verification
-source, and verification time. Provider-backed verification reads the origin's
-branch or ref rules. A manually managed origin requires an explicit operator
-attestation tied to the policy version. Changing repository identity clears the
-evidence. Multi-stage admission rejects missing or stale evidence rather than
-relying on Worker read-back as an immutability control.
+Repositories gain checkpoint-protection policy identity, version, digest,
+verification source, and verification time. Runs snapshot that evidence.
+Provider-backed verification reads effective origin ref rules and permissions
+for both the dedicated Factory checkpoint principal and the agent credential.
+V1 does not admit multi-stage work for an origin without a supported policy
+verifier. Changing repository identity clears the evidence.
+
+Admission refreshes the policy and stores its digest on the Run. The control
+plane refreshes it before every later-Stage claim and checkpoint acceptance,
+and reconciles active multi-stage Runs at least once per minute. A provider
+webhook triggers the same check sooner when available. Missing protection or a
+digest change blocks the affected Run and every not-yet-started Session with an
+actionable policy-drift reason. No new checkpoint can be accepted and no
+successor can start until the exact admitted protection is restored or the
+operator cancels the Run. Origin administrators remain inside the repository
+trust boundary, but policy drift is never treated as a healthy handoff.
 
 Each pending scheduled occurrence stores the complete immutable Pipeline
 generation it will admit: ordered Stages, repository identities, execution
@@ -424,8 +438,10 @@ new Attempt always receives a new ref, so an orphan from response loss or lease
 expiry cannot poison a retry. A later Worker fetches only the winning ref
 recorded on the predecessor Session and verifies it still resolves to the
 stored input commit before it starts. The origin's protected checkpoint
-namespace prevents deletion and force update after creation; Worker read-back
-detects misconfiguration but is not the immutability mechanism.
+namespace prevents every update or deletion after creation; Worker read-back
+detects misconfiguration but is not the immutability mechanism. A provider
+policy check immediately before creation proves that only the dedicated
+checkpoint principal can create the Attempt ref.
 
 In this design, **pushed** means the Worker created a ref at Git origin, while
 **accepted** means the control plane committed that ref as the winning Session
@@ -467,6 +483,13 @@ An agent exit of zero is provisional until checkpoint publication succeeds.
 Commit creation, remote push, or remote read-back failure completes the
 Attempt and Session as failed with a bounded actionable reason. The worktree is
 retained. No downstream Session changes state.
+
+Checkpoint-policy drift requests cancellation of an active Attempt. If the
+agent already exited or raced the request, completion terminalizes the Attempt,
+releases capacity, leaves the Session blocked on the policy reason, and retains
+the worktree. A ref pushed before the final policy check is an unaccepted
+orphan. After the admitted policy is restored, retry creates a new Attempt from
+the same input; no successor is promoted from the drifted Attempt.
 
 Success completion records output identity, marks the Session succeeded, and
 promotes its direct successor in one database transaction. There is no
@@ -547,6 +570,12 @@ automatic checkpoint unless another Stage consumes it. A repository without
 write access is reported as incompatible before a multi-stage Run when the
 Worker can prove that fact, and at checkpoint publication otherwise.
 
+The dedicated checkpoint credential is available only to the Worker parent
+process and its checkpoint publisher. The runtime supervisor and agent receive
+the normal repository credential, whose effective origin policy denies every
+checkpoint-namespace operation. Redaction, process-environment tests, and
+worktree-config tests prove the dedicated secret does not cross that boundary.
+
 At most 500 Sessions are planned per Run, 100 are active, 20 Stages are stored
 per Pipeline, and Pipeline prompts total at most 256 KiB. List APIs remain
 cursor bounded. Attempt event and result limits remain unchanged.
@@ -598,8 +627,9 @@ commit reachability and updates the protected origin policy safely.
   Worker to claim and complete the same Session execution cycle.
 - `AC-17`: Checkpoint publication fails and retains the worktree when an agent
   replaces the frozen input history or changes the repository origin.
-- `AC-18`: Multi-stage admission rejects a repository without current evidence
-  that its origin prevents checkpoint-ref deletion and force update.
+- `AC-18`: Multi-stage admission rejects a repository unless a supported
+  provider proves that only the dedicated Factory principal can create
+  checkpoint refs and no principal can update or delete an existing ref.
 - `AC-19`: An untracked file is never uploaded automatically; checkpoint
   creation fails until the agent stages, commits, ignores, or removes it.
 - `AC-20`: The largest valid resolved Stage prompt plus trusted context fits the
@@ -607,14 +637,17 @@ commit reachability and updates the protected origin policy safely.
 - `AC-21`: With Pipeline and Stage concurrency set to one, a promoted successor
   runs after its predecessor releases the slot; waiting and blocked Sessions do
   not deadlock the Track.
+- `AC-22`: Changing the admitted checkpoint policy during an active Run blocks
+  checkpoint acceptance and later-Stage claims until the admitted policy is
+  restored or the Run is cancelled.
 
 ## 10. Test approach
 
 Store tests prove admission, independent Track promotion, aggregate state,
 retry, cancellation races, every terminal aggregate predicate, generation
-snapshots, concurrency-block promotion, and all limits for `INV-1` through
-`INV-18`, `AC-1`, `AC-2`, `AC-5`, `AC-8`, `AC-9`, `AC-14`, `AC-15`, and
-`AC-21`.
+snapshots, concurrency-block promotion, persisted policy fences, and
+persistence-related limits for `INV-1` through `INV-17`, `AC-1`, `AC-2`,
+`AC-5`, `AC-8`, `AC-9`, `AC-14`, `AC-15`, and `AC-21`.
 Aggregate fixtures include cancellation before any checkpoint, cancellation
 after an intermediate checkpoint, all Tracks cancelled, completed plus
 cancelled Tracks, and failed plus cancelled Tracks.
@@ -627,9 +660,10 @@ conflicting ref, an orphaned Attempt ref after response loss or lease expiry,
 preparation failover without a capacity leak, dirty work, no-change success,
 an agent-pushed working branch, reset or rebased history, an amended input
 commit, a changed origin, an untracked credential-like file, origin rejection
-of checkpoint deletion or force update, and a staged specification file
-consumed by the next Stage. These cases also prove `AC-13`, `AC-16`, `AC-17`,
-`AC-18`, and `AC-19`.
+of checkpoint update or deletion, denial of checkpoint creation with the agent
+credential, absence of the dedicated credential from the agent environment and
+worktree, and a staged specification file consumed by the next Stage. These
+cases also prove `INV-18`, `AC-13`, `AC-16`, `AC-17`, `AC-18`, and `AC-19`.
 
 Migration tests build the last pre-Pipeline schema with active, succeeded,
 failed, cancelled, retried, and retained Sessions. They compare every source
@@ -642,7 +676,9 @@ and prove `INV-16` and `AC-14`.
 HTTP contract tests cover Pipeline validation, pagination, immutable snapshots,
 claim fields, malformed checkpoint rejection, checkpoint-protection evidence,
 complete-input byte boundaries, and local or remote route boundaries for
-`INV-1`, `INV-7`, `INV-13`, `INV-18`, `AC-18`, and `AC-20`.
+`INV-1`, `INV-7`, `INV-13`, `INV-18`, `AC-18`, and `AC-20`. Provider-policy
+integration tests change protection after admission and prove the periodic,
+pre-claim, and pre-acceptance fences for `AC-22`.
 
 Schedule tests prove a pending occurrence retains its complete immutable
 Pipeline generation across later edits for `INV-16` and `AC-14`.
@@ -662,6 +698,10 @@ and Track navigation, and Enter and Space activation.
 - Remote checkpoint refs accumulate. V1 reports them and keeps them because
   deleting code evidence incorrectly is worse than storage growth. Retention
   needs a pull-request-aware follow-up design.
+- Protected checkpoint namespaces and a dedicated credential add repository
+  setup. V1 accepts that cost because ordinary write credentials cannot provide
+  immutable handoff. Origins without a supported policy verifier remain
+  one-stage only.
 - Another process could create an Attempt checkpoint ref first. Create-only
   push and read-back turn that race into a visible conflict for that Attempt.
   A retry receives a different ref and is not blocked by the conflict.
@@ -692,6 +732,8 @@ and Track navigation, and Enter and Space activation.
 - Conditional Stages or prompt expressions based on earlier results.
 - Automatic merge, deployment, rollback, or pull-request publication.
 - Multi-stage cloud and fake-cloud execution profiles.
+- Multi-stage Pipelines on Git origins without a supported protection-policy
+  verifier.
 - General business tasks, people assignment, due dates, and personal planning.
 - Cross-repository dependencies inside one Track.
 - Passing agent result prose directly into a successor Stage prompt.
