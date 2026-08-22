@@ -10,6 +10,38 @@ const headRun = run("run-head", "Current Run", "running");
 const olderRun = run("run-older", "Older Run", "succeeded");
 
 describe("Runs", () => {
+  it("shows actionable software work on the board and opens a Run", async () => {
+    const blocked = {
+      ...run("run-blocked", "Fix release build", "blocked"),
+      needs_attention: true,
+      task: {
+        ...run("run-blocked", "Fix release build", "blocked").task,
+        repositories: [{ id: "repository-1", remote_identity: "github.com/example/factory.git" }],
+      },
+    };
+    const running = run("run-running", "Review pull request", "running");
+    const queued = run("run-queued", "Plan migration", "queued");
+    const succeeded = run("run-succeeded", "Ship documentation", "succeeded");
+    const capacityBlocked = run("run-capacity", "Wait for capacity", "blocked");
+    const historicalFailure = run("run-historical-failure", "Old failed run", "failed");
+    vi.spyOn(api, "runs").mockResolvedValue({ runs: [blocked, running, queued, succeeded, capacityBlocked, historicalFailure], next_cursor: null });
+    const onRun = vi.fn();
+    const client = testClient();
+
+    render(<QueryClientProvider client={client}><RunsView mode="kanban" onMode={() => undefined} onRun={onRun} /></QueryClientProvider>);
+
+    expect(await screen.findByRole("heading", { name: "Work" })).toBeVisible();
+    expect(screen.getByRole("region", { name: "Work summary" })).toHaveTextContent("Needs attention1Running1Queued2Done2");
+    expect(screen.getByRole("region", { name: "Needs attention" })).toContainElement(screen.getByRole("button", { name: /Fix release build, blocked/ }));
+    expect(screen.getByRole("region", { name: "Queued" })).toContainElement(screen.getByRole("button", { name: /Wait for capacity, blocked/ }));
+    expect(screen.getByRole("region", { name: "Done" })).toContainElement(screen.getByRole("button", { name: /Old failed run, failed/ }));
+    expect(screen.getByText("factory", { exact: true })).toBeVisible();
+    expect(screen.getAllByText("codex", { exact: true }).length).toBeGreaterThan(0);
+
+    await userEvent.click(screen.getByRole("button", { name: /Fix release build, blocked/ }));
+    expect(onRun).toHaveBeenCalledWith("run-blocked");
+  });
+
   it("loads Run history one cursor-bounded page at a time", async () => {
     const runs = vi.spyOn(api, "runs").mockImplementation(async (cursor = "") => cursor ? {
       runs: [olderRun],

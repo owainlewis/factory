@@ -35,7 +35,7 @@ test("creates a Task and completes its Run", async ({ page }) => {
   await expect(runDialog.getByLabel("Run on")).toHaveValue("persistent-auto");
   await runDialog.getByRole("button", { name: "Run now" }).click();
 
-  await expect(page).toHaveURL(/\/runs\/[0-9a-f-]+$/);
+  await expect(page).toHaveURL(/\/work\/[0-9a-f-]+$/);
   await expect(page.getByRole("heading", { name: taskName })).toBeVisible();
   await expect(page.getByText("Succeeded", { exact: true })).toBeVisible({ timeout: 45_000 });
   await page.locator(".session-row summary").click();
@@ -44,26 +44,38 @@ test("creates a Task and completes its Run", async ({ page }) => {
   await expect(page.locator(".attempt-events")).toContainText("Inspected the assigned repository.");
 });
 
-test("shows the same Runs as a table, list, and board", async ({ page }) => {
-  await page.goto("/runs");
-  await expect(page.getByRole("heading", { name: "Runs", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: new RegExp(taskName) })).toBeVisible();
+test("makes the board the primary Work view and preserves alternate views", async ({ page }) => {
+  await page.goto("/");
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("heading", { name: "Work", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Work summary" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Done" }).getByRole("button", { name: new RegExp(taskName) })).toBeVisible();
+  expect(await page.evaluate<boolean>("document.documentElement.scrollWidth <= document.documentElement.clientWidth")).toBe(true);
 
   await page.getByRole("button", { name: "List", exact: true }).click();
-  await expect(page).toHaveURL(/view=list/);
+  await expect(page).toHaveURL(/\/work\?view=list/);
   await expect(page.getByText(taskName, { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Board", exact: true }).click();
-  await expect(page).toHaveURL(/view=kanban/);
-  await expect(page.getByText("Done", { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/\/work$/);
   await expect(page.getByText(taskName, { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Table", exact: true }).click();
-  await expect(page).toHaveURL(/\/runs$/);
+  await expect(page).toHaveURL(/\/work\?view=table/);
+
+  await page.goto("/runs");
+  await expect(page.getByRole("heading", { name: "Work", exact: true })).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("button", { name: "Toggle navigation" })).toBeVisible();
+  const board = page.locator(".work-board");
+  await expect(board).toBeVisible();
+  expect(await page.evaluate<boolean>("document.querySelector('.work-board').scrollWidth > document.querySelector('.work-board').clientWidth")).toBe(true);
+  expect(await page.evaluate<boolean>("document.documentElement.scrollWidth <= document.documentElement.clientWidth")).toBe(true);
 });
 
 test("keeps Overview operational and the product navigation small", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/overview");
   await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
   await expect(page.getByText("Active runs", { exact: true })).toBeVisible();
   await expect(page.getByText("Completed · 24h", { exact: true })).toBeVisible();

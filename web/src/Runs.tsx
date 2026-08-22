@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeft, Columns3, List, RotateCcw, Rows3, StopCircle } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowLeft, CheckCircle2, CircleDot, Clock3, Columns3, GitBranch, List, RotateCcw, Rows3, StopCircle, TerminalSquare } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { duration, eventSummary, timeAgo } from "./format";
@@ -57,15 +57,15 @@ export function RunsView({ mode, onMode, onRun }: { mode: RunViewMode; onMode: (
       headCursor: previousHeadCursor.current,
     });
   }, [client, historyCursor, query.data, refreshedHistory]);
-  if (query.isPending) return <LoadingState label="Loading Runs" />;
+  if (query.isPending) return <LoadingState label="Loading Work" />;
   if (query.isError) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
   const items = mergeRuns(query.data?.runs ?? [], refreshedHistory);
   const error = loadHistory.error ?? activeHistory.error;
   return <div className="page page-run">
-    <ViewHeader title="Runs" fetching={query.isFetching || activeHistory.isFetching || loadHistory.isPending} updatedAt={Math.max(query.dataUpdatedAt, activeHistory.dataUpdatedAt)} onRefresh={() => void query.refetch()} />
+    <ViewHeader title="Work" fetching={query.isFetching || activeHistory.isFetching || loadHistory.isPending} updatedAt={Math.max(query.dataUpdatedAt, activeHistory.dataUpdatedAt)} onRefresh={() => void query.refetch()} />
     {error && <StaleBanner error={error} />}
-    <div className="view-toolbar"><p>Every Task invocation, grouped across its repository sessions.</p><ViewSwitch mode={mode} onMode={onMode} /></div>
-    {!items.length ? <EmptyState icon={<Rows3 size={22} />} title="No Runs yet" description="Run a Task now or wait for its next schedule." /> : mode === "table" ? <RunTable items={items} onRun={onRun} /> : mode === "list" ? <RunList items={items} onRun={onRun} /> : <RunBoard items={items} onRun={onRun} />}
+    <div className="view-toolbar"><p>Follow every software run from queue to completion.</p><ViewSwitch mode={mode} onMode={onMode} /></div>
+    {!items.length ? <EmptyState icon={<Rows3 size={22} />} title="No work yet" description="Run a Task now or wait for its next schedule." /> : mode === "table" ? <RunTable items={items} onRun={onRun} /> : mode === "list" ? <RunList items={items} onRun={onRun} /> : <RunBoard items={items} onRun={onRun} />}
     {historyCursor && <div className="load-more-row"><button className="button button-secondary" disabled={loadHistory.isPending} onClick={() => loadHistory.mutate({ cursor: historyCursor, headCursor: previousHeadCursor.current })}>{loadHistory.isPending ? "Loading…" : "Load more Runs"}</button></div>}
   </div>;
 }
@@ -85,7 +85,7 @@ function updateRuns(current: Run[], updates: Run[]): Run[] {
 }
 
 function ViewSwitch({ mode, onMode }: { mode: RunViewMode; onMode: (mode: RunViewMode) => void }) {
-  return <div className="run-view-switcher" aria-label="Run view"><button aria-pressed={mode === "table"} onClick={() => onMode("table")}><Rows3 size={14} /> Table</button><button aria-pressed={mode === "list"} onClick={() => onMode("list")}><List size={14} /> List</button><button aria-pressed={mode === "kanban"} onClick={() => onMode("kanban")}><Columns3 size={14} /> Board</button></div>;
+  return <div className="run-view-switcher" aria-label="Work view"><button aria-pressed={mode === "kanban"} onClick={() => onMode("kanban")}><Columns3 size={14} /> Board</button><button aria-pressed={mode === "table"} onClick={() => onMode("table")}><Rows3 size={14} /> Table</button><button aria-pressed={mode === "list"} onClick={() => onMode("list")}><List size={14} /> List</button></div>;
 }
 
 function RunTable({ items, onRun }: { items: Run[]; onRun: (id: string) => void }) {
@@ -96,15 +96,68 @@ function RunList({ items, onRun }: { items: Run[]; onRun: (id: string) => void }
   return <div className="run-clean-list">{items.map((run) => <button className="run-clean-card" key={run.id} onClick={() => onRun(run.id)}><span className="run-card-state"><StatusBadge state={run.state} /></span><span className="run-card-copy"><strong>{run.task.name}</strong><small>{run.source.replace("_", " ")} · started {timeAgo(run.admitted_at)}</small></span><Progress run={run} /><span className="run-card-duration">{run.terminal_at ? duration(run.admitted_at, run.terminal_at) : "Active"}</span></button>)}</div>;
 }
 
-const boardColumns: Array<{ key: string; label: string; states: RunState[] }> = [
-  { key: "queued", label: "Queued", states: ["queued"] },
-  { key: "active", label: "Active", states: ["running"] },
-  { key: "attention", label: "Attention", states: ["blocked", "failed", "partial"] },
-  { key: "done", label: "Done", states: ["succeeded", "cancelled"] },
+const boardColumns: Array<{ key: string; label: string; hint: string }> = [
+  { key: "attention", label: "Needs attention", hint: "Blocked or failed" },
+  { key: "running", label: "Running", hint: "Agents at work" },
+  { key: "queued", label: "Queued", hint: "Waiting to start" },
+  { key: "done", label: "Done", hint: "Finished work" },
 ];
 
 function RunBoard({ items, onRun }: { items: Run[]; onRun: (id: string) => void }) {
-  return <div className="task-board">{boardColumns.map((column) => { const values = items.filter((item) => column.states.includes(item.state)); return <section className="task-board-column" key={column.key}><header><strong>{column.label}</strong><span>{values.length}</span></header><div>{values.map((run) => <button className="task-board-card" key={run.id} onClick={() => onRun(run.id)}><strong>{run.task.name}</strong><small>{run.source.replace("_", " ")} · {timeAgo(run.admitted_at)}</small><Progress run={run} /></button>)}{!values.length && <p>Nothing here</p>}</div></section>; })}</div>;
+  const counts = boardColumns.map((column) => ({ ...column, count: items.filter((item) => runInBoardColumn(item, column.key)).length }));
+  return <>
+    <section className="work-summary" aria-label="Work summary">
+      {counts.map((column) => <div className={`work-summary-item work-state-${column.key}`} key={column.key}><BoardIcon column={column.key} /><span>{column.label}</span><strong>{column.count}</strong></div>)}
+    </section>
+    <div className="work-board">
+      {boardColumns.map((column) => {
+        const values = items.filter((item) => runInBoardColumn(item, column.key));
+        return <section className={`work-column work-state-${column.key}`} key={column.key} aria-labelledby={`work-column-${column.key}`}>
+          <header><span className="work-column-icon"><BoardIcon column={column.key} /></span><span><strong id={`work-column-${column.key}`}>{column.label}</strong><small>{column.hint}</small></span><b>{values.length}</b></header>
+          <div className="work-column-list">
+            {values.map((run) => <RunBoardCard key={run.id} run={run} onClick={() => onRun(run.id)} />)}
+            {!values.length && <p className="work-column-empty">Nothing here</p>}
+          </div>
+        </section>;
+      })}
+    </div>
+  </>;
+}
+
+function runInBoardColumn(run: Run, column: string): boolean {
+  if (column === "attention") return run.needs_attention;
+  if (run.needs_attention) return false;
+  if (column === "running") return run.state === "running";
+  if (column === "queued") return run.state === "queued" || run.state === "blocked";
+  return run.state === "succeeded" || run.state === "cancelled" || run.state === "failed" || run.state === "partial";
+}
+
+function BoardIcon({ column }: { column: string }) {
+  if (column === "attention") return <AlertCircle size={15} />;
+  if (column === "running") return <CircleDot size={15} />;
+  if (column === "queued") return <Clock3 size={15} />;
+  return <CheckCircle2 size={15} />;
+}
+
+function RunBoardCard({ run, onClick }: { run: Run; onClick: () => void }) {
+  const repositories = run.task.repositories ?? [];
+  const runtime = run.execution.runtime || run.task.runtime;
+  return <button className={`work-card work-card-${run.state}`} onClick={onClick} aria-label={`${run.task.name}, ${run.state}, ${run.session_count} sessions`}>
+    <span className="work-card-top"><StatusBadge state={run.state} /><small>{timeAgo(run.updated_at || run.admitted_at)}</small></span>
+    <strong>{run.task.name}</strong>
+    <span className="work-card-tags">
+      {repositories.slice(0, 2).map((repository) => <span className="work-chip" key={repository.id}><GitBranch size={11} />{repositoryName(repository.remote_identity)}</span>)}
+      {repositories.length > 2 && <span className="work-chip">+{repositories.length - 2}</span>}
+      <span className="work-chip"><TerminalSquare size={11} />{runtime}</span>
+    </span>
+    <Progress run={run} />
+    <span className="work-card-foot"><span>{run.session_count} session{run.session_count === 1 ? "" : "s"}</span><span>{run.source.replace("_", " ")}</span></span>
+  </button>;
+}
+
+function repositoryName(identity: string): string {
+  const parts = identity.replace(/\.git$/, "").split("/").filter(Boolean);
+  return parts.at(-1) ?? identity;
 }
 
 function Progress({ run }: { run: Run }) {
@@ -126,7 +179,7 @@ export function RunDetailView({ id, onBack }: { id: string; onBack: () => void }
     ? "Automatic persistent Worker"
     : `Cloud Run · ${run.execution.provider} / ${run.execution.model}`;
   return <div className="page run-detail-clean">
-    <button className="back-link" onClick={onBack}><ArrowLeft size={14} /> Runs</button>
+    <button className="back-link" onClick={onBack}><ArrowLeft size={14} /> Work</button>
     <div className="detail-heading run-detail-heading"><div><span className="eyebrow">{run.source.replace("_", " ")} · {run.id.slice(0, 8)}</span><h1>{run.task.name}</h1><p>{run.session_count} repository session{run.session_count === 1 ? "" : "s"} · {execution} · started {timeAgo(run.admitted_at)}</p></div><div className="detail-actions"><StatusBadge state={run.state} />{run.active_count > 0 && <button className="button button-danger-secondary" disabled={cancel.isPending} onClick={() => cancel.mutate()}><StopCircle size={14} /> Cancel</button>}</div></div>
     <InlineError error={cancel.error ?? retry.error ?? cancelSession.error} />
     <section className="run-summary-strip"><div><span>Progress</span><strong>{run.succeeded_count + run.failed_count + run.cancelled_count}/{run.session_count}</strong></div><div><span>Succeeded</span><strong>{run.succeeded_count}</strong></div><div><span>Failed</span><strong>{run.failed_count}</strong></div><div><span>Duration</span><strong>{run.terminal_at ? duration(run.admitted_at, run.terminal_at) : "Active"}</strong></div></section>
