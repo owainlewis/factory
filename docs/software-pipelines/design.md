@@ -364,7 +364,12 @@ intervention.
 Each pending scheduled occurrence stores the complete immutable Pipeline
 generation it will admit: ordered Stages, repository identities, execution
 settings, and scheduled instant. Editing a Pipeline only changes occurrences
-created after the edit.
+created after the edit. The source schedule's current enabled and archived
+state still gates admission. Disabling or archiving it pauses an existing
+pending occurrence without changing its frozen generation, retry state, or due
+instant. Admission resumes only when the Pipeline is unarchived and its
+schedule is explicitly enabled. Restoring either gate alone leaves the
+occurrence paused. An explicit discard removes it.
 
 For scheduled admission, absence of one complete owner candidate is transient
 while the frozen repositories and profiles remain valid. The pending occurrence
@@ -543,7 +548,9 @@ single-Track Run `failed` and a mixed Run with another completed Track
 The operator may inspect retained state and start a new Run from the repository
 base. Factory never silently restarts a later Stage from a different commit.
 
-Editing, archiving, or disabling a schedule affects future occurrences only.
+Editing Pipeline content or timing affects future occurrences only. Disabling
+or archiving a schedule pauses admission of its existing pending occurrence as
+well as preventing new ones, without mutating the occurrence snapshot.
 Server shutdown stops admission and scheduling before HTTP shutdown. Active
 Worker leases and Attempt recovery remain otherwise unchanged.
 
@@ -616,7 +623,9 @@ cursor bounded. Attempt event and result limits remain unchanged.
 - `AC-13`: Response loss or lease expiry after local-ref creation does not block
   a new Attempt; only the accepted commit feeds the successor.
 - `AC-14`: A pending scheduled occurrence retains frozen Stage order and
-  settings after the Pipeline is edited.
+  settings after the Pipeline is edited, pauses while its schedule is disabled
+  or its Pipeline is archived, and resumes unchanged only when the Pipeline is
+  unarchived and the schedule is explicitly enabled.
 - `AC-15`: Cancellation committed concurrently with Stage success never makes
   the successor claimable.
 - `AC-16`: Preparation failure before owner freeze releases capacity and may
@@ -684,7 +693,11 @@ failed, cancelled, retried, and retained Sessions. They compare every source
 row and payload after migration for `INV-16` and `AC-10`, and prove migration
 refuses collisions or incomplete source state without changing the database.
 Pending-occurrence fixtures cover enabled, disabled, archived, blocked, paused,
-and retrying schedules and preserve their frozen source snapshot. A complete
+and retrying schedules. They preserve each frozen source snapshot, prevent
+admission while disabled or archived, and resume the same occurrence after the
+Pipeline is unarchived and the schedule is explicitly enabled. Disable,
+archive, unarchive, and enable operations run in both orders and preserve the
+due instant and retry state. A complete
 fleet outage remains transient and admits the same occurrence after Worker
 health returns for `AC-25`.
 
