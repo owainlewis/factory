@@ -178,9 +178,18 @@ Retry, cancel, events, timeouts, and retained worktrees remain per Work target.
 
 When an agent reports `needs-input`, Factory stores the exact question and
 makes the Work visible in the attention column. The developer answers through
-the CLI or browser. The answer is stored as trusted operator context and a new
-Attempt starts in the same Work history. Factory does not keep an idle agent
-process alive while waiting for a person.
+the CLI or browser. The answer is stored as trusted operator context and
+requeues the same Work. The next Worker claim creates an Attempt when capacity
+is available. Factory does not keep an idle agent process alive while waiting
+for a person.
+
+Before accepting `needs-input`, the Worker requires a clean worktree and a
+durable checkpoint. If the agent changed the repository, local `HEAD` must be
+committed and pushed to the immutable publish ref; if it made no change, the
+checkpoint is the exact base SHA. A failed check returns actionable feedback
+and leaves the Attempt running. The Worker repeats the check after the process
+group stops and stores `checkpoint_sha`. The answered Attempt starts from that
+exact checkpoint, so partial work cannot silently disappear.
 
 ### Components and responsibilities
 
@@ -319,9 +328,10 @@ Procedure text and generation are frozen for audit.
 
 The prompt must also state that the Work is unfinished until the agent has
 called `factory update`, list every allowed status, require a PR URL for
-`ready`, explain that `needs-input` ends the current Attempt, and tell the agent
-to use progress updates only when they help an operator. These are Procedure
-requirements, not a transcript parser or a Factory-owned reasoning loop.
+`ready`, explain that `needs-input` ends the current Attempt, require committed
+and pushed partial work before `needs-input`, and tell the agent to use progress
+updates only when they help an operator. These are Procedure requirements, not
+a transcript parser or a Factory-owned reasoning loop.
 
 #### GitHub URLs and explicit repositories first
 
@@ -391,6 +401,8 @@ model.
   operator explicitly converts its outcome contract.
 - `INV-17`: Agent-owned Work becomes ready only from delivery evidence
   revalidated after its process group has stopped.
+- `INV-18`: An answered Work starts from the exact checkpoint revalidated after
+  the needs-input process group stopped.
 
 ### Work state transitions
 
@@ -408,7 +420,7 @@ not an agent update status and does not imply a pull request.
 | `running` | Worker Attempt | unchanged | agent `running` progress update |
 | `running` | Worker Attempt | `ready`, `needs-input`, `failed`, `no-change` | accepted outcome followed by stopped process |
 | `running` | Worker Attempt | `succeeded` or `failed` | legacy `process_exit` completion |
-| `running` | operator | `ready`, `needs-input`, `failed`, `no-change` | trusted operator update |
+| `running` | operator | `ready`, `failed`, `no-change` | trusted operator update |
 | `running` | either | `cancelled` | operator cancellation |
 | `needs-input` | none | `queued` | operator answer appends context; the next Worker claim creates the Attempt |
 | `needs-input` | none | `running` | trusted operator claims manual ownership |
@@ -441,6 +453,9 @@ Worker Attempt before taking manual ownership.
   repository, head branch, and head SHA match the Work repository, immutable
   publish ref, remote ref, and local `HEAD`. Manual `ready` requires the
   expected repository and records the provider-reported branch and SHA.
+- Agent-owned `needs-input` requires a clean worktree and a checkpoint SHA. A
+  changed HEAD must equal the fetched publish ref; an unchanged Work uses its
+  exact base SHA. The Worker revalidates after process stop.
 - `needs-input`, `failed`, and `no-change` require a message. `needs-input`
   exposes the message as the current operator question.
 - Exactly one Attempt-ending agent report can win. Repeating the same report is
@@ -468,6 +483,8 @@ Worker Attempt before taking manual ownership.
   `[A-Za-z0-9][A-Za-z0-9._-]*`. Whitespace, prose, and other characters are
   rejected before admission.
 - A trusted operator may update Work only when it has no active Attempt.
+- A trusted operator cannot report `needs-input`; that outcome requires a
+  Worker-owned checkpoint.
 - Queue, Work, update, Attempt, and Worker list APIs remain bounded and cursor
   paginated.
 - The local operator API remains loopback-only. Remote Workers continue to use
@@ -510,6 +527,10 @@ terminal update from queued Work claims and completes it in one transaction.
 An operator who wants to take over active agent Work must cancel its Attempt
 first. This makes manual and agent-driven Work share one history without
 creating a second completion model or a claim race.
+
+Operator-owned Work may finish as `ready`, `failed`, or `no-change` but cannot
+enter `needs-input`. Only a Worker Attempt with a verified checkpoint may create
+a resumable question. An operator can still answer that agent-created question.
 
 A manual `ready` update is not required to have a Factory worktree or publish
 branch. The CLI uses the operator's local GitHub credentials to resolve the PR
@@ -582,6 +603,7 @@ source_reference
 context_snapshot
 publish_branch
 predecessor_work_id
+checkpoint_sha
 state
 execution_owner: none | worker_attempt | operator
 waiting_reason
@@ -687,6 +709,13 @@ Attempt and Work with stored delivery evidence and a fixed postflight reason;
 it never marks stale evidence ready. Factory validates delivery identity, not
 CI success or semantic correctness; the agent remains responsible for both.
 
+For agent-owned `needs-input`, the Worker similarly validates a clean worktree
+and durable checkpoint before accepting the report and after process stop. A
+dirty tree, moved ref, missing commit, or post-stop mismatch fails validation.
+If the post-stop check fails, the Attempt and Work fail with the retained
+worktree and a fixed checkpoint reason; Factory does not present a question
+whose continuation would lose local work.
+
 For `outcome_contract=agent_update`, if the agent process exits without an
 outcome report, the Worker fails the Attempt with the fixed missing-report
 reason. A `process_exit` Run completes through its legacy exit and result rules.
@@ -708,8 +737,10 @@ target without changing terminal siblings.
 An operator answer to `needs-input` appends trusted context and requeues the
 same Work. The next Worker claim creates a new Attempt. The agent receives the
 original frozen Procedure, original context, prior question, answer, updates,
-known branch, and PR metadata. Archiving a Procedure prevents new Runs but does
-not cancel admitted Work.
+known branch, checkpoint SHA, and PR metadata. Worktree preparation starts from
+that exact checkpoint. A missing or unreachable checkpoint fails preparation
+visibly instead of falling back to repository base. Archiving a Procedure
+prevents new Runs but does not cancel admitted Work.
 
 Control-plane shutdown stops admission before HTTP shutdown. Workers continue
 until lease renewal fails, then stop active processes. Restart sweeps expired
@@ -780,7 +811,8 @@ remains visible and never silently drops an outcome.
   cancellation wins over a late report.
 - `AC-9`: Answering a needs-input question requeues Work with the answer and
   prior history while preserving the original Procedure and context; only the
-  next Worker claim creates an Attempt.
+  next Worker claim creates an Attempt, starting from the revalidated
+  checkpoint SHA.
 - `AC-10`: A warned retry after process start continues from the stable remote
   publish branch when one exists and does not create a second Work record.
 - `AC-11`: Replaying an admission or update after a lost response returns the
@@ -818,12 +850,13 @@ legacy completion cases. HTTP tests prove CLI admission validation, source
 normalization, message limits, cursor bounds, and operator updates for `AC-1`,
 `AC-3`, `AC-11`, `AC-15`, `AC-17`, and `AC-18`.
 
-Worker and supervisor tests prove `INV-5` through `INV-8`, `INV-11`, and
-`INV-17` with
+Worker and supervisor tests prove `INV-5` through `INV-8`, `INV-11`, `INV-17`,
+and `INV-18` with
 wrong tokens, expired leases, terminal-report races, cancellation, forced exit,
 parent loss, stable publish continuation, preflight and post-stop PR identity
 validation, provider outage, branch movement after report, the 199-progress
-limit with a reserved outcome slot, and cleanup.
+limit with a reserved outcome slot, dirty needs-input rejection, pushed and
+unchanged checkpoints, answer continuation, and cleanup.
 They verify `AC-5`, `AC-7`, `AC-8`, `AC-10`, `AC-12`, and `AC-13`, including
 the race detector.
 They also prove that every valid semantic outcome completes the Attempt while
