@@ -797,10 +797,13 @@ A valid `failed` report still completes the Attempt successfully because the
 agent fulfilled the reporting contract; the Work outcome is failed. This
 distinction lets operators tell an engineering blocker from a broken runtime.
 
-Cancellation of queued Work is immediate. Active cancellation is returned by
-the Worker heartbeat, stops the process group, and overrides any terminal
-report not already finalized. Cancelling a Run cancels each nonterminal Work
-target without changing terminal siblings.
+Cancellation of Work with no active Worker Attempt is immediate and
+transactional. This includes queued, needs-input, and operator-owned running
+Work; Factory clears operator ownership and records cancelled without waiting
+for a heartbeat. Cancellation with an active Worker Attempt is returned by the
+Worker heartbeat, stops the process group, and overrides any terminal report
+not already finalized. Cancelling a Run applies the appropriate path to each
+nonterminal Work target without changing terminal siblings.
 
 An operator answer to `needs-input` appends trusted context and requeues the
 same Work while retaining its authoritative `pending_resume_sha`.
@@ -925,6 +928,8 @@ remains visible and never silently drops an outcome.
 - `AC-22`: An operator can atomically finish queued `agent_update` Work, or take
   over active agent Work by cancelling it and atomically claiming the cancelled
   Work with retry guards and no intermediate queued race.
+- `AC-23`: Cancelling queued, needs-input, or operator-owned Work with no active
+  Worker Attempt completes synchronously and cannot wait for a heartbeat.
 
 ## 10. Test approach
 
@@ -933,7 +938,8 @@ Store tests prove `INV-1` through `INV-4`, `INV-9`, `INV-12`, `INV-14`,
 partial outcome, queued, running, and needs-input cancellation, retry of
 replaced Work, matching-nonterminal retry races, manual-claim races, and legacy
 completion cases. Manual-claim tests include queued direct completion and
-cancel-wait-takeover from cancelled Work. HTTP tests prove CLI admission validation, source
+cancel-wait-takeover from cancelled Work. Cancellation tests include every
+no-Attempt state and active Worker delivery. HTTP tests prove CLI admission validation, source
 normalization, message limits, cursor bounds, and operator updates for `AC-1`,
 `AC-3`, `AC-11`, `AC-15`, `AC-17`, and `AC-18`.
 
