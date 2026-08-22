@@ -527,7 +527,7 @@ claims cancelled Work, so a Worker cannot win an intermediate queued state.
 
 ```text
 factory build [--repo REPOSITORY] [--runtime RUNTIME] [--request-key KEY] [--rebuild] [--wait] REFERENCE...
-factory run PROCEDURE --repos REPOSITORY...|all [--request-key KEY] [--wait]
+factory run PROCEDURE --repos REPOSITORY...|all [--request-key KEY] [--rebuild] [--wait]
 factory status [--run RUN_ID]
 factory show WORK_ID
 factory answer WORK_ID MESSAGE
@@ -705,6 +705,9 @@ a different fingerprint conflicts. Any existing nonterminal Work for the same
 work-item target, including `needs-input`, blocks duplicate Build admission.
 After terminal Work,
 `factory build` requires `--rebuild` to admit the same target again.
+For repository-target Work, rebuild identity is the exact
+`(procedure_id, repository_id)` tuple; independent Procedures for one repository
+remain independent.
 
 A caller fingerprint contains the operation, ordered syntactically normalized
 references or repository selectors, explicit repository selector presence and
@@ -713,7 +716,8 @@ option or context value that changes admitted Work. It excludes the request key
 itself and client-only `--wait`. It is computed and compared before repository,
 Procedure, configured-default, or current-Work reads.
 
-A new rebuild request must not reuse the original Build's stored request key.
+A new Build or Procedure Run rebuild request must not reuse the original stored
+request key.
 After proving the new key is unused, one transaction requires every target to
 have no nonterminal Work and selects its most recently created terminal Work,
 ordered by `created_at DESC, id DESC`. It stores that target's
@@ -754,7 +758,10 @@ is recorded.
 A missing publish branch for known PR Work fails preparation with a fixed
 recovery message that identifies the PR, ref, and recorded trusted PR head SHA.
 It tells the operator to restore the ref to exactly that SHA or admit warned
-replacement Work with `--rebuild`; a missing trusted SHA permits only the latter.
+replacement Work with the matching command's `--rebuild`; a missing trusted SHA
+permits only the latter. Work-item recovery uses `factory build --rebuild`.
+Repository-target recovery uses `factory run PROCEDURE --repos REPOSITORY
+--rebuild`, whose predecessor lookup is scoped to that Procedure identity.
 Preparation re-fetches and proves the restored ref equals the recorded SHA. It
 does not create a resumable question without a checkpoint. The retry prompt
 identifies prior updates, known PR, publish ref, and duplicate-effect risk.
@@ -808,14 +815,28 @@ nonterminal Work target without changing terminal siblings.
 An operator answer to `needs-input` appends trusted context and requeues the
 same Work while retaining its authoritative `pending_resume_sha`.
 The next Worker claim creates a new Attempt. The agent receives the original
-frozen Procedure, original context, prior question, answer, updates, known
-branch, checkpoint SHA, and PR metadata. Worktree preparation starts from that
+frozen Procedure, original context, prior question, answer, bounded newest
+updates, known branch, checkpoint SHA, and PR metadata. Worktree preparation starts from that
 exact checkpoint. A missing or unreachable checkpoint fails preparation visibly
 instead of falling back to the publish ref or repository base. Cancellation,
 failed preparation, and explicit retry retain `pending_resume_sha`. It is cleared
 only after an Attempt successfully starts from that commit; the historical
 `checkpoint_sha` and update remain stored. Archiving a Procedure prevents new
 Runs but does not cancel admitted Work.
+
+Every assembled agent prompt remains within the existing 72 KiB byte limit.
+Admission requires the frozen Procedure, original context, fixed wrapper, and
+bounded recovery metadata to fit while reserving the maximum 8 KiB question and
+8 KiB answer. Before accepting `needs-input` or an answer, Factory also proves
+the actual mandatory continuation sections fit; rejection leaves the current
+state unchanged. The continuation always includes the Procedure, original
+context, current question and answer, checkpoint and branch identity, PR
+metadata, and an omission marker. It fills remaining bytes with the newest
+prior updates, prioritizing Attempt outcomes over progress and displaying the
+selected records chronologically. If history is omitted or one message must be
+UTF-8-boundary truncated, the marker includes stored and inserted counts and a
+SHA-256 digest of the complete omitted serialized history. All full updates
+remain stored and visible outside the prompt.
 
 Control-plane shutdown stops admission before HTTP shutdown. Workers continue
 until lease renewal fails, then stop active processes. Restart sweeps expired
@@ -889,7 +910,8 @@ remains visible and never silently drops an outcome.
   prior history while preserving the original Procedure and context; only the
   next Worker claim creates an Attempt, starting from the revalidated
   checkpoint SHA. Cancellation, failed preparation, and retry keep that SHA
-  authoritative until an Attempt successfully starts from it.
+  authoritative until an Attempt successfully starts from it. The continuation
+  prompt remains within 72 KiB and visibly identifies omitted stored history.
 - `AC-10`: A warned retry after process start continues from the stable remote
   publish branch when one exists and does not create a second Work record. It is
   rejected without state change when replacement or matching nonterminal Work
@@ -916,8 +938,8 @@ remains visible and never silently drops an outcome.
   succeeds without control-plane GitHub credentials, and replays idempotently
   by Work and request ID.
 - `AC-19`: Duplicate admission while matching Work needs input conflicts, and
-  a rebuild atomically binds every replacement to its deterministic terminal
-  predecessor Work with a new idempotency key.
+  a Build or Procedure Run rebuild atomically binds every replacement to its
+  deterministic terminal predecessor Work with a new idempotency key.
 - `AC-20`: `--wait` returns 2 on needs-input, 0 when all Work finishes ready,
   no-change, or legacy succeeded, and 1 when finished Work includes failed or
   cancelled.
@@ -930,6 +952,9 @@ remains visible and never silently drops an outcome.
   Work with retry guards and no intermediate queued race.
 - `AC-23`: Cancelling queued, needs-input, or operator-owned Work with no active
   Worker Attempt completes synchronously and cannot wait for a heartbeat.
+- `AC-24`: Initial and continuation prompts cannot exceed 72 KiB; mandatory
+  recovery context is preserved while omitted update history is counted and
+  digested without deleting the stored events.
 
 ## 10. Test approach
 
@@ -951,7 +976,9 @@ parent loss, stable publish continuation, preflight and post-stop PR identity
 validation, provider outage, branch movement after report, the 199-progress
 limit with a reserved outcome slot, dirty needs-input rejection, pushed and
 unchanged checkpoints, answer continuation, answer then cancellation or failed
-preparation then retry with moved and missing refs, and cleanup.
+preparation then retry with moved and missing refs, maximum question and answer
+sizes, bounded multi-Attempt history with UTF-8 truncation and omission digests,
+and cleanup.
 They verify `AC-5`, `AC-7`, `AC-8`, `AC-10`, `AC-12`, and `AC-13`, including
 the race detector.
 They also prove that every valid semantic outcome completes the Attempt while
@@ -972,7 +999,8 @@ explicit and generated-key replay across separate CLI processes, pending-journal
 locking, typed-response cleanup, uncertain-response retention, human and JSON
 output, `--wait`, opaque-reference repository
 requirements, runtime default and override, rebuild key conflicts,
-needs-input duplicate rejection, replay after a rebuild becomes terminal, wait
+Build and Procedure Run rebuild identity, needs-input duplicate rejection,
+replay after a rebuild becomes terminal, wait
 exit codes, missing-PR-ref recovery, and agent-context routing. Replay tests also
 disable or delete the repository and change configured defaults before retrying
 the stored key. Browser
