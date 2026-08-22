@@ -486,18 +486,21 @@ steps in the same write-frozen transaction that renames Tasks to Pipelines:
    release. **Templates** remains the browser label. This is the intentional
    pre-launch breaking API rename approved by the Pipeline design. There is no
    general compatibility alias or new Task admission after upgrade.
-7. Keep one narrow replay-only handler for `POST /api/v1/tasks` until the last
-   migrated legacy mutation row expires. It accepts only a valid legacy Task
-   create body and request key, canonicalizes them with the frozen legacy schema,
-   and looks up the retained legacy digest alias. An exact retained match returns
-   a `task_api_migrated` envelope with the new Pipeline ID and location. An
-   unknown key returns HTTP 410 `task_api_removed`; a changed body returns
-   `request_key_conflict`. It cannot create or mutate a resource. The new
-   Pipeline client can also retrieve the same envelope from
-   `GET /api/v1/mutation-replays/task-create/{request_key}`. That fixed route
-   queries only the retained legacy `task:create` scope alias, so a request key
-   reused in another operation scope cannot collide. The replay-only routes are
-   removed automatically after the final legacy expiry and health reports that
+7. Keep narrow replay-only handlers on every removed legacy mutation route until
+   the last matching migrated ledger row expires: Task create, Template create,
+   Template edit, duplicate, archive, and restore. Each handler accepts only its
+   frozen legacy body and request key, canonicalizes them with the frozen legacy
+   schema, and queries only that route's retained operation-scope alias. An exact
+   retained match returns an `api_migrated` envelope with the new Pipeline or
+   Pipeline Template ID and location. An unknown or expired key returns HTTP 410
+   with the relevant `*_api_removed` code; a changed body returns
+   `request_key_conflict`. These handlers cannot create or mutate a resource.
+   The new client can retrieve the same result from a scope-specific lookup such
+   as `GET /api/v1/mutation-replays/task-create/{request_key}` or
+   `GET /api/v1/mutation-replays/template-edit/{template_id}/{request_key}`.
+   Fixed operation-kind routes always query one retained legacy scope, so a key
+   reused in another scope cannot collide. Each replay-only route is removed
+   automatically after its final legacy expiry and health reports every removal
    date.
 
 For a new `graph_v1` revision after the Pipeline release, the source procedure
@@ -565,9 +568,12 @@ that token and operator confirmation. The transaction rechecks every condition:
   its source, and no unexpired mutation result points to it. Compaction retains a
   tombstone with Template ID, revision ID, revision number, source digest,
   the separately stored `source_node_ids_json`, creation time, and compaction
-  time. It removes procedure bytes and disables View changes for that revision.
-  The tombstone does not count toward retained-body or prompt byte limits, but it
-  does count toward the 20,000 total revision-record limit.
+  time. It removes every content-bearing representation, including canonical
+  procedure JSON and any separately derived `template_graph_json`, and disables
+  View changes for that revision. It retains source and Template Graph digests,
+  but no prompt or execution-default bytes. The tombstone does not count toward
+  retained-body or prompt byte limits, but it does count toward the 20,000 total
+  revision-record limit.
 - A compacted tombstone may be deleted permanently only when it has been
   compacted for at least 365 days and the same Task, Pipeline, duplicate, current,
   starter, and replay reference checks still pass. Its ID, digest, and source
@@ -676,6 +682,10 @@ run in linear time over at most one Template revision and one Task request.
 - `AC-20`: A name- or summary-only edit increments Template generation without
   creating a revision, changing `current_revision_id`, or showing a newer
   procedure notice on sourced Tasks.
+- `AC-21`: Through each original ledger expiry, every removed Task Template
+  mutation route replays an exact migrated result from its fixed operation scope
+  without admitting a new mutation; changed, expired, and unknown requests fail
+  as specified.
 
 ## 10. Test approach
 
@@ -700,12 +710,14 @@ and frozen source revision. These prove `AC-1`, `AC-4`, `AC-5`, `AC-9`, and
 
 Migration fixtures seed old, reverted, and new starter bodies and compare prior
 Task and Run bytes. They migrate Template and provenance rows across the
-Pipeline rename and replay retained mutation results. A graph-conversion fixture
+Pipeline rename and replay retained Task and Template mutation results on every
+legacy route and scope-specific lookup. A graph-conversion fixture
 creates two Pipelines from one revision and proves `INV-10`, `INV-11`, `AC-12`,
-`AC-13`, `AC-14`, `AC-15`, and `AC-19`. Compaction fixtures race a new
+`AC-13`, `AC-14`, `AC-15`, `AC-19`, and `AC-21`. Compaction fixtures race a new
 provenance reference against apply, preserve referenced bytes, verify retained
 tombstones, exercise ledger expiry and cap recovery, and prove `INV-12` and
-`AC-18`. Existing
+`AC-18`. Privacy assertions prove compacted rows retain no prompt or execution
+defaults in either source or derived Graph storage. Existing
 Linux, macOS, browser, migration, race, security, and release checks remain
 required.
 
