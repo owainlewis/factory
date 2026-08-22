@@ -2,169 +2,170 @@
 
 > **Status:** Product direction
 >
-> **Superseded vocabulary:** This document uses Job Definition, Run, and Job.
-> The implemented operator model is Task, Run, and Session; see
-> [Tasks and Runs](../tasks/design.md) and [ARCHITECTURE.md](../../ARCHITECTURE.md).
-> The thesis, scope, principles, and measures below still apply.
+> The [target design](design.md) proposes this direction. The root
+> [architecture](../../ARCHITECTURE.md) continues to describe only code that
+> exists today.
 
-Factory is infrastructure for building a software factory. It turns
-software-engineering intent and events into reliable agent jobs across Git
-repositories and compute.
+Factory is the control plane for software work performed by coding agents. A
+developer gives Factory one work item or a repository fleet. Factory queues the
+work, assigns it to available machines, supplies a consistent procedure, and
+shows what is queued for capacity, running, ready, needs input, failed, or
+completed under a legacy exit-based contract.
 
-The primary user is a software team that owns many repositories and wants to
-apply repeatable engineering procedures with coding agents. Factory is not a
-general automation product or another issue tracker. It is the execution and
-control layer between engineering work, repository fleets, agent runtimes, and
-the compute that runs them.
+Factory does not try to become a better coding agent. Pi, Codex, Claude Code,
+and future runtimes already reason about repositories, use tools, create
+subagents, test changes, and open pull requests. Factory makes those agents
+repeatable and operable across more work than a developer can coordinate in
+terminal windows.
 
 ## Product promise
 
-A team can define a standard engineering procedure once, run it once or many
-times, target one work item or hundreds of repositories, and understand what
-happened at every target.
+A developer can submit several software tasks, close the terminal, and return
+to ready pull requests or precise questions:
 
-Examples include:
+```sh
+factory build LINEAR-123 LINEAR-124 --repo github.com/acme/api
+factory status
+```
 
-- triage and refine issue backlogs;
-- review a ticket, implementation plan, patch, or pull request;
-- inspect a codebase for bugs, security concerns, or policy drift;
-- apply dependency, configuration, or CI changes across a repository fleet;
-- let agents create issues, comments, branches, and pull requests with the tools
-  available on their Worker;
-- run scheduled maintenance and react to GitHub events.
+The same system can apply one reusable engineering procedure across a managed
+repository fleet:
 
-Every use case becomes the same execution primitive. A **Job** runs one agent
-against one repository and optional work item. A **Run** invokes one saved
-**Job Definition** and may fan out into many independent Jobs.
+```sh
+factory run bug-fix --repos all
+```
+
+Each target proceeds independently. One failure does not replay successful
+siblings. Worker capacity bounds parallelism. Every agent reports progress and
+its outcome through a small Factory capability instead of leaving Factory to
+interpret arbitrary text.
 
 ## Core experience
 
-An operator starts with a Job Definition such as `Review pull request`, `Triage
-issue`, or `Find dependency risks`. The definition contains the shared prompt,
-runtime needs, and execution defaults.
+Factory has four operator concepts:
 
-The operator can run it manually, call it through the API, attach a schedule,
-or attach a GitHub event trigger. The invocation freezes the definition,
-parameters, and concrete targets into one Run. Each target becomes one Job and
-uses the same attempt, lease, log, result, retry, and cancellation machinery.
+- A **Procedure** is trusted, reusable engineering instruction such as the
+  built-in standard Build procedure or a saved `bug-fix` procedure.
+- A **Run** is one immutable invocation of a Procedure against frozen targets.
+- **Work** is one independently scheduled target inside a Run. It owns one
+  repository and may also own one work-item reference.
+- A **Worker** is a local or remote machine that runs coding agents in isolated
+  Git worktrees.
 
-The operator sees the aggregate Run and every Job. A failure in one repository
-does not erase successful siblings. Retrying one Job does not replay the whole
-Run.
-
-## Product model
+An Attempt remains internal history for one agent process. A queue is not a
+separate product object. It is the set of Work waiting for Worker capacity.
 
 ```text
-Job Definition
-  reusable software-engineering procedure
-        |
-        +-- manual invocation
-        +-- schedule trigger
-        +-- GitHub webhook trigger
-        `-- API invocation
-                 |
-                 v
-                Run
-       frozen definition and target set
-                 |
-       +---------+---------+
-       v         v         v
-      Job       Job       Job
-   repo/item  repo/item  repo/item
-       +---------+---------+
-                 |
-                 v
- Worker on a local host or VM
-       |
-       v
- Pi, Codex, Claude Code, or another coding agent
- using Git and GitHub CLI
+Work item references or repository selector
+                    |
+                    v
+                  Run
+        frozen Procedure and targets
+                    |
+           +--------+--------+
+           v        v        v
+          Work     Work     Work
+        repo/item  repo     repo/item
+           |        |        |
+           +--------+--------+
+                    v
+          local and VM Workers
+                    |
+                    v
+       Pi, Codex, Claude Code, or another agent
 ```
 
-The Job Definition is the saved procedure. Its instructions are not a separate
-Runbook resource. A Trigger is an admission rule attached to a definition, not
-a second kind of job. A Run records one invocation, so Factory does not need a
-separate Occurrence concept.
+## Agent-directed work
+
+The agent owns the meaning of the work. It decides how to refine the task,
+explore the repository, plan, use subagents, implement, test, review, open a
+pull request, and fix CI. Factory does not encode those activities as a
+pipeline graph.
+
+Factory injects a short procedure wrapper and an Attempt-scoped update tool:
+
+```sh
+factory update --status=running --message="Running integration tests"
+factory update --status=ready --pr=<url> --message="Change ready for review"
+factory update --status=needs-input --message="Which behavior is correct?"
+factory update --status=failed --message="The required service is unavailable"
+factory update --status=no-change --message="No concrete bug was found"
+```
+
+The agent supplies semantic judgment. Factory supplies durable state,
+authorization, validation, idempotency, capacity, process supervision, and
+visibility. Deterministic checks may return useful feedback to the agent, but
+they do not replace its judgment about whether the software task is complete.
+
+## Where Factory is better
+
+An interactive coding-agent terminal remains better for exploration, difficult
+product choices, and one high-touch task. Factory is better when a developer
+has several buildable tasks, wants work to continue without open terminals, or
+needs the same procedure applied across many repositories.
+
+Factory succeeds when it reduces developer attention per ready pull request.
+It fails when a developer still has to open, prompt, and monitor every agent
+session individually.
 
 ## Product principles
 
-1. Everything admitted becomes a Run and one or more Jobs.
-2. One Job touches one repository by default.
-3. A Run freezes its complete definition, parameters, and target set.
-4. Saved definitions edit in place. Historical Runs retain their snapshots.
-5. Triggers admit work but never execute agents.
-6. Workers supply compute. Runtimes such as Pi, Codex, and Claude Code supply
-   agent behavior.
-7. Provider payloads and repository content are untrusted inputs. Definition
-   instructions are trusted operator configuration.
-8. Agents use the tools and credentials available on their Worker. Factory does
-   not intermediate GitHub comments, branches, issues, or pull requests.
-9. Fleet-wide work is bounded, fair, observable, and retryable per target.
-10. Product concepts must earn their place through operator behavior, not
-    speculative reuse.
+1. Factory owns coordination; coding agents own engineering judgment.
+2. Every invocation becomes one Run and one or more independent Work targets.
+3. One Work target changes one repository by default.
+4. Every Run freezes its Procedure and complete target set.
+5. Agents update semantic Work state through bounded, scoped capabilities.
+6. Workers retain exclusive ownership of leases, processes, and worktree
+   cleanup.
+7. Work-item bodies and repository content are untrusted agent context.
+   Procedures are trusted operator instructions.
+8. Agents use the tools and credentials available on their Worker.
+9. Fleet work is bounded, observable, and retryable per target.
+10. Factory adds a durable outer loop, not another model conversation loop.
 
-## Differentiation
+## First useful version
 
-Factory focuses on software delivery execution:
+The first version proves two paths through the same engine:
 
-- Git repository fleets and work-item targets;
-- isolated worktrees, branches, commits, and pull requests;
-- reliable agent scheduling, leases, attempts, and recovery;
-- local and VM capacity, with more Worker targets added when needed;
-- reusable engineering procedures;
-- manual, scheduled, event, and API admission;
-- throughput, reliability, cost, and outcome visibility.
+1. `factory build` admits one or more work-item references and runs the
+   built-in standard Build procedure.
+2. `factory run` applies a saved Procedure to one or more managed repositories.
 
-Factory does not aim to own human project management, chat, inboxes, agent
-personas, squads, a generic workflow builder, or business-process automation.
-GitHub and other engineering systems remain the source of issues, pull
-requests, reviews, and repository state.
+It includes local and VM Workers, bounded concurrency, isolated worktrees,
+versioned Procedure snapshots, agent progress and terminal updates, central
+status, cancellation, and warned retries.
 
-## V1 experience
-
-V1 is a local software factory. An operator can:
-
-- configure a local agent Worker using Pi, Codex, or Claude Code;
-- add the team's Git repositories;
-- save a shared prompt as a Definition;
-- press **Run once** for one repository or a selected repository fleet;
-- see every Job, failure, cycle time, throughput, and Worker health;
-- attach a schedule to repeat the same Run automatically.
-
-Remote VM Workers are the next scaling step after this local manual and
-scheduled path works end to end. GitHub webhook Triggers follow later.
-Kubernetes and other execution targets remain possible future Worker types,
-but they are not on the active roadmap.
-
-The built-in SQLite control plane remains a first-class deployment for local
-use and small teams. For larger production installations, the intended
-direction is an optional durable orchestration backend such as Temporal. That
-backend may own timers, retries, cancellation, fan-out, and recovery, but it
-must not change the Definition, Trigger, Run, Job, or Worker experience. The
-full boundary and migration design is tracked in
-[#259](https://github.com/owainlewis/factory/issues/259) and follows the stable
-local and VM Worker experience.
+It pauses Work when an agent needs input and requeues it after an answer.
+Agent-update Work finishes when it is ready for human review, has no change,
+fails, or is cancelled. Unconverted legacy Work may finish as `succeeded` from
+its existing exit-based contract without implying a pull request. Human merge
+remains in GitHub. Central CI monitoring, automatic merge, general pipeline
+graphs, and a new Factory coding agent are not required to test the product
+thesis.
 
 ## Measures of progress
 
-The product is moving toward this vision when a team can:
+Factory is moving toward this vision when a developer can:
 
-- connect a repository fleet without configuring each worker per repository;
-- run one procedure across at least hundreds of frozen targets;
-- react to a GitHub delivery without duplicate Jobs;
-- add or remove local and VM capacity without changing a Job Definition;
-- identify the exact instructions, input, runtime, worker, and outcome for every
-  Job;
-- recover or retry one failed target without replaying successful work;
-- measure useful engineering outcomes rather than only process completion.
+- submit at least five independent work items in one command;
+- stop managing separate coding-agent conversations;
+- identify every active agent, repository, branch, and latest progress update;
+- receive a precise question when an agent cannot continue;
+- run one Procedure across at least 100 frozen repository targets;
+- retry one failed target without replaying successful siblings;
+- add or remove Worker capacity without changing a Procedure;
+- identify the exact Procedure, Factory-supplied context, source reference,
+  runtime, Worker, updates, and outcome used for historical Work;
+- measure ready pull requests and developer interventions rather than only
+  process exits.
 
 ## Explicit non-goals
 
-- General-purpose automation outside software engineering.
-- A replacement for GitHub Issues, Jira, Linear, or team chat.
-- Multi-step DAGs, workflow chaining, or a visual pipeline builder.
-- One agent process changing several repositories atomically.
-- Autonomous merge, approval, or unbounded recursive Job creation in the first
-  target architecture.
-- A deterministic gateway for agent GitHub actions or exactly-once external
-  side effects.
+- A replacement for an interactive coding-agent terminal.
+- A new coding agent, model loop, planner, or subagent framework.
+- A replacement for GitHub, Linear, Jira, or team chat.
+- A generic workflow builder, DAG, or visual pipeline editor.
+- Deterministically deciding whether an agent's software work is correct.
+- Exactly-once GitHub or other external side effects.
+- Automatic merge in the first version.
+- Public multi-user control-plane access in the first version.

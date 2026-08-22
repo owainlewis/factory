@@ -2,13 +2,14 @@
 
 > **Status:** Current implementation
 >
-> **Verification basis:** `origin/main` at commit `003ed8f`
+> **Verification basis:** `origin/main` at commit `e767947`
 >
 > **Future direction:** The proposed
+> [agent-directed software factory](docs/software-factory/design.md) adds
+> work-item admission and agent-owned semantic status while preserving the
+> current Worker lifecycle. The proposed
 > [Cloud Run agent backend](docs/cloud-run-agents/design.md) adds elastic
-> execution without changing Factory's product lifecycle. The Software Factory
-> target architecture is a historical proposal superseded by Tasks and Runs.
-> This document describes code that exists today.
+> execution. This document describes only code that exists today.
 
 ## 1. Executive summary
 
@@ -213,9 +214,10 @@ most 64 KiB; one Attempt stores at most 10 MiB of events. Results are at most
 
 ### Browser UI
 
-`web/src` is a React and TypeScript single-page application. It exposes
-Overview, Tasks, Runs, Workers, and Repositories, with detail views for each
-operational resource. It polls the same-origin API.
+`web/src` is a React and TypeScript single-page application. It exposes Work,
+Tasks, Overview, Workers, and Repositories, with detail views for each
+operational resource. Work presents Run history as a board or table and polls
+the same-origin API.
 
 `web/dist` is generated, committed, and embedded by `web/embed.go`. The server
 uses an SPA fallback, immutable caching for versioned assets, and restrictive

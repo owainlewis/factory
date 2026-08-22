@@ -110,10 +110,12 @@ Implemented today:
 - table, list, and Kanban Run views with repository-level detail
 - local Workers and authenticated remote VM Workers
 
-Active product work is moving Factory toward ordered software pipelines and a
-software-work graph while keeping general business tracking outside the
-product. See the [software pipelines proposal](https://github.com/owainlewis/factory/pull/333)
-and the [product vision](docs/software-factory/vision.md).
+Active product work is moving Factory toward an agent-directed queue for work
+items and repository fleets. Existing coding agents own engineering judgment;
+Factory owns repeatable procedures, Worker capacity, durable state, and one
+view of the work. See the
+[target design](docs/software-factory/design.md) and
+[product vision](docs/software-factory/vision.md).
 
 ## Development
 
