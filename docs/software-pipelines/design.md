@@ -10,8 +10,9 @@ context window. It is insufficient when an operator deliberately wants
 separate planning, implementation, verification, pull-request, and feedback
 runs with different prompts, runtimes, budgets, and failure boundaries.
 
-This design turns a Task into a **Pipeline** containing one or more ordered
-**Stages**. A one-Stage Pipeline is the current one-agent loop with no extra
+This design turns a Task into a **Pipeline** containing an immutable execution
+**Graph** of typed **Stage nodes** and directed **Edges**. A one-node Pipeline
+is the current one-agent loop with no extra
 handoff cost. Adding Stages opts into more agent starts, context resets, token
 spend, checkpoints, and control. Agent Stages run coding agents. Action Stages
 perform bounded deterministic work such as opening a pull request. Gate Stages
@@ -19,9 +20,9 @@ wait without consuming an agent slot, for example until a pull-request review
 has either approved the change or requested feedback.
 
 One Pipeline Run creates one repository **Track** per selected repository. Each
-Track owns one logical working branch and advances through the frozen Stage
-order. A successful code-producing Stage records an accepted commit. The next
-Stage starts from that exact commit in a fresh Attempt worktree on the same
+Track owns one logical working branch and traverses the frozen Graph. A
+successful code-producing Stage records an accepted commit. Each eligible
+successor starts from that exact commit in a fresh Attempt worktree on the same
 Worker, so several agent runs continue one branch without sharing a dirty
 directory.
 
@@ -31,10 +32,12 @@ An explicit pull-request Action may publish the Track branch to its configured
 origin and record the pull request. Publication is a visible Stage boundary,
 not a hidden side effect of every agent run.
 
-The browser has two related surfaces. The Pipeline editor is a polished linear
-graph that begins with one large Stage card, supports inserting and reordering
-Stages, and shows guaranteed and conditional agent starts and token ceilings
-before a Run. The
+The browser has two related surfaces. The Pipeline editor is a polished graph
+that begins with one large Stage card, supports inserting and reordering a
+chain, and shows guaranteed and conditional agent starts and token ceilings
+before a Run. The durable graph model leaves room for bounded branches and
+feedback loops, while V1 exposes only a chain and one structured review branch.
+The
 software-work view groups active Runs and shows their live Stage graph,
 repository Tracks, blocked work, current agent activity, cost, branch, pull
 request, and recent outcomes. Slate and Agent OS remain the place for general
@@ -73,18 +76,28 @@ model. Factory's shared workspace is a Git branch and accepted commit lineage.
 See [CircleCI workflow orchestration](https://circleci.com/docs/guides/orchestrate/workflows/)
 and [project usage](https://circleci.com/docs/guides/insights/project-usage-dashboard/).
 
+The [Strands Graph pattern](https://strandsagents.com/docs/user-guide/concepts/multi-agent/graph/)
+provides the closer execution reference. It models agents and deterministic
+operations as nodes, dependencies and information flow as edges, explicit entry
+points, conditional traversal, bounded concurrency, timeouts, and cyclic
+execution limits. Factory adopts that graph vocabulary and deterministic state
+machine. It does not embed the Strands SDK or accept user code as an edge
+condition. Factory must persist every transition, preserve Git lineage, and
+recover execution after process or host loss.
+
 This design changes the authoring model, Run lifecycle, Worker worktree input,
 provider-action boundary, and primary browser surface. It preserves the current
 control-plane authority, leases, Attempt supervision, per-repository isolation,
 local operator boundary, remote Worker authentication, repository cache, and
 runtime adapters.
 
-V1 Pipelines are linear. Every Stage after the first has exactly one
-predecessor. Agent, Action, and Gate Stage types cover the first useful delivery
-flows without a general expression language. Each repository advances
+V1 validates a small graph subset. It allows a chain plus the exclusive branch
+created by `Add review round`; it does not allow general parallel Agent fan-out,
+code fan-in, cycles, or a general expression language. Agent, Action, and Gate
+Stage types cover the first useful delivery flows. Each repository advances
 independently, so a failure in one Track does not stop healthy Tracks. A
-Pipeline may contain one Agent Stage, which is the exact replacement for a
-current Task.
+Pipeline may contain one Agent Stage node and no Edges, which is the exact
+replacement for a current Task.
 
 ## 3. System context
 
@@ -125,6 +138,54 @@ receives repository contents or Git credentials.
 
 ### How it works
 
+A Pipeline generation freezes one Graph. A Graph contains one to twenty Stage
+nodes, zero or more directed Edges, one entry node, and a bounded topology. Nodes
+are Agent, Action, or Gate Stages. Edges state dependency and typed traversal
+conditions. Every Track gets its own durable Graph execution state while sharing
+the immutable Pipeline Graph definition.
+
+A one-node Graph has one Agent Stage and no Edges.
+It takes the existing one-agent path. There is no graph scheduler round trip,
+handoff commit, or extra prompt. The Graph is a uniform stored shape, not a
+reason to make the simple path more expensive.
+
+For every Edge, a Track records `pending`, `traversed`, or `not_traversed`.
+Unconditional Edges traverse when their source succeeds. A typed conditional
+Edge traverses only when its source records the named outcome. V1 conditions
+can inspect only a frozen PR review Gate outcome. They cannot inspect model
+prose, repository files, provider fields, environment values, or user code.
+
+Each node declares `activation: all` or `activation: any`. `all` requires every
+incoming Edge to traverse. `any` requires one incoming Edge to traverse after
+all mutually exclusive candidates are resolved. V1 uses `all` for ordinary
+dependencies. The review-round macro uses `any` only at its exclusive
+reconvergence point. If every incoming Edge becomes `not_traversed`, the node is
+skipped with `unreachable`, and that fact propagates with a typed cause. A node
+skipped directly because its mutually exclusive conditional Edge did not match
+is `conditional_success`. A successor made unreachable only by
+`conditional_success` predecessors inherits `conditional_success`, including
+through unconditional Edges. Failure and cancellation causes are never
+converted to success-like skips. Factory never inherits an SDK-specific AND or
+OR default.
+
+Graph state carries bounded typed outputs. Every successful node records its
+status, execution count, duration, and kind-specific output. Git remains the
+code and file channel: an Agent output is an accepted commit, an Open PR Action
+output is a pull-request identity and published commit, and a review Gate output
+is its frozen typed decision. A successor receives only the outputs declared by
+its incoming Edges. Model prose is display evidence and never becomes an
+implicit successor prompt.
+
+V1 Graphs are acyclic and each Stage node executes at most once apart from a
+retry of the same frozen node execution. The control plane derives the maximum
+node executions per Track from the frozen node count; it is not an authorable
+field. Retries remain Attempts of the same node execution. V1 schedules at most
+one node holding an execution slot per Track, so Graph concurrency and a
+Graph-wide timeout are not exposed. Pipeline and Stage concurrency still bound
+work across Tracks, while each Gate keeps its own explicit timeout. A later
+parallel or cyclic Graph design must add its own persisted limits and lifecycle
+contract before relaxing these rules.
+
 An operator opens the Pipeline editor. It starts with one Agent Stage, not a
 wizard asking them to choose between a Task and a Pipeline. For a small change
 they name that Stage `Build`, enter one prompt, and run it. The estimate reads
@@ -152,9 +213,10 @@ none of the intermediate context-reset cost.
 
 Admission freezes the complete Pipeline generation and repository identities.
 It creates one Run, one Track per repository, and one Stage record per Track
-and frozen Stage. Immediate Agent Stages enter routing when their predecessor
-succeeds. Later Agent and Action Stages start in `waiting`. Gate Stages enter
-`waiting` until their typed condition is satisfied. Tracks may use different
+and frozen Stage node. The entry Agent enters routing immediately. Later Agent
+and Action Stages start in `waiting` until their activation policy is
+satisfied. Gate Stages enter `waiting` once their incoming Edges traverse and
+remain there until their typed condition is satisfied. Tracks may use different
 owner Workers and run concurrently within Pipeline and Stage limits.
 
 First-Agent routing considers every frozen Agent and Worker-executed Action in
@@ -279,14 +341,20 @@ permission for the target repository. Other public events may be displayed but
 cannot choose an outcome or start an agent. Otherwise the Gate remains waiting.
 Provider text is untrusted and any feedback snapshot is bounded.
 
-The following conditional block may use the typed condition
-`run_if: feedback_requested`. Address feedback receives the frozen snapshot,
-starts from the exact published branch head, and makes changes locally. A
-required Update PR Action then fast-forwards the same remote branch with its
-accepted output. An approved outcome marks every Stage in that contiguous
-conditional block skipped as a success-like transition and advances to the
-next unconditional Stage or completes the Track. A timeout fails the Gate.
-Factory never starts an Agent with an empty invented feedback set.
+The review macro creates exclusive conditional routing. The
+`feedback_requested` Edge enters Address feedback, which receives the frozen
+snapshot, starts from the exact published branch head, and makes changes
+locally. A required Update PR Action then fast-forwards the same remote branch
+with its accepted output. When another node follows the review block, an
+`approved` Edge bypasses the feedback nodes and reconverges there. When the
+review block is terminal, approval completes the Track without another Edge.
+Nodes made unreachable by the unmatched feedback Edge are skipped as
+`conditional_success`. That class propagates through Address feedback and its
+unconditional Edge to Update PR, and through any other exclusively skipped
+feedback node, until an approved Edge reconverges or the Track completes. A
+failure or cancellation on either path propagates its own non-success class
+instead. A timeout fails the Gate. Factory never starts an Agent with an empty
+invented feedback set.
 
 A multi-stage Agent that makes no changes records its exact input commit as
 output and creates the same Attempt-scoped local ref. Every successful Agent
@@ -367,8 +435,8 @@ canvas scrolls horizontally on desktop and becomes a vertical sequence at 720
 CSS pixels. It is not a free-form canvas, and connections cannot cross.
 
 `Add review round` is an atomic editor operation. It inserts PR review, Address
-feedback, and Update PR with one shared visual bracket and valid `run_if`
-references. Each card remains separately configurable, but move and delete act
+feedback, and Update PR with one shared visual bracket and valid conditional
+Edges. Each card remains separately configurable, but move and delete act
 on the complete review-round block. Pointer and keyboard commands announce the
 three-Stage change before applying it. The browser may hold an incomplete local
 drag preview, but Save and Run remain disabled until the server preview accepts
@@ -420,14 +488,24 @@ state. Empty Stages remain visible because `nothing is waiting here` is useful
 information. The graph is not a free-form canvas and does not ask an operator
 to position nodes.
 
+In the editor and Run detail, Factory auto-lays out the frozen Graph from left
+to right. The ordinary chain stays on one line. A review branch opens one short
+lower lane and reconverges without crossing another Edge. The selected path is
+solid, a conditional path not taken is muted, the active Edge uses restrained
+motion, and completed nodes collapse to evidence summaries. Node coordinates
+are presentation state and are never stored in the Pipeline API. At narrow
+widths the same Graph becomes an indented vertical path with explicit
+`If feedback` and `If approved` labels.
+
 ### Components and responsibilities
 
 The Pipeline service owns Pipeline validation, immutable generations, Stages,
 repository scope, schedules, and admission. It depends on repository and
 execution-profile readiness. It does not claim work or inspect Git contents.
 
-The Run service owns Tracks, Stage dependencies, Worker affinity, Session
-promotion, Gate cursors, aggregate state, cancellation, retry, branch and
+The Run service owns Tracks, frozen Graph execution state, Edge decisions,
+node activation, Worker affinity, Session promotion, Gate cursors, aggregate
+state, cancellation, retry, branch and
 commit identity, and bounded provider metadata. It depends on existing routing
 and Attempt services. It does not create commits, hold origin credentials, or
 decide whether local Git objects exist.
@@ -443,10 +521,10 @@ typed private-repository clone, fetch, and default-branch reads, remote Track
 branch publication and `gh` operations, and mixed-mode exclusion. It has no
 role in Stage selection or local commit acceptance.
 
-The browser owns the Pipeline graph editor, structural cost estimate,
-software-work graph, filters, and links to Run and Stage detail. It reads server
-projections and does not derive dependency, cost, or provider truth from local
-state.
+The browser owns the Pipeline graph editor, automatic layout, structural cost
+estimate, software-work graph, filters, and links to Run and Stage detail. It
+reads server projections and does not derive Edge decisions, dependency, cost,
+or provider truth from local state.
 
 ### Decisions
 
@@ -471,12 +549,22 @@ operators deciding which resource starts software work. Factory is in developer
 preview, so the API and UI may make this clean break with a lossless database
 migration.
 
-**Ship a linear model first.** Stage order is a list and every Stage has zero
-or one predecessor. Agent, Action, and Gate are typed Stage executors, not
-arbitrary graph nodes. This proves sequencing, retry, lineage, provider waits,
-and the graph UI without inventing merge semantics for two code-producing
-predecessors. Stable Stage IDs and explicit predecessors keep a later DAG
-migration possible.
+**Store a Graph but expose a constrained topology first.** Nodes and Edges are
+the canonical saved and snapshotted model. V1 authoring allows a chain plus one
+typed, exclusive review branch created by a macro. It rejects parallel Agent
+fan-out, code fan-in, cycles, and arbitrary conditions. Storing only an ordered
+array was rejected because adding dependencies later would require a second
+Pipeline model and a migration of every saved generation. A fully free-form DAG
+was rejected because Factory has not defined how two code-producing branches
+merge. The cost is that the server must validate a Graph even for a one-node
+Pipeline, though that path performs no extra execution work.
+
+**Define traversal semantics in Factory.** Every node explicitly chooses `all`
+or `any` activation and every Edge reaches a durable traversed or
+not-traversed state. Factory does not inherit the different fan-in defaults of
+an agent SDK. `any` is allowed in V1 only for the mutually exclusive review
+reconvergence. This makes recovery and skip behavior deterministic, but adds
+stored Edge state to each Track.
 
 **Use a stable logical branch with isolated Attempt worktrees.** Every
 multi-stage Track has one generated working branch and one accepted head. Each
@@ -525,14 +613,15 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
 
 ### Invariants
 
-- `INV-1`: A Run contains one immutable Pipeline snapshot, including ordered
-  Stages, repository identities, execution settings, and source.
+- `INV-1`: A Run contains one immutable Pipeline snapshot, including the Graph
+  nodes, Edges, entry point, limits, repository identities, execution settings,
+  and source.
 - `INV-2`: A Track belongs to exactly one Run and one snapshotted repository.
 - `INV-3`: A Session belongs to exactly one Track and one snapshotted Stage.
 - `INV-4`: One Track contains at most one Session for a Stage.
-- `INV-5`: A non-first Session cannot become routeable until its predecessor
-  is dependency-satisfied by success or a success-like conditional skip and
-  every required typed output is durably recorded or explicitly passed through.
+- `INV-5`: A non-entry Session cannot become routeable until its frozen node
+  activation policy is satisfied by durable incoming Edge states and every
+  required typed output is durably recorded.
 - `INV-6`: An Agent Session input is the frozen base commit for the first
   code-producing Stage or the Track's exact latest accepted commit.
 - `INV-7`: In a multi-stage Pipeline, one Worker owns a Track from the first
@@ -561,8 +650,8 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   completion or retry from promoting a successor. It may record the observed
   result of one publication authorized before the cancellation fence or
   reconcile and roll back one local branch transition proposed before it.
-- `INV-18`: A pending scheduled occurrence freezes the same complete ordered
-  Pipeline snapshot as manual admission.
+- `INV-18`: A pending scheduled occurrence freezes the same complete Pipeline
+  Graph snapshot as manual admission.
 - `INV-19`: Multi-stage commit ancestry and local-ref proof ignore every
   agent-writable Git replacement, graft, hook, helper, include, alternate, and
   configuration path. Isolated one-stage completion instead applies the
@@ -580,10 +669,13 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
 - `INV-24`: Planned agent starts show an unconditional minimum and conditional
   maximum, each multiplied by selected repository count. Action, Gate, and
   retry counts are shown separately.
-- `INV-25`: A conditional skip is success-like only when its frozen `run_if`
-  references a prior PR review Gate whose outcome does not match. Every Stage
-  in the contiguous block references that same Gate and outcome, is dependency-
-  satisfied, and passes through the prior typed publication state.
+- `INV-25`: A node skipped directly because every incoming mutually exclusive
+  conditional Edge resolves `not_traversed` is `conditional_success`. That
+  class propagates transitively through a successor whose possible incoming
+  paths are all unreachable solely because of `conditional_success`, including
+  across unconditional Edges. A failure or cancellation cause takes precedence
+  and retains its own class. Edge conditions may reference only the frozen
+  typed outcome of their declared source Gate.
 - `INV-26`: A remote publication has one durable authorization ordered against
   cancellation. Only its frozen candidate may be written or reconciled.
 - `INV-27`: A PR review Gate records `approved` only after every provider feed
@@ -633,11 +725,26 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
 - `INV-41`: On macOS, authority, Workers, caches, locks, worktrees, brokers, and
   Agent containers all reside inside one enrolled Linux VM with no writable
   macOS mount or Agent-accessible management channel.
+- `INV-42`: A one-Agent-node Graph with no Edges uses the current one-stage
+  execution path and creates no graph handoff, extra agent start, or implicit
+  context reset.
+- `INV-43`: Every admitted Track records each Edge as exactly one of `pending`,
+  `traversed`, or `not_traversed`; a committed Edge decision never changes.
+- `INV-44`: Node eligibility uses only the frozen Graph, durable predecessor
+  outcomes, declared typed outputs, and explicit `all` or `any` activation. It
+  never depends on model prose or an SDK default.
+- `INV-45`: V1 Graphs are acyclic, have one entry node, reach every node from
+  that entry, and execute each node at most once apart from Attempts that retry
+  the same frozen node execution.
+- `INV-46`: One Track has at most one accepted code head at a time. V1 rejects
+  any topology that could make two code-producing nodes concurrently eligible
+  or require merging their outputs.
 
 ### Requirements
 
-- A Pipeline has 1 to 20 ordered Stages and 0 to 100 repositories. A draft may
-  have no repositories, but admission requires at least one.
+- A Pipeline Graph has 1 to 20 Stage nodes, 0 to 24 Edges, exactly one entry
+  node, and 0 to 100 repositories. A draft may have no repositories, but
+  admission requires at least one.
 - The product of Stages and repositories must not exceed 500 planned Sessions
   in one Run.
 - One resolved Agent Stage prompt is at most 64 KiB and all Agent Stage prompts
@@ -665,19 +772,24 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   must have an actor whom GitHub confirms currently has write, maintain, or
   admin repository permission. Unknown, missing, or unverifiable permission
   cannot satisfy the Gate.
-- Omitted `run_if` means always. A conditional Stage references one prior PR
-  review Gate ID and `feedback_requested`. No other condition, boolean
-  expression, or provider field is accepted in V1.
-- Server validation and editor mutations enforce the V1 sequence grammar. The
-  first Stage is Agent. Open PR follows at least one Agent and occurs once. A
+- An omitted Edge condition means unconditional traversal after source success.
+  A conditional Edge references its source PR review Gate and one outcome,
+  `feedback_requested` or `approved`. No other condition, boolean expression,
+  provider field, or executable callback is accepted in V1.
+- Server validation and editor mutations enforce the V1 Graph grammar. The
+  entry Stage is Agent. Every node is reachable and the Graph is acyclic. Open
+  PR follows at least one Agent and occurs once. A
   PR review targets the Track's latest successful publication, including state
-  passed through a conditionally skipped block. Any
-  Agent after Open PR must be the first Stage in a contiguous feedback block
-  and must be followed immediately by Update PR. Both reference the same prior
-  PR review Gate and `feedback_requested`. Another PR review may follow Update
-  PR for an explicit bounded round. Insert, reorder, kind change, and delete
-  operations that break this grammar are rejected before save. The editor adds,
-  moves, and deletes each three-Stage review block atomically.
+  passed through an exclusive review branch. Any Agent after Open PR must be
+  Address feedback on the `feedback_requested` Edge and must flow immediately
+  to Update PR. The `approved` Edge bypasses both and may reconverge only with
+  Update PR and may reconverge with the approved Edge only at one following
+  `activation: any` node, or both routes may end at a terminal sink. Another PR review
+  may follow that reconvergence for an explicit bounded round. Every other node
+  uses `activation: all` and has at most one incoming and one outgoing Edge.
+  Insert, reorder, kind change, Edge change, and delete operations that break
+  this grammar are rejected before save. The editor adds, moves, and deletes
+  each review topology atomically.
 - Every Agent Stage in a multi-stage Pipeline uses a persistent Worker
   advertising `agent_isolation`. A one-Agent-Stage Pipeline retains current
   persistent and fake-cloud support through a compatible host security domain.
@@ -703,8 +815,10 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   worktrees, brokers, and Agent runtime all reside inside the enrolled Linux VM,
   with no writable host mount or Agent-accessible VM management channel.
 - Pipeline concurrency limits `queued`, `preparing`, `running`, and `finalizing`
-  Sessions in the Run. Stage concurrency limits the same states for that Stage.
-  `waiting`, concurrency-blocked, and terminal Sessions consume no slot.
+  Sessions across Tracks in the Run. Stage concurrency limits the same states
+  for that Stage across Tracks. Within one Track, V1 promotes at most one Agent
+  or Action Session into an execution-slot state at a time. `waiting`,
+  concurrency-blocked, Gate, and terminal Sessions consume no slot.
 - The software-work view sorts actionable blocked and failed Sessions first,
   then active work, then recent successful or cancelled work.
 - The editor always shows guaranteed and conditional-maximum Agent starts and
@@ -719,100 +833,126 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
 ## 6. Interfaces and data
 
 The operator API replaces `/api/v1/tasks` with `/api/v1/pipelines`. Create and
-update bodies contain Pipeline fields plus an ordered `stages` array. Run-now,
+update bodies contain Pipeline fields plus one `graph` object. Run-now,
 schedule, archive, generation conflict, idempotency, and pagination behavior
 remain the same under Pipeline names.
 
-Every Stage has common identity, name, position, kind, `run_if`, and optional
-concurrency limit, plus one kind-specific configuration:
+The Graph contains `entry_node_id`, `nodes`, and `edges`.
+Every Stage node has common identity, name, display order, activation policy,
+kind, and optional concurrency limit, plus one kind-specific configuration.
+Every Edge has stable identity, source and target node IDs, and an optional
+typed condition.
 
-This example is a saved Pipeline response. Create and preview requests omit the
-server-assigned Stage `id` fields; update requests include the returned IDs for
-unchanged Stages.
+This example is both a valid create or preview draft and the Graph shape in a
+saved Pipeline response. The editor creates an immutable UUID for every node
+and Edge before submission. `entry_node_id`, Edge `source`, and Edge `target`
+therefore resolve inside a draft without a server round trip.
 
 ```json
 {
-  "stages": [
-    {
-      "id": "5c0e4bb0-1d35-4eb2-a2f3-25e9a971c318",
-      "name": "Build",
-      "kind": "agent",
-      "agent": {
-        "runtime": "codex",
-        "execution_profile_id": "profile-local",
-        "prompt": "Implement and verify the change.",
-        "max_tokens": 120000,
-        "timeout_seconds": 3600
-      }
-    },
-    {
-      "id": "3dc45e0b-628f-43b5-829d-da4d920a6a57",
-      "name": "Open PR",
-      "kind": "action",
-      "action": {
-        "type": "open_pull_request",
-        "draft": true,
-        "title_template": "{{pipeline}}: {{repository}}",
-        "body_template": "Created by Factory run {{run_id}}."
-      }
-    },
-    {
-      "id": "26c686e4-e0cb-4269-aed4-c90fe0a65239",
-      "name": "PR review",
-      "kind": "gate",
-      "gate": {
-        "type": "pull_request_review",
-        "actor_policy": "repository_write",
-        "poll_seconds": 120,
-        "timeout_seconds": 604800,
-        "timeout_policy": "fail"
-      }
-    },
-    {
-      "id": "a06e0e60-5a37-4e6a-81aa-beb92ec467fa",
-      "name": "Address feedback",
-      "kind": "agent",
-      "run_if": {
-        "gate_stage_id": "26c686e4-e0cb-4269-aed4-c90fe0a65239",
-        "outcome": "feedback_requested"
+  "graph": {
+    "entry_node_id": "5c0e4bb0-1d35-4eb2-a2f3-25e9a971c318",
+    "nodes": [
+      {
+        "id": "5c0e4bb0-1d35-4eb2-a2f3-25e9a971c318",
+        "name": "Build",
+        "display_order": 0,
+        "activation": "all",
+        "kind": "agent",
+        "agent": {
+          "runtime": "codex",
+          "execution_profile_id": "profile-local",
+          "prompt": "Implement and verify the change.",
+          "max_tokens": 120000,
+          "timeout_seconds": 3600
+        }
       },
-      "agent": {
-        "runtime": "codex",
-        "execution_profile_id": "profile-local",
-        "prompt": "Address the frozen review feedback and verify the change.",
-        "max_tokens": 80000,
-        "timeout_seconds": 3600
-      }
-    },
-    {
-      "id": "8f12de10-4ed9-4730-9335-870ae3fbf752",
-      "name": "Update PR",
-      "kind": "action",
-      "run_if": {
-        "gate_stage_id": "26c686e4-e0cb-4269-aed4-c90fe0a65239",
-        "outcome": "feedback_requested"
+      {
+        "id": "3dc45e0b-628f-43b5-829d-da4d920a6a57",
+        "name": "Open PR",
+        "display_order": 1,
+        "activation": "all",
+        "kind": "action",
+        "action": {
+          "type": "open_pull_request",
+          "draft": true,
+          "title_template": "{{pipeline}}: {{repository}}",
+          "body_template": "Created by Factory run {{run_id}}."
+        }
       },
-      "action": {
-        "type": "update_pull_request"
+      {
+        "id": "26c686e4-e0cb-4269-aed4-c90fe0a65239",
+        "name": "PR review",
+        "display_order": 2,
+        "activation": "all",
+        "kind": "gate",
+        "gate": {
+          "type": "pull_request_review",
+          "actor_policy": "repository_write",
+          "poll_seconds": 120,
+          "timeout_seconds": 604800,
+          "timeout_policy": "fail"
+        }
+      },
+      {
+        "id": "a06e0e60-5a37-4e6a-81aa-beb92ec467fa",
+        "name": "Address feedback",
+        "display_order": 3,
+        "activation": "all",
+        "kind": "agent",
+        "agent": {
+          "runtime": "codex",
+          "execution_profile_id": "profile-local",
+          "prompt": "Address the frozen review feedback and verify the change.",
+          "max_tokens": 80000,
+          "timeout_seconds": 3600
+        }
+      },
+      {
+        "id": "8f12de10-4ed9-4730-9335-870ae3fbf752",
+        "name": "Update PR",
+        "display_order": 4,
+        "activation": "all",
+        "kind": "action",
+        "action": {
+          "type": "update_pull_request"
+        }
       }
-    }
-  ]
+    ],
+    "edges": [
+      { "id": "d5b7137d-0c81-4bd3-8797-99162a8fdd2c", "source": "5c0e4bb0-1d35-4eb2-a2f3-25e9a971c318", "target": "3dc45e0b-628f-43b5-829d-da4d920a6a57" },
+      { "id": "33b15f95-df9d-4b3e-8dca-862e68e69381", "source": "3dc45e0b-628f-43b5-829d-da4d920a6a57", "target": "26c686e4-e0cb-4269-aed4-c90fe0a65239" },
+      {
+        "id": "202b70fa-492e-43a0-b8c9-8e58556d9f4c",
+        "source": "26c686e4-e0cb-4269-aed4-c90fe0a65239",
+        "target": "a06e0e60-5a37-4e6a-81aa-beb92ec467fa",
+        "condition": { "type": "gate_outcome", "outcome": "feedback_requested" }
+      },
+      { "id": "4d8bb8dd-2078-412e-81eb-784cadfc1d48", "source": "a06e0e60-5a37-4e6a-81aa-beb92ec467fa", "target": "8f12de10-4ed9-4730-9335-870ae3fbf752" }
+    ]
+  }
 }
 ```
 
 Exactly one of `agent`, `action`, and `gate` must match `kind`. Unknown kinds,
-adapter types, or fields fail validation. Reordering changes positions but not
-Stage IDs. Changing kind creates a new Stage ID because historical identity
-must not imply compatible behavior. Omitted `run_if` means `always`.
+adapter types, conditions, activation policies, or fields fail validation.
+Reordering changes `display_order` but not node or Edge IDs. An omitted
+condition means unconditional.
 
-Stage IDs are omitted on create and returned by the server. Updates must supply
-the returned IDs for unchanged Stages. A missing or foreign ID conflicts rather
-than silently creating or adopting a Stage.
+Create, preview, and update requests must supply canonical UUIDs for every node
+and Edge. IDs must be unique within the draft. On update, an existing object
+keeps its ID; a new object uses a newly generated ID; a deleted ID cannot be
+reused in that Pipeline; and an ID already owned by another Pipeline is
+rejected. Changing node kind creates a new node ID because the historical
+identity does not imply compatible behavior. The server returns the same IDs
+and freezes them into Runs so entry resolution, traversal, and conditional
+decisions keep stable historical identity.
 
 `POST /api/v1/pipelines/preview` accepts the same bounded draft body as create,
-performs canonical grammar and capability-independent validation, and returns
-unconditional and conditional-maximum Agent starts and token ceilings plus
-Action and Gate counts. It writes nothing. The editor debounces this request
+performs canonical Graph, topology, and capability-independent validation, and
+returns unconditional and conditional-maximum Agent starts and token ceilings,
+Action and Gate counts, reachable nodes, and the longest possible node path.
+It writes nothing. The editor debounces this request
 and renders only the response matching its latest draft hash. `GET
 /api/v1/pipelines/{pipeline_id}` returns the same estimate for saved state.
 `GET /api/v1/runs` adds bounded Track and
@@ -907,8 +1047,11 @@ maximum branch fields, typed Gate context, and trusted Pipeline context,
 against the 72 KiB protocol limit. Save, schedule, admission, claim validation,
 and Worker startup use the same formatter and bound.
 
-The database gains Pipeline Stage and Track tables. Sessions gain Track and
-Stage foreign keys, kind, `waiting` and `skipped` states, input and output
+The database gains Pipeline Graph-node, Graph-edge, and Track tables. Each
+Track snapshots one Edge-state row per Edge before execution. A
+`not_traversed` Edge row records its typed resolution cause and originating
+Session so recovery can reproduce transitive skip classification. Sessions gain
+Track and Stage-node foreign keys, kind, `waiting` and `skipped` states, input and output
 commits, durable `finalizing` state and transition lease, bounded typed output,
 skip class, reason, and the Session whose outcome
 caused the skip. Skip class distinguishes `conditional_success` from
@@ -941,8 +1084,8 @@ canonical, non-actionable reason so the claim transaction can promote it
 without operator intervention.
 
 Each pending scheduled occurrence stores the complete immutable Pipeline
-generation it will admit: ordered Stages, repository identities, execution
-settings, and scheduled instant. Editing a Pipeline only changes occurrences
+generation it will admit: Graph nodes, Edges, entry point, limits, repository
+identities, execution settings, and scheduled instant. Editing a Pipeline only changes occurrences
 created after the edit. The Pipeline's current archive state and schedule
 enabled state still gate admission. Disabling the schedule or archiving the
 Pipeline pauses an existing pending occurrence without changing its frozen
@@ -966,18 +1109,20 @@ permanent and blocks the occurrence under current scheduler rules. Manual
 admission returns the same reason immediately without creating a Run.
 
 The migration renames current Tasks and Task repositories to Pipelines and
-Pipeline repositories. It creates one Stage named `Execute` for every current
-Task, using the Task ID as Stage ID in its separate namespace. The Stage kind is
+Pipeline repositories. It creates one Graph with one Stage named `Execute`, no
+Edges, and that Stage as entry for every current Task. The derived execution
+bound is therefore one.
+It uses the Task ID as Stage ID in its separate namespace. The Stage kind is
 Agent, it preserves current prompt and runtime settings, and its requested token
-ceiling is null. Current Run snapshots become one-Stage Pipeline snapshots.
+ceiling is null. Current Run snapshots become one-node Pipeline Graph snapshots.
 Each current Session receives a Track and points to that Stage. Historical
 Sessions expose null input and output commits unless the old record already
 proved a value; the UI labels them unavailable rather than inventing them.
 
-Every existing pending or paused scheduled occurrence converts to a one-Stage
-`Execute` Pipeline generation from its own frozen Task snapshot, not the current
-mutable Pipeline. Migration preserves due instant, retry state, health, enabled
-or paused status, and association with an archived source.
+Every existing pending or paused scheduled occurrence converts to a one-node
+`Execute` Pipeline Graph generation from its own frozen Task snapshot, not the
+current mutable Pipeline. Migration preserves due instant, retry state, health,
+enabled or paused status, and association with an archived source.
 
 Upgrade creates and validates the existing owner-only database backup before
 migration starts. It refuses a name collision, unsupported schema, invalid
@@ -1050,10 +1195,13 @@ authorize deletion.
 
 ### Naming and identity
 
-Pipeline, Run, Track, Session, Attempt, and newly authored Stage IDs are random
-UUIDs created by the control plane. A migrated Stage reuses its Pipeline ID in
-the Stage table so migration needs no unstable generated value. IDs are scoped
-by table and never inferred from names.
+Pipeline, Run, Track, Session, and Attempt IDs are random UUIDs created by the
+control plane. Newly authored Stage-node and Edge IDs are client-generated
+UUIDs that the server validates and permanently binds to one Pipeline. They
+cannot be adopted by another Pipeline or reused after deletion. A migrated
+Stage reuses its Pipeline ID in the Stage table so migration needs no unstable
+generated value; its Graph has no Edge that needs an ID. IDs are never inferred
+from names.
 
 Pipeline names keep the current normalized uniqueness rule. Stage names are
 unique only inside one Pipeline. Renaming either changes the next Pipeline
@@ -1477,7 +1625,7 @@ authority source broker only.
 
 Only the authenticated owner Worker with the active Attempt lease may report a
 multi-stage output commit. The server validates IDs, Worker identity, commit
-format, Stage position, predecessor equality, and cancellation fences. For that
+format, frozen node eligibility, input-commit equality, and cancellation fences. For that
 handoff the Worker disables hooks for its own automatic commit. It verifies
 objects and ancestry in a fresh Git directory with `GIT_NO_REPLACE_OBJECTS`, no
 graft file, no repository config, and fixed empty system and global config. That directory reads a
@@ -1753,15 +1901,53 @@ overflow is actionable rather than retried indefinitely.
   rejects a writable macOS mount, a host-resident Worker or broker, and a
   management channel reachable from the Agent identity. VM restart preserves
   authority identity, locks, cache, and exact Track recovery.
+- `AC-58`: Creating and running a Graph with one Agent node, no Edges, that node
+  as entry produces the current one-stage
+  persistent or fake-cloud lifecycle with one agent start and no handoff ref.
+- `AC-59`: Save and preview reject a missing or foreign entry node, duplicate or
+  dangling Edge, unreachable node, cycle, node or Edge limit overflow,
+  unsupported activation, arbitrary condition, concurrent code path, or code
+  fan-in before a Pipeline generation is created. Create and preview accept
+  client-generated node and Edge UUIDs and resolve entry and endpoints without
+  prior persistence; update preserves existing IDs, accepts fresh IDs for new
+  objects, and rejects reused deleted or cross-Pipeline IDs.
+- `AC-60`: A Track persists every Edge transition once. Crash or response loss
+  before and after each source outcome, Edge decision, node promotion, and skip
+  propagation recovers the same eligible, waiting, and unreachable nodes
+  without executing a node twice.
+- `AC-61`: `activation: all` waits for every incoming Edge to traverse.
+  `activation: any` in the structured review reconvergence waits until all
+  mutually exclusive incoming Edges resolve and then starts exactly once when
+  one traversed. When none traverses, it records one unreachable skip.
+- `AC-62`: The review macro stores a conditional `feedback_requested` Edge.
+  Approval leaves that Edge not traversed and skips Address feedback and Update
+  PR. Feedback traverses it and runs those nodes once with the frozen Gate
+  output. Neither path can make both branches eligible. In a terminal review
+  block, the transitive approval skips complete the Track successfully. In a
+  nonterminal block, those skips resolve before the approved Edge and the
+  feedback path reconverge at the following `activation: any` node, which runs
+  exactly once.
+- `AC-63`: Preview derives guaranteed and conditional-maximum starts, token
+  ceilings, reachable nodes, and longest path from the submitted Graph. The
+  values are identical after save and in the admitted Run snapshot.
+- `AC-64`: V1 never holds execution slots for two nodes in the same Track.
+  Pipeline and Stage concurrency still allow work from different Tracks, Gate
+  waiting consumes no slot, and each Gate timeout retains its existing terminal
+  and retry behavior.
 
 ## 10. Test approach
 
 Store tests prove atomic admission, independent Track promotion, owner freeze,
 owner-only routing, aggregate state, retry, cancellation races, generation
-snapshots, typed Stage validation, Gate polling and outcomes, conditional
-promotion and success-like skip, concurrency-block promotion, schedule
+snapshots, typed Graph and Stage validation, entry and reachability checks,
+durable Edge traversal, explicit activation semantics, Gate polling and
+outcomes, conditional promotion and unreachable skip, concurrency-block promotion, schedule
 snapshots, structural cost estimates, limits, and every terminal predicate.
-They prove the persisted portions of `INV-1` through `INV-41`;
+Review-route fixtures cover both a terminal approval skip and a nonterminal
+approved-path reconvergence, including crash recovery after each propagated
+`conditional_success` Edge decision. They also prove failure and cancellation
+causes never become success-like.
+They prove the persisted portions of `INV-1` through `INV-46`;
 Worker integration tests prove the Git and worktree portions.
 
 Worker integration tests use two Workers and local bare origins. They prove a
@@ -1939,8 +2125,8 @@ only during the ten-minute overlap, and reject the old key afterward. Emergency
 rotation tests require local operator enrollment and cleared credentials for
 `AC-55`.
 
-React tests prove one-Stage defaults, graph insertion and reorder, inspector
-fields, atomic review-block add, move, and delete, structural cost calculations, telemetry fallback, card grouping,
+React tests prove one-node defaults, graph insertion and reorder, inspector
+fields, atomic review-branch add, move, and delete, structural cost calculations, telemetry fallback, card grouping,
 sorting, attention reasons, links, empty and failure states, and accessible
 names. A real Chromium test authors both a one-Stage Pipeline and the Plan,
 Build, Test, Open PR, PR review, Address feedback, Update PR sequence. It runs
@@ -1988,11 +2174,12 @@ Stage and Track navigation, and Enter and Space activation.
 - Provider polling can consume rate limits. Gates poll no faster than their
   configured interval, honor retry hints, back off to 15 minutes, and show stale
   provider health instead of occupying Worker slots.
-- A linear model cannot express parallel tests or approval fan-in. It still
-  validates sequencing. A Stage runs at most once apart from retry. An operator
-  can add another explicit PR review and Address feedback pair for a bounded
-  second review round, but V1 has no automatic cycle. Explicit predecessor
-  identity keeps a DAG or bounded-cycle migration possible.
+- The canonical Graph is more data than a list, while V1 still cannot express
+  parallel tests or general fan-in. The explicit model avoids a later Pipeline
+  migration and makes every transition inspectable. A Stage runs at most once
+  apart from retry. An operator can add another explicit PR review and Address
+  feedback branch for a bounded second review round, but V1 has no automatic
+  cycle.
 - Renaming Task is disruptive. Keeping the old name would preserve a short API
   while making the product boundary unclear. Developer preview status and a
   lossless migration make the clean name preferable.
@@ -2013,13 +2200,14 @@ Stage and Track navigation, and Enter and Space activation.
   feedback? Recommend no for V1. One Stage should have one durable outcome and
   retries must reuse one input. An operator can add explicit review and address
   pairs or start a new Run. A later design can add a bounded review-cycle
-  construct after the linear execution and cost model are proven. This does
+  construct after the acyclic execution and cost model are proven. This does
   not block task breakdown.
 
 ## 13. Out of scope
 
 - Cross-Worker continuation, remote checkpoint publication, and Track failover.
-- Branching DAGs, parallel Stage execution inside one Track, and fan-in.
+- General branching DAGs, parallel Agent execution inside one Track, and code
+  fan-in beyond the structured exclusive review branch.
 - Backward edges, general loops, and automatic repeated review cycles.
 - Human approval, question, and resume nodes.
 - Arbitrary conditional expressions beyond the typed PR review outcome.
