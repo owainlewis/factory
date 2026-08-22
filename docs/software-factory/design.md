@@ -432,8 +432,9 @@ Worker Attempt before taking manual ownership.
   only the smallest fairness rule its tests require.
 - Progress messages are non-empty UTF-8 text of at most 2 KiB.
 - Outcome messages are non-empty UTF-8 text of at most 8 KiB.
-- One Attempt stores at most 200 accepted agent updates. A later progress call
-  receives a visible limit error; one outcome update remains allowed.
+- One Attempt stores at most 200 accepted agent updates: up to 199 progress
+  updates and one reserved outcome update. A later progress call receives a
+  visible limit error while the required outcome slot remains available.
 - Agent update statuses are `running`, `ready`, `needs-input`, `failed`, and
   `no-change`.
 - Agent-owned `ready` requires one HTTPS GitHub pull-request URL whose
@@ -746,9 +747,9 @@ events.
 
 Existing Worker capacity, repository-cache, event, prompt, result, timeout, and
 retained-worktree limits continue to apply. A Run may add at most 100 Work
-targets. Update history adds at most 200 records per Attempt and at most 8 KiB
-per outcome message. Limit failure remains visible and never silently drops an
-outcome.
+targets. Update history adds at most 200 records per Attempt, including its
+reserved outcome record, and at most 8 KiB per outcome message. Limit failure
+remains visible and never silently drops an outcome.
 
 ## 9. Acceptance criteria
 
@@ -821,7 +822,8 @@ Worker and supervisor tests prove `INV-5` through `INV-8`, `INV-11`, and
 `INV-17` with
 wrong tokens, expired leases, terminal-report races, cancellation, forced exit,
 parent loss, stable publish continuation, preflight and post-stop PR identity
-validation, provider outage, branch movement after report, and cleanup.
+validation, provider outage, branch movement after report, the 199-progress
+limit with a reserved outcome slot, and cleanup.
 They verify `AC-5`, `AC-7`, `AC-8`, `AC-10`, `AC-12`, and `AC-13`, including
 the race detector.
 They also prove that every valid semantic outcome completes the Attempt while
