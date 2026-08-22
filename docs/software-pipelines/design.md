@@ -342,8 +342,9 @@ not hold a Worker slot. The owner Worker receives a bounded, non-execution Gate
 check lease on its normal outbound poll, performs a rate-limited `gh` check,
 and returns the result under that lease. The Gate records one of two typed
 outcomes from the newest qualifying provider event. `feedback_requested` means
-that event is a changes-requested review, review comment, or top-level
-conversation comment. `approved` means it is an explicit approved review
+that event is a changes-requested review, a `COMMENTED` review with a nonempty
+canonical body, a review comment, or a top-level conversation comment.
+`approved` means it is an explicit approved review
 submission for the exact target commit. Events from Factory's own account and
 provider system events are excluded. The actor must also satisfy the frozen
 `repository_write` policy: GitHub must confirm write, maintain, or admin
@@ -760,6 +761,11 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   terminal Update PR Track visibly partial; it is never silently treated as
   already addressed. Events first observed after that explicit boundary belong
   to a later Run.
+- `INV-48`: A floor item whose normalized digest changed and whose current
+  representation qualifies as feedback cannot be ordered by its older creation
+  or submission time. After actor authorization it conservatively chooses
+  `feedback_requested` ahead of unchanged timestamped candidates because GitHub
+  supplies no trustworthy ordered mutation event for every supported feed.
 
 ### Requirements
 
@@ -1400,10 +1406,12 @@ Address feedback was running, before the updated commit was published.
 
 Approval still requires an explicit approved review for the new exact target
 commit. Feedback after the inherited floor may be a review comment,
-conversation comment, or changes-requested review against either the new target
-or the immediately preceding published commit; the latter remains actionable
-because the Address feedback Agent could not have seen it. Older review rounds
-are excluded. The GitHub adapter reads
+conversation comment, changes-requested review, or `COMMENTED` review with a
+nonempty canonical body against either the new target or the immediately
+preceding published commit; the latter remains actionable because the Address
+feedback Agent could not have seen it. Older review rounds are excluded. An
+empty or whitespace-only `COMMENTED` body is not feedback. The GitHub adapter
+reads
 reviews, pull-request review comments, and issue
 comments through feeds with stable provider creation time and database ID. It
 queries from each inclusive floor with overlap and deduplicates immutable
@@ -1423,7 +1431,8 @@ likewise includes immutable ID, creation time, author login, canonical body
 text, and every bounded field copied into the result or snapshot. The flat
 review-comment endpoint includes replies added to existing old threads.
 Deletion, addition, or a result-relevant mutation therefore changes that feed's
-digest.
+digest. Canonical body text normalizes CRLF to LF and otherwise preserves UTF-8;
+`COMMENTED` is nonempty only when Unicode whitespace trimming leaves content.
 
 Each sweep also reads the current pull-request head. If either differs from the
 Gate's target published commit, the Gate fails actionably with
@@ -1449,21 +1458,36 @@ or deduplicated ID. A lease performs exactly two sweeps and never starts a
 third. If the feeds do not match, the Gate remains waiting with
 `review_boundary_moving` and retries after backoff.
 
-The adapter orders qualifying events by provider creation time. Within one feed,
-provider database ID breaks a timestamp tie. Database IDs from different feeds
-are never compared as chronology. When the newest timestamp contains candidates
-from different feeds, one shared outcome is accepted; conflicting outcomes
-resolve conservatively to `feedback_requested`. A review submission qualifies
-for approval only when its provider commit ID equals the target commit. A
-changes-requested review qualifies for feedback when it targets the current or
-immediately preceding publication and its ID or normalized digest is absent
-from the inherited eligibility floor. Review and conversation comments qualify
-when their immutable IDs or normalized digests are absent from that floor.
-Factory never compares its local publication time with a provider creation
-time. Provider timestamps order only
-the unseen candidate set after feed identity establishes eligibility.
+The adapter first separates new immutable IDs from normalized mutations of
+items already present in the eligibility floor. GitHub does not expose one
+trustworthy ordered mutation event across all three feeds. Therefore, when a
+floor item's digest changed and its current representation qualifies as
+feedback, the Worker authorizes its actor and conservatively chooses
+`feedback_requested` ahead of every unchanged timestamped candidate. An
+unverifiable actor follows the normal no-advance waiting rule; a verified actor
+without write permission is discarded. This covers an old `COMMENTED` review
+or comment whose body is edited after a later approval.
+Factory never assigns that mutation the item's older creation time or invents a
+local/provider timestamp comparison.
 
-The Worker evaluates timestamp groups from newest to oldest. For one group it
+Only when no authorized qualifying mutation exists does the adapter order new
+immutable-ID candidates by provider creation time. Within one feed, provider
+database ID breaks a timestamp tie. Database IDs from different feeds are never
+compared as chronology. When the newest timestamp contains candidates from
+different feeds, one shared outcome is accepted; conflicting outcomes resolve
+conservatively to `feedback_requested`. A review submission qualifies
+for approval only when its provider commit ID equals the target commit. A
+changes-requested review, or a `COMMENTED` review with a nonempty canonical
+body, qualifies for feedback when it targets the current or immediately
+preceding publication and either its ID is absent from the inherited eligibility
+floor or its stored normalized digest changed. Review and conversation comments
+qualify under the same new-ID or changed-digest rule.
+Factory never compares its local publication time with a provider creation
+time. Provider timestamps order only new-ID candidates after feed identity
+establishes eligibility.
+
+When no authorized qualifying mutation chose feedback, the Worker evaluates
+new-ID timestamp groups from newest to oldest. For one group it
 checks each distinct actor through GitHub's repository-permission endpoint and
 records actor login, provider permission, and verification time as typed
 metadata. Verified actors without write permission are discarded. If the group
@@ -1481,7 +1505,8 @@ the unresolved group, so the next inclusive scan retries its authorization. An
 unresolved actor in a strictly older group is never consulted after a newer
 decisive group is authorized. The control plane never infers eligibility from
 author association or event text. A
-changes-requested review or comment from an eligible actor yields
+changes-requested review, nonempty `COMMENTED` review, or comment from an
+eligible actor yields
 `feedback_requested`.
 An explicit approved review yields `approved` and is the observation boundary
 for that Gate only after same-timestamp candidates resolve to approval. Earlier
@@ -1987,7 +2012,8 @@ overflow is actionable rather than retried indefinitely.
 - `AC-34`: A PR review Gate holds no Worker execution slot, honors provider
   rate limits through a Worker-initiated fenced lease, scans current state for
   its exact target commit, and freezes exactly one `approved` or
-  `feedback_requested` outcome without losing pre-poll feedback.
+  `feedback_requested` outcome without losing pre-poll feedback. A nonempty
+  `COMMENTED` review body is feedback; an empty or whitespace-only one is not.
 - `AC-35`: For `feedback_requested`, an Address feedback Agent receives the
   frozen untrusted feedback snapshot, starts at the published Track commit, and
   promotes only Update PR after accepted success. Update PR durably
@@ -2005,9 +2031,11 @@ overflow is actionable rather than retried indefinitely.
   promotes a successor.
 - `AC-39`: Review events created during publication response loss are included
   through frozen inclusive eligibility floors and provider ID deduplication.
-  The newest qualifying timestamp, with conservative cross-feed tie resolution,
-  determines
-  the outcome at the Gate's explicit observation boundary; later events belong
+  An authorized changed-digest floor item that currently qualifies as feedback
+  takes conservative precedence because it has no trustworthy mutation event
+  time. Otherwise the newest qualifying new-ID timestamp, with conservative
+  cross-feed tie resolution, determines the outcome at the Gate's explicit
+  observation boundary; later events belong
   to a later review round or Run. Every unseen provider ID after the frozen
   floor is eligible regardless of Factory/provider clock skew. Provider time
   orders only those unseen candidates, and simultaneous feedback prevents
@@ -2283,8 +2311,9 @@ projection for `AC-26`.
 Provider integration tests use a fake `gh` executable and local bare origin.
 They prove generated-branch publication, expected-old-head conflicts,
 idempotent pull-request discovery after response loss, review cursors, explicit
-approval and changes-requested events, qualifying review and conversation
-comments, authorized and unauthorized public actors, permission lookup failure,
+approval, changes-requested, nonempty `COMMENTED`, and empty `COMMENTED` review
+events, qualifying review and conversation comments, authorized and
+unauthorized public actors, permission lookup failure,
 empty polls, events during publication response loss, inclusive
 overlap and provider-ID deduplication, multi-page feed completion, within-feed
 ID ordering, skewed Factory/provider clocks, cross-feed timestamp ties
@@ -2315,10 +2344,14 @@ sweeps fit the verification-read budget through the limit and overflow visibly
 beyond it. The accepted fixtures include worst-case distributions across all
 three feeds, including one large feed plus two empty or one-item feeds.
 Carry-forward fixtures post a new comment, edit a consumed comment, and submit
-a changes-requested review against the preceding commit while Address feedback
-runs. With a following Gate, each item remains outside its inherited floor and
+a changes-requested or nonempty `COMMENTED` review against the preceding commit
+while Address feedback runs. With a following Gate, each item remains outside its inherited floor and
 can request another feedback round. With terminal Update PR, the accepted commit
 is published but the Track becomes partial with the bounded pending snapshot.
+Mutation-order fixtures edit an old consumed `COMMENTED` review and an old
+consumed comment after a newer approval. Their authorized changed digests must
+choose feedback ahead of the approval; a no-write mutation is discarded and an
+unverifiable actor keeps the observation waiting without durable advancement.
 Permission-failure fixtures keep terminal Update PR observing after publication
 without allowing full success, then recover to the same conclusive disposition.
 Timeout fixtures advance the frozen hour, prove the published Action becomes
