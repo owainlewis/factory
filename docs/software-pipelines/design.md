@@ -170,12 +170,21 @@ committed it. Any remaining unignored, untracked file fails completion with a
 bounded reason. The Worker disables hooks for its own commit, verifies the
 output descends from the frozen input in a fixed verification environment, and
 creates an Attempt-scoped local ref to keep the commit reachable. Commit and
-ancestry verification use a reconstructed temporary object store. Under the
-repository mutation lock and after every agent for that repository has exited,
-the Worker hardlinks or copies only canonical loose-object directories and
-regular pack and index files from the cache. It rejects symlinks and copies no
-`objects/info` metadata, including local or HTTP alternates. A fresh temporary
-Git directory uses only that reconstructed store. It ignores replacement refs,
+ancestry verification use a validated temporary object snapshot. Under the
+repository mutation lock, the Worker freezes a manifest of canonical loose
+objects and regular pack and index files, opens every source without following
+symlinks, and copies it to a private store. It does not wait for unrelated
+agents in other worktrees. Worker fetch, repack, ref, and cleanup operations use
+the same lock. Before copying, the Worker sums manifest files and bytes and
+atomically reserves temporary capacity. V1 permits at most 1,000,000 files,
+8 GiB, and 10 minutes per snapshot, three race retries, and 16 GiB of concurrent
+snapshot reservations per Worker. Insufficient free space or a limit breach
+fails actionably with `object_snapshot_too_large` before agent output is
+accepted. Source identity and size are read back after each copy. A changed or
+vanished source fails this snapshot attempt with `object_snapshot_raced` and
+bounded retry; it cannot produce a partial accepted store. The snapshot copies
+no `objects/info` metadata, including local or HTTP alternates. A fresh
+temporary Git directory uses only that snapshot. It ignores replacement refs,
 grafts, hooks, config includes, system and user config, and agent-written
 repository config. Before ancestry evaluation, it verifies every pack and index
 checksum and runs strict object-integrity and connectivity checks. It enumerates
@@ -188,6 +197,13 @@ direct ref operations under the same fixed config. It proves both IDs name
 cryptographically valid commit objects available without an alternate, output
 descends from input, the complete successor checkout is present, and the ref
 resolves to output without executing agent-controlled behavior.
+
+Snapshot directories and reservations have owner-only manifests. They are
+released after verification whether completion is accepted or rejected.
+Startup recovery removes an incomplete snapshot only when no live completion
+owns its manifest, then releases the recorded reservation. The Attempt worktree
+and local ref follow their separate retention rules and are never deleted by
+snapshot cleanup.
 
 Only after the control plane accepts the full output commit under the active
 lease does it mark Implement succeeded and make Test eligible. Test is
@@ -502,6 +518,8 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
 - `INV-28`: A provider event can choose a Gate outcome only when its actor
   satisfies the frozen approval policy through provider-confirmed repository
   permission.
+- `INV-29`: A PR review Gate can choose an outcome only when the provider head
+  observed under its Gate-check lease equals the exact target published commit.
 
 ### Requirements
 
@@ -683,8 +701,8 @@ check. The server atomically grants a short lease containing Gate, Track,
 provider, pull-request, target published commit, baseline cursor, deadline, and
 outcome version. It grants no second live lease for that Gate and the check does
 not consume Pipeline, Stage, or Worker execution capacity. The authenticated
-owner returns a bounded result with the lease token and observed cursor. The
-server accepts it only when the lease, owner, target commit, outcome version,
+owner returns a bounded result with the lease token, observed PR head, and
+observed cursor. The server accepts it only when the lease, owner, target commit, outcome version,
 deadline, and Run and Track cancellation fences still match. Duplicate results
 return the stored outcome; stale or late results cannot satisfy the Gate. A
 lost lease expires and becomes eligible for another owner-Worker poll. At most
@@ -903,7 +921,8 @@ identity and conflicts for a different identity.
 An agent exit of zero is provisional until commit and ref creation succeed.
 Commit, ancestry, local ref, or read-back failure completes the Attempt and
 Session as failed with a bounded actionable reason. The worktree is retained.
-No downstream Session changes state.
+The same transaction skips every later waiting Session with this failure as
+cause. No downstream Session becomes routeable.
 
 Success completion records output identity, marks the Session succeeded, and
 promotes its direct successor in one database transaction. With capacity
@@ -934,6 +953,12 @@ feed end, and deduplicates immutable IDs. Mutable thread `isResolved` state is
 not an outcome input because GitHub supplies no ordered resolution event or
 feed-wide mutation version.
 
+The same bounded provider observation reads the current pull-request head. If
+it differs from the Gate's target published commit, the Gate fails actionably
+with `remote_diverged` and cannot accept an approval or feedback outcome.
+Normal retry keeps the target and baselines after the operator restores the
+expected head or starts a new Run.
+
 The adapter chooses the newest qualifying event by the total key
 `(provider_created_at, provider_database_id, feed_kind)`. A review submission
 qualifies only when its provider commit ID equals the target commit. Review and
@@ -943,7 +968,8 @@ through GitHub's repository-permission endpoint. It returns the actor login,
 provider permission, and verification time as typed metadata. Missing access,
 rate limiting, or an unverifiable response leaves the Gate waiting; the control
 plane never infers eligibility from author association or event text. A
-changes-requested review or comment from an eligible actor yields `feedback_requested`.
+changes-requested review or comment from an eligible actor yields
+`feedback_requested`.
 An explicit approved review yields `approved` and is the observation boundary
 for that Gate. Earlier feedback is superseded by that explicit approval. An
 event ordered after it belongs to another explicit review round or later Run;
@@ -1075,8 +1101,8 @@ position, predecessor equality, and cancellation fences. The Worker disables
 hooks for its own automatic commit. It verifies objects and ancestry in a fresh
 Git directory with `GIT_NO_REPLACE_OBJECTS`, no graft file, no repository
 config, and fixed empty system and global config. That directory reads a
-reconstructed object store containing only regular canonical loose objects and
-pack files from the cache. It contains no `objects/info` directory, alternate
+manifest-frozen, copy-verified object snapshot containing only regular canonical
+loose objects and pack files from the cache. It contains no `objects/info` directory, alternate
 metadata, or symlink. Pack checksums, strict connectivity, and a canonical
 rehash of every object reachable from input and output must pass before lineage
 is accepted. It creates and reads back the exact local ref through direct ref
@@ -1126,6 +1152,12 @@ Token ceilings stop new model requests when the runtime can enforce them;
 otherwise they remain a visible requested budget and actual telemetry is
 authoritative.
 
+Object verification snapshots are limited to 1,000,000 files, 8 GiB, and 10
+minutes each, with three race retries and a 16 GiB Worker-wide reservation.
+Workers require the full reservation plus their configured free-space floor
+before copy. These V1 constants are reported in Worker capabilities and any
+overflow is actionable rather than retried indefinitely.
+
 ## 9. Acceptance criteria
 
 - `AC-1`: An operator can create a three-Stage Pipeline for two repositories
@@ -1136,7 +1168,8 @@ authoritative.
 - `AC-3`: Stage 2 starts from the exact full commit reported by Stage 1 in a
   fresh worktree on the Track owner Worker.
 - `AC-4`: A failed commit or local-ref operation leaves Stage 2 unstarted,
-  shows an actionable reason, and retains the Stage 1 worktree.
+  shows an actionable reason, retains the Stage 1 worktree, and skips every
+  later waiting Session with that failure as cause.
 - `AC-5`: Retrying a failed Stage uses a fresh worktree at its frozen input and
   advances only successors in the same Track after success.
 - `AC-6`: The landing view shows Pipeline Run groups, Stage columns,
@@ -1253,6 +1286,15 @@ authoritative.
 - `AC-42`: A public user without write permission cannot approve a Gate or
   trigger Address feedback. A GitHub-confirmed write, maintain, or admin actor
   can, and permission lookup failure leaves the Gate waiting.
+- `AC-43`: Object verification snapshots a bounded manifest without waiting for
+  unrelated repository agents. A source changed during copy retries visibly
+  and can never produce an accepted partial snapshot.
+- `AC-44`: A PR head different from the Gate target fails with
+  `remote_diverged`; an approval for the stale target cannot advance the Track.
+- `AC-45`: Snapshot file, byte, time, retry, free-space, and Worker reservation
+  limits fail before acceptance with an actionable reason. Success, failure,
+  crash, and restart release the temporary directory and reservation without
+  removing retained Attempt evidence.
 
 ## 10. Test approach
 
@@ -1261,7 +1303,7 @@ owner-only routing, aggregate state, retry, cancellation races, generation
 snapshots, typed Stage validation, Gate polling and outcomes, conditional
 promotion and success-like skip, concurrency-block promotion, schedule
 snapshots, structural cost estimates, limits, and every terminal predicate.
-They prove the persisted portions of `INV-1` through `INV-28`;
+They prove the persisted portions of `INV-1` through `INV-29`;
 Worker integration tests prove the Git and worktree portions.
 
 Worker integration tests use two Workers and local bare origins. They prove a
@@ -1273,10 +1315,16 @@ files, no-change success, response loss, lease expiry, reset history, malformed
 commit IDs, replacement refs, grafts, config includes, object alternates,
 local-ref conflict, missing objects, and corrupt cache state. Verification tests
 put the reported commit only behind cache-level local and HTTP alternates and
-symlinked object paths, then prove the reconstructed store rejects it. A forged
+symlinked object paths, then prove the validated snapshot rejects it. A forged
 regular pack and index pair with mismatched object identity also fails checksum,
 strict-connectivity, or canonical rehash validation. The tests prove fixed Git
-configuration and `INV-19` through `AC-24`.
+configuration and `INV-19` through `AC-24`. Another agent remains running in a
+different worktree while verification completes. Copy-time source replacement
+or removal yields `object_snapshot_raced`, retries from a new manifest, and
+never accepts the partial snapshot for `AC-43`. Fixtures cross each file, byte,
+time, retry, free-space, and concurrent-reservation boundary by one unit and
+prove cleanup and reservation recovery after success, failure, crash, and
+restart for `AC-45`.
 Capability-intersection tests reject admission when no one Worker can run every
 Stage and block an owner whose later runtime becomes unhealthy for `AC-23`.
 
@@ -1339,8 +1387,8 @@ empty polls, events during publication response loss, inclusive
 overlap and provider-ID deduplication, multi-page feed completion, explicit
 event ordering before and after approval, bounded snapshots, rate-limit backoff,
 retry deadlines, untrusted-text prompt framing, response loss before Update PR
-completion, remote divergence, and same-branch feedback updates for
-`AC-33` through `AC-42`. They prove no command can push the base branch, tags,
+completion, stale approved commit with a moved PR head, remote divergence, and
+same-branch feedback updates for `AC-33` through `AC-44`. They prove no command can push the base branch, tags,
 or an operator-owned ref. A two-round fixture proves approval passes through the
 prior publication while requested feedback makes round two target the commit
 published by round one.
