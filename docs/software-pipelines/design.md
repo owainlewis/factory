@@ -770,9 +770,12 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   `feedback_requested` or `approved`.
 - A PR review Gate freezes `actor_policy: repository_write`. A qualifying event
   must have an actor whom GitHub confirms currently has write, maintain, or
-  admin repository permission. Unknown, missing, or unverifiable permission
-  cannot satisfy the Gate, and the observation cannot advance any feed cursor
-  or deduplication state past that unresolved candidate.
+  admin repository permission. Unknown, missing, or unverifiable permission in
+  the newest potentially decisive timestamp group leaves the Gate waiting, and
+  the observation cannot advance any feed cursor or deduplication state past
+  that unresolved group. Once a newer group has an authorized decisive
+  outcome, strictly older groups require no permission lookup and cannot block
+  observation progress.
 - An omitted Edge condition means unconditional traversal after source success.
   A conditional Edge references its source PR review Gate and one outcome,
   `feedback_requested` or `approved`. No other condition, boolean expression,
@@ -1353,15 +1356,26 @@ only when its provider commit ID equals the target commit. Review and
 conversation comments qualify when their immutable provider IDs are absent
 from the pre-publication inclusive baseline. Factory never compares its local
 publication time with a provider creation time. Provider timestamps order only
-the unseen candidate set after feed identity establishes eligibility. Before
-ordering candidates, the Worker checks each distinct actor
-through GitHub's repository-permission endpoint. It returns the actor login,
-provider permission, and verification time as typed metadata. Missing access,
-rate limiting, or an unverifiable response leaves the Gate waiting. That result
-commits only bounded health and backoff state: no observed feed cursor, page
-continuation, or deduplicated item ID advances past the unresolved candidate,
-so the next inclusive scan retries its authorization. The control plane never
-infers eligibility from author association or event text. A
+the unseen candidate set after feed identity establishes eligibility.
+
+The Worker evaluates timestamp groups from newest to oldest. For one group it
+checks each distinct actor through GitHub's repository-permission endpoint and
+records actor login, provider permission, and verification time as typed
+metadata. Verified actors without write permission are discarded. If the group
+then has an authorized candidate, it is the decisive group and older groups are
+not permission-checked because they cannot supersede it. Conflicting authorized
+outcomes inside that group resolve conservatively to feedback. If the group has
+no authorized candidate and every lookup was conclusive, evaluation continues
+to the next older group.
+
+Missing access, rate limiting, or an unverifiable response for an actor in the
+current group leaves the Gate waiting because that event could still affect the
+decisive outcome. That result commits only bounded health and backoff state: no
+observed feed cursor, page continuation, or deduplicated item ID advances past
+the unresolved group, so the next inclusive scan retries its authorization. An
+unresolved actor in a strictly older group is never consulted after a newer
+decisive group is authorized. The control plane never infers eligibility from
+author association or event text. A
 changes-requested review or comment from an eligible actor yields
 `feedback_requested`.
 An explicit approved review yields `approved` and is the observation boundary
@@ -1852,8 +1866,10 @@ overflow is actionable rather than retried indefinitely.
 - `AC-42`: A public user without write permission cannot approve a Gate or
   trigger Address feedback. A GitHub-confirmed write, maintain, or admin actor
   can. Permission lookup failure leaves the Gate waiting without advancing any
-  feed cursor, continuation, or deduplicated ID past the unresolved event; a
-  later successful lookup can still choose it.
+  feed cursor, continuation, or deduplicated ID past an unresolved event in the
+  newest potentially decisive timestamp group; a later successful lookup can
+  still choose it. An unresolved actor on a strictly older event does not block
+  a newer authorized decisive group.
 - `AC-43`: Object verification snapshots a bounded manifest without waiting for
   unrelated repository agents. A source changed during copy retries visibly
   and can never produce an accepted partial snapshot.
@@ -2102,7 +2118,9 @@ or an operator-owned ref. A two-round fixture proves approval passes through the
 prior publication while requested feedback makes round two target the commit
 published by round one. A permission-retry fixture fails authorization once,
 proves every feed cursor and deduplicated ID remains unchanged, then succeeds
-and chooses that same retained event. Credential-isolation fixtures give the host authority
+and chooses that same retained event. Another fixture proves an unresolved
+same-time feedback actor blocks approval, while a strictly older unresolved
+actor does not block a newer authorized approval. Credential-isolation fixtures give the host authority
 broker a working provider credential while a real rootless Podman container can
 edit, stage, commit, and run the frozen model adapter through the exact V1 mount
 layout. Agent `git push`, `gh` mutation, credential-helper, SSH-agent, host-home,
