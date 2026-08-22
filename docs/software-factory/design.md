@@ -448,7 +448,7 @@ manual ownership.
 ### CLI
 
 ```text
-factory build [--repo REPOSITORY] [--runtime RUNTIME] [--request-key KEY] [--wait] REFERENCE...
+factory build [--repo REPOSITORY] [--runtime RUNTIME] [--request-key KEY] [--rebuild] [--wait] REFERENCE...
 factory run PROCEDURE --repos REPOSITORY...|all [--request-key KEY] [--wait]
 factory status [--run RUN_ID]
 factory show WORK_ID
@@ -799,8 +799,9 @@ validated through use:
   an update? Default: fail visibly first and measure frequency because runtime
   support for another turn differs.
 - Should a ready update require Factory to query GitHub checks? Default: no.
-  The agent owns semantic completion; Factory validates only URL shape and
-  repository identity in V1.
+  The agent owns semantic completion. Factory still validates the URL,
+  repository, immutable branch, remote ref, and head SHA as required above,
+  but does not require passing GitHub checks in V1.
 - Should one Run limit parallel Work per repository? Default: no separate
   per-repository limit. Worker capacity and Run concurrency bound execution,
   while isolated pull requests expose conflicts for human review.
