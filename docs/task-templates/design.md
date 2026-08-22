@@ -207,8 +207,8 @@ are two sizes of the same software procedure.
   the Task; Run admission never reads Template state.
 - `INV-2`: Editing, archiving, or upgrading a Template never changes an existing
   Task or Run.
-- `INV-3`: Every Template edit creates an immutable revision with a stable ID
-  and digest.
+- `INV-3`: Every procedure change creates an immutable revision with a stable ID
+  and digest. A metadata-only edit does not create a revision.
 - `INV-4`: Template provenance names an existing revision and truthfully records
   every copied field that the Task customized at creation.
 - `INV-5`: A Template revision contains no repository IDs, schedule, pending
@@ -226,6 +226,8 @@ are two sizes of the same software procedure.
   stored source-node UUID, prompt, and execution defaults.
 - `INV-11`: Every Pipeline created from a Template mints new Pipeline-bound
   Stage UUIDs and records a complete source-node to execution-Stage mapping.
+- `INV-12`: Current, starter, and Task- or Pipeline-referenced revision bodies
+  are never compacted.
 
 ### Requirements
 
@@ -233,7 +235,8 @@ are two sizes of the same software procedure.
 - The Template library supports search by name, active and archived filters,
   preview, create, edit, duplicate, archive, and Use template.
 - Template list responses contain the bounded operator-written summary and no
-  prompt bytes. Detail and revision responses contain the full prompt.
+  prompt bytes. Detail and retained revision responses contain the full prompt;
+  an explicitly compacted unreferenced revision returns only its tombstone.
 - Use template opens the existing Task composer and requires at least one
   repository before the Task can run or be scheduled.
 - The composer clearly marks any procedure field changed from the source
@@ -245,9 +248,11 @@ are two sizes of the same software procedure.
   unique case-insensitively among active user Templates.
 - Summaries are optional and limited to 1 KiB of UTF-8. Prompts retain the
   existing 64 KiB limit.
-- Factory permits at most 500 user Templates, 5,000 retained user revisions,
-  and 320 MiB of retained user Template prompt bytes. A limit failure is
-  actionable and creates no partial record.
+- Factory permits at most 500 active or archived user Templates, 5,000 retained
+  user revision bodies, and 320 MiB of retained user Template prompt bytes.
+  Section 7 defines previewed, operator-confirmed reclamation. A limit failure
+  reports the current use and eligible reclaimable amount and creates no partial
+  record.
 - List APIs return at most 200 items per page and use stable cursor pagination.
 
 ## 6. Interfaces and data
@@ -280,6 +285,38 @@ object. V1 accepts only:
 }
 ```
 
+`PATCH` treats name and summary as Template metadata. Every successful metadata
+mutation increments Template generation but does not create a revision or
+advance `current_revision_id`. Supplying a canonically different procedure
+creates one revision and advances the pointer in the same transaction. Supplying
+an identical procedure is a metadata-only edit. Newer-revision notices compare
+source and current revision numbers, not Template generation.
+
+Duplicate has this complete request:
+
+```json
+{
+  "request_key": "client-generated UUID",
+  "source_revision_id": "revision-id",
+  "expected_generation": 4,
+  "name": "My code review",
+  "summary": "Review one repository without changing it."
+}
+```
+
+The named source revision must belong to the Template. `expected_generation`
+prevents duplicating from a stale detail view, but the source revision may be
+older than current. An archived source may be duplicated because archive blocks
+new linked Tasks, not reading or copying retained content. Duplicate creates one
+active user Template at generation 1 and one immutable revision. It copies the
+canonical procedure bytes but mints new user Template, revision, and
+Template-local source-node IDs. For `graph_v1`, it remaps every Template-local
+node and Edge reference before hashing the new Template Graph. It stores
+`duplicated_from_template_id` and `duplicated_from_revision_id` as provenance.
+The mutation scope is `task-template:{source_template_id}:duplicate`. Success
+returns the standard recorded mutation envelope containing the new Template ID,
+generation 1, and revision ID; an identical replay returns that envelope.
+
 Task creation keeps the existing full Task fields and adds optional provenance:
 
 ```json
@@ -288,6 +325,7 @@ Task creation keeps the existing full Task fields and adds optional provenance:
   "name": "Review Factory",
   "prompt": "Review the repository...",
   "runtime": "codex",
+  "execution_profile_id": "",
   "timeout_seconds": 7200,
   "concurrency_limit": 10,
   "repository_ids": ["repository-id"],
@@ -304,8 +342,8 @@ When `template_source` is present, the server loads that exact revision,
 verifies the digest, compares prompt, runtime, profile, timeout, and concurrency,
 and stores their difference as a canonical `customized_fields` array. The
 request does not have to match the Template because customization is allowed.
-Supplying an unknown, archived, mismatched, or corrupt source rejects the whole
-Task creation. Direct Task creation omits `template_source`.
+Supplying an unknown, archived, compacted, mismatched, or corrupt source rejects
+the whole Task creation. Direct Task creation omits `template_source`.
 
 Archive and restore use the same endpoint. Its body contains `archived`,
 `expected_generation`, and `request_key`. Restoring reclaims the Template's
@@ -318,12 +356,24 @@ columns on `tasks`. A Template row stores ID, normalized name key, display name,
 summary, generation, current revision ID, starter key, starter release version,
 archive state, and timestamps. A revision stores ID, Template ID, revision
 number, optional starter release version, canonical procedure JSON, SHA-256
-digest, one immutable canonical `single_agent_source_node_id` UUID, author kind,
-and creation time. This UUID names a node only inside the Template revision. It
-is never used directly as a Pipeline Stage ID. Task provenance stores Template
-ID, revision ID, Template name
+digest, nullable immutable `single_agent_source_node_id`, optional duplicate
+provenance, author kind, and creation time. The source-node field is required
+only for `single_agent_v1` and names a node inside that Template revision. For
+`graph_v1`, all Template-local node IDs live in canonical procedure JSON and the
+single-agent field is null. Neither form is used directly as a Pipeline Stage
+ID. Duplicate provenance has foreign keys to its source Template and revision;
+the reference checks in section 7 prevent compaction or purge while the
+duplicate is retained. Task provenance stores Template ID, revision ID, Template name
 snapshot, digest, and canonical customized fields. The Task continues to store
 its complete executable values.
+
+After Pipelines ship, Pipeline provenance adds canonical
+`template_node_map_json`. It is an ordered array of every
+`{"source_node_id":"...","stage_id":"..."}` pair and is required when a
+Pipeline has Template provenance. Its source IDs must equal the complete node
+set in the referenced Template Graph and its Stage IDs must equal the complete
+node set in the copied execution Graph. Both sides are unique. A direct Pipeline
+has no Template provenance and a null map.
 
 SQLite also adds `mutation_requests`. Its primary key is the pair of
 `operation_scope` and client-generated `request_key`. It stores the SHA-256
@@ -333,11 +383,15 @@ The application checks this row before optimistic-concurrency validation. A
 matching replay returns the recorded mutation envelope and the client refetches
 resource detail. A different digest returns `request_key_conflict`. The ledger
 row and resource mutation commit in one transaction, so neither can exist
-alone. V1 retains ledger rows for the life of the database and includes them in
-backup, restore, and migration. At 100,000 rows Factory stops new Template
-mutations and Task creates with `mutation_request_limit_reached`; Runs and
-existing schedules continue. The ledger never stores prompt, summary,
-repository, or schedule bytes.
+alone. Each row has `expires_at = created_at + 90 days`. Exact replays remain
+available through that instant. Hourly maintenance deletes only expired rows in
+batches of 1,000. At 100,000 unexpired rows Factory first removes every expired
+batch and then, if still full, stops new Template mutations and Task creates with
+`mutation_request_limit_reached`; exact replays and Runs continue. Health shows
+the row count and earliest expiry, so capacity returns within 90 days without an
+unsafe purge. The ledger never stores prompt, summary, repository, or schedule
+bytes. Its 90-day replay guarantee applies to authoring mutations; scheduler and
+Run idempotency retain their existing separate contracts.
 
 Task creation begins using this ledger for both direct and Template-derived
 Tasks. This fixes the current behavior where `SaveTaskRequest.RequestKey` is
@@ -347,30 +401,36 @@ are not global across unrelated scopes.
 
 ### Naming and identity
 
-User Template IDs, revision IDs, and `single_agent_source_node_id` values are
-distinct cryptographically random UUIDs from the existing `newID` path. Request
-keys are client-generated UUIDs and are validated before the transaction begins.
-A generated resource-ID failure creates nothing. Revision numbers increase
-inside the same transaction that advances the Template generation. Names use
-the existing trimmed case-insensitive Task key rules.
+Ordinary user Template IDs, stored revision IDs, and
+`single_agent_source_node_id` values are distinct cryptographically random UUIDs
+from the existing `newID` path. Request keys are client-generated UUIDs and are
+validated before the transaction begins. A generated resource-ID failure creates
+nothing. Revision numbers increase inside the same transaction that advances the
+Template generation. Names use the existing trimmed case-insensitive Task key
+rules.
 
 Starter Templates use stable reserved keys such as `factory.review-code` and
-`factory.find-fix-bug`. Their revision identity is the SHA-256 digest of the
-starter key, positive starter release version, and release-owned canonical
-procedure. Startup inserts missing starter revisions idempotently. A higher
+`factory.find-fix-bug`. A starter manifest is the explicit exception to random
+resource-ID generation. It contains a fixed stored Template UUID, a fixed stored
+revision UUID per release version, and a fixed Template-local source-node UUID.
+These UUIDs are distinct from the reserved starter key used for lookup and the
+SHA-256 digest used to authenticate canonical procedure bytes. Startup inserts
+missing starter revisions idempotently. A higher
 release version creates the next Template revision even when its procedure
 matches an older revision. Reusing one release version with different canonical
 bytes is corrupt release metadata: startup reports that starter unhealthy and
 does not advance it. The current pointer advances only through every missing
 intermediate manifest version in order, so skipped or reordered starter history
-cannot be hidden. Each manifest version also contains a fixed canonical UUID for
-`single_agent_source_node_id`. Reusing that Template-local UUID for another
+cannot be hidden. Reusing a manifest-defined Template-local UUID for another
 revision is corrupt release metadata.
 
-Renaming a Template changes only its display name and normalized name key. IDs,
-revision IDs, Task provenance, and old Run snapshots remain stable. Task detail
-uses the current Template name when available and the snapshotted source name
-when it is not.
+Renaming or changing the summary updates metadata and increments Template
+generation, but does not create a procedure revision or change
+`current_revision_id`. IDs, revision IDs, Task provenance, and old Run snapshots
+remain stable. Task detail uses the current Template name when available and the
+snapshotted source name when it is not. Newer-revision notices do not appear for
+metadata-only edits. Every metadata mutation still uses optimistic concurrency
+and the durable request ledger.
 
 ### Pipeline release order and migration
 
@@ -412,11 +472,24 @@ steps in the same write-frozen transaction that renames Tasks to Pipelines:
    provenance has no source-node map.
 5. Rewrite retained mutation-ledger scopes and result resource kinds from Task
    to Pipeline names while preserving request keys, digests, result identities,
-   and replay behavior. A replay after upgrade returns the migrated resource.
+   expiry, and replay behavior. Also retain the legacy scope and canonical
+   legacy request digest as a lookup alias until that row's original 90-day
+   expiry. A replay after upgrade returns the migrated resource.
 6. Replace `/api/v1/task-templates` with `/api/v1/pipeline-templates` and
    `/api/v1/tasks` with `/api/v1/pipelines` in the same server and embedded-UI
-   release. **Templates** remains the browser label. There is no mixed API or
-   compatibility alias.
+   release. **Templates** remains the browser label. This is the intentional
+   pre-launch breaking API rename approved by the Pipeline design. There is no
+   general compatibility alias or new Task admission after upgrade.
+7. Keep one narrow replay-only handler for `POST /api/v1/tasks` until the last
+   migrated legacy mutation row expires. It accepts only a valid legacy Task
+   create body and request key, canonicalizes them with the frozen legacy schema,
+   and looks up the retained legacy digest alias. An exact retained match returns
+   a `task_api_migrated` envelope with the new Pipeline ID and location. An
+   unknown key returns HTTP 410 `task_api_removed`; a changed body returns
+   `request_key_conflict`. It cannot create or mutate a resource. The new
+   Pipeline client can also retrieve the same envelope from
+   `GET /api/v1/mutation-replays/{request_key}`. The replay-only route is removed
+   automatically after the final legacy expiry and health reports that date.
 
 For a new `graph_v1` revision after the Pipeline release, the source procedure
 is the Template Graph and its node IDs are Template-local. Creating a Pipeline
@@ -450,6 +523,10 @@ If an execution profile saved as a Template default is removed, disabled, or no
 longer compatible, the Template remains readable. Use template opens with the
 field marked unavailable and requires a valid replacement before Task save.
 
+If a requested historical revision has been explicitly compacted, preview,
+duplicate, and Use template return `template_revision_compacted` with its ID,
+digest, and compaction time. Factory never substitutes the current revision.
+
 Create, edit, duplicate, archive, restore, and all Task-creation writes are
 atomic and idempotent through the durable mutation ledger. A retry with the same
 scope, request key, and canonical body returns the recorded result before
@@ -462,6 +539,37 @@ leaves the Template archived on a name conflict. Archive does not disable Tasks,
 cancel Runs, or remove revisions. Starter Templates cannot be archived.
 Shutdown needs no new drain path because Template operations are bounded HTTP
 transactions and do not start background work.
+
+Template storage reclamation is explicit and never removes provenance that a
+Task or Pipeline still needs. The Templates storage panel and
+`factory templates compact` first produce a preview token with exact eligible
+IDs, bytes, reference counts, and a database-generation fence. Apply requires
+that token and operator confirmation. The transaction rechecks every condition:
+
+- An archived user Template may be purged only when no Task or Pipeline points
+  to any of its revisions, no retained duplicate names it as its source, and no
+  unexpired mutation result points to it. Purge removes the Template and its
+  eligible revision bodies, freeing a Template slot.
+- A non-current user revision body may be compacted only when it is at least 90
+  days old, no Task or Pipeline points to it, no retained duplicate names it as
+  its source, and no unexpired mutation result points to it. Compaction retains a
+  tombstone with Template ID, revision ID, revision number, source digest,
+  source-node identities, creation time, and compaction time. It removes
+  procedure bytes and disables View changes for that revision. The tombstone
+  does not count toward retained-body or prompt byte limits.
+- Current revisions, starter revisions, referenced revisions, and unexpired
+  replay records are never eligible. A changed reference set or preview fence
+  aborts the whole apply with `template_compaction_stale`.
+
+Factory runs expired mutation-ledger cleanup automatically, but never compacts a
+Template body automatically. If safe compaction cannot free enough capacity, an
+operator can raise the three Template storage limits with the offline
+`factory templates set-limits` command. The command requires the server to be
+stopped, validates a database backup and free disk, caps retained prompt bytes
+at 2 GiB, writes the new limits transactionally, and reports the rollback
+command. Lowering a limit below current use is rejected. Thus a long-lived
+installation can recover authoring without deleting referenced history or
+weakening an unexpired replay guarantee.
 
 If starter seeding fails validation or storage at startup, Factory reports the
 specific starter key as unhealthy but continues serving existing Tasks and
@@ -481,11 +589,12 @@ remote Worker cannot list, read, or mutate Templates. Workers receive only the
 resolved Task or Run snapshot, never Template credentials or mutable Template
 state.
 
-Prompts and summaries may contain private code or business context. Full bodies
-appear only in detail endpoints and the authenticated editor. Logs, metrics,
-list endpoints, conflict errors, and starter health diagnostics contain IDs,
-sizes, and digests, not prompt bytes. SQLite backups must be protected under the
-same policy as existing Task prompts.
+Prompts and summaries may contain private code or business context. Full prompts
+appear only in detail endpoints and the authenticated editor; bounded summaries
+also appear in the authenticated list. Logs, metrics, conflict errors, and
+starter health diagnostics contain IDs, sizes, and digests, not prompt or
+summary bytes. SQLite backups must be protected under the same policy as
+existing Task prompts.
 
 The limits in sections 5 and 6 bound database growth, response size, mutation
 history, and diff work.
@@ -501,8 +610,8 @@ run in linear time over at most one Template revision and one Task request.
 - `AC-2`: Creating two Tasks from one Template with different repository sets
   produces independent Tasks with the same source revision and no shared mutable
   execution fields.
-- `AC-3`: Editing a Template creates a new revision and leaves all existing
-  Task and Run snapshots byte-for-byte unchanged.
+- `AC-3`: Editing a Template procedure creates a new revision and leaves all
+  existing Task and Run snapshots byte-for-byte unchanged.
 - `AC-4`: Customizing a prefilled prompt or execution default records the exact
   canonical field name and the Task runs the customized value.
 - `AC-5`: Saving a Task as a Template omits repositories, schedule, pending
@@ -518,8 +627,10 @@ run in linear time over at most one Template revision and one Task request.
   operator selects a valid profile, without making the Template unreadable.
 - `AC-10`: Upgrading starter content creates a new immutable revision and does
   not change a Task created from an earlier release.
-- `AC-11`: Existing direct Task creation, editing, scheduling, admission,
-  retries, and history continue to work without a Template.
+- `AC-11`: In the Task Template release, existing direct Task creation, editing,
+  scheduling, admission, retries, and history continue without a Template. The
+  later Pipeline release performs its separately approved pre-launch API rename
+  and preserves only the bounded replay-only path in section 6.
 - `AC-12`: Every `single_agent_v1` fixture retains identical source bytes and
   digest and gains a separately hashed one-Agent-node Template Graph with its
   stored source UUID and identical prompt and execution defaults.
@@ -532,18 +643,36 @@ run in linear time over at most one Template revision and one Task request.
 - `AC-15`: Creating two Pipelines from one Template revision produces disjoint
   Pipeline-bound Stage UUID sets, complete source-node maps, and otherwise
   equivalent executable Graphs.
+- `AC-16`: A Task created from a Template can select an execution profile that
+  differs from the Template default; the Task stores and runs that profile and
+  provenance records `execution_profile_id` as customized.
+- `AC-17`: Duplicate can copy a retained revision from an active or archived
+  source exactly once, with new Template-local identities and explicit source
+  provenance; stale generation and changed-key replays are rejected.
+- `AC-18`: A previewed compaction removes only eligible unreferenced procedure
+  bodies, retains the specified tombstones, aborts on a new reference, and frees
+  the reported count and byte capacity.
+- `AC-19`: Through each request's original 90-day expiry, an exact lost-response
+  replay on the legacy Task create route returns the migrated Pipeline identity
+  without admitting new work; changed, expired, and unknown requests fail as
+  specified.
+- `AC-20`: A name- or summary-only edit increments Template generation without
+  creating a revision, changing `current_revision_id`, or showing a newer
+  procedure notice on sourced Tasks.
 
 ## 10. Test approach
 
 Store tests cover revision creation, optimistic concurrency, idempotency,
 archive and restore, stable starter seeding, name conflicts, byte limits, and
 atomic Task provenance. Snapshot comparisons prove `INV-1` through `INV-7` and
-`AC-2` through `AC-7`.
+`AC-2` through `AC-7`; metadata-only fixtures prove `AC-20`.
 
 HTTP tests cover pagination, prompt omission from lists, full detail access,
 unknown and archived revisions, digest mismatch, request-key conflicts, and
-existing direct Task compatibility. Structured log capture proves `INV-8` and
-`AC-8`.
+existing direct Task compatibility. They cover duplicate source selection,
+profile overrides, archived-source duplication, and the replay-only migrated
+Task route at both sides of expiry. Structured log capture proves `INV-8` and
+`AC-8`; contract assertions prove `AC-16`, `AC-17`, and `AC-19`.
 
 React tests cover Template search, starter labels, preview, create, edit,
 duplicate, archive, Save as template, Use template, customized markers, newer
@@ -556,7 +685,10 @@ Migration fixtures seed old, reverted, and new starter bodies and compare prior
 Task and Run bytes. They migrate Template and provenance rows across the
 Pipeline rename and replay retained mutation results. A graph-conversion fixture
 creates two Pipelines from one revision and proves `INV-10`, `INV-11`, `AC-12`,
-`AC-13`, `AC-14`, and `AC-15`. Existing
+`AC-13`, `AC-14`, `AC-15`, and `AC-19`. Compaction fixtures race a new
+provenance reference against apply, preserve referenced bytes, verify retained
+tombstones, exercise ledger expiry and cap recovery, and prove `INV-12` and
+`AC-18`. Existing
 Linux, macOS, browser, migration, race, security, and release checks remain
 required.
 
