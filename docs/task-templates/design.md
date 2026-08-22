@@ -506,13 +506,17 @@ every direct or Template-derived Task create, including a keyless compatibility
 create after its internal key is generated, the same transaction inserts one
 `task_create_replay_snapshots` row keyed to the ledger receipt. It stores the
 exact canonical `protocol.Task` response bytes, HTTP status, stable response
-headers, response digest, and receipt expiry. The snapshot is capped at 2 MiB.
+headers, response digest, and receipt expiry. The snapshot is capped at 4 MiB.
 The accepted create body is already capped at 1 MiB, including an arbitrarily
 repeated valid canonical cron field; response-only expansion is bounded by 100
-repository records with UUIDs and canonical GitHub identities of at most 150
-bytes, plus fixed Task metadata. A maximum-shape serialization fixture proves
-the complete response stays below 2 MiB. The existing 500-Task cap bounds all
-live snapshot bytes at 1 GiB. If either bound would be exceeded, the whole
+repository records. Each remote identity may use the existing 2,048-byte Worker
+registration limit and Go's response encoder may expand every `<`, `>`, or `&`
+byte to a six-byte Unicode escape. A maximum-shape fixture uses the production
+serializer with 100 distinct 2,048-byte worst-case escaped identities, the
+maximum escaped prompt and name, and a near-1-MiB repeated valid cron field. It
+proves the complete response, including the trailing newline, stays below 4 MiB.
+The existing 500-Task cap bounds all live snapshot bytes at 2 GiB. If either
+bound would be exceeded, the whole
 create fails before commit. A keyed replay returns those stored bytes, status,
 and headers without reading mutable Task state, so a later edit cannot change
 the create result.
@@ -991,8 +995,10 @@ whitespace-sensitive and non-UUID direct keys up to the existing body bound,
 verify raw keys are not persisted,
 edit a Task after a keyed create, and prove replay returns the original response
 bytes, status, and headers from the bounded snapshot. A near-1-MiB request with
-a valid repeated cron list, maximum prompt, and 100 repositories proves the
-response stays below the 2 MiB row cap and total snapshots stay below 1 GiB.
+a valid repeated cron list, maximum escaped prompt and name, and 100 distinct
+repositories whose 2,048-byte identities take the six-byte JSON-escape path
+proves the response stays below the 4 MiB row cap and total snapshots stay below
+2 GiB.
 They prove a keyless or non-UUID Template-derived create fails while the updated
 composer supplies a UUID. They cover duplicate source selection,
 profile overrides, archived-source duplication, and the replay-only migrated
