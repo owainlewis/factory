@@ -427,6 +427,7 @@ not an agent update status and does not imply a pull request.
 | Current state | Owner | Allowed transition | Cause |
 | --- | --- | --- | --- |
 | `queued` | none | `running` | Worker claim creates an Attempt, or trusted operator claims manual ownership |
+| `queued` | none | `ready`, `failed`, `no-change` | trusted operator claims and completes `agent_update` Work in one transaction |
 | `queued` | none | `cancelled` | operator cancellation |
 | `running` | Worker Attempt | unchanged | agent `running` progress update |
 | `running` | Worker Attempt | `ready`, `needs-input`, `failed`, `no-change` | accepted outcome followed by stopped process |
@@ -437,13 +438,16 @@ not an agent update status and does not imply a pull request.
 | `needs-input` | none | `running` | trusted operator claims manual ownership |
 | `needs-input` | none | `cancelled` | operator cancellation |
 | `failed` or `cancelled` | none | `queued` | explicit warned retry, only when no replacement or matching nonterminal Work exists |
+| `cancelled` | none | `running` | explicit warned operator takeover after active cancellation, with the same retry guards |
 
 `ready`, `succeeded`, `failed`, `no-change`, and `cancelled` are terminal
 outcomes unless an explicit retry rule above applies. A manual `running` update
 atomically records operator ownership and removes the Work from Worker
 eligibility. A direct manual terminal update from queued Work performs that
 claim and completion in one transaction. An operator must cancel an active
-Worker Attempt before taking manual ownership.
+Worker Attempt and wait until Work is cancelled before taking manual ownership.
+The subsequent operator `running` update atomically applies the retry guards and
+claims cancelled Work, so a Worker cannot win an intermediate queued state.
 
 ### Requirements
 
@@ -569,9 +573,12 @@ before returning so the operator can answer or inspect the result.
 An operator `running` update atomically claims manual ownership when the Work
 has no active Attempt. Later operator updates require that ownership. A direct
 terminal update from queued Work claims and completes it in one transaction.
-An operator who wants to take over active agent Work must cancel its Attempt
-first. This makes manual and agent-driven Work share one history without
-creating a second completion model or a claim race.
+An operator who wants to take over active agent Work must cancel it, wait until
+Work is cancelled, then send one `running` update. That update performs the same
+replacement and matching-nonterminal checks as retry, records the duplicate-
+effect warning, and claims operator ownership without exposing a queued race.
+This makes manual and agent-driven Work share one history without creating a
+second completion model or a claim race.
 
 Operator-owned Work may finish as `ready`, `failed`, or `no-change` but cannot
 enter `needs-input`. Only a Worker Attempt with a verified checkpoint may create
@@ -915,6 +922,9 @@ remains visible and never silently drops an outcome.
   with the trusted recovery SHA and explicit recovery instructions, accepts only
   a restored ref at that SHA, and never creates `needs-input` without a verified
   checkpoint.
+- `AC-22`: An operator can atomically finish queued `agent_update` Work, or take
+  over active agent Work by cancelling it and atomically claiming the cancelled
+  Work with retry guards and no intermediate queued race.
 
 ## 10. Test approach
 
@@ -922,7 +932,8 @@ Store tests prove `INV-1` through `INV-4`, `INV-9`, `INV-12`, `INV-14`,
 `INV-16`, and `INV-19` with transaction rollback, duplicate target, replay,
 partial outcome, queued, running, and needs-input cancellation, retry of
 replaced Work, matching-nonterminal retry races, manual-claim races, and legacy
-completion cases. HTTP tests prove CLI admission validation, source
+completion cases. Manual-claim tests include queued direct completion and
+cancel-wait-takeover from cancelled Work. HTTP tests prove CLI admission validation, source
 normalization, message limits, cursor bounds, and operator updates for `AC-1`,
 `AC-3`, `AC-11`, `AC-15`, `AC-17`, and `AC-18`.
 
