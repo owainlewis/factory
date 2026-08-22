@@ -76,7 +76,15 @@ func TestRunPagePreservesRepositorySummaryWithoutPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{RequestKey: "board-summary"}); err != nil {
+	admitted, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{RequestKey: "board-summary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`
+		UPDATE runs SET task_snapshot = json_set(
+			json_remove(task_snapshot, '$.repositories'), '$.repository_ids', json_array(?)
+		) WHERE id = ?
+	`, worker.Repositories[0].ID, admitted.Run.ID); err != nil {
 		t.Fatal(err)
 	}
 	page, err := store.RunPage(context.Background(), 10, "")

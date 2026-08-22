@@ -1019,6 +1019,18 @@ func (s *Store) Run(ctx context.Context, id string) (protocol.RunDetail, error) 
 	if err := rows.Close(); err != nil {
 		return detail, unavailable(err)
 	}
+	if len(detail.Run.Task.Repositories) == 0 {
+		seen := make(map[string]bool, len(detail.Sessions))
+		for _, session := range detail.Sessions {
+			if session.RepositoryID == "" || session.RepositoryIdentity == "" || seen[session.RepositoryID] {
+				continue
+			}
+			seen[session.RepositoryID] = true
+			detail.Run.Task.Repositories = append(detail.Run.Task.Repositories, protocol.TaskRepository{
+				ID: session.RepositoryID, RemoteIdentity: session.RepositoryIdentity,
+			})
+		}
+	}
 	for index := range detail.Sessions {
 		session := &detail.Sessions[index]
 		attemptRows, err := s.db.QueryContext(ctx, `

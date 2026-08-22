@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { api } from "./api";
@@ -42,18 +42,50 @@ describe("Runs", () => {
     expect(onRun).toHaveBeenCalledWith("run-blocked");
   });
 
-  it("refreshes terminal history until it no longer needs attention", async () => {
-    const attention = { ...run("run-attention", "Recent failed run", "failed"), needs_attention: true };
-    const settled = { ...attention, needs_attention: false };
+  it("expires terminal attention locally without polling Run detail", async () => {
+    const attention = {
+      ...run("run-attention", "Recent failed run", "failed"),
+      needs_attention: true,
+      terminal_at: new Date(Date.now() - 24 * 60 * 60 * 1000 + 100).toISOString(),
+    };
     vi.spyOn(api, "runs").mockResolvedValue({ runs: [], next_cursor: null });
-    const runDetail = vi.spyOn(api, "run").mockResolvedValue({ run: settled, sessions: [] });
+    const runDetail = vi.spyOn(api, "run");
     const client = testClient();
     client.setQueryData(["run-history"], { items: [attention], cursor: null, headCursor: null });
 
     render(<QueryClientProvider client={client}><RunsView mode="kanban" onMode={() => undefined} onRun={() => undefined} /></QueryClientProvider>);
 
-    expect(await screen.findByRole("region", { name: "Done" })).toContainElement(await screen.findByRole("button", { name: /Recent failed run, failed/ }));
-    expect(runDetail).toHaveBeenCalledWith("run-attention");
+    const done = await screen.findByRole("region", { name: "Done" });
+    expect(await within(done).findByRole("button", { name: /Recent failed run, failed/ })).toBeVisible();
+    expect(runDetail).not.toHaveBeenCalled();
+  });
+
+  it("drops settled siblings from active history polling", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const settled = run("run-settled", "Settled Run", "succeeded");
+    const active = run("run-active", "Active Run", "running");
+    vi.spyOn(api, "runs").mockResolvedValue({ runs: [], next_cursor: null });
+    const runDetail = vi.spyOn(api, "run").mockImplementation(async (id) => ({
+      run: id === settled.id ? settled : active,
+      sessions: [],
+    }));
+    const client = testClient();
+    client.setQueryData(["run-history"], {
+      items: [run("run-settled", "Settled Run", "running"), active],
+      cursor: null,
+      headCursor: null,
+    });
+
+    try {
+      render(<QueryClientProvider client={client}><RunsView mode="kanban" onMode={() => undefined} onRun={() => undefined} /></QueryClientProvider>);
+
+      await waitFor(() => expect(runDetail).toHaveBeenCalledTimes(2));
+      await vi.advanceTimersByTimeAsync(5_001);
+      await waitFor(() => expect(runDetail.mock.calls.filter(([id]) => id === active.id).length).toBeGreaterThanOrEqual(2));
+      expect(runDetail.mock.calls.filter(([id]) => id === settled.id)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("loads Run history one cursor-bounded page at a time", async () => {

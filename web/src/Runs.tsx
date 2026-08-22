@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, AlertTriangle, ArrowLeft, CheckCircle2, CircleDot, Clock3, Columns3, GitBranch, RotateCcw, Rows3, StopCircle, TerminalSquare } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
@@ -21,27 +21,36 @@ export function RunsView({ mode, onMode, onRun }: { mode: RunViewMode; onMode: (
   const cachedHistory = client.getQueryData<RunHistory>(runHistoryKey);
   const [history, setHistory] = useState<Run[]>(cachedHistory?.items ?? []);
   const [historyCursor, setHistoryCursor] = useState<string | null>(cachedHistory?.cursor ?? null);
+  const [, setAttentionClock] = useState(0);
   const previousHeadCursor = useRef<string | null>(cachedHistory?.headCursor ?? null);
   const query = useQuery({ queryKey: ["runs", "head"], queryFn: () => api.runs(), refetchInterval: 5_000 });
   const headIDs = new Set(query.data?.runs.map((run) => run.id) ?? []);
   const activeHistoricalIDs = history
-    .filter((run) => !headIDs.has(run.id) && refreshableRun(run))
+    .filter((run) => !headIDs.has(run.id) && activeRunState(run.state))
     .map((run) => run.id)
     .sort();
-  const activeHistory = useQuery({
-    queryKey: ["run-history", "active", activeHistoricalIDs],
-    queryFn: async () => Promise.all(activeHistoricalIDs.map(async (id) => (await api.run(id)).run)),
-    enabled: activeHistoricalIDs.length > 0,
-    refetchInterval: (activeQuery) => activeQuery.state.data?.every((run) => !refreshableRun(run)) ? false : 5_000,
+  const activeHistory = useQueries({
+    queries: activeHistoricalIDs.map((id) => ({
+      queryKey: ["run-history", "active", id],
+      queryFn: async () => (await api.run(id)).run,
+      refetchInterval: (activeQuery: { state: { data?: Run } }) => activeQuery.state.data && !activeRunState(activeQuery.state.data.state) ? false : 5_000,
+      refetchOnWindowFocus: false,
+    })),
+    combine: (results) => ({
+      data: results.flatMap((result) => result.data ? [result.data] : []),
+      error: results.find((result) => result.error)?.error,
+      isFetching: results.some((result) => result.isFetching),
+      dataUpdatedAt: Math.max(0, ...results.map((result) => result.dataUpdatedAt)),
+    }),
   });
   const refreshedHistory = useMemo(
-    () => updateRuns(history, activeHistory.data ?? []),
+    () => updateRuns(history, activeHistory.data),
     [activeHistory.data, history],
   );
   const loadHistory = useMutation({
     mutationFn: ({ cursor }: { cursor: string; headCursor: string | null }) => api.runs(cursor),
     onSuccess: (page, request) => {
-      setHistory((current) => mergeRuns(page.runs, updateRuns(current, activeHistory.data ?? [])));
+      setHistory((current) => mergeRuns(page.runs, updateRuns(current, activeHistory.data)));
       if (previousHeadCursor.current === request.headCursor) setHistoryCursor(page.next_cursor);
     },
   });
@@ -57,9 +66,19 @@ export function RunsView({ mode, onMode, onRun }: { mode: RunViewMode; onMode: (
       headCursor: previousHeadCursor.current,
     });
   }, [client, historyCursor, query.data, refreshedHistory]);
+  const mergedItems = mergeRuns(query.data?.runs ?? [], refreshedHistory);
+  const nextAttentionExpiry = terminalAttentionExpiry(mergedItems);
+  useEffect(() => {
+    if (nextAttentionExpiry === null) return;
+    const timer = window.setTimeout(
+      () => setAttentionClock((value) => value + 1),
+      Math.max(1, Math.min(nextAttentionExpiry - Date.now() + 1, 2_147_483_647)),
+    );
+    return () => window.clearTimeout(timer);
+  }, [nextAttentionExpiry]);
   if (query.isPending) return <LoadingState label="Loading Work" />;
   if (query.isError) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
-  const items = mergeRuns(query.data?.runs ?? [], refreshedHistory);
+  const items = mergedItems.map(withCurrentAttention);
   const error = loadHistory.error ?? activeHistory.error;
   return <div className="page page-run">
     <ViewHeader title="Work" fetching={query.isFetching || activeHistory.isFetching || loadHistory.isPending} updatedAt={Math.max(query.dataUpdatedAt, activeHistory.dataUpdatedAt)} onRefresh={() => void query.refetch()} />
@@ -74,8 +93,21 @@ function activeRunState(state: RunState): boolean {
   return state === "blocked" || state === "queued" || state === "running";
 }
 
-function refreshableRun(run: Run): boolean {
-  return activeRunState(run.state) || run.needs_attention;
+function attentionExpiresAt(run: Run): number | null {
+  if (!run.needs_attention || (run.state !== "failed" && run.state !== "partial") || !run.terminal_at) return null;
+  const terminal = Date.parse(run.terminal_at);
+  return Number.isFinite(terminal) ? terminal + 24 * 60 * 60 * 1000 : null;
+}
+
+function terminalAttentionExpiry(runs: Run[]): number | null {
+  const now = Date.now();
+  const future = runs.map(attentionExpiresAt).filter((value): value is number => value !== null && value > now);
+  return future.length ? Math.min(...future) : null;
+}
+
+function withCurrentAttention(run: Run): Run {
+  const expiry = attentionExpiresAt(run);
+  return expiry !== null && expiry <= Date.now() ? { ...run, needs_attention: false } : run;
 }
 
 function mergeRuns(primary: Run[], secondary: Run[]): Run[] {
