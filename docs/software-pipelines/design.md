@@ -97,22 +97,29 @@ Operator browser
 Factory control plane
   Pipeline versions, Run and Track state, Stage dependencies and gates,
   Session admission, Worker affinity, provider metadata, SQLite
-                 ^
-                 | claim, lease, events, prepared input, completion,
-                 | branch publication and provider actions
-                 |
+          ^                         |
+          | claim, lease, events,   | signed typed source/provider envelopes
+          | preparation, completion|
+          |                         v
 Persistent Worker
   repository cache, Track branch, and accepted commit lineage
   fresh Attempt worktree per Stage or retry
-  Pi, Codex, Claude Code, Git, and authenticated gh
+  Pi, Codex, Claude Code, and uncredentialed Git
+          |
+          | protected local typed requests
+          v
+Factory host authority
+  host-domain identity and mode, source and provider credentials,
+  private clone/fetch, Track publication, and bounded gh operations
 ```
 
 The control plane owns desired order, Gate evaluation state, bounded provider
 metadata, and durable state. The Track owner Worker owns repository objects,
 the generated working branch, local checkpoint refs, Attempt worktrees, agent
-processes, and origin credentials. The control plane records full commit IDs
-and pull-request identity but never receives repository contents or Git
-credentials.
+processes, and uncredentialed local Git state. The host authority owns source
+and provider credentials and executes bounded remote Git and provider calls.
+The control plane records full commit IDs and pull-request identity but never
+receives repository contents or Git credentials.
 
 ## 4. Proposed design
 
@@ -163,8 +170,8 @@ startup. Worker affinity starts at that point. A failed preparation before the
 call commits may release capacity and route to another eligible Worker; no
 later operation changes the owner or branch name.
 
-When the Implement agent exits successfully, the Worker preserves the private
-Agent Git directory and reads its index under fixed configuration. It stages
+For this multi-stage handoff, when the Implement agent exits successfully, the
+Worker preserves the private Agent Git directory and reads its index under fixed configuration. It stages
 tracked modifications and deletions there. It never automatically adds an untracked file.
 A new file enters the Stage output only when the agent explicitly staged or
 committed it. Any remaining unignored, untracked file fails completion with a
@@ -177,8 +184,9 @@ read-only cache objects and the Attempt's private writable object directory.
 It includes canonical loose objects and regular pack and index files, opens
 every source without following symlinks, and copies it to a verification store.
 It does not wait for unrelated
-agents in other worktrees. Worker fetch, repack, ref, and cleanup operations use
-the same lock. Before copying, the Worker sums manifest files and bytes and
+agents in other worktrees. Authority fetch and Worker repack, ref, and cleanup
+operations use the same lock; authenticated fetch executes inside the broker
+while holding it. Before copying, the Worker sums manifest files and bytes and
 atomically reserves temporary capacity. V1 permits at most 1,000,000 files,
 8 GiB, and 10 minutes per snapshot, three race retries, and 16 GiB of concurrent
 snapshot reservations per Worker. Insufficient free space or a limit breach
@@ -285,6 +293,43 @@ output and creates the same Attempt-scoped local ref. Every successful Agent
 handoff therefore has one uniform commit proof. A one-stage Pipeline keeps the
 current completion contract and creates no handoff ref.
 
+On a `pipeline_isolated` host, one-stage execution still uses the private Agent
+Git directory. Container launch records an Attempt manifest containing the
+host-side private Git path, then exposes `/factory/git` only inside the
+container. At exit, the Worker treats that directory as untrusted input. Under
+fixed config it snapshots and canonically rehashes the complete object closure
+reachable from the validated input, final Attempt HEAD, and every index entry.
+It rejects invalid index stages, paths, modes, objects, refs, or a HEAD that is
+not a cryptographically valid commit. It does not require final HEAD to descend
+from input. Reset, detached HEAD, merge, rewritten history, and an unrelated
+valid commit remain accepted one-stage results because they advance no shared
+Pipeline lineage. Attempt history records final symbolic-ref or detached shape,
+commit ID, and its computed relation to input for visible inspection. The same
+snapshot file, byte, time, free-space, and reservation limits apply; overflow
+retains the untrusted Attempt evidence and fails actionably.
+
+The Worker builds a new Attempt-owned host Git directory from scratch. It copies
+the complete verified closure as canonical objects, reconstructs only the
+validated final symbolic ref and HEAD, or a detached HEAD, and recreates the
+index from validated entries. It writes fixed config with no includes, helpers,
+hooks, aliases, replacement
+refs, grafts, or alternates. The host directory is therefore self-contained and
+does not depend on later cache retention. Only after fsync does the Worker
+atomically point the retained worktree at this sanitized directory and report
+the current one-stage result. Agent-created commits, staged new files, dirty
+tracked files, and an unchanged index remain inspectable; Agent-controlled Git
+configuration and extra refs do not cross the boundary.
+
+Sanitized reattachment does not import private objects into shared cache,
+advance a Track accepted head, create a sequencing ref, or automatically commit
+for handoff. The sanitized Git directory, untrusted evidence directory, and
+worktree share one retention manifest and are recovered or deleted as one unit.
+Response loss and restart replay the build and pointer swap before completion
+or cleanup; a half-written phase leaves the Attempt retained and visibly
+failed, never partly cleaned. Factory and ordinary host `git status` and
+`git log` use only the sanitized directory and cannot execute Agent hooks,
+helpers, aliases, or alternate paths.
+
 Git is the code and file channel between Stages. A Stage that produces a
 specification, report, or other successor input writes it into the repository
 and stages or commits new files before success. The bounded agent result remains
@@ -388,11 +433,15 @@ and Attempt services. It does not create commits, hold origin credentials, or
 decide whether local Git objects exist.
 
 The Worker owns repository preparation, Attempt worktrees, local commit and ref
-creation, exact-input verification, runtime execution, branch publication,
-credential-isolated provider helper, bounded `gh` actions, retention, and
-recovery. It does not choose the next
+creation, exact-input verification, runtime execution, provider-operation
+and source-operation requests, retention, and recovery. It does not choose the next
 Stage, interpret provider text as trusted instructions, or change dependency
 state.
+
+The host authority owns security-domain attestation, provider credentials,
+typed private-repository clone, fetch, and default-branch reads, remote Track
+branch publication and `gh` operations, and mixed-mode exclusion. It has no
+role in Stage selection or local commit acceptance.
 
 The browser owns the Pipeline graph editor, structural cost estimate,
 software-work graph, filters, and links to Run and Stage detail. It reads server
@@ -492,9 +541,9 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
 - `INV-8`: Every multi-stage Agent Attempt starts in a fresh worktree at its
   Session's exact input commit on the Track owner Worker. One-stage fake-cloud
   execution retains its current dispatcher lifecycle.
-- `INV-9`: A successful code-producing Agent Session records one full output
-  commit that descends from its input and one Attempt-scoped local ref keeping
-  it reachable.
+- `INV-9`: A successful multi-stage code-producing Agent Session records one
+  full output commit that descends from its input and one Attempt-scoped local
+  ref keeping it reachable.
 - `INV-10`: Failed, cancelled, lost, or timed-out Attempts cannot advance a
   Track or replace its last accepted commit.
 - `INV-11`: Retrying a failed Session reuses its frozen Agent input, Action
@@ -514,8 +563,10 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   reconcile and roll back one local branch transition proposed before it.
 - `INV-18`: A pending scheduled occurrence freezes the same complete ordered
   Pipeline snapshot as manual admission.
-- `INV-19`: Commit ancestry and local-ref proof ignore every agent-writable Git
-  replacement, graft, hook, helper, include, alternate, and configuration path.
+- `INV-19`: Multi-stage commit ancestry and local-ref proof ignore every
+  agent-writable Git replacement, graft, hook, helper, include, alternate, and
+  configuration path. Isolated one-stage completion instead applies the
+  sanitized ref-shape, HEAD, object-closure, and index proof in `INV-38`.
 - `INV-20`: A one-Agent-Stage Pipeline preserves the current persistent and
   fake-cloud execution contracts and creates no handoff ref, including for a
   no-change completion.
@@ -562,6 +613,26 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
 - `INV-35`: Lost-owner abandonment permanently fences finalization, never
   accepts the candidate or promotes a successor, releases capacity, and leaves
   a durable rollback-only transition tombstone. Its failure is non-retriable.
+- `INV-36`: One authenticated host security domain is permanently either legacy
+  or Pipeline isolated. Every co-resident Worker has that mode. A legacy domain
+  never runs multi-stage work or receives Factory-managed provider-helper
+  credentials; a Pipeline domain never launches an unsandboxed Agent.
+- `INV-37`: A Pipeline Worker holds no source or provider credential. Every
+  authenticated remote read or write is a typed host-authority operation bound
+  to an enrolled repository and signed control-plane authorization.
+- `INV-38`: An isolated one-stage Attempt preserves its private Git directory
+  only as untrusted evidence and attaches the retained worktree to a separately
+  rebuilt, self-contained, sanitized Git directory. It never imports into shared
+  cache, advances a Track head, or creates a sequencing ref.
+- `INV-39`: A host authority accepts command envelopes only from the mutually
+  pinned control-plane signing key generation; request data cannot introduce or
+  rotate a verification key.
+- `INV-40`: Privileged authority code never executes Git or provider tooling.
+  Every remote operation runs as the dedicated unprivileged broker with one
+  registered target and one ephemeral operation-scoped credential.
+- `INV-41`: On macOS, authority, Workers, caches, locks, worktrees, brokers, and
+  Agent containers all reside inside one enrolled Linux VM with no writable
+  macOS mount or Agent-accessible management channel.
 
 ### Requirements
 
@@ -607,17 +678,30 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   PR for an explicit bounded round. Insert, reorder, kind change, and delete
   operations that break this grammar are rejected before save. The editor adds,
   moves, and deletes each three-Stage review block atomically.
-- Every Agent Stage in a multi-stage Pipeline uses a persistent profile. A
-  one-Agent-Stage Pipeline retains current persistent and fake-cloud support.
+- Every Agent Stage in a multi-stage Pipeline uses a persistent Worker
+  advertising `agent_isolation`. A one-Agent-Stage Pipeline retains current
+  persistent and fake-cloud support through a compatible host security domain.
 - For each repository in a multi-stage Run, at least one persistent Worker is
   eligible for every frozen Agent runtime, execution profile, and
   Worker-executed Action capability. First-Agent routing selects only from that
   complete capability intersection.
-- A Pipeline containing Open PR, Update PR, or PR review requires a persistent
-  Worker advertising `provider_credential_isolation`. V1 readiness requires
-  rootless Podman 5+, the frozen image digest, keep-ID user namespace, the fixed
-  mount layout, isolated runtime secret, no helper or host sockets, an
-  uncredentialed remote, and the host-only typed provider helper.
+- Every multi-stage Pipeline requires a persistent Worker advertising
+  `agent_isolation`. A Pipeline containing Open PR, Update PR, or PR review also
+  requires `provider_credential_isolation`. V1 readiness requires rootless
+  Podman 5+, the frozen image digest, keep-ID user namespace, the fixed mount
+  layout, isolated runtime secret, no helper or host sockets, an uncredentialed
+  remote, and, for provider Stages, the authority-owned typed provider broker.
+- A private repository on a Pipeline host also requires an authority advertising
+  `source_broker` for its frozen provider identity. Clone, fetch, and default-
+  branch resolution are admitted only through that typed capability; a public
+  repository may use the same broker without a credential.
+- Host readiness refuses Pipeline capability unless the enrolled authority key,
+  pinned control-plane key generation, dedicated broker UID, privilege drop,
+  mount and syscall policy, registered cache roots, credential minting, and
+  one-shot result channel pass their self-tests.
+- On macOS, readiness additionally proves authority, Workers, caches, locks,
+  worktrees, brokers, and Agent runtime all reside inside the enrolled Linux VM,
+  with no writable host mount or Agent-accessible VM management channel.
 - Pipeline concurrency limits `queued`, `preparing`, `running`, and `finalizing`
   Sessions in the Run. Stage concurrency limits the same states for that Stage.
   `waiting`, concurrency-blocked, and terminal Sessions consume no slot.
@@ -788,6 +872,12 @@ The claim protocol version increases. A prior Worker may renew and complete an
 Attempt it already owns for a migrated one-stage Pipeline, but it cannot receive
 another claim until it registers with Pipeline support. New Workers understand
 one-stage Sessions without Track lineage and multi-stage owner-affine Sessions.
+Registration includes a short-lived signed host-authority attestation binding
+host-domain ID, Worker ID, immutable mode, boot nonce, binary digest, isolation
+self-test digest, and expiry. The control plane rejects a missing, expired,
+replayed, unknown-key, or mode-conflicting attestation before registering the
+Worker. Claim materialization rejects every Stage whose required host mode or
+capability does not match, even if runtime names otherwise match.
 
 Multi-stage Agent completion has propose and finalize endpoints. Propose adds
 `output_commit` and Attempt-ref proof, rejects malformed, unexpected-input, or
@@ -799,7 +889,9 @@ head, succeeds the Session, and promotes its successor. Replays return the
 stored phase result. The authenticated owner attests to object, ancestry,
 cache-only resolution, and ref proof because the control plane holds no Git
 objects. A one-stage Pipeline keeps the current completion contract and does
-not require a local handoff ref.
+not require a local handoff ref. On a Pipeline-isolated host, its existing
+completion endpoint additionally requires the idempotent private-Git
+reattachment acknowledgement before terminal state.
 
 `finalizing` work uses a separate short owner-only transition lease delivered
 on the Worker's outbound poll. Normal Attempt lost-lease recovery sees the
@@ -828,7 +920,14 @@ workspace health, and any rollback-only transition tombstone. A Worker
 repository-ref projection
 stores only the latest complete inventory scan and its health metadata. The
 current unique Run and repository constraint becomes a unique Track and Stage
-constraint.
+constraint. Host-domain registration stores stable host ID, enrolled authority
+public key, immutable mode, clean-domain acknowledgement, pinned control-plane
+instance and command-key generation, rotation state, and provider-helper
+provisioning state. Worker registration stores its host-domain foreign key,
+original Worker identity, boot nonce, isolation self-test version and digest,
+and attestation expiry. Attempt state records isolated Git mode and the durable
+reattachment acknowledgement; local manifests retain the private Git path and
+worktree-pointer phase without sending filesystem paths to the browser.
 
 Runs and Tracks gain cancellation timestamps used as promotion fences.
 Executions gain preparation-failure count and next-routing time. Gate Sessions
@@ -891,8 +990,8 @@ the pre-upgrade backup with the supported restore command. Runs admitted after
 upgrade are not present in that backup. The release guide states that data
 boundary before upgrade.
 
-The Worker creates local refs for code-producing Agent Attempts with this shape
-in its repository cache:
+The Worker creates local refs for multi-stage code-producing Agent Attempts with
+this shape in its repository cache:
 
 ```text
 refs/factory/pipelines/<run-id>/<track-id>/<stage-position>-<stage-id>/<attempt-id>
@@ -1008,15 +1107,20 @@ routing. Later Sessions begin waiting. A partial write creates no Run.
 
 The first Worker resolves base branch and commit during preparation, then
 freezes owner and input through the prepared endpoint before launching the
-agent. Retry fetches that exact commit from local cache even if the remote base
-branch moved. A prepared request replay is idempotent for the same lease and
-identity and conflicts for a different identity.
+agent. For a private repository, default-branch resolution, initial clone, and a
+missing-commit fetch use typed authority commands before local verification.
+Retry reads that exact commit from local cache even if the remote base branch
+moved; an absent object uses the same idempotent `fetch_commit` binding. A
+prepared request replay is idempotent for the same lease and identity and
+conflicts for a different identity.
 
-An agent exit of zero is provisional until commit and ref creation succeed.
-Commit, ancestry, local ref, or read-back failure completes the Attempt and
-Session as failed with a bounded actionable reason. The worktree is retained.
-The same transaction skips every later waiting Session with this failure as
-cause. No downstream Session becomes routeable.
+For a multi-stage Agent, an exit of zero is provisional until commit and ref
+creation succeed. Commit, ancestry, local ref, or read-back failure completes
+the Attempt and Session as failed with a bounded actionable reason. The
+worktree is retained. The same transaction skips every later waiting Session
+with this failure as cause. No downstream Session becomes routeable. A
+one-stage Agent uses its current result contract plus the isolated sanitizer
+and reattachment contract when applicable; it has no handoff finalization.
 
 Finalizing a ready branch transition records output identity, advances the
 Track head, marks the Session succeeded, and promotes its direct successor in
@@ -1128,9 +1232,10 @@ the same authorization identity and frozen candidate, or the operator cancels
 and starts a new Run.
 
 An idempotent completion replay returns stored completion. An expired lease
-cannot publish completion even if the Worker created a local ref. That orphan
-ref is reported by reconciliation but does not advance the Track or conflict
-with a later Attempt.
+cannot publish multi-stage completion even if the Worker created a local ref.
+That orphan ref is reported by reconciliation but does not advance the Track or
+conflict with a later Attempt. One-stage replay uses its existing result identity
+plus sanitized-reattachment acknowledgement and creates no ref.
 
 When a Session fails, every later waiting Session in that Track becomes skipped
 and records the failed Session as cause. This is distinct from a success-like
@@ -1237,13 +1342,71 @@ Worker leases and Attempt recovery remain otherwise unchanged.
 ## 8. Security, privacy, and operations
 
 The local operator boundary does not change. Current persistent coding runtimes
-are not a general code sandbox, but a Pipeline with provider Stages requires an
-enforced provider-credential boundary. V1 uses one backend: rootless Podman 5 or
-newer with a digest-pinned Factory Agent image. Linux runs rootless Podman
-directly; macOS uses the operator-provisioned rootless Podman machine. The
-execution profile freezes image digest and runtime adapter. Worker readiness
-pulls the image, launches a self-test container, and refuses the capability if
-the runtime, image, user namespace, or mount policy differs.
+are not a general code sandbox, so every multi-stage Agent requires an enforced
+isolation boundary. V1 uses one backend: rootless Podman 5 or newer with a
+digest-pinned Factory Agent image. A security domain is the complete OS host or
+VM plus every socket that can administer it. Linux uses a dedicated host or
+admin-owned VM. On macOS, the entire Pipeline host stack runs inside one
+admin-provisioned Linux VM: `factory-hostd`, every Worker, repository caches,
+locks, Attempt worktrees, operation brokers, and rootless Podman Agent
+containers. The control plane may remain on macOS because it holds no Git or
+provider credential and Workers initiate its existing outbound protocol.
+
+The Linux VM has no writable macOS filesystem mount. Its disk, console, SSH,
+Podman, and lifecycle channels are root-owned administration surfaces and are
+unavailable to the Worker and Agent users. Retained-worktree links are VM-scoped
+and open through the authenticated admin bridge, never a shared host path. A VM
+administered through a socket reachable from a legacy Agent is not an isolated
+domain. The execution profile freezes image digest and runtime adapter. Worker
+readiness pulls the image, launches a self-test container, and refuses
+`agent_isolation` if any required process is not Linux-resident or the runtime,
+image, user namespace, mount, or management-channel policy differs.
+
+V1 installs one host-level authority, `factory-hostd`, before any Worker can
+register for new claims. It owns a stable signing key, host-domain ID, mode, and
+exclusive host lock in root-protected state. Its root-owned Unix socket checks
+peer credentials and admits only the installed Worker supervisor and admin
+provisioning client. It chooses one immutable mode for the whole domain:
+
+- `legacy` may run current unsandboxed one-stage profiles under their existing
+  trust contract. It rejects multi-stage claims, provider Stages, Factory
+  provider-helper installation, and Factory-managed credential provisioning.
+- `pipeline_isolated` requires a clean dedicated domain and launches every
+  Agent, including one-stage Agents, through the isolated container profile. It
+  may advertise multi-stage capability and, after the stronger provider
+  self-test, receive provider-helper credentials.
+
+The authority fsyncs its mode before enabling any Worker, signs short-lived
+Worker attestations, and issues the same mode to every config and data directory
+on the domain. It rejects a mixed-mode sibling in either launch order, an
+in-place mode change, a second authority, and an unverified binary. The control
+plane and authority mutually enroll through an operator-authenticated one-time
+flow. The control plane pins the host public key. The authority pins the control
+plane instance ID, command-signing public key, and key generation in its
+root-protected state. Neither side accepts a key supplied by a normal request.
+The control plane requires host attestation even though the existing loopback
+Worker API is unauthenticated. A spoofed Worker ID or registration cannot invent
+another host ID, mode, isolation capability, or command signer.
+
+Normal control-plane key rotation is two-phase. A rotation certificate signed
+by the currently pinned key names the next key and generation; the authority
+persists it and returns a signed acknowledgement before the control plane uses
+it. Both keys verify only during a bounded ten-minute overlap, after which the
+old generation is rejected. Response loss replays the same rotation ID. If the
+old key is unavailable or suspected compromised, the operator drains the host,
+revokes provider credentials, and repeats mutual enrollment locally; no remote
+request can force recovery rotation. A command from another server or key
+generation is rejected and marks provider capability unhealthy.
+
+Moving a legacy domain into Pipeline service requires the operator to reimage
+the host or VM, remove every Worker and authority data directory, create a new
+host-domain key, and enroll it as a new domain. Pipeline initialization requires
+an explicit clean-domain acknowledgement. Factory does not claim to detect
+persistence on an unreimaged host; the administrative reimage is part of the
+operator boundary. Migration initializes the host authority as `legacy` before
+any existing Worker can receive another claim. Existing one-stage behavior and
+operator-managed ambient credentials remain the current operator risk, but no
+Worker on that host can enter the Pipeline capability pool.
 
 The Worker builds a private Agent Git directory with a writable index, refs,
 config, and object directory plus a read-only alternate to the repository cache
@@ -1258,22 +1421,66 @@ adapter mounts only model-runtime authentication from an Attempt-scoped
 read-only secret into container tmpfs and destroys it at exit. Agent `gh` and
 `git push` therefore have no provider credential or writable remote.
 
-The Worker daemon remains outside the container and retains authenticated Git
-and `gh` credentials. Only its typed lease-bound code can execute Open PR,
-Update PR, and Gate calls; it accepts the frozen adapter fields, not arbitrary
-commands, repositories, refs, or URLs. Provider credentials and helper code are
-never mounted or exposed over a container-accessible socket. A Worker advertises
-`provider_credential_isolation` only after the real container self-test proves
-workspace Git operation, model-runtime startup, provider-mutation denial, mount
-read-only behavior, and cleanup. Existing one-stage Pipelines keep their current
-trust contract.
+In a `pipeline_isolated` domain, the small privileged authority retains the host
+signing key, immutable mode, and a GitHub App installation-key reference;
+Worker daemons, operation brokers, and containers retain none of them. It
+accepts only a signed
+control-plane command envelope bound to command ID, signing-key generation,
+operation, host, Worker, repository provider identity, allowed remote identity,
+Track or preparation lease, local cache identity, ref, expected head, and
+expiry. Used command IDs are durably deduplicated. Its fixed typed operations
+are `resolve_default_branch`, `clone_cache`, `fetch_commit`,
+`publish_track_branch`, `open_pull_request`, `update_pull_request`, and
+`read_review_feeds`.
 
-Only the authenticated owner Worker with the active Attempt lease may report an
-output commit. The server validates IDs, Worker identity, commit format, Stage
-position, predecessor equality, and cancellation fences. The Worker disables
-hooks for its own automatic commit. It verifies objects and ancestry in a fresh
-Git directory with `GIT_NO_REPLACE_OBJECTS`, no graft file, no repository
-config, and fixed empty system and global config. That directory reads a
+The privileged authority never launches Git or `gh` with its own UID and never
+parses repository or provider payloads. After authorization it mints a shortest-
+lived repository-scoped installation token with only the permissions required
+by that operation, then starts a separate `factory-broker` process as the
+dedicated unprivileged broker identity. Before exec it clears supplementary
+groups and inherited file descriptors, sets `no_new_privs`, applies an
+operation-specific syscall and network policy, and creates a mount namespace
+containing read-only trusted binaries and certificates, private temporary space,
+and only the registered cache target needed by that operation. Authority state,
+admin and authority sockets, Worker roots, other caches, and host home are
+absent. The one-operation token arrives through a sealed private descriptor and
+is destroyed with the process.
+
+The unprivileged broker runs Git and `gh` with empty home, fixed system and
+global config, disabled hooks, helpers, includes, alternates, and prompts, and
+bounded input, output, time, memory, and process counts. It returns a bounded
+typed result over a one-shot pipe. The authority validates only that fixed
+result schema and exit status before recording the command result; it never
+loads child Git config or provider objects. A broker escape has neither UID nor
+filesystem access to authority keys, credential minting, mode state, or
+administration sockets.
+
+Source operations map repository and cache identities through authority-owned
+registration; they accept no caller path or arbitrary URL. Clone creates a
+quarantined bare cache below the registered Worker repository root. Fetch writes
+through the same cross-process repository mutation lock and installs only into
+that cache. Credentials are injected ephemerally into the broker process and are
+absent from remotes, Git config, logs, errors, and resulting objects. Default-
+branch reads return one bounded typed name. Response loss replays the command ID
+and returns the recorded result; a different operation or binding conflicts.
+
+Remote write and provider-read operations likewise accept no arbitrary command,
+repository, ref, or URL. The authority socket, credentials, and broker code are
+never mounted or exposed to a container. It provisions credentials only in
+`pipeline_isolated` mode after clean-domain enrollment and the real container
+self-test prove workspace Git operation, model-runtime startup, provider-
+mutation denial, mount read-only behavior, and cleanup. Only then may a Worker
+on that domain advertise source access or `provider_credential_isolation`.
+Existing one-stage Pipelines keep their completion contract: legacy Workers may
+use the current trust model, while Pipeline Workers use the isolated adapter and
+authority source broker only.
+
+Only the authenticated owner Worker with the active Attempt lease may report a
+multi-stage output commit. The server validates IDs, Worker identity, commit
+format, Stage position, predecessor equality, and cancellation fences. For that
+handoff the Worker disables hooks for its own automatic commit. It verifies
+objects and ancestry in a fresh Git directory with `GIT_NO_REPLACE_OBJECTS`, no
+graft file, no repository config, and fixed empty system and global config. That directory reads a
 manifest-frozen, copy-verified object snapshot containing only regular canonical
 loose objects and pack files from the cache and private Agent object directory.
 It contains no `objects/info` directory, alternate
@@ -1282,7 +1489,9 @@ rehash of every object reachable from input and output must pass before lineage
 is accepted. Only verified reachable objects are installed canonically into the
 cache, and cache-only resolution must pass before the local ref and branch
 transition are acknowledged. It does not trust agent output to name a successor
-commit.
+commit. Isolated one-stage completion performs no ancestry or local-ref proof;
+it applies the separate cryptographic HEAD, object-closure, ref-shape, index,
+and sanitized-directory validation defined above.
 
 Prompts, results, events, branches, local refs, provider metadata, feedback
 snapshots, and commit metadata may contain sensitive project information and
@@ -1300,13 +1509,16 @@ Public-repository events from actors without provider-confirmed write,
 maintain, or admin permission never satisfy a Gate. Author association, display
 name, and self-asserted role are not authorization evidence.
 
-Multi-stage Pipelines require one persistent Worker that can prepare the
-repository for the Track. Pull-request Stages additionally require healthy
-`git`, authenticated `gh`, and provider-credential-isolation capabilities with
-repository access. One-stage
-Pipelines keep current behavior. A repository unavailable to a Worker is
-handled by existing routing before owner freeze and by owner-affinity failure
-afterward.
+Multi-stage Pipelines require one `pipeline_isolated` persistent Worker with
+healthy `agent_isolation` that can prepare the repository for the Track.
+Private source preparation additionally requires its host authority's healthy
+`source_broker` capability. Pull-request Stages require that broker plus
+`provider_credential_isolation` with repository access. One-stage Pipelines keep
+current behavior only on a compatible domain: an unsandboxed profile routes to
+`legacy`, while an isolated profile may route to `pipeline_isolated` and uses
+the same source broker for private repositories. A repository unavailable to a
+Worker is handled by existing routing before owner freeze and by owner-affinity
+failure afterward.
 
 Local Pipeline refs keep accepted commits reachable and are not deleted
 automatically in V1. Repository detail reports count and age. Retention and
@@ -1365,9 +1577,9 @@ overflow is actionable rather than retried indefinitely.
   second general-purpose Task board.
 - `AC-12`: A current one-Stage Pipeline still runs successfully on persistent
   and fake-cloud profiles without local Stage handoff fields or no-change ref.
-- `AC-13`: Before a successful completion proposal, response loss or lease
-  expiry after local-ref creation does not block a new Attempt; only an output
-  accepted through finalization feeds the successor.
+- `AC-13`: In a multi-stage handoff, before a successful completion proposal,
+  response loss or lease expiry after local-ref creation does not block a new
+  Attempt; only an output accepted through finalization feeds the successor.
 - `AC-14`: A pending scheduled occurrence retains frozen Stage order and
   settings after the Pipeline is edited, pauses while its schedule is disabled
   or its Pipeline is archived, and resumes unchanged only when the Pipeline is
@@ -1379,10 +1591,12 @@ overflow is actionable rather than retried indefinitely.
 - `AC-16`: Preparation failure before owner freeze releases capacity and may
   route to a second eligible Worker and resolve base again; failure afterward
   stays owner-affine and reuses the frozen input.
-- `AC-17`: A reset or replacement history cannot succeed because the output
-  commit must descend from the frozen input.
-- `AC-18`: An untracked file is never added automatically; completion fails
-  until the agent stages, commits, ignores, or removes it.
+- `AC-17`: A multi-stage reset or replacement history cannot succeed because
+  the handoff output commit must descend from the frozen input. One-stage
+  history is governed by `AC-54` and advances no shared Track state.
+- `AC-18`: During multi-stage handoff, an untracked file is never added
+  automatically; completion fails until the agent stages, commits, ignores, or
+  removes it.
 - `AC-19`: The largest valid normal Agent prompt plus trusted context, and the
   largest feedback Agent prompt plus canonical Gate context plus trusted
   context, each fit the 72 KiB complete-input limit; the next byte is rejected
@@ -1396,10 +1610,13 @@ overflow is actionable rather than retried indefinitely.
   Session with `workspace_lost`, skips its successors, produces the defined Run
   aggregate, and never starts from repository base or another Worker.
 - `AC-23`: Admission rejects a repository with no Worker eligible for every
-  Stage, and owner capability loss later blocks visibly without rerouting.
-- `AC-24`: Replacement refs, grafts, cache-level local or HTTP alternates,
-  symlinked object storage, or agent-written Git config cannot make an unrelated
-  or externally stored output pass ancestry or local-ref verification.
+  Stage and the required security domain, and owner capability loss later
+  blocks visibly without rerouting.
+- `AC-24`: In a multi-stage handoff, replacement refs, grafts, cache-level local
+  or HTTP alternates, symlinked object storage, or agent-written Git config
+  cannot make an unrelated or externally stored output pass ancestry or local-
+  ref verification. One-stage sanitization may retain an unrelated valid HEAD
+  only through the self-contained proof in `AC-54`.
 - `AC-25`: A scheduled occurrence with no complete owner candidate keeps its
   frozen snapshot and admits successfully after the eligible fleet returns.
 - `AC-26`: Repository detail shows the latest complete local-ref count, oldest
@@ -1480,8 +1697,8 @@ overflow is actionable rather than retried indefinitely.
   recovery completes only the matching write-ahead manifest and ref pair.
 - `AC-47`: In a provider Pipeline, Agent attempts to mutate through `git push`,
   `gh`, credential helpers, an SSH agent, or the typed helper are denied. Open
-  PR, Update PR, and Gate operations still succeed through the privileged
-  lease-bound helper. The Agent can edit and commit through the specified
+  PR, Update PR, and Gate operations still succeed through the authority-owned
+  lease-bound provider broker. The Agent can edit and commit through the specified
   rootless Podman Git mount layout without host repository or provider access.
 - `AC-48`: A staged new file and Agent-created commit in the private container
   Git directory are validated with base objects, imported as canonical reachable
@@ -1499,6 +1716,43 @@ overflow is actionable rather than retried indefinitely.
   tombstone. A returning owner can restore the exact old head or report a
   conflict, but manual and automatic retry can never revive or promote the
   abandoned Session.
+- `AC-52`: A multi-stage Pipeline without provider Stages still runs every
+  Agent in the isolated container and cannot write the host cache, manifests,
+  refs, sibling worktrees, home, or Worker sockets. One signed host-domain mode
+  applies across every Worker config and data directory. A legacy host rejects
+  all multi-stage and provider work and cannot receive Factory-managed helper
+  credentials. A Pipeline host rejects every unsandboxed claim, including
+  one-stage work. Mixed-mode siblings, spoofed loopback registration, in-place
+  mode changes, and credential provisioning after legacy execution are rejected
+  in both launch orders. Pipeline enrollment requires a reimaged domain, new
+  host key, and operator-authenticated authority registration.
+- `AC-53`: A Pipeline host prepares a private repository through typed
+  authority default-branch, clone, and fetch operations. Credentials never
+  enter Worker or Agent state, targets cannot escape the registered cache, and
+  response loss or retry returns one recorded bounded result without duplicate
+  or conflicting cache mutation.
+- `AC-54`: An isolated one-stage Attempt preserves committed, staged-new,
+  dirty, or unchanged Git state in a sanitized self-contained retained worktree
+  without a handoff ref or cache import. Malicious config, hooks, helpers,
+  includes, alternates, and extra refs remain untrusted evidence and cannot
+  affect ordinary host Git. Reset, detached, merged, rewritten, and unrelated
+  valid HEADs are retained and visibly classified without an ancestry failure.
+  Completion response loss and restart recover one inspectable worktree, while
+  terminal cleanup removes worktree and both Git directories atomically.
+- `AC-55`: Mutual host enrollment pins the control-plane command key. Forged,
+  replayed, expired, wrong-server, and wrong-generation envelopes fail before
+  broker execution. Normal two-phase key rotation tolerates response loss and
+  rejects the old generation after its bounded overlap.
+- `AC-56`: Every Git and `gh` child runs under the unprivileged broker UID with
+  no authority state, admin socket, host key, other cache, Worker root, or home
+  access. Hostile repository config, hooks, helpers, includes, alternates, and
+  child attempts to read authority files or sockets fail while the single typed
+  operation still succeeds against its registered target.
+- `AC-57`: On macOS, a real Pipeline Run proves every trusted and Agent process
+  and all mutable repository state are inside the enrolled Linux VM. Readiness
+  rejects a writable macOS mount, a host-resident Worker or broker, and a
+  management channel reachable from the Agent identity. VM restart preserves
+  authority identity, locks, cache, and exact Track recovery.
 
 ## 10. Test approach
 
@@ -1507,7 +1761,7 @@ owner-only routing, aggregate state, retry, cancellation races, generation
 snapshots, typed Stage validation, Gate polling and outcomes, conditional
 promotion and success-like skip, concurrency-block promotion, schedule
 snapshots, structural cost estimates, limits, and every terminal predicate.
-They prove the persisted portions of `INV-1` through `INV-35`;
+They prove the persisted portions of `INV-1` through `INV-41`;
 Worker integration tests prove the Git and worktree portions.
 
 Worker integration tests use two Workers and local bare origins. They prove a
@@ -1533,8 +1787,21 @@ Container Git tests stage a new file and create a commit in the private Git
 directory, then prove union validation imports only its reachable canonical
 objects, resolves the commit from cache alone, and gives the complete checkout
 to the successor for `AC-48`.
+Isolated one-stage tests finish with an Agent-created commit, a staged new file,
+dirty tracked files, no change, reset history, detached HEAD, a merge commit,
+and a valid unrelated commit. They verify the recorded HEAD shape and input
+relation without imposing ancestry. They lose the completion response and
+restart before and after pointer reattachment, then prove the retained link
+opens the reconstructed index, trusted ref, complete object closure, and
+workspace without a handoff ref, cache import, or alternate. Fixtures add
+malicious config includes, hooks, aliases, credential helpers, replacement refs,
+and local and HTTP alternates; ordinary host `git status` and `git log` remain
+correct after the shared cache is unavailable and execute none of them. Cleanup
+crash tests prove the worktree and both Git directories remain together or are
+all removed for `AC-54`.
 Capability-intersection tests reject admission when no one Worker can run every
-Stage and block an owner whose later runtime becomes unhealthy for `AC-23`.
+Stage in the required security domain and block an owner whose later runtime
+becomes unhealthy for `AC-23`.
 Branch preparation tests reject unowned collisions and mismatched heads, then
 reuse an owned matching branch across preparation loss, retry, and later Stages
 for `AC-46`. A pre-freeze lost response retries idempotently on the same Worker;
@@ -1619,13 +1886,58 @@ completion, stale approved commit with a moved PR head, remote divergence, and
 same-branch feedback updates for `AC-33` through `AC-44`. They prove no command can push the base branch, tags,
 or an operator-owned ref. A two-round fixture proves approval passes through the
 prior publication while requested feedback makes round two target the commit
-published by round one. Credential-isolation fixtures give the privileged
-helper a working provider credential while a real rootless Podman container can
+published by round one. Credential-isolation fixtures give the host authority
+broker a working provider credential while a real rootless Podman container can
 edit, stage, commit, and run the frozen model adapter through the exact V1 mount
 layout. Agent `git push`, `gh` mutation, credential-helper, SSH-agent, host-home,
 Podman-socket, and helper-socket attempts all fail for `AC-47`. The self-test
 also rejects a mutable image tag, rootful engine, wrong user namespace,
 unexpected mount, or writable base-object mount.
+
+Security-domain tests run the same container without any provider Stage and
+prove host cache, branch manifests, refs, sibling worktrees, home, and Worker
+sockets remain inaccessible. Host-authority integration tests launch Workers
+from several config and data directories and reject mixed legacy and Pipeline
+siblings in both orders, a second authority, mode change across restart, and an
+unreimaged legacy host key presented for Pipeline enrollment. Registration
+tests spoof Worker IDs and capabilities through the unauthenticated loopback API
+and prove the control plane rejects missing, forged, replayed, expired, or
+mode-conflicting signed attestations. Claim and provisioning tests prove every
+Worker in a legacy domain rejects multi-stage work and helper credentials, every
+Worker in a Pipeline domain rejects unsandboxed work, and only the enrolled
+authority broker receives provider credentials and signed command envelopes.
+Migration tests prove every existing host domain becomes legacy for `AC-52`.
+
+Private-source tests use a credentialed local origin whose default branch and
+base commit are unavailable anonymously. The authority resolves, clones, and
+fetches through registered repository and cache identities while Worker and
+Agent environments, remotes, configs, logs, and errors remain credential-free.
+They inject response loss, retry, concurrent cache mutation, wrong repository,
+path traversal, and a changed command binding for `AC-53`.
+
+Privilege-separation tests record the effective and supplementary IDs, open file
+descriptors, mounts, environment, and network policy of real Git and `gh`
+children. A hostile repository supplies config, hooks, helpers, includes,
+alternates, symlinks, and attempts to read the authority key, mode state,
+credential vault, admin and authority sockets, another cache, Worker roots, and
+host home. Every access fails while the registered clone, fetch, provider read,
+and Track publication succeed with one ephemeral token for `AC-56`.
+
+A real macOS topology test provisions the supported Linux VM, runs a one-stage
+and multi-stage Pipeline, and asserts authority, Worker, broker, Git, `gh`, cache,
+lock, worktree, and Agent process namespaces and paths are VM-local. Negative
+fixtures add a writable host mount, move a Worker or broker to macOS, expose the
+VM management channel to the Agent UID, and try a legacy sibling; readiness
+rejects each case. Reboot during a Stage and during finalization proves exact
+host identity, cache, lock, manifest, and Track recovery for `AC-57`.
+
+Mutual-enrollment tests pin different control-plane keys on two servers. They
+reject unsigned, forged, replayed, expired, wrong-server, and wrong-generation
+attestations and broker commands. Rotation tests stop before persist, after
+persist, and after acknowledgement, replay one rotation ID, accept both keys
+only during the ten-minute overlap, and reject the old key afterward. Emergency
+rotation tests require local operator enrollment and cleared credentials for
+`AC-55`.
 
 React tests prove one-Stage defaults, graph insertion and reorder, inspector
 fields, atomic review-block add, move, and delete, structural cost calculations, telemetry fallback, card grouping,
@@ -1643,6 +1955,13 @@ Stage and Track navigation, and Enter and Space activation.
   loop. The editor shows starts and token ceilings before execution, and Run
   detail shows actual telemetry. It does not claim that more Stages are higher
   quality.
+- Pipeline isolation creates a real host boundary. Existing host domains stay
+  legacy; using one for multi-stage or provider work requires a reimage and new
+  authority enrollment, and no Worker in that domain can run unsandboxed
+  profiles.
+- macOS Pipeline work runs fully inside a dedicated Linux VM. This adds VM disk,
+  startup, administration, and remote-worktree UX cost, but keeps the same
+  enforceable Linux isolation contract as native hosts.
 - An offline owner Worker blocks its Tracks. The UI makes that explicit and the
   existing Worker recovery path resumes exact local state. A finalizing Track
   can be abandoned after the lost threshold, but that is a one-way failure path
@@ -1657,8 +1976,8 @@ Stage and Track navigation, and Enter and Space activation.
 - Local refs accumulate. V1 reports and retains them because unsafe cleanup can
   remove code evidence. Retention needs a Track-aware follow-up design.
 - Pull-request Actions add a write-capable provider boundary. They use existing
-  Worker credentials, publish only generated Track branches, require expected
-  remote heads, and never merge or force-push.
+  authority-broker credentials and signed typed commands, publish only generated
+  Track branches, require expected remote heads, and never merge or force-push.
 - Review text can contain prompt injection or secrets. Feedback is bounded,
   labelled untrusted, stored under current local retention, and never treated as
   configuration or approval.
