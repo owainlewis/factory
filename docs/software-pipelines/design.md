@@ -1349,8 +1349,11 @@ are never compared as chronology. When the newest timestamp contains candidates
 from different feeds, one shared outcome is accepted; conflicting outcomes
 resolve conservatively to `feedback_requested`. A review submission qualifies
 only when its provider commit ID equals the target commit. Review and
-conversation comments qualify when created after the frozen publication
-boundary. Before ordering candidates, the Worker checks each distinct actor
+conversation comments qualify when created at or after the frozen publication
+boundary and their immutable provider IDs are not already present in the
+pre-publication inclusive baseline. Boundary-equal candidates participate in
+the same timestamp group and the conservative cross-feed tie rule. Before
+ordering candidates, the Worker checks each distinct actor
 through GitHub's repository-permission endpoint. It returns the actor login,
 provider permission, and verification time as typed metadata. Missing access,
 rate limiting, or an unverifiable response leaves the Gate waiting; the control
@@ -1828,7 +1831,9 @@ overflow is actionable rather than retried indefinitely.
   through frozen inclusive baselines and provider ID deduplication. The newest
   qualifying timestamp, with conservative cross-feed tie resolution, determines
   the outcome at the Gate's explicit observation boundary; later events belong
-  to a later review round or Run.
+  to a later review round or Run. A comment exactly at the publication-boundary
+  timestamp is included unless its immutable ID was already frozen in the
+  pre-publication baseline; simultaneous feedback prevents approval.
 - `AC-40`: Approval conditionally skips a complete feedback block, passes
   through the prior publication identity, and lets a later explicit review
   round bind that identity. A feedback path binds the newly updated commit.
@@ -2079,7 +2084,8 @@ approval and changes-requested events, qualifying review and conversation
 comments, authorized and unauthorized public actors, permission lookup failure,
 empty polls, events during publication response loss, inclusive
 overlap and provider-ID deduplication, multi-page feed completion, within-feed
-ID ordering, cross-feed timestamp ties with matching and conflicting outcomes,
+ID ordering, publication-boundary-equal comments, cross-feed timestamp ties
+with matching and conflicting outcomes,
 explicit event ordering before and after approval, bounded snapshots, rate-limit backoff,
 retry deadlines, untrusted-text prompt framing, response loss before Update PR
 completion, stale approved commit with a moved PR head, remote divergence, and
