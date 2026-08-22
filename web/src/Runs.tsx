@@ -25,14 +25,14 @@ export function RunsView({ mode, onMode, onRun }: { mode: RunViewMode; onMode: (
   const query = useQuery({ queryKey: ["runs", "head"], queryFn: () => api.runs(), refetchInterval: 5_000 });
   const headIDs = new Set(query.data?.runs.map((run) => run.id) ?? []);
   const activeHistoricalIDs = history
-    .filter((run) => !headIDs.has(run.id) && activeRunState(run.state))
+    .filter((run) => !headIDs.has(run.id) && refreshableRun(run))
     .map((run) => run.id)
     .sort();
   const activeHistory = useQuery({
     queryKey: ["run-history", "active", activeHistoricalIDs],
     queryFn: async () => Promise.all(activeHistoricalIDs.map(async (id) => (await api.run(id)).run)),
     enabled: activeHistoricalIDs.length > 0,
-    refetchInterval: (activeQuery) => activeQuery.state.data?.every((run) => !activeRunState(run.state)) ? false : 5_000,
+    refetchInterval: (activeQuery) => activeQuery.state.data?.every((run) => !refreshableRun(run)) ? false : 5_000,
   });
   const refreshedHistory = useMemo(
     () => updateRuns(history, activeHistory.data ?? []),
@@ -72,6 +72,10 @@ export function RunsView({ mode, onMode, onRun }: { mode: RunViewMode; onMode: (
 
 function activeRunState(state: RunState): boolean {
   return state === "blocked" || state === "queued" || state === "running";
+}
+
+function refreshableRun(run: Run): boolean {
+  return activeRunState(run.state) || run.needs_attention;
 }
 
 function mergeRuns(primary: Run[], secondary: Run[]): Run[] {

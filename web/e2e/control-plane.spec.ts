@@ -49,7 +49,9 @@ test("makes the board the primary Work view and preserves alternate views", asyn
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole("heading", { name: "Work", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Work summary" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Done" }).getByRole("button", { name: new RegExp(taskName) })).toBeVisible();
+  const completedRun = page.getByRole("region", { name: "Done" }).getByRole("button", { name: new RegExp(taskName) });
+  await expect(completedRun).toBeVisible();
+  await expect(completedRun).toContainText("factory-demo");
   expect(await page.evaluate<boolean>("document.documentElement.scrollWidth <= document.documentElement.clientWidth")).toBe(true);
 
   await page.getByRole("button", { name: "List", exact: true }).click();

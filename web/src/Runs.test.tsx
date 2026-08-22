@@ -42,6 +42,20 @@ describe("Runs", () => {
     expect(onRun).toHaveBeenCalledWith("run-blocked");
   });
 
+  it("refreshes terminal history until it no longer needs attention", async () => {
+    const attention = { ...run("run-attention", "Recent failed run", "failed"), needs_attention: true };
+    const settled = { ...attention, needs_attention: false };
+    vi.spyOn(api, "runs").mockResolvedValue({ runs: [], next_cursor: null });
+    const runDetail = vi.spyOn(api, "run").mockResolvedValue({ run: settled, sessions: [] });
+    const client = testClient();
+    client.setQueryData(["run-history"], { items: [attention], cursor: null, headCursor: null });
+
+    render(<QueryClientProvider client={client}><RunsView mode="kanban" onMode={() => undefined} onRun={() => undefined} /></QueryClientProvider>);
+
+    expect(await screen.findByRole("region", { name: "Done" })).toContainElement(await screen.findByRole("button", { name: /Recent failed run, failed/ }));
+    expect(runDetail).toHaveBeenCalledWith("run-attention");
+  });
+
   it("loads Run history one cursor-bounded page at a time", async () => {
     const runs = vi.spyOn(api, "runs").mockImplementation(async (cursor = "") => cursor ? {
       runs: [olderRun],

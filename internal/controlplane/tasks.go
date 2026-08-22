@@ -925,7 +925,6 @@ func (s *Store) RunPage(ctx context.Context, limit int, cursor string) (protocol
 		detail.Run.Task.Prompt = ""
 		detail.Run.Task.TimeoutSeconds = 0
 		detail.Run.Task.ConcurrencyLimit = 0
-		detail.Run.Task.Repositories = nil
 		page.Runs = append(page.Runs, detail.Run)
 	}
 	if hasMore {

@@ -64,6 +64,34 @@ func TestTaskAdmissionWorkerLifecycleAndAggregateRun(t *testing.T) {
 	}
 }
 
+func TestRunPagePreservesRepositorySummaryWithoutPrompt(t *testing.T) {
+	store := newTestStore(t)
+	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
+		Key: "factory", RemoteIdentity: "github.com/owainlewis/factory",
+	})
+	task, err := store.CreateTask(context.Background(), protocol.SaveTaskRequest{
+		Name: "Board summary", Prompt: "Do not expose this prompt.", Runtime: protocol.RuntimeCodex,
+		RepositoryIDs: []string{worker.Repositories[0].ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.RunTask(context.Background(), task.ID, protocol.RunTaskRequest{RequestKey: "board-summary"}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.RunPage(context.Background(), 10, "")
+	if err != nil || len(page.Runs) != 1 {
+		t.Fatalf("Run page = %#v, err %v", page, err)
+	}
+	summary := page.Runs[0].Task
+	if summary.Prompt != "" || summary.TimeoutSeconds != 0 || summary.ConcurrencyLimit != 0 {
+		t.Fatalf("Run page leaked Task execution detail: %#v", summary)
+	}
+	if len(summary.Repositories) != 1 || summary.Repositories[0].RemoteIdentity != "github.com/owainlewis/factory" {
+		t.Fatalf("Run page repository summary = %#v", summary.Repositories)
+	}
+}
+
 func TestTaskRunReplayReturnsCommittedRunAfterTaskChanges(t *testing.T) {
 	store := newTestStore(t)
 	worker := registerTestWorker(t, store, workerA, 10, protocol.RepositoryRegistration{
