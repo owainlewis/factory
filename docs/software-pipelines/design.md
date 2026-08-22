@@ -529,10 +529,17 @@ requests cancellation for preparing or running Sessions. Cancelling one Session
 commits a Track cancellation timestamp and applies the same rule to that Track.
 Claim, prepared, start, completion, promotion, and retry transactions all
 recheck both cancellation timestamps. A queued Session is never claimable after
-the fence; an Attempt prepared concurrently cannot start after it. A late
-completion is rejected, stores no accepted output, and cannot promote a
-successor. A cancelled Run or Track cannot reopen through Session retry; the
-operator starts a new Pipeline Run.
+the fence; an Attempt prepared concurrently cannot start after it. After the
+fence, a completion endpoint first returns any matching terminal result that
+committed before the fence, including a successful result whose response was
+lost. That replay performs no new state change. With no stored result, it
+accepts only an idempotent cancellation acknowledgement from the active
+Attempt. That acknowledgement stores no output and marks the Session cancelled.
+New success, failure, and output publication are rejected and cannot promote a
+successor. If the active Attempt instead loses its lease, recovery terminalizes
+the Session as cancelled because the committed cancellation fence is
+authoritative, not failed. A cancelled Run or Track cannot reopen through
+Session retry; the operator starts a new Pipeline Run.
 
 `waiting` is neither claimable nor terminal. `skipped` is terminal. A Run is
 active while any Session is blocked, queued, preparing, running, or waiting.
@@ -655,7 +662,8 @@ cursor bounded. Attempt event and result limits remain unchanged.
   unarchived and the schedule is explicitly enabled.
 - `AC-15`: Cancellation committed concurrently with claim, preparation, start,
   or Stage success prevents new execution and never makes the successor
-  claimable; a queued Session becomes terminal.
+  claimable. Queued work becomes terminal, and active work becomes cancelled by
+  acknowledgement or lease recovery without turning the Run failed.
 - `AC-16`: Preparation failure before owner freeze releases capacity and may
   route to a second eligible Worker and resolve base again; failure afterward
   stays owner-affine and reuses the frozen input.
@@ -740,7 +748,11 @@ admits the same occurrence after Worker health returns for `AC-25`.
 
 Cancellation race tests pause at claim, prepared, start, and completion
 boundaries. They prove queued work terminalizes, active work cannot start after
-the fence, and no late completion promotes a successor for `AC-15`.
+the fence, cancellation acknowledgement is accepted without output, lease loss
+after the fence becomes cancelled rather than failed, and no late success
+promotes a successor for `AC-15`. Completion-first ordering replays the stored
+success without mutation after a later fence; fence-first ordering rejects a
+new success and accepts only cancellation.
 
 HTTP contract tests cover Pipeline validation, pagination, immutable snapshots,
 claim fields, owner conflicts, commit validation, complete-input byte
