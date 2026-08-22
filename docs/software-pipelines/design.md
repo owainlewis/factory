@@ -330,8 +330,8 @@ boundary that may advance the Track. Response loss is replayed by verifying
 that the recorded pull request branch equals the candidate commit. A different
 remote head fails the Action with `remote_diverged`; Factory never moves a
 succeeded Agent Session backward. Its authorization also freezes a stable
-preceding-Gate vector and successor topology. When another PR review Gate
-follows, that Gate inherits the vector as its eligibility floor rather than the
+preceding-Gate eligibility-floor record and successor topology. When another PR
+review Gate follows, it inherits that record rather than the
 new publication-time feed ends. When Update PR is terminal, a stable
 post-publication observation compares against that floor. Eligible feedback
 makes the Track `partial` with reason `feedback_arrived_during_address` and a
@@ -755,9 +755,9 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   any topology that could make two code-producing nodes concurrently eligible
   or require merging their outputs.
 - `INV-47`: Update PR never advances a following Gate's eligibility floor past
-  the preceding Gate's stable consumed vector. Eligible feedback posted or
-  edited after that vector and inside the following Gate or terminal
-  observation boundary is either consumed by the following Gate or makes a
+  the preceding Gate's frozen consumed-feedback set. Eligible feedback posted,
+  edited, or omitted from the Agent view after that set and inside the following
+  Gate or terminal observation boundary is either consumed by the following Gate or makes a
   terminal Update PR Track visibly partial; it is never silently treated as
   already addressed. Events first observed after that explicit boundary belong
   to a later Run.
@@ -766,6 +766,16 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   or submission time. After actor authorization it conservatively chooses
   `feedback_requested` ahead of unchanged timestamped candidates because GitHub
   supplies no trustworthy ordered mutation event for every supported feed.
+- `INV-49`: A feedback item advances the consumed portion of an eligibility
+  floor only when its complete canonical representation was included in the
+  Address feedback Agent's bounded view. Observed but omitted feedback remains
+  explicitly unconsumed and conservatively chooses feedback in the next Gate or
+  makes terminal Update PR partial; provider identity alone is never proof that
+  an Agent received it. Consumed `(feed, ID, digest)` entries accumulate across
+  feedback rounds; a changed digest is unconsumed until delivered again.
+- `INV-50`: Exact-digest approval-supersession entries persist across later
+  feedback outcomes. A changed superseded digest becomes eligible again; a new
+  approval advances supersession to its complete stable observation vector.
 
 ### Requirements
 
@@ -795,11 +805,18 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   and the fixed `fail` timeout policy. V1 supports `pull_request_review` after
   an Open PR or Update PR Action in the same Pipeline. Its typed outcome is
   `feedback_requested` or `approved`.
-- A review Gate freezes its stable per-feed vector with its outcome. Update PR
-  passes that exact vector to a following review Gate as the eligibility floor;
+- A review Gate freezes an eligibility-floor record containing its complete
+  stable observation vector and the exact feedback identities and digests fully
+  delivered cumulatively in canonical Agent views, plus an optional explicit
+  cumulative approval-supersession vector. Feedback outcomes preserve unchanged
+  supersession entries; a changed digest becomes eligible, and a new approval
+  advances supersession to its complete stable vector. Update PR passes that
+  exact record to
+  a following review Gate;
   it cannot substitute the feeds observed at Update PR publication. A terminal
   Update PR records `partial` after publishing when its stable publication
-  vector contains eligible feedback absent from the preceding Gate vector.
+  vector contains eligible feedback absent from the preceding Gate's consumed
+  set.
 - Terminal Update PR freezes a one-hour post-publication observation timeout.
   Expiry is actionable failure, never success. Retry repeats only the feedback
   observation against the same published commit, floor, digest version, and
@@ -1019,7 +1036,10 @@ version. It grants no second live lease for that Gate and the check does not
 consume Pipeline, Stage, or Worker execution capacity. The authenticated owner
 returns a bounded result with the lease token, both sweep digests, stable
 second-sweep vector, observed PR head, normalized candidates, permission proofs,
-and bounded snapshot. The server accepts it only when the lease, owner, target
+bounded UI snapshot, canonical Agent view, and exact delivered-feedback
+identities and digests. The server verifies the newly delivered entries from
+complete items in that view, unions them with inherited unchanged consumed
+`(feed, ID, digest)` entries, and accepts the result only when the lease, owner, target
 commit, floor, digest version, outcome version, deadline, and Run and Track
 cancellation fences still match. Duplicate results return the stored outcome;
 stale or late results cannot satisfy the Gate. A
@@ -1031,8 +1051,9 @@ Before an Open PR or Update PR remote write, the owner calls a lease-protected
 publication-authorization endpoint with candidate commit, expected remote head,
 and idempotency key. The transaction checks the Action lease and cancellation
 fences and stores the authorization exactly once. Open PR stores empty floors.
-Update PR binds the preceding Gate ID and outcome version, its complete stable
-vector as the inherited floor, the normalization-digest version, and whether
+Update PR binds the preceding Gate ID and outcome version, its complete
+eligibility-floor record as the inherited floor, the normalization-digest
+version, and whether
 the frozen Graph has a following review Gate. For terminal Update PR it also
 freezes the V1 one-hour observation timeout. These values come from durable
 server state, never a Worker-supplied cursor. Replays return that complete frozen
@@ -1123,7 +1144,9 @@ review outcome, terminal disposition and reason, terminal provider vector,
 bounded pending-feedback snapshot, workspace health, and any rollback-only
 transition tombstone. Publication authorizations store candidate and expected
 remote commits, idempotency key, preceding Gate and outcome version, inherited
-floor, normalization-digest version, successor Gate identity or terminal flag,
+observation vector, cumulative consumed-feedback set, and optional explicit
+approval-supersession vector, normalization-digest version,
+successor Gate identity or terminal flag,
 observed remote result, and terminal-observation phase, deadline, and lease. A Worker
 repository-ref projection
 stores only the latest complete inventory scan and its health metadata. The
@@ -1142,7 +1165,8 @@ Executions gain preparation-failure count and next-routing time. Gate Sessions
 store next poll time, deadline, target and immediately preceding published
 commits, immutable per-feed eligibility floor, observed cursors per provider
 event feed, page continuations, deduplicated item
-IDs, the last stable cross-feed boundary vector, chosen observation event,
+IDs, the last stable cross-feed observation vector, cumulative consumed-feedback
+identities and digests, optional approval-supersession vector, chosen observation event,
 actor permission verification, outcome version, bounded satisfaction snapshot,
 and any
 active Gate-check lease identity, owner, and expiry. A Session blocked only by
@@ -1396,13 +1420,29 @@ A PR review Gate binds to the Track's latest successfully published commit and
 an immutable per-feed eligibility floor. A success-like skip passes the prior
 publication identity through unchanged. Open PR starts from empty feed floors
 because the pull request does not yet exist. Each completed Gate stores its
-stable second-sweep vector, including the normalized digest of every item at
-that boundary. Update PR captures current feeds for audit and terminal
-late-feedback detection, but a following Gate inherits the preceding Gate's
-stable vector as its floor. It never replaces that floor with the later
+stable second-sweep observation vector, including the normalized digest of every
+item at that boundary, a cumulative consumed-feedback set, and an optional
+approval-supersession vector. For `approved`, the record sets supersession to
+the complete observation vector because the newer explicit approval
+semantically supersedes unchanged earlier feedback; it does not add those items
+to the Agent-consumed set. A new approval replaces the prior supersession vector
+with its complete stable vector. For `feedback_requested`, the record preserves
+every inherited supersession `(feed, ID, digest)` entry whose exact digest is
+unchanged; a changed digest becomes eligible again. The next consumed set is the
+inherited unchanged exact-digest entries union items whose complete
+canonical representation appears in the new 32 KiB Agent view. A changed digest
+does not match its old consumed entry and is unconsumed until fully delivered
+again. Deleted or currently nonqualifying entries may be retired after the
+stable sweep. Feedback retained only in the larger UI snapshot or omitted by
+any item or byte limit remains explicitly unconsumed. Update PR captures current
+feeds for audit and terminal late-feedback detection, but a following Gate
+inherits the preceding Gate's
+complete eligibility-floor record. It never replaces that floor with the later
 publication-time feed ends. A new item or result-relevant mutation absent from
-the inherited vector therefore remains eligible even when it was posted while
-Address feedback was running, before the updated commit was published.
+the inherited observation vector, and any qualifying feedback absent from the
+consumed set and not unchanged beneath the explicit approval-supersession
+vector, therefore remains eligible even when it was already observed or was
+posted while Address feedback was running before the updated commit was published.
 
 Approval still requires an explicit approved review for the new exact target
 commit. Feedback after the inherited floor may be a review comment,
@@ -1458,8 +1498,16 @@ or deduplicated ID. A lease performs exactly two sweeps and never starts a
 third. If the feeds do not match, the Gate remains waiting with
 `review_boundary_moving` and retries after backoff.
 
-The adapter first separates new immutable IDs from normalized mutations of
-items already present in the eligibility floor. GitHub does not expose one
+The adapter first separates explicitly unconsumed feedback, normalized
+mutations, and new immutable IDs. An item is unconsumed only when its exact
+digest is absent from the cumulative consumed set and it is not unchanged under
+an approval-supersession vector. An unconsumed item is actor-authorized and
+conservatively chooses `feedback_requested` ahead of approval or timestamp
+ordering because Factory knows the previous Agent did not receive it. Missing
+permission waits without floor advancement; verified no-write items are
+discarded.
+
+For remaining items, GitHub does not expose one
 trustworthy ordered mutation event across all three feeds. Therefore, when a
 floor item's digest changed and its current representation qualifies as
 feedback, the Worker authorizes its actor and conservatively chooses
@@ -1470,7 +1518,8 @@ or comment whose body is edited after a later approval.
 Factory never assigns that mutation the item's older creation time or invents a
 local/provider timestamp comparison.
 
-Only when no authorized qualifying mutation exists does the adapter order new
+Only when no authorized unconsumed feedback or qualifying mutation exists does
+the adapter order new
 immutable-ID candidates by provider creation time. Within one feed, provider
 database ID breaks a timestamp tie. Database IDs from different feeds are never
 compared as chronology. When the newest timestamp contains candidates from
@@ -1486,8 +1535,8 @@ Factory never compares its local publication time with a provider creation
 time. Provider timestamps order only new-ID candidates after feed identity
 establishes eligibility.
 
-When no authorized qualifying mutation chose feedback, the Worker evaluates
-new-ID timestamp groups from newest to oldest. For one group it
+When no authorized unconsumed item or qualifying mutation chose feedback, the
+Worker evaluates new-ID timestamp groups from newest to oldest. For one group it
 checks each distinct actor through GitHub's repository-permission endpoint and
 records actor login, provider permission, and verification time as typed
 metadata. Verified actors without write permission are discarded. If the group
@@ -1535,8 +1584,8 @@ requested, the accepted Agent output promotes only Update PR. That Action
 fast-forwards the remote branch with an expected-old-head check and promotes
 later work only after durable publication succeeds. With a following review
 Gate, the publication result atomically stores the preceding Gate boundary as
-that successor's eligibility floor; no publication-time observation can replace
-it.
+that successor's complete eligibility-floor record; no publication-time
+observation can replace it.
 
 With no successor Gate, Update PR publishes or reconciles the frozen candidate
 first, enters `observing_terminal_feedback`, and releases its execution slot.
@@ -1879,8 +1928,13 @@ retained Attempt depends on it would lose evidence.
 At most 500 Sessions are planned per Run, 100 hold execution slots, 20 Stages
 are stored per Pipeline, and prompts total at most 256 KiB. One feedback
 snapshot contains at most 100 items and 256 KiB after UTF-8 encoding. Its
-canonical successor view is at most 32 KiB and records omitted item and byte
-counts plus provider identities for explicit lookup. One Gate-check lease
+canonical successor view packs complete authorized feedback items newest first
+and is at most 32 KiB. It never truncates an item and records omitted item and
+byte counts plus provider identities for operator display only; Agents have no
+provider retrieval path. Only packed items enter the consumed-feedback set. If
+the newest decisive item's complete canonical representation cannot fit, the
+Gate fails actionably with `feedback_item_too_large` and starts no Agent. One
+Gate-check lease
 performs exactly two complete sweeps. Each sweep reads at most 2,000 unique
 items and 4 MiB of normalized event data. Because GitHub returns at most 100
 items per page and all three feeds require a response even when empty, the
@@ -2018,7 +2072,8 @@ overflow is actionable rather than retried indefinitely.
   frozen untrusted feedback snapshot, starts at the published Track commit, and
   promotes only Update PR after accepted success. Update PR durably
   fast-forwards the same remote branch before later work advances and carries
-  the preceding Gate boundary into any following Gate. For `approved`, both
+  the preceding Gate's observation vector and consumed-feedback set into any
+  following Gate. For `approved`, both
   conditional Stages are skipped without an Attempt.
 - `AC-36`: An independently moved remote Track branch fails Update PR
   actionably with `remote_diverged`; normal retry reuses the frozen candidate
@@ -2031,9 +2086,10 @@ overflow is actionable rather than retried indefinitely.
   promotes a successor.
 - `AC-39`: Review events created during publication response loss are included
   through frozen inclusive eligibility floors and provider ID deduplication.
-  An authorized changed-digest floor item that currently qualifies as feedback
-  takes conservative precedence because it has no trustworthy mutation event
-  time. Otherwise the newest qualifying new-ID timestamp, with conservative
+  Authorized feedback explicitly omitted from the prior Agent view takes first
+  precedence. An authorized changed-digest floor item that currently qualifies
+  as feedback takes next precedence because it has no trustworthy mutation
+  event time. Otherwise the newest qualifying new-ID timestamp, with conservative
   cross-feed tie resolution, determines the outcome at the Gate's explicit
   observation boundary; later events belong
   to a later review round or Run. Every unseen provider ID after the frozen
@@ -2181,6 +2237,16 @@ overflow is actionable rather than retried indefinitely.
   later success or partial disposition while result-first remains terminal. A
   one-hour deadline expires to visible actionable failure; retry preserves the
   publication and repeats only observation with a fresh deadline.
+- `AC-67`: When qualifying feedback exceeds the 32 KiB canonical Agent view,
+  only complete packed items enter the consumed-feedback set. Every omitted item
+  stays eligible and takes conservative precedence in a following Gate or makes
+  terminal Update PR partial. One oversized decisive item fails actionably
+  before Agent start. Neither an operator-only provider identity nor the larger
+  UI snapshot is treated as Agent delivery. Across rounds the next set is the
+  inherited unchanged exact-digest entries union the newly packed entries; it
+  never drops a prior delivered batch. Feedback outcomes likewise retain
+  inherited unchanged approval-supersession entries. A changed consumed or
+  superseded digest becomes unconsumed; a new approval advances supersession.
 
 ## 10. Test approach
 
@@ -2338,7 +2404,19 @@ outcome. Another dismissal mutates an early page after its second read and
 proves that mutation belongs to the next vector, while the exact second-read
 value is the one frozen in the current result. Review-body and comment-body
 edits between sweeps change their digests and cannot leave stale text in Address
-feedback. A continuously changing feed remains waiting without advancing
+feedback. A packing fixture crosses the 100-item, 256 KiB UI-snapshot, and 32
+KiB Agent-view limits. It proves only fully packed items enter the consumed set,
+omitted feedback outranks a later approval in the next Gate, and terminal Update
+PR becomes partial when no Gate follows. A single decisive item larger than the
+Agent view fails with `feedback_item_too_large` before an Attempt starts. A
+three-round fixture packs disjoint feedback batches, proves the cumulative union
+never makes a delivered batch eligible again, and lets the terminal check
+succeed after the final omitted batch is delivered. Editing a delivered item
+changes its digest and makes only that representation unconsumed. An approval,
+new-feedback, third-Gate fixture proves the feedback outcome preserves the prior
+approval-supersession entries; editing one superseded item makes that changed
+representation eligible again. A
+continuously changing feed remains waiting without advancing
 durable scan state. Exact 1,999-, 2,000-, and 2,001-item fixtures prove both
 sweeps fit the verification-read budget through the limit and overflow visibly
 beyond it. The accepted fixtures include worst-case distributions across all
