@@ -1,201 +1,137 @@
 # Factory
 
-**Developer preview**
+**Run repeatable software work through AI coding agents across repositories and machines.**
 
-Factory is currently in *developer preview* and is iterating rapidly.
-**THERE WILL BE COMPATIBILITY-BREAKING CHANGES.**
+[![CI](https://github.com/owainlewis/factory/actions/workflows/ci.yml/badge.svg)](https://github.com/owainlewis/factory/actions/workflows/ci.yml)
+[![MIT license](https://img.shields.io/badge/license-MIT-white.svg)](LICENSE)
+[![Developer preview](https://img.shields.io/badge/status-developer%20preview-5b7cfa.svg)](#project-status)
 
-Factory runs repeatable software-engineering Runs across Git repositories and
-compute. Operators save prompts as Tasks, run them now, or schedule them
-across one or more repositories. Its Go control plane coordinates Runs and a
-fleet of Workers that provide Pi, Codex, or Claude Code runtimes.
+[Website](https://owainlewis.github.io/factory/) ·
+[Quick start](#quick-start) ·
+[Documentation](docs/README.md) ·
+[Architecture](ARCHITECTURE.md) ·
+[Contributing](CONTRIBUTING.md)
 
-The browser UI provides:
+Factory is an open-source, local-first control plane for coding agents. Define
+software work once, run it across one or many Git repositories, and see every
+agent, worktree, result, failure, and retry in one place.
 
-- an operational overview of active, completed, and attention-needed Runs;
-- Tasks with prompts, repositories, runtime settings, and optional schedules;
-- table, list, and board views of Runs, with per-repository Session details;
-- registered worker and repository status;
+It is designed for builders who have outgrown a collection of terminal windows
+but still want agents to run on infrastructure and credentials they control.
 
-Factory is local-first. Its browser and operator API accept loopback connections
-only. An optional, separate TLS-authenticated endpoint accepts Workers on remote
-VMs.
+```text
+Define work  ->  Dispatch repositories  ->  Run agents  ->  Inspect outcomes
+                       |                       |
+                       +-- Git worktrees       +-- Pi, Codex, Claude Code
+                       +-- local or VM Workers +-- bounded concurrency
+```
 
-Factory starts with coding agents on machines you control and is intended to
-scale to elastic cloud execution without rewriting a Task or splitting its
-Run history. Existing Tasks remain persistent by default. Once the proposed
-cloud backend is implemented, a manual run will be able to select a compatible
-elastic profile. Persistent local and VM Workers remain the rich path for
-subscription authentication, warm repository caches, and inspectable
-worktrees. A proposed
-Cloud Run backend adds disposable, API-backed agent containers for bursty and
-parallel Runs. Read the
-[Cloud Run agent backend design](docs/cloud-run-agents/design.md) for the
-planned boundary, security model, and rollout.
+## What Factory gives you
 
-Read the [product vision](docs/software-factory/vision.md), the
-[current implementation architecture](ARCHITECTURE.md), and the active
-[Cloud Run backend design](docs/cloud-run-agents/design.md). Planned work
-follows the [project workflow](WORKFLOW.md). Superseded proposals remain
-available through the [documentation index](docs/README.md).
+- **Repeatable software work.** Save a prompt, repository scope, runtime,
+  schedule, and execution settings as one Task.
+- **One operational view.** Follow active Runs, repository Sessions, Attempts,
+  agent events, results, failures, and retained worktrees from the browser.
+- **A worker fleet you control.** Run Pi, Codex, or Claude Code on a laptop,
+  workstation, or remote VM without exposing the operator API publicly.
+- **Git-native isolation.** Every Attempt runs in its own worktree. Clean work
+  is reclaimed while unpublished or failed work remains inspectable.
+- **Durable coordination.** SQLite state, leases, heartbeats, retries,
+  cancellation, schedules, and bounded APIs survive process restarts.
 
 ## Quick start
 
 Requirements:
 
 - Go 1.25.13 or newer on the 1.25 release line, or Go 1.26.6 or newer
-- Git
-- `curl`
-- `just`
-- Codex CLI or Claude Code CLI, authenticated on the worker host
-
-Node.js is only needed when changing the UI. Normal builds use the committed,
-embedded UI assets.
-
-Managed GitHub repository checkout and Tasks that allow the `gh` tool depend
-on the GitHub CLI. Factory does not include a separate GitHub API client.
-Install and authenticate [`gh`](https://cli.github.com/) on the control-plane
-host and each eligible Worker host:
+- Git, `curl`, and `just`
+- An authenticated Pi, Codex, or Claude Code CLI on the Worker host
+- GitHub CLI when using managed GitHub repositories
 
 ```sh
-gh --version
-gh auth status
-```
-
-```sh
+git clone https://github.com/owainlewis/factory.git
+cd factory
 just build
 mkdir -p ~/.factory
 cp examples/worker.toml ~/.factory/worker.toml
-```
-
-Edit `~/.factory/worker.toml` to select any installed `pi`, `codex`, and
-`claude-code` agents. Workers need no repository list. They probe local `gh`
-access and acquire centrally managed GitHub repositories on demand. Then start
-the server and Worker:
-
-```sh
 just run
 ```
 
-Open [http://127.0.0.1:7337](http://127.0.0.1:7337).
+Open [http://127.0.0.1:7337](http://127.0.0.1:7337). Edit
+`~/.factory/worker.toml` to enable the agent runtimes installed on your machine.
+The [local guide](docs/local.md) covers authentication, repository setup, and
+the complete first Run.
 
-Database migration 27 converts supported pre-launch Definitions, schedules,
-and execution history into the current lifecycle model after the database is
-backed up, and migration 30 renames that schema and its records to Tasks, Runs,
-and Sessions. Unsupported legacy provider admission is blocked and reported
-instead of being silently discarded.
+Node.js is only required when changing the browser UI. Normal builds use the
+committed embedded assets.
 
-One Worker has one stable identity, a configurable set of coding-agent
-capabilities, and a pool of independent sessions. The pool defaults to ten
-slots. A single local Worker can advertise Pi, Codex, and Claude Code:
+## How it works
 
-```sh
-FACTORY_WORKER_CONFIG=~/.factory/worker.toml \
-  ~/.factory/bin/factory-worker
-```
-
-See the [local guide](docs/local.md) for a complete setup and the
-[worker guide](docs/worker.md) for runtime and worktree behavior. Use the
-[remote VM guide](docs/remote-workers.md) to enroll a Worker outside the server
-host. Tagged binary
-installation, upgrades, compatibility, rollback, and release verification are
-covered by the [release guide](docs/release.md).
-
-## Architecture
+The Go control plane owns Tasks, Runs, schedules, durable state, and admission.
+Workers poll for eligible Sessions, prepare isolated Git worktrees, supervise
+the selected coding-agent runtime, and report bounded events and results.
 
 ```text
 Browser
    |
-   | HTTP + JSON
+   | loopback HTTP + JSON
    v
-Go control plane
-  SQLite, Task scheduler, Run admission, embedded UI
+Factory control plane
+  SQLite, scheduler, Run admission, embedded UI
    ^
-   | registration, claim, heartbeat, events, completion
+   | authenticated polling, leases, events, completion
    |
-Go Workers
-  one identity + ready runtime capabilities + N agent slots + repository cache
+Factory Workers
+  repository cache, isolated worktrees, agent slots
    |
-   +-- Pi CLI
-   +-- Codex CLI
-   `-- Claude Code CLI
+   +-- Pi
+   +-- Codex
+   `-- Claude Code
 ```
 
-The control plane owns durable coordination. Workers own execution and Git
-worktrees. Workers poll the API, so the system does not require WebSockets or
-inbound connections to worker hosts.
+The operator surface stays on loopback. Remote Workers use a separate,
+TLS-authenticated endpoint. The control plane stores coordination metadata,
+while Workers retain Git contents, runtime credentials, and worktrees. Read the
+[architecture](ARCHITECTURE.md) and [security policy](SECURITY.md) before
+running untrusted code.
 
-The future execution model keeps three choices independent:
+## Project status
 
-```text
-Execution backend     Agent runtime              Provider and model
------------------     -------------              ------------------
-Persistent Worker  +  Pi, Codex, Claude Code  +  subscription or API
-Cloud Run Job      +  Pi, Codex, Claude Code  +  API-backed model
-```
+Factory is in **developer preview**. Compatibility-breaking changes are
+expected while the product model settles.
 
-Cloud Run is a proposed execution backend, not a DeepSeek-specific product.
-For example, the completed experiment ran the Pi runtime in Cloud Run with
-DeepSeek V4 Flash through OpenRouter. Cloud execution is managed and elastic,
-but not infrastructure-free, infinitely scalable, or a hostile-code sandbox.
+Implemented today:
 
-All default state is below `~/.factory`:
+- Go control-plane API and embedded React UI
+- durable Tasks, Runs, Sessions, Attempts, leases, events, and cancellation
+- manual and scheduled work across one or many repositories
+- Pi, Codex, and Claude Code Worker capabilities
+- managed repository catalog, Worker caches, and isolated Git worktrees
+- table, list, and Kanban Run views with repository-level detail
+- local Workers and authenticated remote VM Workers
 
-```text
-~/.factory/
-  bin/
-  server/factory.sqlite3
-  config.toml       optional control-plane bootstrap only
-  worker.toml
-  workers/
-```
-
-Read the [architecture](ARCHITECTURE.md) for the contracts and
-security boundaries.
-
-## Current scope
-
-Implemented:
-
-- Go control-plane API and embedded React UI;
-- durable Tasks, Runs, Sessions, executions, attempts, leases, events, and
-  cancellation;
-- Pi, Codex, and Claude Code Worker capabilities;
-- manual and scheduled Task admission across one or more repositories;
-- versioned Task prompts, execution settings, repository scope, and optional
-  schedules;
-- a central managed-repository catalog, bounded worker caches, and isolated Git
-  worktrees;
-- bounded list APIs and retained-data metrics;
-- automatic cleanup of clean unchanged or published work and preservation of
-  unpublished branches.
-
-Designed but not implemented: a unified `factory` CLI and an elastic Cloud Run
-agent backend.
-
-See the [documentation index](docs/README.md) for current guides and proposed
-designs.
+Active product work is moving Factory toward ordered software pipelines and a
+software-work graph while keeping general business tracking outside the
+product. See the [software pipelines proposal](https://github.com/owainlewis/factory/pull/333)
+and the [product vision](docs/software-factory/vision.md).
 
 ## Development
-
-Backend:
 
 ```sh
 just test
 just vet
-```
-
-UI:
-
-```sh
-just ui-install
 just ui-check
 ```
 
-After changing the UI, rebuild the committed assets:
+Browser-facing changes are proven against a real Go server with:
 
 ```sh
-just ui-build 0
+just test-browser
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full check set.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full check set and project
+workflow. Proposed and historical designs are indexed in [docs](docs/README.md).
+
+## License
+
+Factory is available under the [MIT License](LICENSE).

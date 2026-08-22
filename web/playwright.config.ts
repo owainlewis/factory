@@ -20,10 +20,18 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 1000 } },
     },
   ],
-  webServer: {
-    command: "node e2e/server.mjs",
-    url: "http://127.0.0.1:17437/healthz",
-    reuseExistingServer: false,
-    timeout: 120_000,
-  },
+  webServer: [
+    {
+      command: "node e2e/server.mjs",
+      url: "http://127.0.0.1:17437/healthz",
+      reuseExistingServer: false,
+      timeout: 120_000,
+    },
+    {
+      command: "node e2e/site-server.mjs",
+      url: "http://127.0.0.1:17438",
+      reuseExistingServer: false,
+      timeout: 10_000,
+    },
+  ],
 });
