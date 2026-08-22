@@ -245,10 +245,12 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   succeeded with a recorded full output commit.
 - `INV-6`: A Session input is the frozen base commit for the first Stage or the
   exact accepted output commit of its predecessor.
-- `INV-7`: One Worker owns a Track from the first successful prepared call
-  until the Track is terminal.
-- `INV-8`: Every Attempt starts in a fresh worktree at its Session's exact input
-  commit on the Track owner Worker.
+- `INV-7`: In a multi-stage Pipeline, one Worker owns a Track from the first
+  successful prepared call until the Track is terminal. A one-stage Pipeline
+  retains its current backend ownership contract.
+- `INV-8`: Every multi-stage Attempt starts in a fresh worktree at its Session's
+  exact input commit on the Track owner Worker. One-stage fake-cloud execution
+  retains its current dispatcher lifecycle.
 - `INV-9`: A successful multi-stage Session records one full output commit that
   descends from its input and one Attempt-scoped local ref keeping it reachable.
 - `INV-10`: Failed, cancelled, lost, or timed-out Attempts cannot advance a
@@ -312,8 +314,11 @@ Pipeline snapshot, Tracks, Sessions grouped by Track and Stage, and existing
 Attempt summaries. The detail response does not inline Attempt events.
 
 Worker claims add `track_id`, `stage_id`, `stage_name`, `stage_position`,
-`track_owner_worker_id`, and `input_commit`. A first-Stage claim has no owner
-yet. A later-Stage or retry claim is available only to the stored owner Worker.
+`track_owner_worker_id`, and `input_commit`. A first-Stage claim before owner
+freeze has no owner or frozen input and may go to any eligible Worker in the
+complete capability intersection. A later-Stage claim, or any retry after owner
+freeze, is available only to the stored owner Worker and carries the frozen
+input commit.
 
 Before runtime launch, the Worker calls a lease-protected prepared endpoint
 with resolved base branch, exact worktree HEAD, worktree identity, and working
@@ -323,11 +328,13 @@ Worker or commit. Only a successful prepared response authorizes startup. The
 existing start endpoint continues to record supervisor process identity.
 
 Preparation failure before owner freeze terminalizes the Attempt, releases
-capacity, clears assignment, and lets routing choose another eligible Worker.
-Preparation failure after owner freeze releases capacity and blocks the Session
-on that Worker with a bounded reason and retry time. It never reroutes the
-Track. Five automatic preparation failures exhaust the execution cycle and fail
-the Session; manual retry begins a new cycle and keeps Attempt history.
+capacity, clears assignment, and lets the first-Stage retry choose any eligible
+Worker and resolve the base input again. Preparation failure after owner freeze
+releases capacity and blocks the Session on that Worker with a bounded reason
+and retry time. Every later automatic or manual retry stays on the owner and
+uses the stored input commit. It never reroutes the Track. Five automatic
+preparation failures exhaust the execution cycle and fail the Session; manual
+retry begins a new cycle and keeps Attempt history.
 
 The claim protocol version increases. A prior Worker may renew and complete an
 Attempt it already owns for a migrated one-stage Pipeline, but it cannot receive
@@ -364,12 +371,19 @@ intervention.
 Each pending scheduled occurrence stores the complete immutable Pipeline
 generation it will admit: ordered Stages, repository identities, execution
 settings, and scheduled instant. Editing a Pipeline only changes occurrences
-created after the edit. The source schedule's current enabled and archived
-state still gates admission. Disabling or archiving it pauses an existing
-pending occurrence without changing its frozen generation, retry state, or due
-instant. Admission resumes only when the Pipeline is unarchived and its
-schedule is explicitly enabled. Restoring either gate alone leaves the
-occurrence paused. An explicit discard removes it.
+created after the edit. The Pipeline's current archive state and schedule
+enabled state still gate admission. Disabling the schedule or archiving the
+Pipeline pauses an existing pending occurrence without changing its frozen
+generation, retry state, or due instant. Admission resumes only when the
+Pipeline is unarchived and its schedule is explicitly enabled. Restoring either
+gate alone leaves the occurrence paused. An explicit discard removes it.
+
+The occurrence-admission transaction reads and locks the source Pipeline row,
+then rechecks both `archived = false` and `schedule_enabled = true` immediately
+before inserting a Run. Disable, archive, and admission therefore have one
+database order. If either pause mutation commits first, admission creates no
+Run. If admission commits first, that Run was admitted before the pause and the
+pause prevents only later admission.
 
 For scheduled admission, absence of one complete owner candidate is transient
 while the frozen repositories and profiles remain valid. The pending occurrence
@@ -432,16 +446,25 @@ operator does not lose its visible delivery worktree merely because Pipeline
 sequencing finished.
 
 Workers reconcile local Pipeline refs through a cursor-bounded inventory API.
-One scan has a random ID and enumerates the union of the complete local ref
-namespace and manifest entries, in pages of at most 500. Paired records contain
-stored Run, Track, Stage, Attempt, repository, full commit, creation time, and
-manifest state. Before reporting a pair, the Worker reads the exact ref under
-the fixed config. A ref without a manifest is still reported as an orphan with
-unknown age. A manifest without a ref is reported as incomplete. A conflicting
-or malformed pair reports corrupt health. The server matches valid pairs to
-accepted Session output and publishes aggregate repository health only after
-the Worker marks the scan complete. An interrupted scan never replaces the
-last complete projection.
+One scan has a random ID. Before sending page one, the Worker takes its
+repository mutation lock and materializes the complete union of the local ref
+namespace and manifest entries into an immutable, owner-only scan snapshot.
+Attempt preparation, completion, ref publication, recovery, and cleanup use the
+same lock. Snapshot creation waits until no agent process for that repository is
+preparing, running, or finishing; if work remains active, the prior projection
+becomes visibly stale instead of claiming a complete scan. The Worker releases
+the lock after the snapshot is durable, and all pages of at most 500 records
+read only that snapshot. Ref publication after the snapshot appears in the next
+scan and cannot alter or disappear from the current pages.
+
+Paired records contain stored Run, Track, Stage, Attempt, repository, full
+commit, creation time, and manifest state. Before adding a pair to the
+snapshot, the Worker reads the exact ref under the fixed config. A ref without a
+manifest is still recorded as an orphan with unknown age. A manifest without a
+ref is recorded as incomplete. A conflicting or malformed pair records corrupt
+health. The server matches valid pairs to accepted Session output and publishes
+aggregate repository health only after the Worker marks every snapshotted page
+complete. An interrupted scan never replaces the last complete projection.
 
 The stored projection contains ref count, oldest known creation time, unknown
 age count, orphan count, incomplete count, corrupt count, scan status, last
@@ -500,11 +523,14 @@ and records the failed Session as cause. Retrying the failed Session reopens the
 Run, returns only never-started successors skipped by that failure to waiting,
 and uses the same input. A successor with an Attempt is never reset.
 
-Cancelling a Run first commits its cancellation timestamp, then requests
-cancellation for active Sessions and marks waiting or concurrency-blocked
-Sessions skipped. Cancelling one Session commits a Track cancellation timestamp
-and applies the same rule to that Track. These timestamps are promotion fences:
-a late completion is rejected, stores no accepted output, and cannot promote a
+Cancelling a Run first commits its cancellation timestamp, marks queued Sessions
+cancelled, marks waiting or concurrency-blocked Sessions skipped, and then
+requests cancellation for preparing or running Sessions. Cancelling one Session
+commits a Track cancellation timestamp and applies the same rule to that Track.
+Claim, prepared, start, completion, promotion, and retry transactions all
+recheck both cancellation timestamps. A queued Session is never claimable after
+the fence; an Attempt prepared concurrently cannot start after it. A late
+completion is rejected, stores no accepted output, and cannot promote a
 successor. A cancelled Run or Track cannot reopen through Session retry; the
 operator starts a new Pipeline Run.
 
@@ -549,8 +575,9 @@ The operator may inspect retained state and start a new Run from the repository
 base. Factory never silently restarts a later Stage from a different commit.
 
 Editing Pipeline content or timing affects future occurrences only. Disabling
-or archiving a schedule pauses admission of its existing pending occurrence as
-well as preventing new ones, without mutating the occurrence snapshot.
+the schedule or archiving the Pipeline pauses admission of its existing pending
+occurrence as well as preventing new ones, without mutating the occurrence
+snapshot.
 Server shutdown stops admission and scheduling before HTTP shutdown. Active
 Worker leases and Attempt recovery remain otherwise unchanged.
 
@@ -626,10 +653,12 @@ cursor bounded. Attempt event and result limits remain unchanged.
   settings after the Pipeline is edited, pauses while its schedule is disabled
   or its Pipeline is archived, and resumes unchanged only when the Pipeline is
   unarchived and the schedule is explicitly enabled.
-- `AC-15`: Cancellation committed concurrently with Stage success never makes
-  the successor claimable.
+- `AC-15`: Cancellation committed concurrently with claim, preparation, start,
+  or Stage success prevents new execution and never makes the successor
+  claimable; a queued Session becomes terminal.
 - `AC-16`: Preparation failure before owner freeze releases capacity and may
-  route to a second eligible Worker; failure afterward stays owner-affine.
+  route to a second eligible Worker and resolve base again; failure afterward
+  stays owner-affine and reuses the frozen input.
 - `AC-17`: A reset or replacement history cannot succeed because the output
   commit must descend from the frozen input.
 - `AC-18`: An untracked file is never added automatically; completion fails
@@ -652,17 +681,22 @@ cursor bounded. Attempt event and result limits remain unchanged.
   frozen snapshot and admits successfully after the eligible fleet returns.
 - `AC-26`: Repository detail shows the latest complete local-ref count, oldest
   known age, unknown-age count, orphan, incomplete, and corrupt counts, scan
-  health, and freshness, and never replaces it with a partial scan.
+  health, and freshness. A publication during paginated reporting appears only
+  in the next immutable scan and cannot make the current projection partial.
 - `AC-27`: A crash before or after every manifest and ref transition recovers a
   matching pair or reports the one-sided or conflicting state; no local ref is
   omitted from inventory.
+- `AC-28`: If scheduled admission races with disabling the schedule or
+  archiving the Pipeline, the transaction that commits first determines whether
+  a Run exists; no Run is created after a pause commits.
 
 ## 10. Test approach
 
 Store tests prove atomic admission, independent Track promotion, owner freeze,
 owner-only routing, aggregate state, retry, cancellation races, generation
 snapshots, concurrency-block promotion, schedule snapshots, limits, and every
-terminal predicate for `INV-1` through `INV-18`.
+terminal predicate. They prove the persisted portions of `INV-1` through
+`INV-18`; Worker integration tests prove the Git and worktree portions.
 
 Worker integration tests use two Workers and local bare origins. They prove a
 Track freezes its first prepared Worker, each Stage uses a fresh worktree, the
@@ -683,6 +717,9 @@ that the lost threshold changes the reason from operational to actionable.
 Crash-injection tests stop before and after each manifest write, directory
 fsync, ref compare-and-swap, and ready transition. They prove recovery and the
 union inventory contract for `AC-27`, including agent-created ref-only state.
+Inventory tests paginate an immutable snapshot while publishing another ref,
+prove the current projection stays internally complete, and prove the next scan
+contains the new ref for `AC-26`.
 
 Workspace-loss tests fail the earliest incomplete Session, fence a concurrent
 completion, and skip its successors. They prove `failed` for a single Track and
@@ -697,9 +734,13 @@ and retrying schedules. They preserve each frozen source snapshot, prevent
 admission while disabled or archived, and resume the same occurrence after the
 Pipeline is unarchived and the schedule is explicitly enabled. Disable,
 archive, unarchive, and enable operations run in both orders and preserve the
-due instant and retry state. A complete
-fleet outage remains transient and admits the same occurrence after Worker
-health returns for `AC-25`.
+due instant and retry state. Admission races both pause mutations and proves the
+commit-order fence for `AC-28`. A complete fleet outage remains transient and
+admits the same occurrence after Worker health returns for `AC-25`.
+
+Cancellation race tests pause at claim, prepared, start, and completion
+boundaries. They prove queued work terminalizes, active work cannot start after
+the fence, and no late completion promotes a successor for `AC-15`.
 
 HTTP contract tests cover Pipeline validation, pagination, immutable snapshots,
 claim fields, owner conflicts, commit validation, complete-input byte
