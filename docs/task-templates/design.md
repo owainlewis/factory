@@ -262,7 +262,9 @@ are two sizes of the same software procedure.
   tombstones, and 320 MiB of retained user Template prompt bytes. One Template
   Graph has at most the Pipeline limit of 20 source nodes. Section 7 defines
   previewed, operator-confirmed reclamation. A limit failure reports the current
-  use and eligible reclaimable amount and creates no partial record.
+  use and eligible reclaimable amount and creates no partial record. The 20,000
+  total revision-record limit is a fixed safety bound because one atomic Template
+  purge must fit in one confirmed preview; it is not operator-configurable.
 - List APIs return at most 200 items per page and use stable cursor pagination.
 
 ## 6. Interfaces and data
@@ -413,8 +415,9 @@ set in the referenced Template Graph and its Stage IDs must equal the complete
 node set in the copied execution Graph. Both sides are unique. A direct Pipeline
 has no Template provenance and a null map.
 
-The storage GET returns the four configured limits, current body, record, and
-byte use, reclaimable counts, and next mutation-ledger expiry. A compaction
+The storage GET returns all four limits, marking the 20,000 revision-record
+limit as fixed and the other three as configurable. It also returns current
+body, record, and byte use, reclaimable counts, and next mutation-ledger expiry. A compaction
 preview request contains an optional Template ID and `max_actions`, from 1 to
 1,000. This limit counts top-level reclamation actions, not revision members:
 one `purge_template` aggregate is one action. Each purge action contains the
@@ -781,13 +784,19 @@ that token and operator confirmation. The transaction rechecks every condition:
 
 Factory runs expired mutation-ledger cleanup automatically, but never compacts a
 Template body automatically. If safe compaction cannot free enough capacity, an
-operator can raise the four Template storage limits with the offline
-`factory templates set-limits` command. The command requires the server to be
-stopped, validates a database backup and free disk, caps retained prompt bytes
-at 2 GiB, writes the new limits transactionally, and reports the rollback
-command. Lowering a limit below current use is rejected. Thus a long-lived
-installation can recover authoring without deleting referenced history or
-weakening an unexpired replay guarantee.
+operator can raise the configurable Template-count, retained-body, and prompt-
+byte limits with the offline `factory templates set-limits` command. The command
+cannot change the fixed 20,000 revision-record cap and rejects any configuration
+whose current or minimum implied record use would exceed it. It requires the
+server to be stopped, validates a database backup and free disk, caps retained
+prompt bytes at 2 GiB, writes the new limits transactionally, and reports the
+rollback command. Lowering a configurable limit below current use is rejected.
+Body compaction frees retained-body and prompt-byte capacity but leaves one
+tombstone record and does not reduce revision-record use. Revision-record
+pressure is recovered only through permanent tombstone deletion or aggregate
+purge. Thus a long-lived installation can recover
+authoring without deleting referenced history, weakening an unexpired replay
+guarantee, or making a Template too large for atomic confirmation.
 
 If starter seeding fails validation or storage at startup, Factory reports the
 specific starter key as unhealthy but continues serving existing Tasks and
@@ -887,7 +896,8 @@ run in linear time over at most one Template revision and one Task request.
   atomically deletes its current revision and every other revision or tombstone,
   while any omitted aggregate member or external reference rejects the purge.
   Aggregate purges subsume member actions, and retained or compacted duplicate
-  provenance blocks reclamation of its source.
+  provenance blocks reclamation of its source. The fixed 20,000 revision-record
+  cap cannot be raised beyond the maximum atomic purge-preview bound.
 - `AC-19`: Through each request's original 90-day expiry, an exact lost-response
   replay on the legacy Task create route returns the migrated Pipeline identity
   without admitting new work; changed, expired, and unknown requests fail as
@@ -965,6 +975,8 @@ provenance reference against apply, preserve referenced bytes, verify retained
 tombstones, purge complete archived aggregates containing current revisions and
 young tombstones, reject incomplete or newly referenced aggregates, prove purge
 actions subsume all member actions, and exercise ledger expiry and cap recovery.
+Offline limit fixtures prove the other three limits can change but every attempt
+to change or indirectly exceed the fixed 20,000 revision-record cap is rejected.
 They prove `INV-12` and `AC-18`, retain duplicate provenance after body
 compaction, block source reclamation from retained and compacted duplicate rows,
 and exercise
