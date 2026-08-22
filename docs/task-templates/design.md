@@ -408,15 +408,19 @@ byte use, reclaimable counts, and next mutation-ledger expiry. A compaction
 preview request contains an optional Template ID and `max_actions`, from 1 to
 1,000. This limit counts top-level reclamation actions, not revision members:
 one `purge_template` aggregate is one action. Each purge action contains the
-Template ID plus the complete ordered array of its revision IDs and digests;
+Template ID plus the complete ordered array of member revision IDs, digests,
+and content states. Every compacted member also includes its complete ordered
+`source_node_ids` array; retained members omit that redundant field because
+their procedure body remains readable until apply.
 `compact_body` contains its one revision ID and digest; and
 `delete_tombstone` contains its revision ID, digest, and complete ordered
 `source_node_ids` array. The total nested purge membership cannot exceed the
 global 20,000 revision-record limit, while at most 1,000 tombstone-deletion
-actions each expose the existing maximum of 20 source-node UUIDs. Preview and
+actions each expose the existing maximum of 20 source-node UUIDs. Across purge
+members, at most 400,000 source-node UUIDs can appear. Preview and
 apply responses contain no names, summaries, prompts, or procedure bytes and
-have a fixed 8 MiB serialized-response limit; these field and cardinality bounds
-keep the maximum response below it.
+have a fixed 32 MiB serialized-response limit; a maximum-shape fixture proves
+these field and cardinality bounds fit below it.
 
 Action generation is canonical and mutually exclusive. Factory determines
 eligible `purge_template` aggregates first, emits one action per aggregate, and
@@ -429,8 +433,8 @@ database-generation fence, and aggregate bytes and slots. SQLite stores the
 token hash, authenticated actor ID, original filter and `max_actions`, canonical
 preview JSON, its SHA-256 digest, database-generation fence, and expiry in
 `template_compaction_previews`; the plaintext token encodes no trusted data.
-Canonical preview JSON is capped at 8 MiB. At most 16 unexpired previews and 128
-MiB of preview JSON may exist. Preview creation removes expired rows and the
+Canonical preview JSON is capped at 32 MiB. At most 16 unexpired previews and
+256 MiB of preview JSON may exist. Preview creation removes expired rows and the
 actor's prior unconsumed preview, then fails without a token if either bound
 would still be exceeded.
 
@@ -691,8 +695,9 @@ that token and operator confirmation. The transaction rechecks every condition:
   to any of its revisions, no duplicate revision record, retained or compacted,
   names the Template or any revision as its source, and no unexpired mutation
   result points to the Template or any revision. `purge_template` is aggregate
-  deletion, not revision compaction: the preview must include every revision ID
-  and digest, and apply deletes the Template plus every revision record
+  deletion, not revision compaction: the preview must include every revision ID,
+  digest, and content state, plus the complete source-node set for every
+  compacted member. Apply deletes the Template plus every revision record
   transactionally.
   This includes the current revision and compacted tombstones regardless of
   their individual 90- or 365-day ages. If any revision is omitted or fails an
@@ -854,9 +859,10 @@ run in linear time over at most one Template revision and one Task request.
   new mutation. A new Pipeline route does not claim that legacy request as its
   own replay; changed, expired, and unknown legacy requests fail as specified.
 - `AC-22`: The authenticated storage panel previews at most 1,000 exact
-  reclamation actions and at most 20,000 nested revision members in an 8 MiB
-  response, persists the exact bounded preview behind its actor-bound token, and
-  applies it idempotently while the token is unexpired. A committed apply
+  reclamation actions, 20,000 nested revision members, and 400,000 nested
+  source-node IDs in a 32 MiB response. It persists the exact bounded preview
+  behind its actor-bound token and applies it idempotently while the token is
+  unexpired. A committed apply
   durably replays the same compact receipt after the token expires and reclaimed
   rows are gone; an uncommitted expired token or changed reference fence performs
   no partial work.
@@ -913,9 +919,11 @@ storage. A lost-response fixture deletes the maximum aggregate and proves that
 the replayed apply receipt is byte-identical after token expiry without
 consulting the deleted preview or resource rows. Preview persistence fixtures
 verify actor binding, stored canonical contents and digest, token replacement,
-expiry, and the 16-row and 128 MiB bounds.
+expiry, and the 16-row and 256 MiB bounds.
 The maximum tombstone-deletion fixture proves every retained source-node UUID is
-present in the preview and that the response stays under 8 MiB. Privacy
+present in both independent deletion and aggregate purge previews. The full
+20,000-revision, 400,000-node fixture proves the response stays under 32 MiB and
+preview storage stays under its 256 MiB total cap. Privacy
 assertions prove compacted
 rows retain no prompt or execution defaults in either source or derived Graph
 storage. Existing
