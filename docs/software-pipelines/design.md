@@ -678,8 +678,10 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   typed outcome of their declared source Gate.
 - `INV-26`: A remote publication has one durable authorization ordered against
   cancellation. Only its frozen candidate may be written or reconciled.
-- `INV-27`: A PR review Gate records `approved` only after every provider feed
-  reaches its current end and the newest unambiguous qualifying event is an
+- `INV-27`: A PR review Gate records `approved` only after two consecutive,
+  complete, bounded sweeps of all three flat provider feeds produce identical
+  normalized content digests and observe the target pull-request head. The
+  newest unambiguous qualifying event inside that stable feed vector must be an
   explicit approval for the target commit. Conflicting outcomes at the same
   cross-feed timestamp resolve conservatively to feedback. It never infers
   approval from the absence of mutable thread state.
@@ -1080,8 +1082,8 @@ Runs and Tracks gain cancellation timestamps used as promotion fences.
 Executions gain preparation-failure count and next-routing time. Gate Sessions
 store next poll time, deadline, target published commit, inclusive baseline and
 observed cursors per provider event feed, page continuations, deduplicated item
-IDs, chosen observation event, actor permission verification, outcome version,
-bounded satisfaction snapshot, and any
+IDs, the last stable cross-feed boundary vector, chosen observation event,
+actor permission verification, outcome version, bounded satisfaction snapshot, and any
 active Gate-check lease identity, owner, and expiry. A Session blocked only by
 Pipeline or Stage concurrency uses one
 canonical, non-actionable reason so the claim transaction can promote it
@@ -1336,16 +1338,48 @@ and conversation comments before the remote write. Open PR starts from empty
 feed IDs because the pull request does not yet exist. The GitHub adapter reads
 reviews, pull-request review comments, and issue
 comments through feeds with stable provider creation time and database ID. It
-queries from each inclusive baseline with overlap, paginates to the current
-feed end, and deduplicates immutable IDs. Mutable thread `isResolved` state is
-not an outcome input because GitHub supplies no ordered resolution event or
-feed-wide mutation version.
+queries from each inclusive baseline with overlap and deduplicates immutable
+IDs. Mutable thread `isResolved` state is not an outcome input because GitHub
+supplies no ordered resolution event or feed-wide mutation version.
 
-The same bounded provider observation reads the current pull-request head. If
-it differs from the Gate's target published commit, the Gate fails actionably
-with `remote_diverged` and cannot accept an approval or feedback outcome.
-Normal retry keeps the target and baselines after the operator restores the
-expected head or starts a new Run.
+One scan iteration performs two consecutive complete sweeps through GitHub's
+three flat REST feeds: pull-request reviews, pull-request review comments, and
+issue comments. Each sweep starts from the durable inclusive publication
+baseline, uses stable ascending provider order with overlap, reaches every
+current page, and normalizes the decision-relevant fields before hashing them.
+The review digest includes immutable ID, submission time, target commit ID,
+author login, current review state, canonical body text, and every other bounded
+field copied into the Gate result or feedback snapshot, so dismissal or a body
+edit changes the digest without requiring a new review ID. Each comment digest
+likewise includes immutable ID, creation time, author login, canonical body
+text, and every bounded field copied into the result or snapshot. The flat
+review-comment endpoint includes replies added to existing old threads.
+Deletion, addition, or a result-relevant mutation therefore changes that feed's
+digest.
+
+Each sweep also reads the current pull-request head. If either differs from the
+Gate's target published commit, the Gate fails actionably with
+`remote_diverged` and cannot accept an approval or feedback outcome. Normal
+retry keeps the target and baselines after the operator restores the expected
+head or starts a new Run.
+
+The adapter may freeze an outcome only when the second sweep produces the same
+three digests as the first. The three successful second-sweep responses form an
+explicit feed-vector boundary; no wall-clock comparison or claim of an atomic
+GitHub snapshot is made. Within that vector, each item's normalized second read
+is its component boundary for mutable state and snapshot text; the response
+that completes the feed's final page is its component boundary for membership.
+A mutation after an item's second read, or an item first observable after its
+feed's final-page response, belongs to a later explicit review round or Run,
+even if another feed is still being confirmed or the control-plane result
+transaction commits afterward.
+
+If a request fails or either sweep differs, the adapter discards the
+iteration's ephemeral candidates and restarts from the durable inclusive
+baselines on the next scheduled poll without advancing a cursor, continuation,
+or deduplicated ID. A lease performs exactly two sweeps and never starts a
+third. If the feeds do not match, the Gate remains waiting with
+`review_boundary_moving` and retries after backoff.
 
 The adapter orders qualifying events by provider creation time. Within one feed,
 provider database ID breaks a timestamp tie. Database IDs from different feeds
@@ -1707,10 +1741,18 @@ At most 500 Sessions are planned per Run, 100 hold execution slots, 20 Stages
 are stored per Pipeline, and prompts total at most 256 KiB. One feedback
 snapshot contains at most 100 items and 256 KiB after UTF-8 encoding. Its
 canonical successor view is at most 32 KiB and records omitted item and byte
-counts plus provider identities for explicit lookup. One Gate-check lease reads
-at most 20 provider pages or 500 items. Persisted event-scan metadata is capped
-at 2,000 items and 4 MiB per cycle; overflow is actionable and cannot choose an
-outcome. Gate polls start at the
+counts plus provider identities for explicit lookup. One Gate-check lease
+performs exactly two complete sweeps. Each sweep reads at most 2,000 unique
+items and 4 MiB of normalized event data. Because GitHub returns at most 100
+items per page and all three feeds require a response even when empty, the
+feed-page limit is 22 per sweep. One lease therefore permits
+at most 44 feed page reads, two pull-request head reads, 4,000 item
+representations, and 8 MiB across verification.
+The second read of an unchanged item counts against the verification-read
+budget but not the per-sweep unique-item limit. Ephemeral data is discarded
+after the result; persisted event-scan metadata remains capped at 2,000 unique
+items and 4 MiB. A 2,001st unique item or oversized sweep remains waiting with
+`review_state_too_large` and cannot choose an outcome. Gate polls start at the
 configured interval, back off to at most 15 minutes on provider failure, honor
 provider retry hints, and never run more than one poll per Track at once. List
 APIs remain cursor bounded. Attempt event and result limits remain unchanged.
@@ -1858,11 +1900,18 @@ overflow is actionable rather than retried indefinitely.
   through the prior publication identity, and lets a later explicit review
   round bind that identity. A feedback path binds the newly updated commit.
 - `AC-41`: A multi-page review event scan chooses the newest qualifying event
-  by the documented provider order only after all three feeds reach their
-  current ends. Same-timestamp cross-feed candidates with conflicting outcomes
-  resolve to feedback requested, never approval. Overflow remains visibly
-  waiting with `review_state_too_large`; mutable thread-resolution state is
-  never presented as snapshot proof.
+  by the documented provider order only after two consecutive complete,
+  bounded sweeps of the flat reviews, review-comments, and issue-comments feeds
+  produce identical normalized content digests and observe the target head.
+  Review state participates in its digest. A changed digest discards the
+  iteration without durable scan progress; the next scheduled poll starts two
+  fresh sweeps. Each normalized item's second read is its mutable-value boundary
+  and each feed's final-page response is its membership boundary. Failure to
+  stabilize remains visibly waiting with `review_boundary_moving`.
+  Same-timestamp cross-feed candidates with conflicting outcomes resolve to
+  feedback requested, never approval. Overflow remains visibly waiting with
+  `review_state_too_large`; mutable thread-resolution state is never presented
+  as snapshot proof.
 - `AC-42`: A public user without write permission cannot approve a Gate or
   trigger Address feedback. A GitHub-confirmed write, maintain, or admin actor
   can. Permission lookup failure leaves the Gate waiting without advancing any
@@ -2109,9 +2158,9 @@ comments, authorized and unauthorized public actors, permission lookup failure,
 empty polls, events during publication response loss, inclusive
 overlap and provider-ID deduplication, multi-page feed completion, within-feed
 ID ordering, skewed Factory/provider clocks, cross-feed timestamp ties
-with matching and conflicting outcomes,
-explicit event ordering before and after approval, bounded snapshots, rate-limit backoff,
-retry deadlines, untrusted-text prompt framing, response loss before Update PR
+with matching and conflicting outcomes, explicit event ordering before and
+after approval, bounded snapshots, rate-limit backoff, retry deadlines,
+untrusted-text prompt framing, response loss before Update PR
 completion, stale approved commit with a moved PR head, remote divergence, and
 same-branch feedback updates for `AC-33` through `AC-44`. They prove no command can push the base branch, tags,
 or an operator-owned ref. A two-round fixture proves approval passes through the
@@ -2120,7 +2169,22 @@ published by round one. A permission-retry fixture fails authorization once,
 proves every feed cursor and deduplicated ID remains unchanged, then succeeds
 and chooses that same retained event. Another fixture proves an unresolved
 same-time feedback actor blocks approval, while a strictly older unresolved
-actor does not block a newer authorized approval. Credential-isolation fixtures give the host authority
+actor does not block a newer authorized approval. A boundary-race fixture
+submits a review after the reviews feed was paged but before the comment feeds
+finish. It proves the differing second sweep prevents the older approval from
+committing and the restarted iteration chooses the newer feedback. Further
+fixtures add a reply to an existing old review thread and dismiss a review
+between sweeps; each must change its normalized digest and prevent a stale
+outcome. Another dismissal mutates an early page after its second read and
+proves that mutation belongs to the next vector, while the exact second-read
+value is the one frozen in the current result. Review-body and comment-body
+edits between sweeps change their digests and cannot leave stale text in Address
+feedback. A continuously changing feed remains waiting without advancing
+durable scan state. Exact 1,999-, 2,000-, and 2,001-item fixtures prove both
+sweeps fit the verification-read budget through the limit and overflow visibly
+beyond it. The accepted fixtures include worst-case distributions across all
+three feeds, including one large feed plus two empty or one-item feeds.
+Credential-isolation fixtures give the host authority
 broker a working provider credential while a real rootless Podman container can
 edit, stage, commit, and run the frozen model adapter through the exact V1 mount
 layout. Agent `git push`, `gh` mutation, credential-helper, SSH-agent, host-home,
