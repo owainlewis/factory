@@ -249,10 +249,11 @@ are two sizes of the same software procedure.
 - Summaries are optional and limited to 1 KiB of UTF-8. Prompts retain the
   existing 64 KiB limit.
 - Factory permits at most 500 active or archived user Templates, 5,000 retained
-  user revision bodies, and 320 MiB of retained user Template prompt bytes.
-  Section 7 defines previewed, operator-confirmed reclamation. A limit failure
-  reports the current use and eligible reclaimable amount and creates no partial
-  record.
+  user revision bodies, 20,000 total user revision records including compacted
+  tombstones, and 320 MiB of retained user Template prompt bytes. One Template
+  Graph has at most the Pipeline limit of 20 source nodes. Section 7 defines
+  previewed, operator-confirmed reclamation. A limit failure reports the current
+  use and eligible reclaimable amount and creates no partial record.
 - List APIs return at most 200 items per page and use stable cursor pagination.
 
 ## 6. Interfaces and data
@@ -359,9 +360,12 @@ number, optional starter release version, canonical procedure JSON, SHA-256
 digest, nullable immutable `single_agent_source_node_id`, optional duplicate
 provenance, author kind, and creation time. The source-node field is required
 only for `single_agent_v1` and names a node inside that Template revision. For
-`graph_v1`, all Template-local node IDs live in canonical procedure JSON and the
-single-agent field is null. Neither form is used directly as a Pipeline Stage
-ID. Duplicate provenance has foreign keys to its source Template and revision;
+`graph_v1`, Template-local node IDs are defined in canonical procedure JSON and
+the single-agent field is null. Neither form is used directly as a Pipeline Stage
+ID. Every revision also stores `source_node_ids_json`, the canonical ordered set
+of one to twenty node UUIDs extracted and validated from the single-agent field
+or Graph at creation. This bounded identity set survives procedure compaction.
+Duplicate provenance has foreign keys to its source Template and revision;
 the reference checks in section 7 prevent compaction or purge while the
 duplicate is retained. Task provenance stores Template ID, revision ID, Template name
 snapshot, digest, and canonical customized fields. The Task continues to store
@@ -453,7 +457,9 @@ steps in the same write-frozen transaction that renames Tasks to Pipelines:
    as entry. It uses the revision's immutable
    `single_agent_source_node_id` UUID. The source digest continues to
    authenticate the original procedure; the Template Graph digest independently
-   authenticates the derived reusable graph recipe.
+   authenticates the derived reusable graph recipe. Populate and verify the
+   separately retained `source_node_ids_json` for every revision kind before any
+   procedure body can become eligible for later compaction.
 3. Copy prompt, runtime, execution-profile default, and timeout into the Agent
    Stage. Map `concurrency_limit` to the Pipeline concurrency default. Leave
    Stage concurrency and requested token ceiling null. This matches the current
@@ -488,8 +494,11 @@ steps in the same write-frozen transaction that renames Tasks to Pipelines:
    unknown key returns HTTP 410 `task_api_removed`; a changed body returns
    `request_key_conflict`. It cannot create or mutate a resource. The new
    Pipeline client can also retrieve the same envelope from
-   `GET /api/v1/mutation-replays/{request_key}`. The replay-only route is removed
-   automatically after the final legacy expiry and health reports that date.
+   `GET /api/v1/mutation-replays/task-create/{request_key}`. That fixed route
+   queries only the retained legacy `task:create` scope alias, so a request key
+   reused in another operation scope cannot collide. The replay-only routes are
+   removed automatically after the final legacy expiry and health reports that
+   date.
 
 For a new `graph_v1` revision after the Pipeline release, the source procedure
 is the Template Graph and its node IDs are Template-local. Creating a Pipeline
@@ -503,8 +512,9 @@ Editing a migrated `single_agent_v1` revision in the graph editor creates a new
 Migration preflight rejects an unknown procedure kind, missing referenced
 revision, provenance digest mismatch, missing or non-UUID
 `single_agent_source_node_id`, duplicate Template-local node identity,
-incomplete source-node mapping, Stage-ID collision inside a converted Graph,
-graph digest mismatch, or ledger result that cannot be retargeted. The existing owner-only
+`source_node_ids_json` mismatch, incomplete source-node mapping, Stage-ID
+collision inside a converted Graph, graph digest mismatch, or ledger result that
+cannot be retargeted. The existing owner-only
 backup and offline rollback boundary from the Pipeline design apply. A failure
 leaves the pre-migration database unchanged.
 
@@ -554,16 +564,22 @@ that token and operator confirmation. The transaction rechecks every condition:
   days old, no Task or Pipeline points to it, no retained duplicate names it as
   its source, and no unexpired mutation result points to it. Compaction retains a
   tombstone with Template ID, revision ID, revision number, source digest,
-  source-node identities, creation time, and compaction time. It removes
-  procedure bytes and disables View changes for that revision. The tombstone
-  does not count toward retained-body or prompt byte limits.
+  the separately stored `source_node_ids_json`, creation time, and compaction
+  time. It removes procedure bytes and disables View changes for that revision.
+  The tombstone does not count toward retained-body or prompt byte limits, but it
+  does count toward the 20,000 total revision-record limit.
+- A compacted tombstone may be deleted permanently only when it has been
+  compacted for at least 365 days and the same Task, Pipeline, duplicate, current,
+  starter, and replay reference checks still pass. Its ID, digest, and source
+  node set are included in the preview. Deletion frees one total revision-record
+  slot. Revision numbers are never reused.
 - Current revisions, starter revisions, referenced revisions, and unexpired
   replay records are never eligible. A changed reference set or preview fence
   aborts the whole apply with `template_compaction_stale`.
 
 Factory runs expired mutation-ledger cleanup automatically, but never compacts a
 Template body automatically. If safe compaction cannot free enough capacity, an
-operator can raise the three Template storage limits with the offline
+operator can raise the four Template storage limits with the offline
 `factory templates set-limits` command. The command requires the server to be
 stopped, validates a database backup and free disk, caps retained prompt bytes
 at 2 GiB, writes the new limits transactionally, and reports the rollback
@@ -650,8 +666,9 @@ run in linear time over at most one Template revision and one Task request.
   source exactly once, with new Template-local identities and explicit source
   provenance; stale generation and changed-key replays are rejected.
 - `AC-18`: A previewed compaction removes only eligible unreferenced procedure
-  bodies, retains the specified tombstones, aborts on a new reference, and frees
-  the reported count and byte capacity.
+  bodies, retains the specified bounded tombstones, aborts on a new reference,
+  safely deletes only 365-day unreferenced tombstones, and frees the reported
+  body, record, and byte capacity.
 - `AC-19`: Through each request's original 90-day expiry, an exact lost-response
   replay on the legacy Task create route returns the migrated Pipeline identity
   without admitting new work; changed, expired, and unknown requests fail as
