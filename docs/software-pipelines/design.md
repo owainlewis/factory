@@ -342,7 +342,8 @@ never zero.
 The editor offers examples as copyable starting points, not special execution
 modes: `Quick change` has one Build Agent; `Controlled change` has Plan, Build,
 and Test Agents; `Pull request delivery` adds Open PR, PR review, and
-Address feedback. Once copied, every example is an ordinary Pipeline.
+Address feedback, then Update PR. Once copied, every example is an ordinary
+Pipeline.
 
 The browser shows one Pipeline Run section with Stage columns and one card per
 repository in its current Stage. A card carries the repository, Stage, runtime,
@@ -535,9 +536,10 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
 - `INV-26`: A remote publication has one durable authorization ordered against
   cancellation. Only its frozen candidate may be written or reconciled.
 - `INV-27`: A PR review Gate records `approved` only after every provider feed
-  reaches its current end and the newest qualifying ordered event is an
-  explicit approval for the target commit. It never infers approval from the
-  absence of mutable thread state.
+  reaches its current end and the newest unambiguous qualifying event is an
+  explicit approval for the target commit. Conflicting outcomes at the same
+  cross-feed timestamp resolve conservatively to feedback. It never infers
+  approval from the absence of mutable thread state.
 - `INV-28`: A provider event can choose a Gate outcome only when its actor
   satisfies the frozen approval policy through provider-confirmed repository
   permission.
@@ -991,6 +993,13 @@ unowned, or conflicting branch fails without adoption, deletion, reset, or overw
 Provider records use the provider repository identity plus pull-request number
 as durable identity; a changed title or URL does not create another record.
 
+Before owner freeze, retry on the same Worker treats a ready manifest owned by
+the same Track at the expected initial commit as idempotent preparation and
+reuses it. Retry on another Worker creates its own local owned branch and never
+adopts the first Worker's state. If the first Worker later returns after another
+owner froze, its prepared acknowledgement is rejected and its unaccepted local
+branch follows retained-Attempt cleanup.
+
 ## 7. Failure behavior and lifecycle
 
 Admission writes the Run, every Track, and every planned Session in one
@@ -1074,9 +1083,12 @@ with `remote_diverged` and cannot accept an approval or feedback outcome.
 Normal retry keeps the target and baselines after the operator restores the
 expected head or starts a new Run.
 
-The adapter chooses the newest qualifying event by the total key
-`(provider_created_at, provider_database_id, feed_kind)`. A review submission
-qualifies only when its provider commit ID equals the target commit. Review and
+The adapter orders qualifying events by provider creation time. Within one feed,
+provider database ID breaks a timestamp tie. Database IDs from different feeds
+are never compared as chronology. When the newest timestamp contains candidates
+from different feeds, one shared outcome is accepted; conflicting outcomes
+resolve conservatively to `feedback_requested`. A review submission qualifies
+only when its provider commit ID equals the target commit. Review and
 conversation comments qualify when created after the frozen publication
 boundary. Before ordering candidates, the Worker checks each distinct actor
 through GitHub's repository-permission endpoint. It returns the actor login,
@@ -1086,8 +1098,9 @@ plane never infers eligibility from author association or event text. A
 changes-requested review or comment from an eligible actor yields
 `feedback_requested`.
 An explicit approved review yields `approved` and is the observation boundary
-for that Gate. Earlier feedback is superseded by that explicit approval. An
-event ordered after it belongs to another explicit review round or later Run;
+for that Gate only after same-timestamp candidates resolve to approval. Earlier
+feedback is superseded by that explicit approval. An event ordered after it
+belongs to another explicit review round or later Run;
 Factory does not claim a live snapshot of mutable GitHub thread state. More
 than 2,000 events or 4 MiB of scan metadata remains waiting with
 `review_state_too_large` and cannot choose an outcome.
@@ -1437,16 +1450,18 @@ overflow is actionable rather than retried indefinitely.
   promotes a successor.
 - `AC-39`: Review events created during publication response loss are included
   through frozen inclusive baselines and provider ID deduplication. The newest
-  qualifying event at the Gate's explicit observation boundary determines the
-  outcome; later events belong to a later review round or Run.
+  qualifying timestamp, with conservative cross-feed tie resolution, determines
+  the outcome at the Gate's explicit observation boundary; later events belong
+  to a later review round or Run.
 - `AC-40`: Approval conditionally skips a complete feedback block, passes
   through the prior publication identity, and lets a later explicit review
   round bind that identity. A feedback path binds the newly updated commit.
 - `AC-41`: A multi-page review event scan chooses the newest qualifying event
   by the documented provider order only after all three feeds reach their
-  current ends. Overflow remains visibly waiting with
-  `review_state_too_large`; mutable thread-resolution state is never presented
-  as snapshot proof.
+  current ends. Same-timestamp cross-feed candidates with conflicting outcomes
+  resolve to feedback requested, never approval. Overflow remains visibly
+  waiting with `review_state_too_large`; mutable thread-resolution state is
+  never presented as snapshot proof.
 - `AC-42`: A public user without write permission cannot approve a Gate or
   trigger Address feedback. A GitHub-confirmed write, maintain, or admin actor
   can, and permission lookup failure leaves the Gate waiting.
@@ -1522,9 +1537,11 @@ Capability-intersection tests reject admission when no one Worker can run every
 Stage and block an owner whose later runtime becomes unhealthy for `AC-23`.
 Branch preparation tests reject unowned collisions and mismatched heads, then
 reuse an owned matching branch across preparation loss, retry, and later Stages
-for `AC-46`. Crash injection before and after pending-manifest fsync, ref
-compare-and-swap, ready transition, and prepared acknowledgement proves
-recovery finishes only matching owned state and never adopts a ref-only branch.
+for `AC-46`. A pre-freeze lost response retries idempotently on the same Worker;
+a retry that selects another Worker never adopts the first Worker's branch.
+Crash injection before and after pending-manifest fsync, ref compare-and-swap,
+ready transition, and prepared acknowledgement proves recovery finishes only
+matching owned state and never adopts a ref-only branch.
 Accepted-head tests crash before and after completion propose, transition
 manifest fsync, branch CAS, ready acknowledgement, and finalize commit and
 response. They prove exact recovery, cancellation rollback, and no early
@@ -1594,8 +1611,9 @@ idempotent pull-request discovery after response loss, review cursors, explicit
 approval and changes-requested events, qualifying review and conversation
 comments, authorized and unauthorized public actors, permission lookup failure,
 empty polls, events during publication response loss, inclusive
-overlap and provider-ID deduplication, multi-page feed completion, explicit
-event ordering before and after approval, bounded snapshots, rate-limit backoff,
+overlap and provider-ID deduplication, multi-page feed completion, within-feed
+ID ordering, cross-feed timestamp ties with matching and conflicting outcomes,
+explicit event ordering before and after approval, bounded snapshots, rate-limit backoff,
 retry deadlines, untrusted-text prompt framing, response loss before Update PR
 completion, stale approved commit with a moved PR head, remote divergence, and
 same-branch feedback updates for `AC-33` through `AC-44`. They prove no command can push the base branch, tags,
