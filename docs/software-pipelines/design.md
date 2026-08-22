@@ -379,9 +379,13 @@ Git directory. Container launch records an Attempt manifest containing the
 host-side private Git path, then exposes `/factory/git` only inside the
 container. At exit, the Worker treats that directory as untrusted input. Under
 fixed config it snapshots and canonically rehashes the complete object closure
-reachable from the validated input, final Attempt HEAD, and every index entry.
-It rejects invalid index stages, paths, modes, objects, refs, or a HEAD that is
-not a cryptographically valid commit. It does not require final HEAD to descend
+reachable from the validated input, final Attempt HEAD, and every non-gitlink
+index entry. A stage-zero mode-160000 gitlink is validated as an index entry
+whose object ID has the repository's frozen hash width, but its target commit is
+intentionally external to the superproject. The Worker neither requires,
+copies, nor rehashes that target in the superproject object store. It rejects
+other invalid index stages, paths, modes, objects, refs, or a HEAD that is not a
+cryptographically valid commit. It does not require final HEAD to descend
 from input. Reset, detached HEAD, merge, rewritten history, and an unrelated
 valid commit remain accepted one-stage results because they advance no shared
 Pipeline lineage. Attempt history records final symbolic-ref or detached shape,
@@ -389,10 +393,27 @@ commit ID, and its computed relation to input for visible inspection. The same
 snapshot file, byte, time, free-space, and reservation limits apply; overflow
 retains the untrusted Attempt evidence and fails actionably.
 
+Before reattachment, the Worker handles every validated gitlink path with
+no-follow directory operations. If a working-tree entry exists at that exact
+path, it atomically moves the complete entry, including any nested `.git` file,
+directory, symlink, config, hooks, or submodule contents, into the Attempt's
+untrusted evidence tree and recreates only an empty ordinary directory. A path
+race, symlinked parent, cross-device move, or failed fsync fails sanitization and
+leaves the Attempt retained; Factory never copies through or opens nested Git
+administration. The sanitized superproject config fixes
+`submodule.recurse=false`, `fetch.recurseSubmodules=false`,
+`status.submoduleSummary=false`, and `diff.ignoreSubmodules=all`. Factory host
+commands also pass the supported no-recurse or ignore-submodules options and
+never invoke `git submodule`. Ordinary host inspection therefore cannot enter
+Agent-controlled nested repositories.
+
 The Worker builds a new Attempt-owned host Git directory from scratch. It copies
 the complete verified closure as canonical objects, reconstructs only the
 validated final symbolic ref and HEAD, or a detached HEAD, and recreates the
-index from validated entries. It writes fixed config with no includes, helpers,
+index from validated entries. Validated gitlinks are preserved without
+pretending their external commits are superproject objects; their original
+working directories remain available only as labelled untrusted evidence. It
+writes fixed config with no includes, helpers,
 hooks, aliases, replacement
 refs, grafts, or alternates. The host directory is therefore self-contained and
 does not depend on later cache retention. Only after fsync does the Worker
@@ -730,7 +751,11 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
 - `INV-38`: An isolated one-stage Attempt preserves its private Git directory
   only as untrusted evidence and attaches the retained worktree to a separately
   rebuilt, self-contained, sanitized Git directory. It never imports into shared
-  cache, advances a Track head, or creates a sequencing ref.
+  cache, advances a Track head, or creates a sequencing ref. A validated
+  mode-160000 gitlink is preserved as an external index target and never creates
+  a superproject object-closure requirement. Its working-tree entry is moved
+  whole to untrusted evidence and replaced by an inert directory before any host
+  Git command can inspect nested Agent-controlled administration.
 - `INV-39`: A host authority accepts command envelopes only from the mutually
   pinned control-plane signing key generation; request data cannot introduce or
   rotate a verification key.
@@ -2174,6 +2199,11 @@ overflow is actionable rather than retried indefinitely.
   includes, alternates, and extra refs remain untrusted evidence and cannot
   affect ordinary host Git. Reset, detached, merged, rewritten, and unrelated
   valid HEADs are retained and visibly classified without an ancestry failure.
+  A valid unchanged or staged mode-160000 gitlink is retained without requiring
+  its external submodule commit in the superproject object database. Its
+  working-tree entry and nested Git administration are quarantined as untrusted
+  evidence, an inert directory replaces it, and host Git ignores submodule
+  inspection and executes no nested config or hook.
   Completion response loss and restart recover one inspectable worktree, while
   terminal cleanup removes worktree and both Git directories atomically.
 - `AC-55`: Mutual host enrollment pins the control-plane command key. Forged,
@@ -2289,7 +2319,14 @@ to the successor for `AC-48`.
 Isolated one-stage tests finish with an Agent-created commit, a staged new file,
 dirty tracked files, no change, reset history, detached HEAD, a merge commit,
 and a valid unrelated commit. They verify the recorded HEAD shape and input
-relation without imposing ancestry. They lose the completion response and
+relation without imposing ancestry. A submodule fixture retains unchanged and
+staged mode-160000 entries whose target commits are absent from the superproject
+object database, while malformed stages, modes, and hash widths fail. Hostile
+variants put an Agent-written `.git` pointer, `.git` directory, executable
+filesystem-monitor config, hooks, and symlinks at the gitlink path. Sanitization
+moves the complete entry to labelled evidence, leaves an inert directory, and
+proves top-level host `git status`, `git diff`, and `git log` neither inspect nor
+execute it. They lose the completion response and
 restart before and after pointer reattachment, then prove the retained link
 opens the reconstructed index, trusted ref, complete object closure, and
 workspace without a handoff ref, cache import, or alternate. Fixtures add
