@@ -9,7 +9,8 @@
 Factory is the control plane for software work performed by coding agents. A
 developer gives Factory one work item or a repository fleet. Factory queues the
 work, assigns it to available machines, supplies a consistent procedure, and
-shows what is running, ready, blocked, or failed.
+shows what is queued for capacity, running, ready, needs input, failed, or
+completed under a legacy exit-based contract.
 
 Factory does not try to become a better coding agent. Pi, Codex, Claude Code,
 and future runtimes already reason about repositories, use tools, create
@@ -134,10 +135,13 @@ It includes local and VM Workers, bounded concurrency, isolated worktrees,
 versioned Procedure snapshots, agent progress and terminal updates, central
 status, cancellation, and warned retries.
 
-It stops when Work is ready for human review, needs input, has no change, or
-fails. Human merge remains in GitHub. Central CI monitoring, automatic merge,
-general pipeline graphs, and a new Factory coding agent are not required to
-test the product thesis.
+It pauses Work when an agent needs input and requeues it after an answer.
+Agent-update Work finishes when it is ready for human review, has no change,
+fails, or is cancelled. Unconverted legacy Work may finish as `succeeded` from
+its existing exit-based contract without implying a pull request. Human merge
+remains in GitHub. Central CI monitoring, automatic merge, general pipeline
+graphs, and a new Factory coding agent are not required to test the product
+thesis.
 
 ## Measures of progress
 

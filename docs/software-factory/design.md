@@ -138,9 +138,11 @@ factory update --status=failed --message="The required service is unavailable"
 The local helper validates the Attempt-scoped capability and forwards the
 typed update through the Worker. An Attempt-ending update becomes final only after the
 agent process stops and the Worker completes the Attempt under its existing
-lease. A process that exits without an outcome update fails with the visible
-reason `Agent exited without reporting an outcome.` Factory never parses the
-agent's final prose to infer status.
+lease. Under `outcome_contract=agent_update`, a process that exits without an
+outcome update fails with the visible reason
+`Agent exited without reporting an outcome.` A legacy `process_exit` Run keeps
+its existing exit-based completion. Factory never parses the agent's final
+prose to infer agent-update status.
 
 Attempt lifecycle and Work outcome are deliberately separate. When an agent
 reports any valid Attempt-ending outcome and then stops, the Attempt is `succeeded`
@@ -396,6 +398,8 @@ Progress is an event, not a durable workflow state change. `running` means an
 execution owner exists. `needs-input` ends the current Attempt but pauses the
 Work, so it is not terminal. Capacity and routing waits remain `queued` with a
 visible `waiting_reason`; V1 does not add a separate blocked state.
+Compatibility-only `succeeded` represents exit-zero `process_exit` Work. It is
+not an agent update status and does not imply a pull request.
 
 | Current state | Owner | Allowed transition | Cause |
 | --- | --- | --- | --- |
@@ -403,6 +407,7 @@ visible `waiting_reason`; V1 does not add a separate blocked state.
 | `queued` | none | `cancelled` | operator cancellation |
 | `running` | Worker Attempt | unchanged | agent `running` progress update |
 | `running` | Worker Attempt | `ready`, `needs-input`, `failed`, `no-change` | accepted outcome followed by stopped process |
+| `running` | Worker Attempt | `succeeded` or `failed` | legacy `process_exit` completion |
 | `running` | operator | `ready`, `needs-input`, `failed`, `no-change` | trusted operator update |
 | `running` | either | `cancelled` | operator cancellation |
 | `needs-input` | none | `queued` | operator answer appends context; the next Worker claim creates the Attempt |
@@ -410,12 +415,12 @@ visible `waiting_reason`; V1 does not add a separate blocked state.
 | `needs-input` | none | `cancelled` | operator cancellation |
 | `failed` or `cancelled` | none | `queued` | explicit warned retry |
 
-`ready`, `failed`, `no-change`, and `cancelled` are terminal outcomes unless an
-explicit retry rule above applies. A manual `running` update atomically records
-operator ownership and removes the Work from Worker eligibility. A direct
-manual terminal update from queued Work performs that claim and completion in
-one transaction. An operator must cancel an active Worker Attempt before taking
-manual ownership.
+`ready`, `succeeded`, `failed`, `no-change`, and `cancelled` are terminal
+outcomes unless an explicit retry rule above applies. A manual `running` update
+atomically records operator ownership and removes the Work from Worker
+eligibility. A direct manual terminal update from queued Work performs that
+claim and completion in one transaction. An operator must cancel an active
+Worker Attempt before taking manual ownership.
 
 ### Requirements
 
@@ -448,7 +453,8 @@ manual ownership.
   Reusing it for `--rebuild` or any different request conflicts.
 - Duplicate Build admission conflicts while matching Work is queued, running,
   or needs-input.
-- A process exit without an outcome report fails with a fixed reason.
+- Under `outcome_contract=agent_update`, a process exit without an outcome
+  report fails with a fixed reason. `process_exit` Runs retain legacy behavior.
 - An operator answer is non-empty UTF-8 text of at most 8 KiB and requeues Work
   without changing the frozen Procedure or original context. The next Worker
   claim creates the Attempt.
@@ -493,8 +499,8 @@ and requires `--id`.
 
 `--wait` streams status and returns as soon as any Work needs input, using exit
 code 2, even while independent siblings continue. Otherwise it returns when the
-Run finishes: exit 0 when every Work is ready or no-change, and exit 1 when any
-Work is failed or cancelled. The CLI always prints the Work counts and IDs
+Run finishes: exit 0 when every Work is ready, no-change, or compatibility
+succeeded, and exit 1 when any Work is failed or cancelled. The CLI always prints the Work counts and IDs
 before returning so the operator can answer or inspect the result.
 
 An operator `running` update atomically claims manual ownership when the Work
@@ -680,12 +686,14 @@ Attempt and Work with stored delivery evidence and a fixed postflight reason;
 it never marks stale evidence ready. Factory validates delivery identity, not
 CI success or semantic correctness; the agent remains responsible for both.
 
-If the agent process exits without an outcome report, the Worker fails the
-Attempt with the fixed missing-report reason. If it reports an outcome but does
-not exit, the supervisor stops it after ten seconds. If the Worker dies after
-forwarding the report, normal lease expiry stops or reconciles the process
-before the report may become final. Factory never presents Work as ready while
-process ownership is uncertain.
+For `outcome_contract=agent_update`, if the agent process exits without an
+outcome report, the Worker fails the Attempt with the fixed missing-report
+reason. A `process_exit` Run completes through its legacy exit and result rules.
+If an agent-update Run reports an outcome but does not exit, the supervisor
+stops it after ten seconds. If the Worker dies after forwarding the report,
+normal lease expiry stops or reconciles the process before the report may
+become final. Factory never presents Work as ready while process ownership is
+uncertain.
 
 A valid `failed` report still completes the Attempt successfully because the
 agent fulfilled the reporting contract; the Work outcome is failed. This
@@ -758,11 +766,13 @@ outcome.
 - `AC-5`: An active agent can report progress and exactly one Attempt-ending
   outcome for only its current Work through the injected `factory update`
   capability.
-- `AC-6`: The Work board shows queued, running, needs-input, ready, failed,
-  no-change, and cancelled Work with latest progress, repository, Worker, and
-  PR link where present.
-- `AC-7`: An agent that exits without a terminal update produces the fixed
-  visible failure reason and no inferred success.
+- `AC-6`: The Work board shows queued, running, needs-input, ready, succeeded,
+  failed, no-change, and cancelled Work with latest progress, repository,
+  Worker, and PR link where present. `succeeded` is labelled as legacy
+  process-exit completion and never implies a PR.
+- `AC-7`: An `agent_update` agent that exits without an outcome update produces
+  the fixed visible failure reason and no inferred success; a `process_exit`
+  Run retains its legacy completion behavior.
 - `AC-8`: A ready update cannot make Work ready until the Worker proves the
   agent process stopped and then revalidates the repository, immutable branch,
   remote ref, local HEAD, and PR head SHA;
@@ -794,8 +804,9 @@ outcome.
 - `AC-19`: Duplicate admission while matching Work needs input conflicts, and
   a rebuild atomically binds every replacement to its deterministic terminal
   predecessor Work with a new idempotency key.
-- `AC-20`: `--wait` returns 2 on needs-input, 0 when all Work finishes ready or
-  no-change, and 1 when finished Work includes failed or cancelled.
+- `AC-20`: `--wait` returns 2 on needs-input, 0 when all Work finishes ready,
+  no-change, or legacy succeeded, and 1 when finished Work includes failed or
+  cancelled.
 
 ## 10. Test approach
 
