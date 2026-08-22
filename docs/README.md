@@ -28,6 +28,9 @@ Start with the root [README](../README.md) to run Factory.
 
 ## Active design work
 
+- [Software pipelines](software-pipelines/design.md): proposed ordered agent
+  Stages, durable Git checkpoint handoff, and a software-work graph over the
+  existing Run, Session, Attempt, and Worker lifecycle.
 - [Cloud Run agent backend](cloud-run-agents/design.md): proposed elastic,
   API-backed execution alongside persistent local and VM Workers.
 - [Software Factory vision](software-factory/vision.md): product thesis, scope,
