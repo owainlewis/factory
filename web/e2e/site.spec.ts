@@ -9,6 +9,9 @@ function capturePageFailures(page: Page) {
   });
   page.on("pageerror", (error) => failures.push(`page: ${error.message}`));
   page.on("requestfailed", (request) => failures.push(`request: ${request.url()} ${request.failure()?.errorText ?? "failed"}`));
+  page.on("response", (response) => {
+    if (response.status() >= 400) failures.push(`response: ${response.status()} ${response.url()}`);
+  });
   return failures;
 }
 
@@ -116,6 +119,20 @@ test("public site is keyboard accessible", async ({ page }) => {
   await expect(skipLink).toBeVisible();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(`${siteURL}/#main`);
+  await expect(page.locator("main")).toBeFocused();
+});
+
+test("public site preserves the product window at intermediate widths", async ({ page }) => {
+  await page.setViewportSize({ width: 1120, height: 900 });
+  await page.goto(siteURL);
+
+  const windowBounds = await page.locator(".product-window").boundingBox();
+  expect(windowBounds).not.toBeNull();
+  expect((windowBounds?.x ?? 0) + (windowBounds?.width ?? 0)).toBeLessThanOrEqual(1120);
+  const viewport = await page.evaluate<{ width: number; scrollWidth: number }>(
+    "({ width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth })",
+  );
+  expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.width);
 });
 
 test("public site remains usable at 390 pixels", async ({ page }) => {
