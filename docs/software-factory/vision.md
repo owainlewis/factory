@@ -150,8 +150,8 @@ Factory is moving toward this vision when a developer can:
 - run one Procedure across at least 100 frozen repository targets;
 - retry one failed target without replaying successful siblings;
 - add or remove Worker capacity without changing a Procedure;
-- identify the exact Procedure, context, runtime, Worker, updates, and outcome
-  used for historical Work;
+- identify the exact Procedure, Factory-supplied context, source reference,
+  runtime, Worker, updates, and outcome used for historical Work;
 - measure ready pull requests and developer interventions rather than only
   process exits.
 

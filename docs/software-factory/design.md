@@ -74,7 +74,7 @@ flowchart LR
 ```
 
 The control plane owns Run and Work records, target identity, scheduling,
-immutable input, update history, and user-visible state. A Worker owns its
+immutable Factory-supplied input, update history, and user-visible state. A Worker owns its
 repository cache, Attempt lease, worktree, supervisor, agent process, and the
 local update endpoint. The coding agent owns engineering judgment and external
 actions performed with Worker-host tools. GitHub, Linear, and other systems
@@ -102,8 +102,13 @@ may use the same repository.
 GitHub issue URLs derive their repository and canonical source identity. An
 opaque reference such as `LINEAR-123` requires `--repo` in V1. Factory does not
 fetch Linear. The agent reads the live item with tools available on its Worker,
-or reports `needs-input` when it cannot obtain enough context. Manual text can
-be supplied with an explicit repository and receives a random source identity.
+or reports `needs-input` when it cannot obtain enough context.
+
+The immutable target contains the source reference, repository, and any
+operator-supplied context, not a copy of live provider content. GitHub or Linear
+content read by the agent may change between Attempts. Historical Work records
+the exact reference and read time where runtime events expose it, but V1 does
+not claim to preserve the exact external item body the agent observed.
 
 A Worker claims eligible Work, prepares an isolated worktree, and starts its
 resolved Pi, Codex, or Claude Code runtime. The operator configures one default
@@ -290,12 +295,14 @@ comments or other agent side effects.
 
 The Claim and prompt contain the immutable publish ref. The standard Procedure
 requires the agent to push local `HEAD` to that ref and use it as the pull
-request head. Before accepting `ready`, the Worker verifies that local `HEAD`,
-the fetched remote publish ref, and the PR head SHA match, and that the PR head
-branch and repository match the Work. A mismatch returns actionable validation
-feedback and leaves the Attempt running. Factory never force-pushes or deletes
-the remote publish branch. A normal non-fast-forward push is for the agent to
-reconcile or report as `needs-input`.
+request head. Before accepting the report provisionally, the Worker verifies
+that local `HEAD`, the fetched remote publish ref, and the PR head SHA match,
+and that the PR head branch and repository match the Work. A mismatch returns
+actionable validation feedback and leaves the Attempt running. After the
+process group stops, the Worker repeats every check before making Work ready.
+Factory never force-pushes or deletes the remote publish branch. A normal
+non-fast-forward push is for the agent to reconcile or report as
+`needs-input`.
 
 #### Built-in standard Build Procedure
 
@@ -322,8 +329,9 @@ Those additions require separate credential, namespace, and mapping decisions.
 #### Ready stops before merge
 
 `ready` means the agent reports that a pull request is ready for a human. The
-report includes a PR URL and message, and Factory may validate that the URL
-belongs to the expected repository. GitHub owns review, mergeability, and
+report includes a PR URL and message. Factory must validate the URL, expected
+repository, immutable branch, remote ref, and head SHA after the agent process
+group stops. GitHub owns review, mergeability, and
 merge. We reject automatic merge and a durable `complete` state in V1 because
 both require ongoing provider observation and repository policy.
 
@@ -369,12 +377,16 @@ model.
 - `INV-12`: Retrying one Work never replays a terminal sibling.
 - `INV-13`: Work-item and repository content cannot change the trusted
   Procedure or choose a repository clone source.
-- `INV-14`: Historical Work identifies the exact Procedure, context, target,
-  runtime, Worker, updates, Attempts, and outcome used.
+- `INV-14`: Historical Work identifies the exact Procedure, Factory-supplied
+  context, source reference, target, runtime, Worker, updates, Attempts, and
+  outcome used. It does not claim an immutable copy of external content read by
+  the agent.
 - `INV-15`: Factory does not claim exactly-once external side effects performed
   by an agent.
 - `INV-16`: A legacy Task keeps its process-exit completion behavior until an
   operator explicitly converts its outcome contract.
+- `INV-17`: Agent-owned Work becomes ready only from delivery evidence
+  revalidated after its process group has stopped.
 
 ### Work state transitions
 
@@ -437,6 +449,9 @@ manual ownership.
   process previously started.
 - Setup requires one valid default Build runtime. `factory build --runtime`
   accepts only a configured runtime and admission freezes the resolved choice.
+- An opaque work-item reference is 1 to 64 ASCII characters matching
+  `[A-Za-z0-9][A-Za-z0-9._-]*`. Whitespace, prose, and other characters are
+  rejected before admission.
 - A trusted operator may update Work only when it has no active Attempt.
 - Queue, Work, update, Attempt, and Worker list APIs remain bounded and cursor
   paginated.
@@ -514,10 +529,11 @@ stop. The supervisor allows ten seconds for normal exit, then stops the process
 group. The Worker reports terminal Attempt completion only after it proves the
 process group stopped. Cancellation received before completion wins.
 
-On completion, a valid outcome report maps to a `succeeded` Attempt and its
-reported Work outcome. No report or an infrastructure error maps to a `failed`
-Attempt and failed Work. This keeps process execution evidence separate from
-the agent's semantic judgment.
+On completion, a valid non-ready outcome report maps to a `succeeded` Attempt
+and its reported Work outcome. A ready report maps to succeeded and ready only
+after post-stop delivery revalidation. No report, an infrastructure error, or
+failed post-stop validation maps to a `failed` Attempt and failed Work. This
+keeps process execution evidence separate from the agent's semantic judgment.
 
 ### Stored resources
 
@@ -539,7 +555,7 @@ target_key
 target_kind: work_item | repository
 repository_id
 repository_identity
-source_kind: github_issue | opaque | manual | repository
+source_kind: github_issue | opaque | repository
 source_key
 source_reference
 context_snapshot
@@ -575,9 +591,9 @@ derived from its immutable Work ID and is bounded to a Git-safe value such as
 
 A GitHub issue URL normalizes to
 `github:<lowercase-owner>/<lowercase-repository>:issue:<number>`. An opaque
-reference normalizes Unicode whitespace but otherwise preserves case and is
-scoped to its managed repository. Manual text uses a random source key. A
-repository target uses the managed repository ID.
+reference preserves case, must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, and is
+scoped to its managed repository. A repository target uses the managed
+repository ID.
 
 `target_key` is the source key plus repository ID for a work item and the
 repository ID for a fleet target. It is unique inside one Run. The admission
@@ -595,8 +611,8 @@ arrives in a later invocation; a different outcome report conflicts.
 ## 7. Failure behavior and lifecycle
 
 Admission validates the complete target set before writing anything. Unknown,
-disabled, duplicate, empty, or oversized targets create no Run. An opaque
-reference without an explicit repository creates no Run.
+disabled, duplicate, empty, malformed, or oversized targets create no Run. An
+opaque reference without an explicit repository creates no Run.
 
 Work waits visibly when no compatible Worker has capacity. A Worker that loses
 its lease stops the agent process group. Infrastructure failure before or after
@@ -620,8 +636,12 @@ report returns the stored outcome, while a different outcome report conflicts.
 Progress after an outcome report conflicts.
 
 For `ready`, the Worker performs a bounded GitHub and remote-ref check before
-accepting the report. A timeout or provider outage returns a retriable validation
-error and leaves the Attempt running. Factory validates delivery identity, not
+accepting the report provisionally. A timeout or provider outage returns a
+retriable validation error and leaves the Attempt running. After the process
+group stops, the Worker repeats the repository, branch, local HEAD, remote ref,
+and PR head SHA checks. A mismatch or provider outage at that point fails the
+Attempt and Work with stored delivery evidence and a fixed postflight reason;
+it never marks stale evidence ready. Factory validates delivery identity, not
 CI success or semantic correctness; the agent remains responsible for both.
 
 If the agent process exits without an outcome report, the Worker fails the
@@ -708,7 +728,8 @@ outcome.
 - `AC-7`: An agent that exits without a terminal update produces the fixed
   visible failure reason and no inferred success.
 - `AC-8`: A ready update cannot make Work ready until the Worker proves the
-  agent process stopped and verifies the immutable branch and head SHA;
+  agent process stopped and then revalidates the repository, immutable branch,
+  remote ref, local HEAD, and PR head SHA;
   cancellation wins over a late report.
 - `AC-9`: Answering a needs-input question requeues Work with the answer and
   prior history while preserving the original Procedure and context; only the
@@ -744,9 +765,11 @@ legacy completion cases. HTTP tests prove CLI admission validation, source
 normalization, message limits, cursor bounds, and operator updates for `AC-1`,
 `AC-3`, `AC-11`, `AC-15`, `AC-17`, and `AC-18`.
 
-Worker and supervisor tests prove `INV-5` through `INV-8` and `INV-11` with
+Worker and supervisor tests prove `INV-5` through `INV-8`, `INV-11`, and
+`INV-17` with
 wrong tokens, expired leases, terminal-report races, cancellation, forced exit,
-parent loss, stable publish continuation, PR identity validation, and cleanup.
+parent loss, stable publish continuation, preflight and post-stop PR identity
+validation, provider outage, branch movement after report, and cleanup.
 They verify `AC-5`, `AC-7`, `AC-8`, `AC-10`, `AC-12`, and `AC-13`, including
 the race detector.
 They also prove that every valid semantic outcome completes the Attempt while
@@ -755,6 +778,9 @@ only `ready` makes the Work ready.
 Prompt boundary tests prove `INV-10` and `INV-13`, the exact Procedure snapshot,
 trusted and untrusted sections, injected update instructions, and maximum final
 prompt size for `AC-4`.
+
+Admission tests prove the exact opaque-reference grammar and reject whitespace,
+prose, Unicode, empty, and overlength values without creating partial Work.
 
 CLI tests use a real loopback server to prove multi-reference admission,
 request replay, human and JSON output, `--wait`, opaque-reference repository
@@ -778,6 +804,10 @@ real Worker-local update endpoint.
 - An agent may forget to call `factory update`. The standard wrapper makes the
   requirement short and explicit. Missing reports fail visibly instead of
   being inferred from prose.
+- A live GitHub or Linear item may change between Attempts. V1 records its
+  stable reference but does not snapshot provider content. Provider history is
+  the source for auditing those edits; a later integration may freeze content
+  at admission when credentials and identity are designed.
 - Waiting for CI consumes a Worker slot. V1 measures wait duration and timeout
   frequency before adding durable external waiting and continuation.
 - Stable publish branches reduce duplicate PRs but cannot make comments,
