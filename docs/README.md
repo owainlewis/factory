@@ -28,6 +28,9 @@ Start with the root [README](../README.md) to run Factory.
 
 ## Active design work
 
+- [Agent-directed software factory](software-factory/design.md): proposed
+  work-item queue, repository fleet Runs, agent update capability, and first
+  useful CLI.
 - [Cloud Run agent backend](cloud-run-agents/design.md): proposed elastic,
   API-backed execution alongside persistent local and VM Workers.
 - [Software Factory vision](software-factory/vision.md): product thesis, scope,
@@ -48,10 +51,9 @@ Start with the root [README](../README.md) to run Factory.
   Runs.
 - [Coding automation experience](automation-experience/design.md): implemented
   Runbook-first UX record, superseded by Tasks and Runs.
-- [Software Factory target architecture](software-factory/design.md): proposed
-  Definitions, Triggers, Runs, and Jobs, superseded by Tasks and Runs.
 - [Unified CLI](cli/design.md): useful process-boundary record whose resource
-  names and command contract must be revised against Tasks and Runs.
+  names and command contract are superseded by the agent-directed target
+  design.
 
 Current behavior belongs in the root `ARCHITECTURE.md`. Proposed behavior belongs
 in a focused design until it is implemented.

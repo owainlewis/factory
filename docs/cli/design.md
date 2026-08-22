@@ -1,8 +1,9 @@
 # Factory command-line interface
 
 > **Status:** Superseded command contract, not implemented. Its process
-> boundaries remain useful, but its resource names and commands must be revised
-> against the [Software Factory target architecture](../software-factory/design.md).
+> boundaries remain useful, but the
+> [agent-directed software factory](../software-factory/design.md) owns the
+> current proposed command surface.
 
 > **Automation boundary:** The external `factory ingest github` role and
 > standalone schedule resource in earlier revisions are superseded by

@@ -1,475 +1,822 @@
-# Software Factory target architecture
+# Agent-directed software factory
 
-> **Status:** Proposed revision
+> **Status:** Proposed for review
 
 ## 1. Executive summary
 
-Factory is an orchestration system for software-engineering agents. A user
-configures a Worker, adds Git repositories, saves a prompt as a Definition, and
-runs that Definition against one or many repositories. Factory starts the
-agents, tracks their lifecycle, and reports the outcome.
+Factory currently runs saved prompts across repositories, but a developer who
+wants several coding tasks completed still has to create and monitor separate
+agent conversations. The target product lets that developer submit work-item
+references or select a repository fleet, then rely on Factory to queue the
+work, assign coding agents, apply consistent instructions, and collect progress
+and outcomes in one place.
 
-The current product has separate Workflow, revision, Automation, Occurrence,
-Task, Execution, Attempt, and worker concepts. The target product has five
-concepts: **Definition**, **Trigger**, **Run**, **Job**, and **Worker**.
+The design keeps Factory out of the coding-agent business. A capable existing
+agent owns refinement, implementation, tests, subagents, review, pull-request
+creation, and CI repair. Factory gives the agent a small scoped capability to
+report progress, readiness, questions, failure, or no change. Factory owns the
+durable outer loop: admission, frozen input, capacity, leases, process safety,
+history, and visibility.
 
-V1 is local-first. It supports manual and scheduled Runs on local agent
-Workers, repository fan-out, and operational metrics. Pi, Codex, and Claude
-Code are initial runtime examples. Remote VM Workers are the next scaling step.
-GitHub webhook Triggers follow later. Kubernetes is a possible future Worker
-target, but it is not on the active roadmap.
-
-The built-in SQLite orchestration path remains the first-class V1 backend. A
-later production deployment may select Temporal or a similar durable workflow
-engine behind the same product model. Definitions and the Worker-facing product
-contract must not depend on that choice. The architecture decision, history
-migration, and same-Definition prototype remain tracked in
-[#259](https://github.com/owainlewis/factory/issues/259); they are not part of
-this V1 implementation.
-
-The main tradeoff is trust. The agent uses the tools and credentials available
-on its Worker, including authenticated `gh`. Factory does not intermediate
-comments, branches, issues, or pull requests and cannot promise exactly-once
-external side effects.
+The main downside is that V1 trusts an agent's semantic status report. Factory
+validates identity, scope, transition shape, and cheap external facts, but it
+does not attempt to prove the implementation correct. This is deliberate. The
+first version tests whether agent-directed status plus durable coordination is
+more useful than managing many terminal sessions.
 
 ## 2. Context and scope
 
-The current [architecture](../../ARCHITECTURE.md) already has useful execution
-machinery: durable tasks, isolated worktrees, leases, events, cancellation,
-cleanup, runtime supervision, and a repository catalog. It also already lets an
-agent use authenticated `gh` from the Worker host.
+The current [architecture](../../ARCHITECTURE.md) already supplies durable
+Tasks, Runs, repository Sessions, Attempts, leases, local and VM Workers,
+isolated worktrees, cancellation, events, retries, and retained failure state.
+The browser now presents Runs as Work, but admission is still centered on a
+saved Task with a fixed repository set. An invocation cannot supply several
+work-item targets, and an agent can only return arbitrary result text when its
+process exits.
 
-The problem is the product model. A user who wants to run one prompt must
-understand Workflows, revisions, Tasks, and workers. Scheduled work adds
-Automations and Occurrences. Running the same prompt across five repositories
-is not one visible operation.
+Two user needs motivate the change:
 
-This revision keeps the reliable execution machinery and simplifies the
-operator experience. It covers the V1 journey and the boundaries later Worker
-and Trigger types must preserve. It does not design a generic automation
-platform or a deterministic GitHub action gateway.
+```sh
+factory build LINEAR-123 LINEAR-124 --repo github.com/acme/api
+factory run bug-fix --repos all
+```
+
+The first queues existing software tasks. The second applies one reusable
+engineering procedure to a repository fleet. Both need the same scheduling,
+isolation, agent runtime, progress, cancellation, result, and retry machinery.
+
+This design covers one local single-operator control plane, local and enrolled
+VM Workers, a unified CLI, manual work-item admission, repository fleet
+admission, a built-in standard Build procedure, saved Procedures, and the
+agent update capability. It does not add a public team service, a provider
+plugin system, a general pipeline graph, central CI waiting, or automatic
+merge.
 
 ## 3. System context
 
 ```mermaid
 flowchart LR
-    U["Operator"] --> D["Definition: saved prompt"]
-    T["Manual or schedule Trigger"] --> R["Run: one invocation"]
-    D --> R
-    R --> J1["Job: repository A"]
-    R --> J2["Job: repository B"]
-    J1 --> RN["Worker"]
-    J2 --> RN
-    RN --> A["Pi, Codex, Claude Code, or another coding agent"]
-    A --> G["Git and GitHub CLI"]
-    J1 --> M["Lifecycle and metrics"]
-    J2 --> M
+    O["Developer"] --> CLI["Factory CLI or browser"]
+    GH["GitHub issue URL"] --> CLI
+    LR["Opaque reference such as LINEAR-123"] --> CLI
+    CLI --> CP["Factory control plane"]
+    P["Built-in or saved Procedure"] --> CP
+    CP --> R["Run with frozen targets"]
+    R --> W1["Work: repository and optional item"]
+    R --> W2["Work: repository and optional item"]
+    W1 --> WK["Local or VM Worker"]
+    W2 --> WK
+    WK --> A["Existing coding-agent runtime"]
+    A --> FT["Attempt-scoped Factory update tool"]
+    A --> EXT["Git, GitHub CLI, tests, and other tools"]
+    FT --> WK
+    WK --> CP
 ```
 
-Factory owns Definitions, Triggers, Runs, Jobs, Worker coordination, repository
-targets, lifecycle events, results, and metrics. The Worker owns the execution
-environment, worktree, agent process, and available tools. The agent owns the
-engineering work it performs with those tools. GitHub remains the source of
-issues, pull requests, reviews, and repository state.
+The control plane owns Run and Work records, target identity, scheduling,
+immutable input, update history, and user-visible state. A Worker owns its
+repository cache, Attempt lease, worktree, supervisor, agent process, and the
+local update endpoint. The coding agent owns engineering judgment and external
+actions performed with Worker-host tools. GitHub, Linear, and other systems
+remain sources of work and delivery state, not Factory databases.
 
 ## 4. Proposed design
 
-### V1 user journey
+### How it works
 
-#### Configure a local Worker
+#### Build work items
 
-As an operator, I want to connect a local agent Worker so Factory can run Pi,
-Codex, Claude Code, or another supported coding agent on my machine.
+A developer runs:
 
-One local launcher command starts the control plane and a local Worker process.
-On first start, the Worker creates a durable random identity at
-`~/.factory/worker/id`, then registers with the control plane. Restarting the
-launcher reuses that identity.
+```sh
+factory build LINEAR-123 LINEAR-124 --repo github.com/acme/api
+```
 
-The Worker performs bounded, non-interactive health checks for Git,
-authenticated `gh`, and installed agent runtimes such as Pi, Codex, and Claude
-Code. The setup screen shows each capability as ready, missing,
-unauthenticated, or unhealthy. One host may advertise several runtimes. A
-Definition selects the runtime and required tools; each Job still launches one
-isolated agent process. V1 configuration does not install or authenticate
-third-party CLIs for the user.
+The CLI resolves the managed repository and sends one idempotent admission
+request containing the ordered references. The control plane selects the
+built-in `standard-build` Procedure, freezes its current generation, and
+creates one Run with two Work targets. Each Work has its own identity,
+repository, context, state, progress history, result, and Attempts. Two targets
+may use the same repository.
 
-#### Configure repositories
+GitHub issue URLs derive their repository and canonical source identity. An
+opaque reference such as `LINEAR-123` requires `--repo` in V1. Factory does not
+fetch Linear. The agent reads the live item with tools available on its Worker,
+or reports `needs-input` when it cannot obtain enough context. Manual text can
+be supplied with an explicit repository and receives a random source identity.
 
-As an operator, I want to add the GitHub repositories my team works on so I can
-choose where a Definition runs.
+A Worker claims eligible Work, prepares an isolated worktree, and starts its
+resolved Pi, Codex, or Claude Code runtime. The operator configures one default
+Build runtime during setup and may override it with `--runtime`; admission
+freezes the resolved choice. The final prompt contains a short
+Factory safety preamble, the frozen standard Build Procedure, repository and
+branch metadata, the untrusted work-item context, and the update-tool contract.
+The agent chooses how to refine, build, test, use subagents, review, open a pull
+request, and repair CI.
 
-Factory stores canonical repository identities and enabled state. Workers
-acquire a configured repository on demand and never clone a URL supplied by a
-prompt or webhook payload.
+During execution the agent may report progress:
 
-#### Save a shared Definition
+```sh
+factory update --status=running --message="Waiting for integration CI"
+```
 
-As an operator, I want to save a prompt such as `Find bugs`, `Triage issues`, or
-`Review pull request` so everyone using the same trusted Factory instance runs
-the same instructions.
+Before finishing it reports exactly one Attempt-ending outcome:
 
-A Definition stores a name, prompt, required runtime, timeout, and execution
-defaults. Definitions edit in place. Each Run stores the complete Definition
-snapshot it used, so historical Runs remain understandable without exposing a
-revision library.
+```sh
+factory update --status=ready --pr=<url> --message="Ready for human review"
+factory update --status=needs-input --message="Which API behavior is correct?"
+factory update --status=failed --message="The required service is unavailable"
+```
 
-#### Run once on one repository
+The local helper validates the Attempt-scoped capability and forwards the
+typed update through the Worker. An Attempt-ending update becomes final only after the
+agent process stops and the Worker completes the Attempt under its existing
+lease. A process that exits without an outcome update fails with the visible
+reason `Agent exited without reporting an outcome.` Factory never parses the
+agent's final prose to infer status.
 
-As an operator, I want to select a Definition and repository and press **Run
-once** so an agent completes the work end to end.
+Attempt lifecycle and Work outcome are deliberately separate. When an agent
+reports any valid Attempt-ending outcome and then stops, the Attempt is `succeeded`
+because the runtime completed its contract. The Work becomes the reported
+`ready`, `needs-input`, `failed`, or `no-change` outcome. A runtime, lease, or
+missing-report failure makes the Attempt `failed` and the Work `failed` with an
+infrastructure reason. `needs-input` pauses rather than terminates the Work.
+Cancellation makes both records cancelled.
 
-Factory creates one Run containing one Job. The Job moves through pending,
-blocked, queued, preparing, running, and then succeeded, failed, cancelled, or
-skipped. Attempt history, events, and cleanup remain implementation details
-shown inside the Job when useful.
+#### Run a Procedure across repositories
 
-#### Run once across repositories
+A developer runs:
 
-As an operator, I want to select five repositories and press **Run once** so the
-same Definition runs independently against all five.
+```sh
+factory run bug-fix --repos all
+```
 
-Factory freezes the complete target list and creates one Job per repository.
-Jobs can run concurrently, fail independently, and be retried individually.
-The Run shows aggregate progress without hiding per-repository outcomes.
+Factory freezes the current `bug-fix` Procedure and the enabled managed
+repository set, then creates one Work target per repository. The Procedure asks
+the agent to find and fix one concrete bug, or report `no-change` when no
+defensible change exists. Work is admitted up to the Run concurrency limit and
+Worker capacity. The Run shows aggregate counts without hiding each target.
 
-#### Track the software factory
+The same update contract applies:
 
-As an operator, I want a dashboard showing what is running, what failed, and
-how long work takes so I can understand the factory rather than inspect process
-logs.
+```sh
+factory update --status=no-change --message="No reproducible bug was found"
+```
 
-V1 reports queued and running Jobs, success and failure counts, queue time,
-cycle time, throughput, and Worker health. Metrics can be filtered by
-Definition, repository, Worker, and time window.
+Retry, cancel, events, timeouts, and retained worktrees remain per Work target.
 
-Queue time runs from `admitted_at` to `started_at`. Cycle time runs from
-`admitted_at` to `terminal_at`. Throughput is the number of Jobs with a
-`terminal_at` in a time window. Success rate is succeeded Jobs divided by
-succeeded plus failed Jobs; cancelled and skipped Jobs are excluded.
+#### Answer a question
 
-#### Run on a schedule
+When an agent reports `needs-input`, Factory stores the exact question and
+makes the Work visible in the attention column. The developer answers through
+the CLI or browser. The answer is stored as trusted operator context and a new
+Attempt starts in the same Work history. Factory does not keep an idle agent
+process alive while waiting for a person.
 
-As an operator, I want to schedule a Definition across selected repositories so
-routine engineering work runs without manual action.
+### Components and responsibilities
 
-A schedule is a Trigger attached to a Definition. At each due instant it creates
-the same Run and Jobs as **Run once**. For example, a Monday `Find bugs`
-Definition can inspect five repositories. The agents may use `gh` to create
-issues or pull requests as instructed.
+#### Procedure store
 
-### Later user journeys
+The Procedure store owns names, trusted instructions, runtime, timeout,
+concurrency, outcome contract, mutable generation, archive state, and the built-in
+`standard-build` Procedure. It snapshots a complete Procedure into every Run.
+It does not own work-item content, repositories selected for an ad-hoc
+invocation, agent skills, or external provider state. A saved Procedure may
+retain a default repository set used by its existing schedule.
 
-An operator can add a Worker on a remote VM without changing a Definition. This
-is the first scaling path beyond the local machine. A later GitHub webhook
-Trigger creates a Run when an issue or pull request event arrives,
-such as running a shared `Review pull request` Definition when a pull request is
-opened.
+`standard-build` has a stable built-in key and a version shipped with the
+binary and always uses `outcome_contract=agent_update`. It is read-only through
+operator surfaces. Its runtime resolves from
+the configured default Build runtime or an explicit invocation override. A
+binary update may change the version used by future Runs, but every admitted
+Run retains the exact prior text, version, and resolved runtime. The standard
+Build Procedure is not schedulable in V1.
 
-Kubernetes and other execution targets may be added through the same Worker
-contract later. They are not active roadmap milestones.
+Existing Tasks remain on their current process-exit completion contract and
+keep the same IDs, generations, repository selection, and schedules. They may
+appear as legacy Procedures in operator surfaces, but do not require
+`factory update` until an operator explicitly converts them to the new outcome
+contract. `outcome_contract` is `process_exit` or `agent_update`; conversion
+increments the Procedure generation. Their next scheduled occurrence behaves
+exactly as it does today.
 
-These paths must create the same Run and Job records. They are not different
-automation products.
+New Procedures default to `agent_update`. `process_exit` exists only to retain
+unconverted legacy behavior. Every Run snapshot stores the selected contract,
+so later conversion cannot change admitted or historical Work.
 
-After the local and VM Worker experience is stable, a production-scale
-orchestration backend may move durable timers, retries, cancellation, fan-out,
-and recovery to Temporal. Factory remains the product and API boundary. The
-selected backend is an operational choice, not a Definition authoring choice.
-The detailed design must decide whether Workers continue to use Factory's
-lifecycle API or consume backend task queues directly while preserving
-outbound-only connections and the existing trust model. Internal Worker
-transport and configuration may vary, but identity, capability, capacity,
-lifecycle, and trust semantics remain stable.
+#### Admission service
 
-### Agent-owned GitHub work
+The admission service owns request idempotency, source normalization, target
+validation, repository resolution, target limits, and transactional Run and
+Work creation. It does not fetch opaque provider references or start agents.
 
-The agent reads and changes GitHub through `gh`, just as it does when run
-directly by a developer. Factory does not define typed comment, branch, issue,
-or pull-request actions. It does not publish patches or reconcile provider
-side effects.
+#### Work service
 
-For a trusted local or VM Worker, the agent uses the Worker user's authenticated
-`gh`. A later managed Worker profile may inject a short-lived,
-repository-scoped `GH_TOKEN` for the Job. The token disappears when the agent
-process ends.
+The Work service owns user-visible state, update events, questions and answers,
+result metadata, PR URL, stable publish branch, cancellation, and explicit
+retry. It depends on the existing Execution and Attempt lifecycle but does not
+own agent processes or worktrees.
 
-Factory supplies stable `FACTORY_RUN_ID` and `FACTORY_JOB_ID` environment
-values. Definitions can use those values in branch names, comments, or other
-markers when retry-safe behavior matters. The Job result may report issue or
-pull-request URLs, but Factory treats them as agent output rather than provider
-state it owns.
+#### Worker and supervisor
 
-### Component boundaries
+The Worker owns routing compatibility, repository acquisition, Attempt-local
+branches, a stable remote publish branch, the Attempt-scoped update endpoint,
+process supervision, leases, event forwarding, cancellation, and cleanup. It
+does not transmit its Worker credential or lease token through the update
+protocol. V1 does not treat the agent process as isolated from other files and
+services available to the Worker operating-system user. The Worker does not
+decide whether the engineering task is semantically complete.
 
-The control plane owns saved configuration, admission, target snapshots,
-scheduling, leases, results, and metrics. It never runs an agent process and
-does not interpret prompt output as commands.
+#### Agent runtime
 
-The Worker owns runtime discovery, repository preparation, process supervision,
-events, cancellation, and cleanup. It does not decide which repositories a Run
-targets.
+The agent runtime owns model interaction, repository exploration, planning,
+subagents, implementation, tests, review, provider tools, pull-request work,
+and semantic status selection. It may update only its current Work through the
+scoped capability. Factory does not implement a competing model loop.
 
-The agent runtime owns model interaction and engineering tool use. Factory does
-not reproduce tools already available to Pi, Codex, Claude Code, or another
-configured coding agent.
+#### Operator surfaces
 
-The browser and future CLI use the same API. The primary navigation is
-Overview, Definitions, Runs, Repositories, and Workers. A Job is viewed inside
-its Run. Triggers are configured on a Definition.
+The CLI and browser use the same local operator API. They own presentation and
+operator actions, not scheduling or state derivation. The main browser surface
+is Work, with Run aggregation, Work detail, latest progress, question answering,
+retry, cancellation, Worker visibility, and Procedure management.
 
 ### Decisions
 
-#### Five product concepts
+#### One execution primitive for items and fleets
 
-Definition, Trigger, Run, Job, and Worker are sufficient. Attempt remains Job
-history, Repository remains configured infrastructure, and GitHub connection
-details remain settings. We reject separate Runbook, Workflow revision,
-Automation, Occurrence, and Provider Action product resources.
+A Run contains frozen targets, and each target becomes Work. A work-item target
+contains one repository plus a source reference. A fleet target contains one
+repository. We reject separate queue, batch, campaign, and fleet-run models
+because their execution behavior is the same. The cost is that Work target
+identity must replace the current assumption that a Run contains at most one
+Session per repository.
 
-#### One Job per repository
+#### Agent-directed semantic state
 
-A Run may fan out, but each Job owns one repository and optional work item.
-This keeps worktrees, retries, credentials, cost, and results independent.
+The agent reports progress and an Attempt-ending outcome through a typed Factory
+capability. We reject parsing final text and reject deterministic code as the
+sole judge of completion. The agent can interpret acceptance criteria,
+repository conventions, tests, and external feedback more effectively. The
+cost is that a capable but mistaken agent may report `ready` too early. Factory
+records evidence and can return obvious validation feedback, but V1 accepts
+that semantic trust boundary.
 
-#### One execution path
+#### Worker-owned process completion
 
-Manual, API, schedule, and later webhook admission create the same Run and Job
-records. A Trigger decides when to admit work. It does not execute an agent.
+Agent updates do not carry the Worker lease and do not directly complete an
+Attempt. The Worker remains the only component that finalizes process state
+after the process stops. We reject exposing the control-plane operator or
+Worker credential through the update protocol. The cost is a small two-part lifecycle: an
+agent outcome report followed by Worker process completion.
 
-#### Agents use their tools
+#### One agent process owns the inner development loop
 
-The Worker gives the agent a prepared repository and its configured tools.
-Factory does not become a GitHub client on behalf of the agent. This preserves
-the capability of the underlying agent and avoids a second action language.
+The standard Build agent owns refinement, implementation, tests, subagent
+review, PR creation, and CI repair in one Attempt. Factory shows these as
+progress, not durable stages. We reject a Build, Review, Test, and Merge DAG in
+V1. The cost is that an agent may occupy a Worker slot while waiting for CI.
+Measured slot waste or timeout frequency can justify a later event-driven
+continuation design.
 
-#### Backend-neutral orchestration
+#### Stable remote branch, unique local Attempt branches
 
-SQLite-backed orchestration is the default and supported local product, not a
-temporary demo. A future durable backend must preserve Definition snapshots,
-Run and Job identities, idempotent admission, per-Job history, cancellation,
-and the retry warning for agent-owned external effects. Factory must keep the
-same operator API and product vocabulary across backends. Temporal workflow,
-activity, task-queue, and retry-policy concepts stay out of normal Definition
-authoring.
+Every Work derives one stable remote publish branch. Every Attempt still uses
+a unique local branch and worktree. A retry starts from the current remote
+publish head when it exists and pushes back to the same remote branch. We
+reject reusing one local branch because failed worktrees are intentionally
+retained. This reduces duplicate PR risk but cannot provide exactly-once issue
+comments or other agent side effects.
 
-This direction does not assert that the current store already implements a
-backend interface. [Issue #259](https://github.com/owainlewis/factory/issues/259)
-owns the architecture decision, state-ownership boundary, mixed-version
-migration and rollback plan, operational requirements, and a prototype that
-runs one unchanged Definition on both backends.
+The Claim and prompt contain the immutable publish ref. The standard Procedure
+requires the agent to push local `HEAD` to that ref and use it as the pull
+request head. Before accepting `ready`, the Worker verifies that local `HEAD`,
+the fetched remote publish ref, and the PR head SHA match, and that the PR head
+branch and repository match the Work. A mismatch returns actionable validation
+feedback and leaves the Attempt running. Factory never force-pushes or deletes
+the remote publish branch. A normal non-fast-forward push is for the agent to
+reconcile or report as `needs-input`.
+
+#### Built-in standard Build Procedure
+
+V1 ships one read-only, versioned standard Build Procedure. It asks the agent
+to follow repository instructions, refine the work, implement completely,
+test, use a fresh review subagent, fix valid findings, open or update one pull
+request, handle CI, and report through Factory. We reject a skill registry and
+prompt marketplace. Installed skills remain runtime behavior, while the exact
+Procedure text and generation are frozen for audit.
+
+The prompt must also state that the Work is unfinished until the agent has
+called `factory update`, list every allowed status, require a PR URL for
+`ready`, explain that `needs-input` ends the current Attempt, and tell the agent
+to use progress updates only when they help an operator. These are Procedure
+requirements, not a transcript parser or a Factory-owned reasoning loop.
+
+#### GitHub URLs and explicit repositories first
+
+V1 parses GitHub issue URLs because they contain repository identity. Opaque
+references require an explicit managed repository. We reject a Linear client,
+provider plugin interface, and automatic team mapping in the first slice.
+Those additions require separate credential, namespace, and mapping decisions.
+
+#### Ready stops before merge
+
+`ready` means the agent reports that a pull request is ready for a human. The
+report includes a PR URL and message, and Factory may validate that the URL
+belongs to the expected repository. GitHub owns review, mergeability, and
+merge. We reject automatic merge and a durable `complete` state in V1 because
+both require ongoing provider observation and repository policy.
+
+#### Product names can move before internal table names
+
+The user-facing model becomes Procedure, Run, Work, and Worker. The current
+Task, Run, Session, Execution, and Attempt tables may evolve incrementally.
+Implementation must not perform a broad schema rename merely to ship the first
+vertical slice. Historical API and database names remain internal until a
+separate migration can preserve every record and link.
+
+Initially, the existing Task record can back a legacy Procedure and the
+existing Session and Execution records can back Work execution. Legacy
+schedules keep creating Runs from their configured repository selection and
+retain exit-based success. New fields and adapters must preserve current Task,
+Run, Session, Attempt, event, and schedule behavior; renaming storage or
+converting completion contracts is not a prerequisite for testing the product
+model.
 
 ## 5. Invariants and requirements
 
 ### Invariants
 
-1. Every invocation creates one Run and at least one Job.
-2. A Run freezes one Definition and one complete target set.
-3. Every Job belongs to one Run and one repository.
-4. Editing a Definition or Trigger never changes an existing Run.
-5. Replaying one admission identity creates no duplicate Run or Job.
-6. One active Attempt lease owns one agent process.
-7. Worker loss cannot erase Job history or a retained recovery artifact.
-8. One large Run cannot prevent an unrelated compatible Run from progressing.
-9. Factory never claims exactly-once external effects performed by an agent.
+- `INV-1`: Every admitted command creates one Run and at least one Work target
+  in one transaction.
+- `INV-2`: A Run freezes one complete Procedure generation and ordered target
+  set.
+- `INV-3`: Every Work belongs to one Run and one managed repository.
+- `INV-4`: Two Work targets in one Run may use the same repository but cannot
+  have the same target identity.
+- `INV-5`: One active Attempt lease owns one agent process.
+- `INV-6`: The injected agent update capability accepts updates only for its
+  current Work and Attempt.
+- `INV-7`: The update protocol never contains a Worker credential, operator
+  credential, or Attempt lease token.
+- `INV-8`: An Attempt-ending agent report becomes final only after its agent
+  process has stopped.
+- `INV-9`: Cancellation prevents a later agent report from making Work ready.
+- `INV-10`: Factory never derives semantic success by parsing arbitrary agent
+  output.
+- `INV-11`: One Work has one stable remote publish branch and each Attempt has
+  one unique local branch.
+- `INV-12`: Retrying one Work never replays a terminal sibling.
+- `INV-13`: Work-item and repository content cannot change the trusted
+  Procedure or choose a repository clone source.
+- `INV-14`: Historical Work identifies the exact Procedure, context, target,
+  runtime, Worker, updates, Attempts, and outcome used.
+- `INV-15`: Factory does not claim exactly-once external side effects performed
+  by an agent.
+- `INV-16`: A legacy Task keeps its process-exit completion behavior until an
+  operator explicitly converts its outcome contract.
+
+### Work state transitions
+
+Progress is an event, not a durable workflow state change. `running` means an
+execution owner exists. `needs-input` ends the current Attempt but pauses the
+Work, so it is not terminal. Capacity and routing waits remain `queued` with a
+visible `waiting_reason`; V1 does not add a separate blocked state.
+
+| Current state | Owner | Allowed transition | Cause |
+| --- | --- | --- | --- |
+| `queued` | none | `running` | Worker claim creates an Attempt, or trusted operator claims manual ownership |
+| `queued` | none | `cancelled` | operator cancellation |
+| `running` | Worker Attempt | unchanged | agent `running` progress update |
+| `running` | Worker Attempt | `ready`, `needs-input`, `failed`, `no-change` | accepted outcome followed by stopped process |
+| `running` | operator | `ready`, `needs-input`, `failed`, `no-change` | trusted operator update |
+| `running` | either | `cancelled` | operator cancellation |
+| `needs-input` | none | `queued` | operator answer appends context; the next Worker claim creates the Attempt |
+| `needs-input` | none | `running` | trusted operator claims manual ownership |
+| `needs-input` | none | `cancelled` | operator cancellation |
+| `failed` or `cancelled` | none | `queued` | explicit warned retry |
+
+`ready`, `failed`, `no-change`, and `cancelled` are terminal outcomes unless an
+explicit retry rule above applies. A manual `running` update atomically records
+operator ownership and removes the Work from Worker eligibility. A direct
+manual terminal update from queued Work performs that claim and completion in
+one transaction. An operator must cancel an active Worker Attempt before taking
+manual ownership.
 
 ### Requirements
 
-- A manual Run can target one or up to 500 configured repositories.
-- Invalid, duplicate, disabled, empty, or oversized target sets create no Run.
-- A Run defaults to at most 20 active Jobs with fair admission across Runs.
-- A Job can be cancelled or retried without replaying successful siblings.
-- A failure before the agent process starts may retry under a bounded
-  infrastructure policy. Any failure after process start requires an explicit
-  warned retry.
-- Retrying any Job after its agent started warns that external effects may
-  already have happened.
-- A Job waiting for a compatible Worker stays visible as blocked.
-- Dashboard aggregates never hide the underlying Jobs.
+- One admission accepts 1 to 100 Work targets.
+- A Run defaults to at most 10 executing Work targets and accepts a configured
+  limit from 1 to 100.
+- Scheduling must not let one large Run starve older eligible Work in another
+  compatible Run. The implementation may reuse the current scheduler and add
+  only the smallest fairness rule its tests require.
+- Progress messages are non-empty UTF-8 text of at most 2 KiB.
+- Outcome messages are non-empty UTF-8 text of at most 8 KiB.
+- One Attempt stores at most 200 accepted agent updates. A later progress call
+  receives a visible limit error; one outcome update remains allowed.
+- Agent update statuses are `running`, `ready`, `needs-input`, `failed`, and
+  `no-change`.
+- Agent-owned `ready` requires one HTTPS GitHub pull-request URL whose
+  repository, head branch, and head SHA match the Work repository, immutable
+  publish ref, remote ref, and local `HEAD`. Manual `ready` requires the
+  expected repository and records the provider-reported branch and SHA.
+- `needs-input`, `failed`, and `no-change` require a message. `needs-input`
+  exposes the message as the current operator question.
+- Exactly one Attempt-ending agent report can win. Repeating the same report is
+  idempotent; a different outcome report conflicts.
+- Every update invocation has a random request ID. A transport retry with the
+  same Attempt and request ID, or the same operator Work and request ID, returns
+  the stored response.
+- A process exit without an outcome report fails with a fixed reason.
+- An operator answer is non-empty UTF-8 text of at most 8 KiB and requeues Work
+  without changing the frozen Procedure or original context. The next Worker
+  claim creates the Attempt.
+- V1 performs no automatic execution retry. Every failed or cancelled Work
+  retry is explicit and warns about duplicate external effects if an agent
+  process previously started.
+- Setup requires one valid default Build runtime. `factory build --runtime`
+  accepts only a configured runtime and admission freezes the resolved choice.
+- A trusted operator may update Work only when it has no active Attempt.
+- Queue, Work, update, Attempt, and Worker list APIs remain bounded and cursor
+  paginated.
+- The local operator API remains loopback-only. Remote Workers continue to use
+  the separate authenticated TLS listener.
 
 ## 6. Interfaces and data
 
-| Resource | Owns |
-|---|---|
-| Definition | name, prompt, runtime and tool requirements, timeout, defaults, generation |
-| Trigger | Definition, kind, enabled state, schedule or later event rule, target repositories, context, timeout override |
-| Run | source identity, Definition snapshot, parameters, frozen target set, aggregate state |
-| Job | Run, repository, ref or work item, Worker requirement, state, timestamps, result, metrics |
-| Worker | stable identity, runtime and tool capabilities, capacity, health |
+### CLI
 
-Attempt records remain behind Job and store leases, process identity, events,
-timestamps, outcomes, and recovery state.
+```text
+factory build [--repo REPOSITORY] [--runtime RUNTIME] [--request-key KEY] [--wait] REFERENCE...
+factory run PROCEDURE --repos REPOSITORY...|all [--request-key KEY] [--wait]
+factory status [--run RUN_ID]
+factory show WORK_ID
+factory answer WORK_ID MESSAGE
+factory retry WORK_ID
+factory cancel WORK_ID
+factory update [--id WORK_ID] --status STATUS --message MESSAGE [--pr URL] [--head-branch BRANCH] [--head-sha SHA]
 
-The control plane owns Job state. A Worker reports preparation, process start,
-events, and completion under its Attempt lease; the control plane validates the
-lease before applying a transition.
+factory procedures
+factory workers
+factory worker start [--config PATH]
+factory server start [--config PATH]
+```
 
-- `pending`: admitted but held by the Run concurrency limit.
-- `blocked`: no healthy Worker satisfies the runtime, tools, or repository.
-- `queued`: eligible for a compatible Worker to claim.
-- `preparing`: claimed while the Worker prepares the repository and process.
-- `running`: the agent process has started.
-- `succeeded`, `failed`, `cancelled`, and `skipped`: terminal outcomes.
+Finite operator commands call the loopback API and never open SQLite or Worker
+directories. `factory update` detects an injected Attempt context and uses the
+Worker-local capability. Without that context it is a trusted operator command
+and requires `--id`.
 
-The Run state is derived from its Jobs. It is `running` while any Job is
-preparing or running, `blocked` when all remaining Jobs are blocked, `queued`
-when work remains but none is active, and `cancelling` after cancellation is
-requested while work remains. Once every Job is terminal, the Run is `failed`
-if any Job failed, `cancelled` if none failed and any Job was cancelled, and
-otherwise `succeeded`. Per-state Job counts remain visible for mixed outcomes.
+An operator `running` update atomically claims manual ownership when the Work
+has no active Attempt. Later operator updates require that ownership. A direct
+terminal update from queued Work claims and completes it in one transaction.
+An operator who wants to take over active agent Work must cancel its Attempt
+first. This makes manual and agent-driven Work share one history without
+creating a second completion model or a claim race.
 
-Every Job stores `admitted_at`, optional `started_at`, and `terminal_at` when it
-finishes. A Worker is online when its last valid registration is no more than 30
-seconds old. It is degraded when online but none of its enabled runtimes is
-healthy, and offline after 30 seconds without registration.
+A manual `ready` update is not required to have a Factory worktree or publish
+branch. The CLI uses the operator's local GitHub credentials to resolve the PR
+head branch and SHA, or accepts explicit `--head-branch` and `--head-sha`
+evidence. The control plane validates the PR URL's expected repository and the
+field shapes, then records the branch and SHA as trusted operator evidence. It
+does not need GitHub credentials. Agent-owned Work uses the stricter Worker
+validation below.
 
-IDs are random UUIDs. A Worker ID persists on its host. A manual or API Run uses
-a caller request key. A scheduled Run uses `(Trigger ID, scheduled UTC instant)`.
-A later webhook Run uses `(Trigger ID, delivery ID)`.
+### Agent update contract
 
-Existing Workflow current content maps to Definition prompt. A Workflow revision
-maps to the snapshot already stored on historical work. Automation schedule
-configuration maps to a Trigger. The Task execution contract informs the new Job
-contract, and worker maps to Worker.
+The Worker injects:
 
-Historical Tasks, Executions, Attempts, events, and linked Occurrences remain in
-a clearly labelled read-only **Legacy history** view. Their existing URLs and
-identities remain valid. Factory does not create synthetic Runs for them or
-project them as Jobs because they never belonged to a Run.
+```text
+FACTORY_WORK_ID
+FACTORY_ATTEMPT_ID
+FACTORY_UPDATE_SOCKET
+FACTORY_UPDATE_TOKEN
+```
+
+The socket is created below the Worker data directory with mode `0600`. The
+random update token is valid only while the Attempt owns its active lease. The
+Worker stores only its digest and never forwards the token to the control
+plane. For each invocation, the helper creates a random request ID and reuses it
+for bounded transport retries. The Worker validates the token, Work and Attempt
+identity, request ID, current lifecycle, status, message, and optional PR URL
+before forwarding a typed update under the Worker lease.
+
+The token is a scope and accidental-misuse guard, not a sandbox boundary. V1
+trusts processes running as the Worker operating-system user with the same host
+authority as that user. A local agent can reach the unauthenticated loopback
+operator API, and a remote agent may be able to read the Worker credential.
+Operators who need hostile-code isolation must use separate OS identities and
+an authenticated operator endpoint, which are outside V1.
+
+An accepted outcome update sets `terminal_reported_at` and asks the agent to
+stop. The supervisor allows ten seconds for normal exit, then stops the process
+group. The Worker reports terminal Attempt completion only after it proves the
+process group stopped. Cancellation received before completion wins.
+
+On completion, a valid outcome report maps to a `succeeded` Attempt and its
+reported Work outcome. No report or an infrastructure error maps to a `failed`
+Attempt and failed Work. This keeps process execution evidence separate from
+the agent's semantic judgment.
+
+### Stored resources
+
+| Resource | New or changed ownership |
+| --- | --- |
+| Procedure | trusted instructions, runtime, timeout, concurrency, outcome contract, generation |
+| Run | Procedure snapshot including outcome contract, resolved runtime, source, ordered frozen targets, aggregate state |
+| Work | target identity, repository, source context, publish branch, user state, execution owner, waiting reason, question, result |
+| Work update | Work, optional Attempt, request ID, sequence, status, message, PR URL, accepted time, actor |
+| Attempt | Worker lease, process identity, local branch, lifecycle and events |
+| Worker | capacity, runtime capabilities, repository access and retained worktrees |
+
+A Work target stores:
+
+```text
+id
+run_id
+target_key
+target_kind: work_item | repository
+repository_id
+repository_identity
+source_kind: github_issue | opaque | manual | repository
+source_key
+source_reference
+context_snapshot
+publish_branch
+state
+execution_owner: none | worker_attempt | operator
+waiting_reason
+latest_progress
+question
+pull_request_url
+pull_request_head_branch
+pull_request_head_sha
+terminal_message
+timestamps
+```
+
+The existing Execution and Attempt records remain internal. Existing Run and
+Session history stays readable. An implementation may initially add the new
+target and update fields to current records rather than renaming every table.
+
+Run state is a derived summary, not a second workflow engine. A Run is active
+while any Work is queued or running, needs attention when no Work can advance
+and at least one needs input, and finished when every Work is terminal. Mixed
+success and failure are shown as counts rather than collapsed into one success
+label. The control plane may cache this projection, but Work remains its source
+of truth.
+
+### Naming and identity
+
+Run, Work, Attempt, and Worker IDs are random UUIDs. A Work publish branch is
+derived from its immutable Work ID and is bounded to a Git-safe value such as
+`factory/work-<uuid-prefix>`.
+
+A GitHub issue URL normalizes to
+`github:<lowercase-owner>/<lowercase-repository>:issue:<number>`. An opaque
+reference normalizes Unicode whitespace but otherwise preserves case and is
+scoped to its managed repository. Manual text uses a random source key. A
+repository target uses the managed repository ID.
+
+`target_key` is the source key plus repository ID for a work item and the
+repository ID for a fleet target. It is unique inside one Run. The admission
+request key and normalized request digest make uncertain client replay return
+the original Run. A second active Build for the same work-item target conflicts.
+After terminal Work, `factory build` requires `--rebuild` to admit the same
+target again.
+
+An agent update request is unique by `(attempt_id, request_id)`. An operator
+update request is unique by `(work_id, request_id)`. The CLI generates the
+request ID once per invocation and reuses it for its internal retry. A repeated
+outcome report with identical fields returns the accepted result even when it
+arrives in a later invocation; a different outcome report conflicts.
 
 ## 7. Failure behavior and lifecycle
 
-Run admission stores the Definition snapshot, complete target set, and Jobs in
-one transaction. A selector failure stores nothing.
+Admission validates the complete target set before writing anything. Unknown,
+disabled, duplicate, empty, or oversized targets create no Run. An opaque
+reference without an explicit repository creates no Run.
 
-If no compatible Worker is online, the Job remains blocked with a reason. If a
-Worker disappears before its agent process starts, its lease expires and the
-Job may follow its bounded infrastructure retry policy. Loss after process
-start fails the Attempt and requires an explicit warned retry because the agent
-may already have changed GitHub. Cancelling a Run cancels undispatched Jobs and
-requests cancellation of active agents without rewriting terminal outcomes.
+Work waits visibly when no compatible Worker has capacity. A Worker that loses
+its lease stops the agent process group. Infrastructure failure before or after
+process start fails the Attempt and Work. V1 never retries execution
+automatically. An explicit retry warns about duplicate effects when a process
+previously started because the agent may already have pushed, commented, or
+opened a pull request.
 
-An agent may complete a GitHub write and then crash before reporting success.
-Factory records the Job failure and retained events but does not repeat or undo
-the write. A manual retry displays the duplicate-effect warning and gives the
-new agent the stable Run and Job identities.
+Each retry creates a fresh local worktree. If the stable remote publish branch
+exists, preparation starts from its current fetched head. Otherwise it starts
+from the repository base only when no PR is recorded. A missing publish branch
+for known PR Work moves the Work to `needs-input` instead of guessing. The retry
+prompt identifies prior updates, known PR, publish ref, and duplicate-effect
+risk. Factory never force-pushes or deletes the ref. If the ref moves while an
+Attempt is active, the agent must reconcile a normal push or report
+`needs-input`.
 
-Migration starts with a preview of every Workflow and Automation. Factory stops
-new legacy Automation evaluation and lets already admitted Tasks and Executions
-finish or be cancelled. It then imports current Workflow content as Definitions.
+An agent update request with an expired or wrong token is rejected. An exact
+transport retry returns the stored update. A second identical Attempt-ending
+report returns the stored outcome, while a different outcome report conflicts.
+Progress after an outcome report conflicts.
 
-Schedule Automations migrate losslessly. Their repository, context, timeout,
-enabled state, schedule, and next due instant become Definition or Trigger
-fields as appropriate. Current GitHub issue and pull-request polling Automations
-have no V1 equivalent. The preview marks them unsupported, keeps their history
-readable, and requires explicit operator confirmation before retiring them. It
-recommends either a scheduled Definition whose agent queries GitHub with `gh`,
-or the later webhook Trigger.
+For `ready`, the Worker performs a bounded GitHub and remote-ref check before
+accepting the report. A timeout or provider outage returns a retriable validation
+error and leaves the Attempt running. Factory validates delivery identity, not
+CI success or semantic correctness; the agent remains responsible for both.
 
-After every supported item imports or receives an explicit retirement decision,
-Factory writes a cutover marker and enables new admission. No in-flight work is
-translated between execution models. After cutover, completed standalone Tasks
-and Occurrence-linked Tasks remain available only through Legacy history.
+If the agent process exits without an outcome report, the Worker fails the
+Attempt with the fixed missing-report reason. If it reports an outcome but does
+not exit, the supervisor stops it after ten seconds. If the Worker dies after
+forwarding the report, normal lease expiry stops or reconciles the process
+before the report may become final. Factory never presents Work as ready while
+process ownership is uncertain.
+
+A valid `failed` report still completes the Attempt successfully because the
+agent fulfilled the reporting contract; the Work outcome is failed. This
+distinction lets operators tell an engineering blocker from a broken runtime.
+
+Cancellation of queued Work is immediate. Active cancellation is returned by
+the Worker heartbeat, stops the process group, and overrides any terminal
+report not already finalized. Cancelling a Run cancels each nonterminal Work
+target without changing terminal siblings.
+
+An operator answer to `needs-input` appends trusted context and requeues the
+same Work. The next Worker claim creates a new Attempt. The agent receives the
+original frozen Procedure, original context, prior question, answer, updates,
+known branch, and PR metadata. Archiving a Procedure prevents new Runs but does
+not cancel admitted Work.
+
+Control-plane shutdown stops admission before HTTP shutdown. Workers continue
+until lease renewal fails, then stop active processes. Restart sweeps expired
+leases and reconstructs queue and update state from SQLite. Worker restart uses
+the existing manifest reconciliation before it claims more Work.
 
 ## 8. Security, privacy, and operations
 
-V1 keeps the current trusted-host boundary. The operator API remains loopback
-only. A local agent has the operating-system user's filesystem, network, Git,
-and `gh` permissions. Factory must state this clearly and must not present a
-prompt as a security boundary.
+V1 remains a trusted single-operator system. The operator API accepts loopback
+clients only and has no user authentication. It must not be exposed to a
+network. Remote Workers use the existing TLS enrollment and credential model.
 
-“Shared Definition” in V1 means shared by people using the same trusted local
-Factory instance. V1 has no user identity, remote browser access, or per-user
-authorization. Authenticated team access requires a later design.
+The agent has the Worker operating-system user's filesystem, network, Git, and
+provider CLI permissions. Worktrees isolate Git state but are not a security
+sandbox. Operators must register only repositories and Worker hosts that the
+agent may modify.
 
-Remote VM Workers use a separate TLS listener containing only enrollment and
-the Worker lifecycle. A ten-minute, one-time token bound to the stable Worker
-identity creates a per-Worker credential. Agent and provider credentials remain
-host-managed trusted inputs. Future Worker targets must preserve these
-boundaries.
+Procedure instructions are trusted operator policy. Work-item titles, bodies,
+comments, repository files, CI output, and review content are untrusted agent
+context. Prompt assembly labels those boundaries, and admission prevents that
+content from selecting a clone URL or changing the Procedure snapshot. This is
+a prompt-integrity boundary, not hostile-code isolation. Factory does not place
+credentials in the prompt or update protocol, but the agent may access anything
+available to its shared Worker OS identity, including local operator or Worker
+credentials.
 
-A later public webhook listener exposes only signed, bounded delivery routes.
-Webhook payloads and repository content are untrusted agent context and cannot
-choose clone URLs, Worker credentials, or Definition instructions.
+The Attempt update token is separate from the Worker credential and lease. It
+is random, short-lived, stored only as a digest, scoped to one Attempt, removed
+from stale inherited environments, and invalid after process stop, cancellation,
+or lease loss. It prevents accidental cross-Work updates through the injected
+tool; it does not constrain a malicious process with the Worker user's broader
+authority. Update events and messages may contain source code or private ticket
+context and receive the same local-data protection as current prompts and agent
+events.
 
-Each Worker advertises hard capacity. Runs have target, concurrency, timeout,
-event, output, and retained-work limits. Reaching a limit produces a visible
-blocked or failed Job rather than silently dropping work.
+Existing Worker capacity, repository-cache, event, prompt, result, timeout, and
+retained-worktree limits continue to apply. A Run may add at most 100 Work
+targets. Update history adds at most 200 records per Attempt and at most 8 KiB
+per outcome message. Limit failure remains visible and never silently drops an
+outcome.
 
 ## 9. Acceptance criteria
 
-- A new user can configure a local Pi, Codex, or Claude Code Worker and run a
-  prompt against one repository.
-- One launcher command starts the local instance, reuses its Worker identity,
-  and reports Git, `gh`, and each configured agent runtime separately.
-- A team can save and reuse one Definition without selecting revisions.
-- One manual Run can execute the same Definition against five repositories and
-  show independent Job outcomes.
-- The dashboard reports failures, success rate, queue time, cycle time,
-  throughput, active Jobs, and Worker health.
-- A schedule creates the same Run and Jobs as manual **Run once**.
-- An agent can use authenticated `gh` to comment, create an issue, push a branch,
-  or open a pull request without Factory publishing the action.
-- Retrying a Job after its agent started shows the duplicate-effect warning.
-- Current Workflow, Automation, Task, Execution, Attempt, and Occurrence history
-  remains readable after cutover.
-- Standalone and Occurrence-linked Tasks keep their existing URLs and appear in
-  Legacy history without synthetic Runs or Jobs.
-- Migration preserves every schedule Automation field and requires an explicit
-  retirement decision for each unsupported GitHub polling Automation.
-- Definitions run unchanged on local and remote VM Workers and when webhook
-  support is added later.
+- `AC-1`: One `factory build` command with five valid references creates one
+  Run and five independently visible Work targets without opening agent
+  processes in the CLI.
+- `AC-2`: Two work-item targets for the same repository run in separate
+  worktrees and retain separate state, updates, branches, and outcomes.
+- `AC-3`: `factory run bug-fix --repos all` freezes the current enabled
+  repository set and produces one independently retryable Work target per
+  repository.
+- `AC-4`: Every new Build uses the exact recorded `standard-build` Procedure
+  generation and resolved runtime, and labels work-item content as untrusted
+  context.
+- `AC-5`: An active agent can report progress and exactly one Attempt-ending
+  outcome for only its current Work through the injected `factory update`
+  capability.
+- `AC-6`: The Work board shows queued, running, needs-input, ready, failed,
+  no-change, and cancelled Work with latest progress, repository, Worker, and
+  PR link where present.
+- `AC-7`: An agent that exits without a terminal update produces the fixed
+  visible failure reason and no inferred success.
+- `AC-8`: A ready update cannot make Work ready until the Worker proves the
+  agent process stopped and verifies the immutable branch and head SHA;
+  cancellation wins over a late report.
+- `AC-9`: Answering a needs-input question requeues Work with the answer and
+  prior history while preserving the original Procedure and context; only the
+  next Worker claim creates an Attempt.
+- `AC-10`: A warned retry after process start continues from the stable remote
+  publish branch when one exists and does not create a second Work record.
+- `AC-11`: Replaying an admission or update after a lost response returns the
+  original stored result without duplication.
+- `AC-12`: Local and enrolled VM Workers use the same scoped update protocol
+  without transmitting the operator credential, Worker credential, or Attempt
+  lease token in that protocol.
+- `AC-13`: Restarting the control plane or Worker preserves Work, updates,
+  questions, results, and retained recovery state.
+- `AC-14`: Existing Task, Run, Session, Attempt, event, schedule, and repository
+  history remains readable through the transition.
+- `AC-15`: A configured default Build runtime and an explicit `--runtime`
+  override both resolve before admission and remain frozen in historical Work.
+- `AC-16`: An unconverted legacy Task's next manual and scheduled Runs retain
+  their existing repository selection and exit-based success behavior without
+  requiring `factory update`.
+- `AC-17`: Every Run freezes `outcome_contract`; converting a legacy Procedure
+  increments its generation and cannot change admitted Runs.
+- `AC-18`: A manual ready update resolves or accepts operator PR head evidence,
+  succeeds without control-plane GitHub credentials, and replays idempotently
+  by Work and request ID.
 
 ## 10. Test approach
 
-Store and API tests prove Definition snapshots, atomic target creation,
-idempotent admission, aggregate state, cancellation, retry, and bounded
-pagination. State tests prove every Job transition, derived Run state, timestamp,
-metric denominator, and 30-second Worker health boundary. Scheduler tests prove
-capacity, blocked routing, per-Run concurrency, and fair progress.
+Store tests prove `INV-1` through `INV-4`, `INV-9`, `INV-12`, `INV-14`, and
+`INV-16` with transaction rollback, duplicate target, replay, partial outcome,
+queued, running, and needs-input cancellation, retry, manual-claim races, and
+legacy completion cases. HTTP tests prove CLI admission validation, source
+normalization, message limits, cursor bounds, and operator updates for `AC-1`,
+`AC-3`, `AC-11`, `AC-15`, `AC-17`, and `AC-18`.
 
-Worker integration tests use fake Pi, Codex, Claude Code, and `gh` executables
-to prove first-run identity creation, restart reuse, discovery, authentication
-health, process cleanup, result capture, and stable Factory environment IDs. No
-test uses live provider credentials.
+Worker and supervisor tests prove `INV-5` through `INV-8` and `INV-11` with
+wrong tokens, expired leases, terminal-report races, cancellation, forced exit,
+parent loss, stable publish continuation, PR identity validation, and cleanup.
+They verify `AC-5`, `AC-7`, `AC-8`, `AC-10`, `AC-12`, and `AC-13`, including
+the race detector.
+They also prove that every valid semantic outcome completes the Attempt while
+only `ready` makes the Work ready.
 
-Browser tests cover the complete V1 journey: configure a Worker, add
-repositories, save a Definition, run one repository, run five repositories,
-inspect mixed outcomes and metrics, retry one Job, and create a schedule.
+Prompt boundary tests prove `INV-10` and `INV-13`, the exact Procedure snapshot,
+trusted and untrusted sections, injected update instructions, and maximum final
+prompt size for `AC-4`.
 
-Migration tests prove legacy admission stops before cutover, active work drains,
-every schedule field imports once, unsupported GitHub polling Automations require
-an explicit decision, history remains readable, and new admission starts only
-after the cutover marker. Browser tests cover both a standalone historical Task
-and an Occurrence-linked Task through their preserved URLs and Legacy history.
+CLI tests use a real loopback server to prove multi-reference admission,
+request replay, human and JSON output, `--wait`, opaque-reference repository
+requirements, runtime default and override, and agent-context routing. Browser
+component tests and a real browser flow prove `AC-2`, `AC-6`, `AC-9`, and
+accessibility at desktop and 390-pixel widths.
+
+Migration tests open supported historical databases and prove `AC-14` and
+`AC-16` without dropping, relabelling, or changing the next scheduled outcome.
+They prove that existing Procedures default to `process_exit` and conversion
+increments generation for `AC-17`. One end-to-end smoke test runs a fake agent
+executable that reports progress and each Attempt-ending outcome through the
+real Worker-local update endpoint.
 
 ## 11. Risks and tradeoffs
 
-- Agent-owned GitHub writes can be duplicated after a crash or retry. Stable
-  identifiers, explicit Definition instructions, and a retry warning make the
-  risk visible without building a second execution engine.
-- A 500-repository Run can consume the fleet. Per-Run concurrency and fair
-  scheduling bound its effect.
-- Shared host credentials are broad. V1 labels local Workers as trusted, while
-  later managed Workers use narrower temporary credentials.
-- The compatibility window exposes old and new names. Keep it short and make
-  all new creation use the target model.
+- An agent may report `ready` incorrectly. Factory stores the exact report,
+  Procedure, PR, and events so the error is visible. Repository, branch, and
+  head-SHA checks reject obvious delivery mismatch, but semantic correctness
+  remains the agent's job.
+- An agent may forget to call `factory update`. The standard wrapper makes the
+  requirement short and explicit. Missing reports fail visibly instead of
+  being inferred from prose.
+- Waiting for CI consumes a Worker slot. V1 measures wait duration and timeout
+  frequency before adding durable external waiting and continuation.
+- Stable publish branches reduce duplicate PRs but cannot make comments,
+  labels, or provider writes exactly once. Warned retry remains required after
+  process start.
+- Multiple Work targets in one repository may produce conflicting pull
+  requests. V1 isolates worktrees and leaves integration ordering to human
+  review. Automatic merge and conflict sequencing require later evidence.
+- Product names and internal table names temporarily differ. This keeps the
+  first vertical slice smaller but requires clear API adapters and contributor
+  documentation.
 
 ## 12. Open questions
 
-No question blocks V1. Remote credentials and public webhook deployment require
-focused designs before those later milestones start. Any future Worker target,
-including Kubernetes, requires its own accepted design before implementation.
-The optional production orchestration backend is deliberately unresolved until
-[#259](https://github.com/owainlewis/factory/issues/259) defines ownership,
-deployment, migration, rollback, and failure behavior and proves the boundary
-with a small prototype.
+No question blocks the first implementation plan. These defaults should be
+validated through use:
+
+- Should Factory add a bounded final reminder turn when an agent exits without
+  an update? Default: fail visibly first and measure frequency because runtime
+  support for another turn differs.
+- Should a ready update require Factory to query GitHub checks? Default: no.
+  The agent owns semantic completion; Factory validates only URL shape and
+  repository identity in V1.
+- Should one Run limit parallel Work per repository? Default: no separate
+  per-repository limit. Worker capacity and Run concurrency bound execution,
+  while isolated pull requests expose conflicts for human review.
+- When should bare Linear references resolve without `--repo`? Default: after
+  a separate design defines workspace identity, credentials, and repository
+  mapping.
 
 ## 13. Out of scope
 
-- Deterministic GitHub action publishing or exactly-once external side effects.
-- General business automation and non-engineering providers.
-- Human project management, chat, inboxes, personas, or squads.
-- DAGs, workflow chaining, visual pipelines, or synthesis Jobs.
-- One agent process changing several repositories atomically.
-- Remote operator access, automatic merge, approval, deployment, or release.
+- A Factory coding agent, model loop, context manager, or subagent framework.
+- Ordered Stage graphs, arbitrary DAGs, visual pipeline editing, or workflow
+  chaining.
+- Central CI polling, webhook-driven continuation, or long-lived wait state.
+- Automatic merge, release, deployment, or production monitoring.
+- Linear, Jira, or generic provider clients and plugin interfaces.
+- Public operator access, team accounts, roles, or multi-tenancy.
+- Cloud Run implementation or another execution backend change.
+- Deterministic proof that an agent's implementation is correct.
+- Exactly-once external provider side effects.
