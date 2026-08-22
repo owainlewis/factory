@@ -67,8 +67,8 @@ Factory control plane
                  ^
                  | claim, lease, events, checkpoint completion
                  |
-Persistent Worker -------------------------- Git origin
-  isolated Attempt worktree                  immutable checkpoint refs
+Isolated persistent Worker ----------------- Git origin
+  sandboxed agent and Attempt worktree       immutable checkpoint refs
   Pi, Codex, or Claude Code                  shared between Workers
 ```
 
@@ -151,10 +151,12 @@ state, cancellation, retry, and checkpoint identity. It depends on the
 existing routing and Attempt services. It does not create commits or decide
 whether a checkpoint exists remotely.
 
-The Worker owns base and checkpoint fetches, isolated worktrees, runtime
-execution, checkpoint commit creation, publication proof, and safe retention.
-It depends on its existing repository credentials. It does not choose the next
-Stage or change dependency state.
+The Worker owns base and checkpoint fetches, Attempt repository preparation,
+runtime execution, checkpoint commit creation, publication proof, and safe
+retention. An isolated profile uses a self-contained per-Attempt clone; a
+credential-free legacy Worker may keep the current linked-worktree path for
+unsandboxed one-stage work. The Worker does not choose the next Stage or change
+dependency state.
 
 The browser owns the Pipeline editor, software-work graph, filters, and links
 to Run and Session detail. It reads server projections and does not derive
@@ -191,11 +193,14 @@ because an offline Worker would strand the Pipeline and cloud execution could
 not continue it. Patch blobs in SQLite were rejected because they would move
 repository contents into the control plane and duplicate Git's object model.
 
-**Limit multi-stage V1 to persistent execution profiles.** The current cloud
-profile returns result and patch artifacts but cannot publish a durable Git
-checkpoint. Pipeline validation and admission reject a multi-stage Pipeline
-when any Stage uses a non-persistent profile. One-stage Pipelines retain every
-current profile. Cloud checkpoint publication requires a separate design.
+**Limit multi-stage V1 to isolated persistent execution profiles.** The current
+cloud profile returns result and patch artifacts but cannot publish a durable
+Git checkpoint. Current persistent runtimes share the Worker OS context and
+cannot protect a checkpoint credential from agent code. Pipeline validation and
+admission therefore reject a multi-stage Pipeline unless every Stage uses a
+persistent profile that provides the isolation contract below. One-stage
+Pipelines retain every current profile. Cloud checkpoint publication and
+unsandboxed multi-stage execution require separate designs.
 
 **Let the Worker create the checkpoint commit.** Agents may leave committed or
 uncommitted changes. On a successful exit, the Worker stages modifications and
@@ -228,8 +233,9 @@ by a multi-stage Pipeline must protect
 deletion of an existing ref. Creation is permitted only to a dedicated Factory
 checkpoint principal. Agents and other repository writers cannot create,
 update, or delete refs in the namespace. The Worker uses a separate credential
-for checkpoint publication and never exposes it to the agent process or
-worktree Git configuration. Factory stores the provider-verified policy
+for checkpoint publication. The credential and publisher run outside the agent
+sandbox and are unreachable from its OS identity, mounts, process namespace,
+environment, and network endpoints. Factory stores the provider-verified policy
 identity and version on the repository and rejects multi-stage admission when
 that evidence is missing or stale.
 
@@ -276,6 +282,15 @@ occupies that graph. This keeps sequence and project context visible together.
 - `INV-18`: The Git origin permits only the dedicated Factory checkpoint
   principal to create checkpoint refs and prevents every principal from
   updating or deleting an accepted checkpoint ref.
+- `INV-19`: A multi-stage agent security domain cannot access the dedicated
+  checkpoint credential or invoke its publisher.
+- `INV-20`: A host security domain that holds or can invoke the checkpoint
+  publisher never executes an unsandboxed agent.
+- `INV-21`: An isolated Attempt has self-contained Git administration and
+  objects; shared caches, manifests, sibling worktrees, and their Git metadata
+  are unreachable from its sandbox.
+- `INV-22`: One stable host security-domain ID has one immutable execution
+  mode, and publisher credentials do not exist before that mode is enforced.
 
 ### Requirements
 
@@ -293,9 +308,15 @@ occupies that graph. This keeps sequence and project context visible together.
   whitespace normalization.
 - A Stage chooses Pi, Codex, or Claude Code, one execution profile, a timeout,
   and an optional concurrency limit.
-- Every Stage in a multi-stage Pipeline uses a persistent execution profile.
-  A one-stage Pipeline retains current persistent, cloud, and fake-cloud
-  profile support.
+- Every Stage in a multi-stage Pipeline uses an isolated persistent execution
+  profile. A one-stage Pipeline retains current unsandboxed persistent, cloud,
+  and fake-cloud profile support.
+- A checkpoint-isolated Worker host accepts no unsandboxed profile. A legacy
+  unsandboxed Worker host is credential-free and accepts no multi-stage claim.
+- Every persistent Worker starts through the host supervisor with one stable,
+  immutable security-domain ID and mode.
+- An isolated Attempt uses a self-contained clone without Git alternates or
+  administration paths outside its Attempt directory.
 - Every repository in a multi-stage Pipeline has current evidence for an
   provider-verifiable, origin-enforced protected checkpoint namespace.
 - Pipeline concurrency limits Sessions holding an execution slot in the Run.
@@ -349,6 +370,54 @@ it cannot receive another claim until it registers with Pipeline support. A
 new Worker understands both one-stage Sessions without checkpoints and
 multi-stage Sessions with the prepared and checkpoint contracts.
 
+An isolated persistent profile advertises a versioned `agent_isolation`
+capability. The Worker launches the runtime in a container, VM, or equivalent
+OS security boundary. Before launch, it creates a self-contained per-Attempt
+clone with independent Git administration and object storage, checks out the
+exact input, and verifies that no `.git` indirection points into the shared
+cache. The sandbox mounts only that clone, runtime binaries, bounded temporary
+storage, and the normal repository credential. It cannot read Worker or
+control-plane data and configuration, shared repository caches, manifests,
+sibling worktrees, host credential stores, host process memory or environments,
+container or hypervisor control sockets, or the checkpoint publisher channel.
+It has no host process namespace and no network route to a local publisher
+endpoint. The Worker parent creates and supervises the sandbox from outside it.
+A same-user child process, environment redaction, filesystem convention, linked
+worktree, or clone using shared alternates does not satisfy this capability.
+
+Worker registration includes isolation kind, implementation version, health
+result, stable `security_domain_id`, and `security_domain_mode`. Admission
+requires a currently healthy compatible capability on an eligible Worker for
+every multi-stage Stage. Loss of isolation health makes new claims ineligible
+and blocks affected waiting work; it does not silently fall back to an
+unsandboxed runtime.
+
+A Worker security domain is either `checkpoint-isolated` or
+`legacy-unsandboxed`, never both. A checkpoint-isolated domain may hold or call
+the publisher and accepts only isolated profiles, including one-stage work. A
+legacy-unsandboxed domain has no checkpoint credential, publisher capability,
+or route to a publisher and accepts only one-stage work. The boundary applies
+to the whole host or VM security domain, not merely one Worker process; running
+a legacy Worker beside a publisher under the same readable OS context is
+invalid. Registration and routing reject a profile or sibling Worker that
+would mix the modes.
+
+The Factory host supervisor is the only supported launcher for persistent
+Workers. On first start it creates an owner-only security-domain record with a
+random stable ID and immutable mode in the host configuration root. Every
+Worker process inherits that identity from the supervisor; a command-line or
+per-Worker override is rejected. The supervisor refuses to launch a Worker or
+profile whose mode differs, including across restart. The control plane stores
+the first registered mode for each security-domain ID and rejects a conflicting
+sibling registration or health update.
+
+Checkpoint publisher credentials are provisioned to the host supervisor only
+after it atomically persists `checkpoint-isolated` mode and verifies no legacy
+Worker process is registered locally. A failed or conflicting launch happens
+before credential material exists. The trusted operator can reprovision a host
+only by removing all Workers and publisher credentials through an explicit
+offline reset; there is no live mode switch.
+
 Attempt completion adds `output_commit` and `checkpoint_ref` for success in a
 multi-stage Pipeline. The server rejects missing, malformed, or unexpected
 checkpoint identity before changing Session state. A one-stage Pipeline uses
@@ -373,6 +442,11 @@ Executions gain a preparation-failure count and next-routing time. A Session
 blocked only by Pipeline or Stage concurrency uses one canonical,
 non-actionable reason so the claim transaction can promote it without operator
 intervention.
+
+Worker registration state gains security-domain ID and mode with a uniqueness
+constraint that rejects conflicting modes. The local host record is the source
+of identity; the database copy is a routing and audit fence, not a caller-chosen
+replacement for local enforcement.
 
 Repositories gain checkpoint-protection policy identity, version, digest,
 verification source, and verification time. Runs snapshot that evidence.
@@ -553,11 +627,12 @@ as it does today. Active Worker leases and Attempt recovery are unchanged.
 
 ## 8. Security, privacy, and operations
 
-The local operator and remote Worker trust boundaries do not change. Only the
-authenticated Worker that owns the active Attempt lease may report checkpoint
-identity. The server validates IDs, commit format, ref shape, Stage position,
-and predecessor equality. It does not trust agent output to name the next
-commit.
+The local operator and control-plane boundary does not change. Multi-stage work
+adds an enforced boundary between the Worker parent and the agent sandbox. Only
+the authenticated Worker that owns the active Attempt lease may report
+checkpoint identity. The server validates IDs, commit format, ref shape, Stage
+position, and predecessor equality. It does not trust agent output to name the
+next commit.
 
 Repository prompts, results, events, branch names, and checkpoint metadata may
 contain sensitive project information and keep their current local retention
@@ -570,11 +645,22 @@ automatic checkpoint unless another Stage consumes it. A repository without
 write access is reported as incompatible before a multi-stage Run when the
 Worker can prove that fact, and at checkpoint publication otherwise.
 
-The dedicated checkpoint credential is available only to the Worker parent
-process and its checkpoint publisher. The runtime supervisor and agent receive
-the normal repository credential, whose effective origin policy denies every
-checkpoint-namespace operation. Redaction, process-environment tests, and
-worktree-config tests prove the dedicated secret does not cross that boundary.
+The dedicated checkpoint credential is available only outside the agent
+sandbox to the Worker parent and checkpoint publisher. The sandbox receives the
+normal repository credential, whose effective origin policy denies every
+checkpoint-namespace operation. OS isolation tests, not redaction alone, prove
+the agent cannot read Worker storage, credentials, processes, or publisher
+channels. No unsandboxed agent runs anywhere in that host security domain. A
+legacy host may execute an unsandboxed one-stage agent only because it has no
+checkpoint credential or publisher route to steal.
+
+The Worker owns each self-contained Attempt clone and records that repository
+kind in its existing retention manifest. Failure, cancellation, or publication
+error retains the complete clone. Successful cleanup removes only the resolved
+Attempt directory after the existing clean-and-published checks. Shared cache
+cleanup and linked-worktree registration are not involved, and recovery refuses
+an isolated manifest whose Git directory or object alternates escape the
+Attempt directory.
 
 At most 500 Sessions are planned per Run, 100 are active, 20 Stages are stored
 per Pipeline, and Pipeline prompts total at most 256 KiB. List APIs remain
@@ -640,6 +726,19 @@ commit reachability and updates the protected origin policy safely.
 - `AC-22`: Changing the admitted checkpoint policy during an active Run blocks
   checkpoint acceptance and later-Stage claims until the admitted policy is
   restored or the Run is cancelled.
+- `AC-23`: A multi-stage agent cannot read the dedicated checkpoint credential
+  through environment, filesystem, host process inspection, credential stores,
+  control sockets, or publisher endpoints, while the Worker can still publish
+  the Attempt checkpoint after the sandbox exits.
+- `AC-24`: A checkpoint-isolated Worker security domain rejects every
+  unsandboxed profile, while a credential-free legacy Worker still runs a
+  current one-stage Pipeline.
+- `AC-25`: Inside an isolated Attempt, normal Git status, stage, commit, and
+  diff operations work, while shared caches, manifests, sibling worktrees, and
+  Git administration outside the Attempt directory are unreachable.
+- `AC-26`: Starting checkpoint-isolated and legacy Workers in either order for
+  one security-domain ID rejects the second mode before any checkpoint
+  credential is provisioned; restart preserves the original mode.
 
 ## 10. Test approach
 
@@ -661,9 +760,27 @@ preparation failover without a capacity leak, dirty work, no-change success,
 an agent-pushed working branch, reset or rebased history, an amended input
 commit, a changed origin, an untracked credential-like file, origin rejection
 of checkpoint update or deletion, denial of checkpoint creation with the agent
-credential, absence of the dedicated credential from the agent environment and
-worktree, and a staged specification file consumed by the next Stage. These
-cases also prove `INV-18`, `AC-13`, `AC-16`, `AC-17`, `AC-18`, and `AC-19`.
+credential, and a staged specification file consumed by the next Stage. A
+malicious test runtime attempts to read Worker data and configuration, host
+process environments, OS credential stores, container-control sockets, and the
+publisher channel from inside the sandbox; every attempt fails while the
+outside publisher still succeeds. These cases also prove `INV-18`, `INV-19`,
+`INV-20`, `INV-21`, `INV-22`, `AC-13`, `AC-16`, `AC-17`, `AC-18`, `AC-19`,
+`AC-23`, `AC-24`, `AC-25`, and `AC-26`. A malicious unsandboxed one-stage
+runtime runs only on a legacy Worker and proves that no checkpoint credential
+or publisher endpoint exists in its entire host security domain.
+
+Repository lifecycle tests prove an isolated Attempt clone has its own Git
+directory and objects without alternates, supports status, stage, commit, and
+diff, retains as one complete unit on failure, cleans up only its resolved
+Attempt directory on success, and refuses an escaping manifest. Existing
+linked-worktree tests continue to cover credential-free one-stage Workers.
+
+Host-supervisor integration tests start isolated then legacy Workers, legacy
+then isolated Workers, conflicting sibling processes, and both modes after a
+restart. They prove local launch and control-plane registration reject the
+second mode before publisher credential provisioning. An offline-reset fixture
+proves reprovisioning first removes every Worker and credential record.
 
 Migration tests build the last pre-Pipeline schema with active, succeeded,
 failed, cancelled, retried, and retained Sessions. They compare every source
@@ -702,6 +819,12 @@ and Track navigation, and Enter and Space activation.
   setup. V1 accepts that cost because ordinary write credentials cannot provide
   immutable handoff. Origins without a supported policy verifier remain
   one-stage only.
+- Agent sandboxing adds Worker setup and platform-specific enforcement. Current
+  unsandboxed profiles remain one-stage only on credential-free legacy Worker
+  hosts because protecting a parent secret by convention would make checkpoint
+  namespace controls ineffective. Self-contained clones also use more disk than
+  linked worktrees; the existing 100 active-Session bound and retention reports
+  make that cost visible.
 - Another process could create an Attempt checkpoint ref first. Create-only
   push and read-back turn that race into a visible conflict for that Attempt.
   A retry receives a different ref and is not blocked by the conflict.
@@ -732,6 +855,7 @@ and Track navigation, and Enter and Space activation.
 - Conditional Stages or prompt expressions based on earlier results.
 - Automatic merge, deployment, rollback, or pull-request publication.
 - Multi-stage cloud and fake-cloud execution profiles.
+- Multi-stage execution in an unsandboxed persistent profile.
 - Multi-stage Pipelines on Git origins without a supported protection-policy
   verifier.
 - General business tasks, people assignment, due dates, and personal planning.
