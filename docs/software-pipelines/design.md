@@ -93,11 +93,11 @@ their predecessor. The two Tracks can run at the same time within the
 Pipeline's concurrency limit.
 
 The Implement agent starts from the repository base commit in an isolated
-worktree. When the agent exits successfully, the Worker commits any tracked or
-unignored changes and publishes the resulting commit to a Factory-owned,
-immutable checkpoint ref. Only after the Worker reports that checkpoint does
-the control plane mark Implement succeeded and make Test eligible in the same
-transaction.
+worktree. When the agent exits successfully, the Worker commits tracked changes
+and new files the agent explicitly staged, then pushes the resulting commit to
+a Factory-owned, origin-protected checkpoint ref. Only after the control plane
+accepts that checkpoint does it mark Implement succeeded and make Test eligible
+in the same transaction.
 
 Test may run on another Worker. It fetches the exact Implement checkpoint,
 creates a fresh Attempt worktree, and receives the Test prompt plus trusted
@@ -198,14 +198,17 @@ when any Stage uses a non-persistent profile. One-stage Pipelines retain every
 current profile. Cloud checkpoint publication requires a separate design.
 
 **Let the Worker create the checkpoint commit.** Agents may leave committed or
-uncommitted changes. On a successful exit, the Worker stages tracked changes
-and unignored new files, creates a commit only when HEAD changed or the index is
-dirty, and publishes the final HEAD. Before publication it revalidates that
-`origin` still matches the snapshotted repository identity and proves the
-frozen input commit is an ancestor of the output commit. A reset, replacement
-history, or changed origin fails the Attempt and retains the worktree. Failed,
-cancelled, lost, or timed-out Attempts never publish a checkpoint. This makes
-success observable and keeps the handoff contract independent of agent habits.
+uncommitted changes. On a successful exit, the Worker stages modifications and
+deletions to tracked files, but never automatically adds an untracked file. A
+new file enters the checkpoint only when the agent explicitly staged or
+committed it. Any remaining unignored, untracked file fails checkpoint creation
+with a bounded reason instead of being silently omitted or uploaded. The Worker
+creates a commit when the index is dirty and publishes the final HEAD. Before
+publication it revalidates that `origin` still matches the snapshotted
+repository identity and proves the frozen input commit is an ancestor of the
+output commit. A reset, replacement history, changed origin, or unresolved new
+file fails the Attempt and retains the worktree. This makes success observable
+without automatically disclosing scratch files or credentials.
 
 **Keep publication separate from an agent's branch.** The immutable checkpoint
 ref is Worker-owned even if an agent pushed its working branch or opened a pull
@@ -217,6 +220,15 @@ response loss or lease expiry leaves an orphan ref. A retry uses a new ref and
 cannot conflict with that orphan. The control plane records only the winning
 Attempt ref when it accepts completion, and only that ref can feed the next
 Stage.
+
+**Require origin-enforced checkpoint protection.** Create-only Worker behavior
+and read-back prove one instant, not future immutability. Every repository used
+by a multi-stage Pipeline must protect
+`refs/heads/factory/checkpoints/**` at the Git origin against deletion and
+force update while permitting new refs. A GitHub ruleset, GitLab protected
+branch rule, or equivalent server policy satisfies the contract. Factory
+stores the verified policy identity and version on the repository and rejects
+multi-stage admission when that evidence is missing or stale.
 
 **Group the graph by Pipeline Run.** A global set of status columns was rejected
 because `running` does not say whether code is being implemented, tested, or
@@ -240,7 +252,8 @@ occupies that graph. This keeps sequence and project context visible together.
   commit ID and the winning Attempt's write-once checkpoint ref, which the
   completing Worker proved resolves to that commit at origin.
 - `INV-8`: Failed, cancelled, lost, or timed-out Attempts cannot advance a
-  Track or replace its last successful checkpoint.
+  Track, replace its last successful checkpoint, or have a pushed orphan ref
+  accepted as a Session checkpoint.
 - `INV-9`: Retrying a failed Session reuses its frozen input commit and cannot
   change a downstream Session that already ran.
 - `INV-10`: Editing a Pipeline never changes an admitted Run.
@@ -255,8 +268,10 @@ occupies that graph. This keeps sequence and project context visible together.
   completion or retry from promoting a successor.
 - `INV-16`: A pending scheduled occurrence freezes the same complete ordered
   Pipeline snapshot as manual admission.
-- `INV-17`: A published output commit descends from the frozen input commit and
-  its checkpoint ref is written to the snapshotted repository origin.
+- `INV-17`: An accepted output commit descends from the frozen input commit and
+  its checkpoint ref exists at the snapshotted repository origin.
+- `INV-18`: The Git origin prevents deletion and force update of accepted
+  checkpoint refs.
 
 ### Requirements
 
@@ -264,8 +279,12 @@ occupies that graph. This keeps sequence and project context visible together.
   have no repositories, but admission requires at least one.
 - The product of Stages and repositories must not exceed 500 planned Sessions
   in one Run.
-- One Stage prompt is at most 64 KiB and all Stage prompts in one Pipeline are
-  at most 256 KiB.
+- One resolved Stage prompt is at most 64 KiB and all Stage prompts in one
+  Pipeline are at most 256 KiB. The canonical formatter reserves the remaining
+  space in the versioned 72 KiB complete agent-input limit for bounded trusted
+  Pipeline, Stage, Track, checkpoint, repository, and branch context. Save,
+  schedule, admission, claim validation, and Worker startup reject a complete
+  input that exceeds 72 KiB.
 - Stage names are unique within a Pipeline after Unicode case folding and
   whitespace normalization.
 - A Stage chooses Pi, Codex, or Claude Code, one execution profile, a timeout,
@@ -273,8 +292,12 @@ occupies that graph. This keeps sequence and project context visible together.
 - Every Stage in a multi-stage Pipeline uses a persistent execution profile.
   A one-stage Pipeline retains current persistent, cloud, and fake-cloud
   profile support.
-- Pipeline concurrency limits all active Sessions in the Run. Stage
-  concurrency further limits active Sessions for that Stage.
+- Every repository in a multi-stage Pipeline has current evidence for an
+  origin-enforced protected checkpoint namespace.
+- Pipeline concurrency limits Sessions holding an execution slot in the Run.
+  Stage concurrency further limits slot holders for that Stage. Exactly
+  `queued`, `preparing`, and `running` Sessions hold slots; `waiting`,
+  concurrency-blocked, and terminal Sessions do not.
 - The software-work view sorts actionable blocked and failed Sessions first,
   then active work, then recent successful or cancelled work.
 - Cards always show a Pipeline name, Stage name, repository identity, state,
@@ -295,13 +318,16 @@ Pipeline snapshot, Tracks, Sessions grouped by Track and Stage, and existing
 Attempt summaries. The detail response does not inline Attempt events.
 
 Worker claims add `track_id`, `stage_id`, `stage_name`, `stage_position`, and
-the predecessor checkpoint ref when one exists. Before launching the runtime,
-the Worker calls a new lease-protected prepared endpoint with the resolved base
-branch, exact input commit, worktree identity, and working branch. For a first
-Stage, the transaction freezes the Track base commit if it is not already set.
-For a retry or later Stage, the endpoint requires an exact match with the
-stored input. Only a successful prepared response authorizes process startup.
-The existing start endpoint continues to record supervisor process identity.
+the winning predecessor checkpoint ref when one exists. For a later Stage, the
+Worker first fetches that ref, verifies it resolves to `input_commit`, and
+creates or resets the isolated worktree at that exact commit. Before launching
+the runtime, the Worker calls a new lease-protected prepared endpoint with the
+resolved base branch, exact worktree HEAD, input commit, worktree identity, and
+working branch. For a first Stage, the transaction freezes the Track base
+commit if it is not already set. For a retry or later Stage, the endpoint
+rejects a worktree HEAD or input identity that differs from the stored input.
+Only a successful prepared response authorizes process startup. The existing
+start endpoint continues to record supervisor process identity.
 
 If preparation fails, the Worker calls the lease-protected
 `POST /api/v1/attempts/{attempt_id}/preparation-fail` endpoint with a bounded
@@ -326,6 +352,12 @@ the current completion contract and does not require an unused remote write.
 The Worker must revalidate canonical origin identity and commit ancestry after
 the agent exits and again as part of checkpoint read-back proof.
 
+Pipeline authoring and admission use a versioned canonical agent-input
+formatter shared with the Worker. It calculates the complete UTF-8 payload,
+including maximum branch fields and every trusted Pipeline context field,
+against the 72 KiB protocol limit. The claim protocol version changes whenever
+that formatter or bound changes.
+
 The database gains Pipeline Stage and Track tables. Sessions gain Track and
 Stage foreign keys, `waiting` and `skipped` states, input and output commit
 columns, checkpoint ref, skip reason, and the Session whose outcome caused the
@@ -338,6 +370,13 @@ blocked only by Pipeline or Stage concurrency uses one canonical,
 non-actionable reason so the claim transaction can promote it without operator
 intervention.
 
+Repositories gain checkpoint-protection policy identity, version, verification
+source, and verification time. Provider-backed verification reads the origin's
+branch or ref rules. A manually managed origin requires an explicit operator
+attestation tied to the policy version. Changing repository identity clears the
+evidence. Multi-stage admission rejects missing or stale evidence rather than
+relying on Worker read-back as an immutability control.
+
 Each pending scheduled occurrence stores the complete immutable Pipeline
 generation it will admit: ordered Stages, repository identities, execution
 settings, and scheduled instant. Editing a Pipeline only changes occurrences
@@ -349,7 +388,10 @@ Task, using the Task ID as the Stage ID in its separate namespace. Current Run
 snapshots become one-Stage Pipeline snapshots. Each current Session receives a
 Track and points to that one Stage. Existing Sessions have no synthetic output
 checkpoint because no Worker proved one. Historical state remains read-only
-where later sequencing would require missing proof.
+where later sequencing would require missing proof. Pre-Pipeline historical
+Sessions expose null input commit, output commit, and checkpoint ref unless the
+old record already proved a value; the UI labels those fields unavailable
+rather than inventing them.
 
 Every existing pending or paused scheduled occurrence is converted to a
 one-Stage `Execute` Pipeline generation from its own frozen Task snapshot, not
@@ -381,7 +423,15 @@ Attempt may reuse the ref only when it resolves to the same output commit. A
 new Attempt always receives a new ref, so an orphan from response loss or lease
 expiry cannot poison a retry. A later Worker fetches only the winning ref
 recorded on the predecessor Session and verifies it still resolves to the
-stored input commit before it starts.
+stored input commit before it starts. The origin's protected checkpoint
+namespace prevents deletion and force update after creation; Worker read-back
+detects misconfiguration but is not the immutability mechanism.
+
+In this design, **pushed** means the Worker created a ref at Git origin, while
+**accepted** means the control plane committed that ref as the winning Session
+checkpoint under a valid lease and cancellation fence. Response loss, lease
+expiry, or cancellation may leave a pushed orphan ref. Such a ref is never
+accepted, never stored as the Session checkpoint, and never advances the Track.
 
 ### Naming and identity
 
@@ -426,8 +476,8 @@ canonical non-actionable concurrency reason. The existing claim transaction
 rechecks such Sessions on each healthy Worker poll and makes one routeable when
 both Pipeline and Stage capacity exist, within the current two-second polling
 interval. Promotion is idempotent. An expired lease cannot publish completion
-even if the Worker pushed its Attempt ref; the orphan is visible to cleanup but
-does not advance the Track or conflict with a later Attempt.
+even if the Worker pushed its Attempt ref; reconciliation reports the orphan,
+but it does not advance the Track or conflict with a later Attempt.
 
 When a Session fails, every later waiting Session in that Track becomes
 skipped and records the failed Session as its cause. Retrying the failed
@@ -440,11 +490,12 @@ Cancelling a Run first commits its cancellation timestamp, then requests
 cancellation for active Sessions and marks waiting or concurrency-blocked
 Sessions skipped. Cancelling one Session commits a Track cancellation timestamp
 and applies the same rule to that Track. These timestamps are promotion fences:
-a late valid completion may record its checkpoint for audit, but the Session
-resolves cancelled and cannot promote a successor. A cancelled Run or Track
-cannot be reopened by Session retry; the operator starts a new Pipeline Run.
-Editing, archiving, or disabling the schedule affects future scheduled
-occurrences only.
+a late completion is rejected and cannot store a winning checkpoint or promote
+a successor. The Worker may already have pushed an orphan Attempt ref before it
+learns of cancellation; the server records only a bounded orphan event for
+audit and the Session resolves cancelled. A cancelled Run or Track cannot be
+reopened by Session retry; the operator starts a new Pipeline Run. Editing,
+archiving, or disabling the schedule affects future scheduled occurrences only.
 
 `waiting` is neither claimable nor terminal. `skipped` is terminal. A Run is
 active while any Session is blocked, queued, preparing, running, or waiting.
@@ -502,9 +553,9 @@ cursor bounded. Attempt event and result limits remain unchanged.
 
 Checkpoint refs are durable delivery evidence and are not deleted
 automatically in V1. The repository detail page reports their count and age.
-Manual cleanup must verify the Run is terminal and retain the final Track
-checkpoint. Automatic retention and pull-request-aware cleanup require a
-separate design.
+Factory provides no deletion operation in V1. Retention and
+pull-request-aware cleanup require a separate design that preserves accepted
+commit reachability and updates the protected origin policy safely.
 
 ## 9. Acceptance criteria
 
@@ -523,8 +574,9 @@ separate design.
   repository cards, attention reasons, runtime activity, and recent outcomes
   at desktop and 390-pixel widths.
 - `AC-7`: Selecting a repository card opens Run detail with every Stage,
-  Session, Attempt, input commit, output commit, and checkpoint ref for that
-  Track.
+  Session, and Attempt for that Track. Input, output, and checkpoint fields are
+  shown when the Session contract recorded them. A one-stage or pre-Pipeline
+  historical Session shows unavailable fields without synthetic values.
 - `AC-8`: Editing or reordering a Pipeline leaves an active Run and all its
   Stage identities unchanged.
 - `AC-9`: Manual and scheduled admission create the same Pipeline Run, Track,
@@ -546,13 +598,23 @@ separate design.
   Worker to claim and complete the same Session execution cycle.
 - `AC-17`: Checkpoint publication fails and retains the worktree when an agent
   replaces the frozen input history or changes the repository origin.
+- `AC-18`: Multi-stage admission rejects a repository without current evidence
+  that its origin prevents checkpoint-ref deletion and force update.
+- `AC-19`: An untracked file is never uploaded automatically; checkpoint
+  creation fails until the agent stages, commits, ignores, or removes it.
+- `AC-20`: The largest valid resolved Stage prompt plus trusted context fits the
+  72 KiB complete-input limit, and the next byte is rejected before execution.
+- `AC-21`: With Pipeline and Stage concurrency set to one, a promoted successor
+  runs after its predecessor releases the slot; waiting and blocked Sessions do
+  not deadlock the Track.
 
 ## 10. Test approach
 
 Store tests prove admission, independent Track promotion, aggregate state,
 retry, cancellation races, every terminal aggregate predicate, generation
 snapshots, concurrency-block promotion, and all limits for `INV-1` through
-`INV-17`, `AC-1`, `AC-2`, `AC-5`, `AC-8`, `AC-9`, `AC-14`, and `AC-15`.
+`INV-18`, `AC-1`, `AC-2`, `AC-5`, `AC-8`, `AC-9`, `AC-14`, `AC-15`, and
+`AC-21`.
 Aggregate fixtures include cancellation before any checkpoint, cancellation
 after an intermediate checkpoint, all Tracks cancelled, completed plus
 cancelled Tracks, and failed plus cancelled Tracks.
@@ -564,8 +626,10 @@ The test compares full commit IDs and file contents for `INV-5` through
 conflicting ref, an orphaned Attempt ref after response loss or lease expiry,
 preparation failover without a capacity leak, dirty work, no-change success,
 an agent-pushed working branch, reset or rebased history, an amended input
-commit, a changed origin, and a specification file consumed by the next Stage.
-These cases also prove `AC-13`, `AC-16`, and `AC-17`.
+commit, a changed origin, an untracked credential-like file, origin rejection
+of checkpoint deletion or force update, and a staged specification file
+consumed by the next Stage. These cases also prove `AC-13`, `AC-16`, `AC-17`,
+`AC-18`, and `AC-19`.
 
 Migration tests build the last pre-Pipeline schema with active, succeeded,
 failed, cancelled, retried, and retained Sessions. They compare every source
@@ -576,8 +640,9 @@ blocked, paused, and retrying schedules, preserve their frozen source snapshot,
 and prove `INV-16` and `AC-14`.
 
 HTTP contract tests cover Pipeline validation, pagination, immutable snapshots,
-claim fields, malformed checkpoint rejection, and local or remote route
-boundaries for `INV-1`, `INV-7`, and `INV-13`.
+claim fields, malformed checkpoint rejection, checkpoint-protection evidence,
+complete-input byte boundaries, and local or remote route boundaries for
+`INV-1`, `INV-7`, `INV-13`, `INV-18`, `AC-18`, and `AC-20`.
 
 Schedule tests prove a pending occurrence retains its complete immutable
 Pipeline generation across later edits for `INV-16` and `AC-14`.
@@ -586,6 +651,8 @@ React tests prove card grouping, sorting, attention reasons, links, empty and
 failure states, and keyboard names. A real Chromium test runs the three-Stage,
 two-repository flow at desktop and 390-pixel widths, checks console and failed
 requests, and proves `AC-1`, `AC-6`, `AC-7`, `AC-9`, `AC-11`, and `AC-12`.
+At both widths it asserts logical focus order, visible focus indicators, Stage
+and Track navigation, and Enter and Space activation.
 
 ## 11. Risks and tradeoffs
 
