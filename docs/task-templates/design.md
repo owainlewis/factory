@@ -227,7 +227,9 @@ are two sizes of the same software procedure.
 - `INV-11`: Every Pipeline created from a Template mints new Pipeline-bound
   Stage UUIDs and records a complete source-node to execution-Stage mapping.
 - `INV-12`: Current, starter, and Task- or Pipeline-referenced revision bodies
-  are never compacted.
+  are never independently compacted. Purging an eligible archived user Template
+  deletes its complete aggregate, including its current revision, under the
+  stricter aggregate checks in section 7.
 
 ### Requirements
 
@@ -384,16 +386,23 @@ has no Template provenance and a null map.
 
 The storage GET returns the four configured limits, current body, record, and
 byte use, reclaimable counts, and next mutation-ledger expiry. A compaction
-preview request contains an optional Template ID and `max_records`, from 1 to
-1,000. The response contains one random opaque token, a ten-minute expiry, the
-database-generation fence, exact eligible IDs, their action (`purge_template`,
-`compact_body`, or `delete_tombstone`), and aggregate bytes and slots. The server
-stores the canonical preview digest; the token does not encode trusted data.
-Apply contains `request_key` and the preview token. It uses mutation scope
+preview request contains an optional Template ID and `max_actions`, from 1 to
+1,000. This limit counts top-level reclamation actions, not revision members:
+one `purge_template` aggregate is one action. Each purge action contains the
+Template ID plus the complete ordered array of its revision IDs and digests;
+`compact_body` and `delete_tombstone` each contain their one revision ID and
+digest. The total nested revision membership cannot exceed the global 20,000
+revision-record limit. Preview and apply responses contain no names, summaries,
+prompts, or procedure bytes and have a fixed 8 MiB serialized-response limit;
+the bounded UUID and SHA-256 fields keep the 20,000-member maximum below it.
+The response also contains one random opaque token, a ten-minute expiry, the
+database-generation fence, and aggregate bytes and slots. The server stores the
+canonical preview digest; the token does not encode trusted data. Apply contains
+`request_key` and the preview token. It uses mutation scope
 `template-storage:compact`, rechecks the complete preview transactionally, and
-returns the recorded counts, IDs, and bytes. Replaying the same apply returns
-that result. An expired token returns `template_compaction_preview_expired` and
-performs no work.
+returns the recorded actions, membership, counts, and bytes. Replaying the same
+apply returns that result. An expired token returns
+`template_compaction_preview_expired` and performs no work.
 
 SQLite also adds `mutation_requests`. Its primary key is the pair of
 `operation_scope` and client-generated `request_key`. It stores the SHA-256
@@ -576,9 +585,17 @@ IDs, bytes, reference counts, and a database-generation fence. Apply requires
 that token and operator confirmation. The transaction rechecks every condition:
 
 - An archived user Template may be purged only when no Task or Pipeline points
-  to any of its revisions, no retained duplicate names it as its source, and no
-  unexpired mutation result points to it. Purge removes the Template and its
-  eligible revision bodies, freeing a Template slot.
+  to any of its revisions, no retained duplicate names the Template or any
+  revision as its source, and no unexpired mutation result points to the
+  Template or any revision. `purge_template` is aggregate deletion, not
+  revision compaction: the preview must include every revision ID and digest,
+  and apply deletes the Template plus every revision record transactionally.
+  This includes the current revision and compacted tombstones regardless of
+  their individual 90- or 365-day ages. If any revision is omitted or fails an
+  external-reference or replay check, the whole Template is ineligible. Starter
+  Templates are never purge candidates. A successful purge frees one Template
+  slot, all of its retained-body and prompt-byte use, and all of its total
+  revision-record slots.
 - A non-current user revision body may be compacted only when it is at least 90
   days old, no Task or Pipeline points to it, no retained duplicate names it as
   its source, and no unexpired mutation result points to it. Compaction retains a
@@ -597,9 +614,12 @@ that token and operator confirmation. The transaction rechecks every condition:
   starter, and replay reference checks still pass. Its ID, digest, and source
   node set are included in the preview. Deletion frees one total revision-record
   slot. Revision numbers are never reused.
-- Current revisions, starter revisions, referenced revisions, and unexpired
-  replay records are never eligible. A changed reference set or preview fence
-  aborts the whole apply with `template_compaction_stale`.
+- Current revisions are never eligible for independent body compaction or
+  tombstone deletion; they may be removed only inside an eligible
+  `purge_template` aggregate. Starter revisions, externally referenced
+  revisions, and revisions named by unexpired replay records are never eligible
+  for any reclamation action. A changed reference set, aggregate membership, or
+  preview fence aborts the whole apply with `template_compaction_stale`.
 
 Factory runs expired mutation-ledger cleanup automatically, but never compacts a
 Template body automatically. If safe compaction cannot free enough capacity, an
@@ -692,7 +712,9 @@ run in linear time over at most one Template revision and one Task request.
 - `AC-18`: A previewed compaction removes only eligible unreferenced procedure
   bodies, retains the specified bounded tombstones, aborts on a new reference,
   safely deletes only 365-day unreferenced tombstones, and frees the reported
-  body, record, and byte capacity.
+  body, record, and byte capacity. Purging an eligible archived user Template
+  atomically deletes its current revision and every other revision or tombstone,
+  while any omitted aggregate member or external reference rejects the purge.
 - `AC-19`: Through each request's original 90-day expiry, an exact lost-response
   replay on the legacy Task create route returns the migrated Pipeline identity
   without admitting new work; changed, expired, and unknown requests fail as
@@ -705,8 +727,9 @@ run in linear time over at most one Template revision and one Task request.
   without admitting a new mutation; changed, expired, and unknown requests fail
   as specified.
 - `AC-22`: The authenticated storage panel previews at most 1,000 exact
-  reclamation actions, applies them idempotently from an unexpired token, and
-  performs no partial work for an expired token or changed reference fence.
+  reclamation actions and at most 20,000 nested revision members in an 8 MiB
+  response, applies them idempotently from an unexpired token, and performs no
+  partial work for an expired token or changed reference fence.
 
 ## 10. Test approach
 
@@ -737,10 +760,14 @@ legacy route and scope-specific lookup. A graph-conversion fixture
 creates two Pipelines from one revision and proves `INV-10`, `INV-11`, `AC-12`,
 `AC-13`, `AC-14`, `AC-15`, `AC-19`, and `AC-21`. Compaction fixtures race a new
 provenance reference against apply, preserve referenced bytes, verify retained
-tombstones, exercise ledger expiry and cap recovery, and prove `INV-12` and
-`AC-18`. They retain duplicate provenance after body compaction and exercise
-bounded preview and idempotent apply APIs. Privacy assertions prove compacted rows retain no prompt or execution
-defaults in either source or derived Graph storage. Existing
+tombstones, purge complete archived aggregates containing current revisions and
+young tombstones, reject incomplete or newly referenced aggregates, exercise
+ledger expiry and cap recovery, and prove `INV-12` and `AC-18`. They retain
+duplicate provenance after body compaction and exercise
+the 1,000-action, 20,000-member, and serialized-response bounds at maximum
+storage as well as idempotent apply APIs. Privacy assertions prove compacted
+rows retain no prompt or execution defaults in either source or derived Graph
+storage. Existing
 Linux, macOS, browser, migration, race, security, and release checks remain
 required.
 
