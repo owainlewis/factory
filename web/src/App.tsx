@@ -36,7 +36,7 @@ function readRoute(): Route {
 }
 
 function runMode(value: string | null): RunViewMode {
-  return value === "list" || value === "table" ? value : "kanban";
+  return value === "list" || value === "table" ? "table" : "kanban";
 }
 
 function routePath(route: Route): string {

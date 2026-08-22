@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, AlertTriangle, ArrowLeft, CheckCircle2, CircleDot, Clock3, Columns3, GitBranch, List, RotateCcw, Rows3, StopCircle, TerminalSquare } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowLeft, CheckCircle2, CircleDot, Clock3, Columns3, GitBranch, RotateCcw, Rows3, StopCircle, TerminalSquare } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { duration, eventSummary, timeAgo } from "./format";
 import type { Attempt, AttemptEvent, Run, RunState, Session } from "./types";
 import { EmptyState, ErrorState, InlineError, LoadingState, StaleBanner, StatusBadge, ViewHeader } from "./ui";
 
-export type RunViewMode = "table" | "list" | "kanban";
+export type RunViewMode = "table" | "kanban";
 
 interface RunHistory {
   items: Run[];
@@ -65,7 +65,7 @@ export function RunsView({ mode, onMode, onRun }: { mode: RunViewMode; onMode: (
     <ViewHeader title="Work" fetching={query.isFetching || activeHistory.isFetching || loadHistory.isPending} updatedAt={Math.max(query.dataUpdatedAt, activeHistory.dataUpdatedAt)} onRefresh={() => void query.refetch()} />
     {error && <StaleBanner error={error} />}
     <div className="view-toolbar"><p>Follow every software run from queue to completion.</p><ViewSwitch mode={mode} onMode={onMode} /></div>
-    {!items.length ? <EmptyState icon={<Rows3 size={22} />} title="No work yet" description="Run a Task now or wait for its next schedule." /> : mode === "table" ? <RunTable items={items} onRun={onRun} /> : mode === "list" ? <RunList items={items} onRun={onRun} /> : <RunBoard items={items} onRun={onRun} />}
+    {!items.length ? <EmptyState icon={<Rows3 size={22} />} title="No work yet" description="Run a Task now or wait for its next schedule." /> : mode === "table" ? <RunTable items={items} onRun={onRun} /> : <RunBoard items={items} onRun={onRun} />}
     {historyCursor && <div className="load-more-row"><button className="button button-secondary" disabled={loadHistory.isPending} onClick={() => loadHistory.mutate({ cursor: historyCursor, headCursor: previousHeadCursor.current })}>{loadHistory.isPending ? "Loading…" : "Load more Runs"}</button></div>}
   </div>;
 }
@@ -89,15 +89,11 @@ function updateRuns(current: Run[], updates: Run[]): Run[] {
 }
 
 function ViewSwitch({ mode, onMode }: { mode: RunViewMode; onMode: (mode: RunViewMode) => void }) {
-  return <div className="run-view-switcher" aria-label="Work view"><button aria-pressed={mode === "kanban"} onClick={() => onMode("kanban")}><Columns3 size={14} /> Board</button><button aria-pressed={mode === "table"} onClick={() => onMode("table")}><Rows3 size={14} /> Table</button><button aria-pressed={mode === "list"} onClick={() => onMode("list")}><List size={14} /> List</button></div>;
+  return <div className="run-view-switcher" aria-label="Work view"><button aria-pressed={mode === "kanban"} onClick={() => onMode("kanban")}><Columns3 size={14} /> Board</button><button aria-pressed={mode === "table"} onClick={() => onMode("table")}><Rows3 size={14} /> Table</button></div>;
 }
 
 function RunTable({ items, onRun }: { items: Run[]; onRun: (id: string) => void }) {
   return <div className="run-table panel"><div className="run-table-row run-table-head"><span>Task</span><span>Progress</span><span>Source</span><span>State</span><span>Started</span><span>Duration</span></div>{items.map((run) => <button className="run-table-row" key={run.id} onClick={() => onRun(run.id)}><span className="run-name"><strong>{run.task.name}</strong><small>{run.id.slice(0, 8)}</small></span><span><Progress run={run} /></span><span className="capitalize">{run.source.replace("_", " ")}</span><span><StatusBadge state={run.state} /></span><span>{timeAgo(run.admitted_at)}</span><span>{run.terminal_at ? duration(run.admitted_at, run.terminal_at) : "In progress"}</span></button>)}</div>;
-}
-
-function RunList({ items, onRun }: { items: Run[]; onRun: (id: string) => void }) {
-  return <div className="run-clean-list">{items.map((run) => <button className="run-clean-card" key={run.id} onClick={() => onRun(run.id)}><span className="run-card-state"><StatusBadge state={run.state} /></span><span className="run-card-copy"><strong>{run.task.name}</strong><small>{run.source.replace("_", " ")} · started {timeAgo(run.admitted_at)}</small></span><Progress run={run} /><span className="run-card-duration">{run.terminal_at ? duration(run.admitted_at, run.terminal_at) : "Active"}</span></button>)}</div>;
 }
 
 const boardColumns: Array<{ key: string; label: string; hint: string }> = [

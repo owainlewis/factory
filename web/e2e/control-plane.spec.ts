@@ -44,7 +44,7 @@ test("creates a Task and completes its Run", async ({ page }) => {
   await expect(page.locator(".attempt-events")).toContainText("Inspected the assigned repository.");
 });
 
-test("makes the board the primary Work view and preserves alternate views", async ({ page }) => {
+test("makes the board the primary Work view and preserves the table view", async ({ page }) => {
   await page.goto("/");
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole("heading", { name: "Work", exact: true })).toBeVisible();
@@ -54,16 +54,13 @@ test("makes the board the primary Work view and preserves alternate views", asyn
   await expect(completedRun).toContainText("factory-demo");
   expect(await page.evaluate<boolean>("document.documentElement.scrollWidth <= document.documentElement.clientWidth")).toBe(true);
 
-  await page.getByRole("button", { name: "List", exact: true }).click();
-  await expect(page).toHaveURL(/\/work\?view=list/);
-  await expect(page.getByText(taskName, { exact: true })).toBeVisible();
-
-  await page.getByRole("button", { name: "Board", exact: true }).click();
-  await expect(page).toHaveURL(/\/work$/);
-  await expect(page.getByText(taskName, { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "List", exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Table", exact: true }).click();
   await expect(page).toHaveURL(/\/work\?view=table/);
+
+  await page.goto("/work?view=list");
+  await expect(page.getByRole("button", { name: "Table", exact: true })).toHaveAttribute("aria-pressed", "true");
 
   await page.goto("/runs");
   await expect(page.getByRole("heading", { name: "Work", exact: true })).toBeVisible();

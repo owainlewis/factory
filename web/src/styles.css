@@ -971,13 +971,6 @@ button.run-table-row:hover { background: var(--panel-2); color: var(--fg); }
 .session-progress > span { width: 72px; height: 4px; overflow: hidden; border-radius: 999px; background: var(--line-2); }
 .session-progress i { display: block; height: 100%; border-radius: inherit; background: var(--succeeded); }
 .session-progress small { color: var(--fg-3); font-family: var(--mono); font-size: 10px; }
-.run-clean-list { display: grid; gap: 7px; }
-.run-clean-card { min-height: 68px; display: grid; grid-template-columns: 105px minmax(220px, 1fr) 160px 80px; align-items: center; gap: 14px; padding: 10px 13px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--panel); color: inherit; text-align: left; cursor: pointer; }
-.run-clean-card:hover { border-color: var(--line-2); background: var(--panel-2); }
-.run-card-copy strong, .run-card-copy small { display: block; }
-.run-card-copy strong { font-size: 13px; font-weight: 500; }
-.run-card-copy small { margin-top: 5px; color: var(--fg-3); font-size: 11px; }
-.run-card-duration { text-align: right; color: var(--fg-3); font-family: var(--mono); font-size: 10px; }
 .work-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1076,8 +1069,6 @@ button.run-table-row:hover { background: var(--panel-2); color: var(--fg); }
   .task-settings, .repository-picker { grid-template-columns: 1fr; }
   .run-table-row { grid-template-columns: minmax(160px, 1fr) 100px; }
   .run-table-row > :not(:first-child):not(:fourth-child) { display: none; }
-  .run-clean-card { grid-template-columns: 90px minmax(160px, 1fr); }
-  .run-clean-card > :nth-child(3), .run-clean-card > :nth-child(4) { display: none; }
   .session-row summary { grid-template-columns: minmax(160px, 1fr) 90px; }
   .session-time { display: none; }
   .work-summary { grid-template-columns: 1fr 1fr; }
