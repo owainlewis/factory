@@ -207,7 +207,10 @@ without holding a Worker execution slot until the review is approved or has
 bounded actionable feedback. Address feedback runs only for the latter outcome,
 receives the frozen feedback snapshot, and continues from the same accepted
 branch head. Update PR publishes only that accepted output. Approval skips both
-conditional Stages successfully. If the operator instead asks one
+conditional Stages successfully. If another review Gate follows, feedback that
+arrives while Address feedback runs is carried into that Gate. A terminal
+Update PR never hides such feedback: it publishes the accepted commit but makes
+the Track `partial` with a bounded pending-feedback snapshot. If the operator instead asks one
 Build agent to plan, implement, and test, Factory runs one agent loop and pays
 none of the intermediate context-reset cost.
 
@@ -307,7 +310,8 @@ checkpoint refs are implementation details beneath that one branch lineage.
 An Open PR Action runs on the Track owner after a code-producing predecessor.
 It first obtains a durable publication authorization ordered against Run and
 Track cancellation. That transaction freezes the candidate and expected remote
-head, provider cursor baselines, and an idempotency key. Only then may the
+head, provider observation inputs, successor eligibility floor when applicable,
+and an idempotency key. Only then may the
 Worker fast-forward the generated Track branch and create or find the pull
 request through authenticated `gh`. The Stage records provider, repository,
 pull request number, URL, remote branch, and published commit. Replaying uses
@@ -325,7 +329,13 @@ a later review or completion. Update PR success is the durable publication
 boundary that may advance the Track. Response loss is replayed by verifying
 that the recorded pull request branch equals the candidate commit. A different
 remote head fails the Action with `remote_diverged`; Factory never moves a
-succeeded Agent Session backward.
+succeeded Agent Session backward. Its authorization also freezes a stable
+preceding-Gate vector and successor topology. When another PR review Gate
+follows, that Gate inherits the vector as its eligibility floor rather than the
+new publication-time feed ends. When Update PR is terminal, a stable
+post-publication observation compares against that floor. Eligible feedback
+makes the Track `partial` with reason `feedback_arrived_during_address` and a
+bounded pending snapshot.
 
 A PR review Gate is enabled only after an Open PR or Update PR Action. It does
 not hold a Worker slot. The owner Worker receives a bounded, non-execution Gate
@@ -354,7 +364,9 @@ unconditional Edge to Update PR, and through any other exclusively skipped
 feedback node, until an approved Edge reconverges or the Track completes. A
 failure or cancellation on either path propagates its own non-success class
 instead. A timeout fails the Gate. Factory never starts an Agent with an empty
-invented feedback set.
+invented feedback set. A terminal Update PR publishes its accepted output, but
+late eligible feedback makes the Track partial rather than successfully hiding
+work the Agent never saw.
 
 A multi-stage Agent that makes no changes records its exact input commit as
 output and creates the same Attempt-scoped local ref. Every successful Agent
@@ -636,7 +648,7 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
 - `INV-10`: Failed, cancelled, lost, or timed-out Attempts cannot advance a
   Track or replace its last accepted commit.
 - `INV-11`: Retrying a failed Session reuses its frozen Agent input, Action
-  authorization, or Gate target and per-feed baselines and cannot change a
+  authorization, or Gate target and per-feed eligibility floors and cannot change a
   downstream Session that already started.
 - `INV-12`: Editing a Pipeline never changes an admitted Run.
 - `INV-13`: A Track advances independently of every other Track in the Run.
@@ -741,6 +753,13 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
 - `INV-46`: One Track has at most one accepted code head at a time. V1 rejects
   any topology that could make two code-producing nodes concurrently eligible
   or require merging their outputs.
+- `INV-47`: Update PR never advances a following Gate's eligibility floor past
+  the preceding Gate's stable consumed vector. Eligible feedback posted or
+  edited after that vector and inside the following Gate or terminal
+  observation boundary is either consumed by the following Gate or makes a
+  terminal Update PR Track visibly partial; it is never silently treated as
+  already addressed. Events first observed after that explicit boundary belong
+  to a later Run.
 
 ### Requirements
 
@@ -770,6 +789,15 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   and the fixed `fail` timeout policy. V1 supports `pull_request_review` after
   an Open PR or Update PR Action in the same Pipeline. Its typed outcome is
   `feedback_requested` or `approved`.
+- A review Gate freezes its stable per-feed vector with its outcome. Update PR
+  passes that exact vector to a following review Gate as the eligibility floor;
+  it cannot substitute the feeds observed at Update PR publication. A terminal
+  Update PR records `partial` after publishing when its stable publication
+  vector contains eligible feedback absent from the preceding Gate vector.
+- Terminal Update PR freezes a one-hour post-publication observation timeout.
+  Expiry is actionable failure, never success. Retry repeats only the feedback
+  observation against the same published commit, floor, digest version, and
+  authorization and sets a fresh one-hour deadline; it cannot publish again.
 - A PR review Gate freezes `actor_policy: repository_write`. A qualifying event
   must have an actor whom GitHub confirms currently has write, maintain, or
   admin repository permission. Unknown, missing, or unverifiable permission in
@@ -979,24 +1007,43 @@ the frozen input commit. Gate Sessions are never returned by the claim API.
 Gate checks use a separate Worker-initiated lease protocol on the existing
 outbound Worker poll. A healthy owner Worker asks for at most one due Gate
 check. The server atomically grants a short lease containing Gate, Track,
-provider, pull-request, target published commit, baseline cursor, deadline, and
-outcome version. It grants no second live lease for that Gate and the check does
-not consume Pipeline, Stage, or Worker execution capacity. The authenticated
-owner returns a bounded result with the lease token, observed PR head, and
-observed cursor. The server accepts it only when the lease, owner, target commit, outcome version,
-deadline, and Run and Track cancellation fences still match. Duplicate results
-return the stored outcome; stale or late results cannot satisfy the Gate. A
+provider, pull-request, target and preceding published commits, complete
+eligibility-floor vector, normalization-digest version, deadline, and outcome
+version. It grants no second live lease for that Gate and the check does not
+consume Pipeline, Stage, or Worker execution capacity. The authenticated owner
+returns a bounded result with the lease token, both sweep digests, stable
+second-sweep vector, observed PR head, normalized candidates, permission proofs,
+and bounded snapshot. The server accepts it only when the lease, owner, target
+commit, floor, digest version, outcome version, deadline, and Run and Track
+cancellation fences still match. Duplicate results return the stored outcome;
+stale or late results cannot satisfy the Gate. A
 lost lease expires and becomes eligible for another owner-Worker poll. At most
 one Gate check runs per Track and a Worker has a bounded Gate-check concurrency
 of four. Factory never opens an inbound connection to a Worker.
 
 Before an Open PR or Update PR remote write, the owner calls a lease-protected
 publication-authorization endpoint with candidate commit, expected remote head,
-idempotency key, and conservative per-feed cursors observed by a bounded
-provider read. Open PR supplies empty feed cursors because no pull request yet
-exists. The transaction checks the Action lease and cancellation fences and
-stores the authorization exactly once. Replays return the frozen authorization;
-a different candidate, expected head, or cursor set conflicts.
+and idempotency key. The transaction checks the Action lease and cancellation
+fences and stores the authorization exactly once. Open PR stores empty floors.
+Update PR binds the preceding Gate ID and outcome version, its complete stable
+vector as the inherited floor, the normalization-digest version, and whether
+the frozen Graph has a following review Gate. For terminal Update PR it also
+freezes the V1 one-hour observation timeout. These values come from durable
+server state, never a Worker-supplied cursor. Replays return that complete frozen
+identity; a different candidate, expected head, preceding outcome, digest
+version, or successor topology conflicts.
+
+The publication result reports the exact observed remote commit under that
+authorization. For Update PR with a following Gate, one transaction verifies
+the remote commit, marks the Action succeeded, and writes the frozen inherited
+floor and digest version to the successor Gate. Terminal Update PR instead
+records the publication, moves the Action to `observing_terminal_feedback`,
+stores a deadline of `publication verified time + 1 hour`, releases its
+execution slot, and becomes eligible for the same bounded
+Worker-initiated observation lease used by Gates. That lease runs after remote
+publication and returns the two-sweep proof, stable vector, normalized late
+candidates, permission proofs, and bounded pending snapshot. Only its fenced
+result transaction may choose full success or `partial`.
 
 Before runtime launch, the Worker calls a lease-protected prepared endpoint
 with resolved base branch, exact worktree HEAD, worktree identity, and working
@@ -1057,15 +1104,21 @@ The database gains Pipeline Graph-node, Graph-edge, and Track tables. Each
 Track snapshots one Edge-state row per Edge before execution. A
 `not_traversed` Edge row records its typed resolution cause and originating
 Session so recovery can reproduce transitive skip classification. Sessions gain
-Track and Stage-node foreign keys, kind, `waiting` and `skipped` states, input and output
-commits, durable `finalizing` state and transition lease, bounded typed output,
+Track and Stage-node foreign keys, kind, `waiting`, `skipped`, and
+`observing_terminal_feedback` states, input and output commits, durable
+`finalizing` state and transition lease, bounded typed output,
 skip class, reason, and the Session whose outcome
 caused the skip. Skip class distinguishes `conditional_success` from
 `causal_failure` and cancellation. Tracks store owner Worker, immutable working
 branch, branch owner IDs, expected local and remote heads, frozen base commit,
 current accepted commit, published commit, pull-request identity, publication
-authorization and per-feed baselines, pending branch transition, review outcome,
-workspace health, and any rollback-only transition tombstone. A Worker
+authorization and per-feed eligibility floors, pending branch transition,
+review outcome, terminal disposition and reason, terminal provider vector,
+bounded pending-feedback snapshot, workspace health, and any rollback-only
+transition tombstone. Publication authorizations store candidate and expected
+remote commits, idempotency key, preceding Gate and outcome version, inherited
+floor, normalization-digest version, successor Gate identity or terminal flag,
+observed remote result, and terminal-observation phase, deadline, and lease. A Worker
 repository-ref projection
 stores only the latest complete inventory scan and its health metadata. The
 current unique Run and repository constraint becomes a unique Track and Stage
@@ -1080,10 +1133,12 @@ worktree-pointer phase without sending filesystem paths to the browser.
 
 Runs and Tracks gain cancellation timestamps used as promotion fences.
 Executions gain preparation-failure count and next-routing time. Gate Sessions
-store next poll time, deadline, target published commit, inclusive baseline and
-observed cursors per provider event feed, page continuations, deduplicated item
+store next poll time, deadline, target and immediately preceding published
+commits, immutable per-feed eligibility floor, observed cursors per provider
+event feed, page continuations, deduplicated item
 IDs, the last stable cross-feed boundary vector, chosen observation event,
-actor permission verification, outcome version, bounded satisfaction snapshot, and any
+actor permission verification, outcome version, bounded satisfaction snapshot,
+and any
 active Gate-check lease identity, owner, and expiry. A Session blocked only by
 Pipeline or Stage concurrency uses one
 canonical, non-actionable reason so the claim transaction can promote it
@@ -1328,24 +1383,37 @@ retry reuses the same Track branch and provider lookup key. If branch
 publication and PR creation succeeded but the response was lost, the Worker
 finds and verifies that same pull request before reporting success. It never
 creates a second PR for the Track. Success records the provider identity and
-exact published commit but never replaces the pre-publication baselines.
+exact published commit. Open PR creates empty eligibility floors; Update PR
+uses the carry-forward rules below.
 
 A PR review Gate binds to the Track's latest successfully published commit and
-the conservative baselines frozen before that publication. A success-like skip
-passes the prior publication identity through unchanged. Each publication
-authorization stores separate inclusive baselines for reviews, review comments,
-and conversation comments before the remote write. Open PR starts from empty
-feed IDs because the pull request does not yet exist. The GitHub adapter reads
+an immutable per-feed eligibility floor. A success-like skip passes the prior
+publication identity through unchanged. Open PR starts from empty feed floors
+because the pull request does not yet exist. Each completed Gate stores its
+stable second-sweep vector, including the normalized digest of every item at
+that boundary. Update PR captures current feeds for audit and terminal
+late-feedback detection, but a following Gate inherits the preceding Gate's
+stable vector as its floor. It never replaces that floor with the later
+publication-time feed ends. A new item or result-relevant mutation absent from
+the inherited vector therefore remains eligible even when it was posted while
+Address feedback was running, before the updated commit was published.
+
+Approval still requires an explicit approved review for the new exact target
+commit. Feedback after the inherited floor may be a review comment,
+conversation comment, or changes-requested review against either the new target
+or the immediately preceding published commit; the latter remains actionable
+because the Address feedback Agent could not have seen it. Older review rounds
+are excluded. The GitHub adapter reads
 reviews, pull-request review comments, and issue
 comments through feeds with stable provider creation time and database ID. It
-queries from each inclusive baseline with overlap and deduplicates immutable
+queries from each inclusive floor with overlap and deduplicates immutable
 IDs. Mutable thread `isResolved` state is not an outcome input because GitHub
 supplies no ordered resolution event or feed-wide mutation version.
 
 One scan iteration performs two consecutive complete sweeps through GitHub's
 three flat REST feeds: pull-request reviews, pull-request review comments, and
-issue comments. Each sweep starts from the durable inclusive publication
-baseline, uses stable ascending provider order with overlap, reaches every
+issue comments. Each sweep starts from the durable inclusive eligibility
+floor, uses stable ascending provider order with overlap, reaches every
 current page, and normalizes the decision-relevant fields before hashing them.
 The review digest includes immutable ID, submission time, target commit ID,
 author login, current review state, canonical body text, and every other bounded
@@ -1360,8 +1428,8 @@ digest.
 Each sweep also reads the current pull-request head. If either differs from the
 Gate's target published commit, the Gate fails actionably with
 `remote_diverged` and cannot accept an approval or feedback outcome. Normal
-retry keeps the target and baselines after the operator restores the expected
-head or starts a new Run.
+retry keeps the target and eligibility floor after the operator restores the
+expected head or starts a new Run.
 
 The adapter may freeze an outcome only when the second sweep produces the same
 three digests as the first. The three successful second-sweep responses form an
@@ -1376,7 +1444,7 @@ transaction commits afterward.
 
 If a request fails or either sweep differs, the adapter discards the
 iteration's ephemeral candidates and restarts from the durable inclusive
-baselines on the next scheduled poll without advancing a cursor, continuation,
+floors on the next scheduled poll without advancing a cursor, continuation,
 or deduplicated ID. A lease performs exactly two sweeps and never starts a
 third. If the feeds do not match, the Gate remains waiting with
 `review_boundary_moving` and retries after backoff.
@@ -1386,10 +1454,13 @@ provider database ID breaks a timestamp tie. Database IDs from different feeds
 are never compared as chronology. When the newest timestamp contains candidates
 from different feeds, one shared outcome is accepted; conflicting outcomes
 resolve conservatively to `feedback_requested`. A review submission qualifies
-only when its provider commit ID equals the target commit. Review and
-conversation comments qualify when their immutable provider IDs are absent
-from the pre-publication inclusive baseline. Factory never compares its local
-publication time with a provider creation time. Provider timestamps order only
+for approval only when its provider commit ID equals the target commit. A
+changes-requested review qualifies for feedback when it targets the current or
+immediately preceding publication and its ID or normalized digest is absent
+from the inherited eligibility floor. Review and conversation comments qualify
+when their immutable IDs or normalized digests are absent from that floor.
+Factory never compares its local publication time with a provider creation
+time. Provider timestamps order only
 the unseen candidate set after feed identity establishes eligibility.
 
 The Worker evaluates timestamp groups from newest to oldest. For one group it
@@ -1427,7 +1498,7 @@ then either remains waiting or freezes `approved` or `feedback_requested` and
 promotes or conditionally skips the complete block. A scan with an unresolved
 permission check follows the no-advance rule above.
 Deadline expiry marks the Gate failed and skips successors. Manual retry keeps
-the target commit and baseline, records a new outcome version, clears the old
+the target commit and eligibility floor, records a new outcome version, clears the old
 lease and failure, and sets a new deadline to `retry time + frozen timeout`.
 The retry transaction conflicts with a concurrent accepted result or
 cancellation. V1 has no deadline-extension endpoint or `keep_waiting` policy.
@@ -1437,7 +1508,36 @@ Gate's frozen snapshot. If the Gate outcome is `approved`, Address feedback and
 Update PR are conditionally skipped without an Attempt. If feedback was
 requested, the accepted Agent output promotes only Update PR. That Action
 fast-forwards the remote branch with an expected-old-head check and promotes
-later work only after durable publication succeeds. If the remote branch moved
+later work only after durable publication succeeds. With a following review
+Gate, the publication result atomically stores the preceding Gate boundary as
+that successor's eligibility floor; no publication-time observation can replace
+it.
+
+With no successor Gate, Update PR publishes or reconciles the frozen candidate
+first, enters `observing_terminal_feedback`, and releases its execution slot.
+The owner then receives a fenced observation lease and applies the Gate's exact
+two-sweep digest, actor-permission, boundedness, and backoff protocol against the
+preceding Gate floor. A conclusive stable result with no eligible late feedback
+marks the Action and Track succeeded. Eligible late feedback atomically stores
+the stable vector, bounded pending snapshot, terminal reason
+`feedback_arrived_during_address`, Action success, and Track disposition
+`partial`. Missing or unverifiable actor permission leaves the Action observing
+and cannot permit full success or advance observation state. Events first
+observable after the stable post-publication second sweep belong to a later Run.
+
+If no conclusive stable result commits within one hour of verified publication,
+the Action and Track fail actionably with
+`terminal_feedback_observation_timeout`. The pull request remains published and
+the UI says `PR updated; feedback check timed out`, links the PR, and offers
+`Retry feedback check` or cancellation. Retry never republishes: one
+transaction verifies the frozen authorization, unchanged published commit, and
+cancellation fence, clears the observation failure and lease, preserves the
+preceding Gate floor and digest version, and sets a new deadline to
+`retry time + 1 hour`. A moved remote head fails retry with
+`remote_diverged`. Concurrent retry, accepted observation result, or
+cancellation is ordered by that transaction and cannot create two live leases.
+
+If the remote branch moved
 independently, Update PR fails actionably with `remote_diverged` and does not
 overwrite it. After external reconciliation, normal failed-Session retry reuses
 the same authorization identity and frozen candidate, or the operator cancels
@@ -1493,6 +1593,17 @@ loss retains the authorization for read-only reconciliation; it cannot
 authorize another candidate. The UI says `cancelled after publication was
 authorised` until the remote state is known.
 
+Terminal Update PR observation is ordered by a second transaction fence. If its
+fenced result commits first, it atomically stores the remote publication,
+stable vector, pending snapshot, reason, and succeeded or partial Track
+disposition; later cancellation cannot rewrite that terminal disposition. If
+cancellation commits first after publication authorization, a late publication
+or observation result may record remote and provider evidence but must
+terminalize the Action and Track as cancelled, never succeeded or partial, and
+cannot promote. Response loss replays the frozen authorization and terminal
+observation phase; restart derives no disposition from successful Sessions when
+the durable Track disposition is already present.
+
 If a preparing or running Attempt instead loses its lease, recovery
 terminalizes the Session as cancelled because the committed cancellation fence
 is authoritative, not failed. A finalizing Session is different: its Agent
@@ -1503,17 +1614,20 @@ operator starts a new Pipeline Run.
 
 `waiting` is neither claimable nor terminal. `skipped` is terminal. A Run is
 active while any Session is blocked, queued, preparing, running, finalizing,
-or waiting. The canonical concurrency block counts as active but not
+waiting, or observing terminal feedback. The canonical concurrency block counts as active but not
 actionable. A Run needs attention when another actionable blocked or failed
-Session exists. It becomes terminal when every Session is succeeded, failed,
-cancelled, or skipped. Terminal aggregate state uses these ordered predicates:
+Session exists. `observing_terminal_feedback` is active but holds no execution
+slot. A Run becomes terminal when every Session is succeeded, failed,
+cancelled, or skipped. A Track normally derives the matching terminal
+disposition from its Sessions; terminal Update PR may override an otherwise
+successful Track to `partial` for frozen late feedback. Terminal Run aggregate
+state uses these ordered predicates:
 
-1. `succeeded` when every Track completed every Stage by success or a
-   success-like conditional skip.
-2. `partial` when at least one Track completed every Stage that way but not
-   every Track did.
-3. `failed` when no Track completed and at least one Session failed.
-4. `cancelled` when no Track completed, no Session failed, and a Run or Track
+1. `succeeded` when every Track has the `succeeded` disposition.
+2. `partial` when at least one Track is `succeeded` or `partial` and the Run is
+   not fully succeeded.
+3. `failed` when no Track is succeeded or partial and at least one Session failed.
+4. `cancelled` when no Track is succeeded or partial, no Session failed, and a Run or Track
    cancellation timestamp exists.
 
 An intermediate commit does not complete a Track. Cancellation before Stage 1
@@ -1877,8 +1991,9 @@ overflow is actionable rather than retried indefinitely.
 - `AC-35`: For `feedback_requested`, an Address feedback Agent receives the
   frozen untrusted feedback snapshot, starts at the published Track commit, and
   promotes only Update PR after accepted success. Update PR durably
-  fast-forwards the same remote branch before later work advances. For
-  `approved`, both conditional Stages are skipped without an Attempt.
+  fast-forwards the same remote branch before later work advances and carries
+  the preceding Gate boundary into any following Gate. For `approved`, both
+  conditional Stages are skipped without an Attempt.
 - `AC-36`: An independently moved remote Track branch fails Update PR
   actionably with `remote_diverged`; normal retry reuses the frozen candidate
   and Factory never force-pushes or silently replaces it.
@@ -1889,11 +2004,12 @@ overflow is actionable rather than retried indefinitely.
   candidate to be reconciled, records the observed remote result, and never
   promotes a successor.
 - `AC-39`: Review events created during publication response loss are included
-  through frozen inclusive baselines and provider ID deduplication. The newest
-  qualifying timestamp, with conservative cross-feed tie resolution, determines
+  through frozen inclusive eligibility floors and provider ID deduplication.
+  The newest qualifying timestamp, with conservative cross-feed tie resolution,
+  determines
   the outcome at the Gate's explicit observation boundary; later events belong
   to a later review round or Run. Every unseen provider ID after the frozen
-  baseline is eligible regardless of Factory/provider clock skew. Provider time
+  floor is eligible regardless of Factory/provider clock skew. Provider time
   orders only those unseen candidates, and simultaneous feedback prevents
   approval.
 - `AC-40`: Approval conditionally skips a complete feedback block, passes
@@ -2023,6 +2139,20 @@ overflow is actionable rather than retried indefinitely.
   Pipeline and Stage concurrency still allow work from different Tracks, Gate
   waiting consumes no slot, and each Gate timeout retains its existing terminal
   and retry behavior.
+- `AC-65`: Feedback posted or edited after a Gate's stable vector and before
+  Update PR publication remains absent from the inherited floor of a following
+  Gate and can choose that Gate's outcome. Without a following Gate, Update PR
+  publishes the accepted commit but terminalizes the Track as `partial` with
+  `feedback_arrived_during_address` and a bounded pending snapshot, never as
+  fully successful.
+- `AC-66`: Terminal Update PR observes feedback only after publication is
+  verified. Its fenced two-sweep result atomically persists the stable vector,
+  permission proofs, pending snapshot, reason, and Track disposition. An
+  inconclusive actor remains observing without full success. Restart and
+  response-loss replay preserve that phase, and cancellation-first prevents a
+  later success or partial disposition while result-first remains terminal. A
+  one-hour deadline expires to visible actionable failure; retry preserves the
+  publication and repeats only observation with a fresh deadline.
 
 ## 10. Test approach
 
@@ -2184,6 +2314,21 @@ durable scan state. Exact 1,999-, 2,000-, and 2,001-item fixtures prove both
 sweeps fit the verification-read budget through the limit and overflow visibly
 beyond it. The accepted fixtures include worst-case distributions across all
 three feeds, including one large feed plus two empty or one-item feeds.
+Carry-forward fixtures post a new comment, edit a consumed comment, and submit
+a changes-requested review against the preceding commit while Address feedback
+runs. With a following Gate, each item remains outside its inherited floor and
+can request another feedback round. With terminal Update PR, the accepted commit
+is published but the Track becomes partial with the bounded pending snapshot.
+Permission-failure fixtures keep terminal Update PR observing after publication
+without allowing full success, then recover to the same conclusive disposition.
+Timeout fixtures advance the frozen hour, prove the published Action becomes
+actionably failed without republishing, then retry observation with the same
+authorization, floor, digest version, and remote commit and a fresh deadline.
+Response-loss and restart fixtures preserve the same authorization, floor,
+digest version, observation phase, vector, publication result, and partial
+outcome. Cancellation races before authorization, after authorization, after
+publication, and before or after the terminal observation transaction prove the
+documented precedence and never promote a cancelled Track.
 Credential-isolation fixtures give the host authority
 broker a working provider credential while a real rootless Podman container can
 edit, stage, commit, and run the frozen model adapter through the exact V1 mount
