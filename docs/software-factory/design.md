@@ -94,6 +94,8 @@ factory build LINEAR-123 LINEAR-124 --repo github.com/acme/api
 
 The CLI performs only pure syntax normalization and sends one idempotent
 admission request containing the ordered references and unresolved selectors.
+It always sends a request key, using the durable generated-key behavior in the
+CLI contract when the operator does not provide one.
 The control plane checks an existing request key before reading repositories,
 Procedures, or defaults. For a new key, it resolves the managed repository,
 selects the built-in `standard-build` Procedure, freezes its current generation,
@@ -403,6 +405,8 @@ model.
   revalidated after its process group has stopped.
 - `INV-18`: An answered Work starts from the exact checkpoint revalidated after
   the needs-input process group stopped.
+- `INV-19`: A Work that has been replaced cannot be retried, and retry admission
+  cannot create a second nonterminal Work target for the same retry identity.
 
 ### Work state transitions
 
@@ -425,7 +429,7 @@ not an agent update status and does not imply a pull request.
 | `needs-input` | none | `queued` | operator answer appends context; the next Worker claim creates the Attempt |
 | `needs-input` | none | `running` | trusted operator claims manual ownership |
 | `needs-input` | none | `cancelled` | operator cancellation |
-| `failed` or `cancelled` | none | `queued` | explicit warned retry |
+| `failed` or `cancelled` | none | `queued` | explicit warned retry, only when no replacement or matching nonterminal Work exists |
 
 `ready`, `succeeded`, `failed`, `no-change`, and `cancelled` are terminal
 outcomes unless an explicit retry rule above applies. A manual `running` update
@@ -477,6 +481,12 @@ Worker Attempt before taking manual ownership.
 - V1 performs no automatic execution retry. Every failed or cancelled Work
   retry is explicit and warns about duplicate external effects if an agent
   process previously started.
+- Retrying Work is one transaction that rejects the request when any Work names
+  it as `predecessor_work_id` or when another nonterminal Work with the same
+  retry identity exists. For work-item Work, retry identity is the exact
+  `(repository_id, source_kind, source_key)` tuple. For repository Work, only
+  Work in the same predecessor lineage matches; an independent Procedure Run
+  against that repository does not. A rejected retry does not change Work state.
 - Setup requires one valid default Build runtime. `factory build --runtime`
   accepts only a configured runtime and admission freezes the resolved choice.
 - An opaque work-item reference is 1 to 64 ASCII characters matching
@@ -514,6 +524,23 @@ Finite operator commands call the loopback API and never open SQLite or Worker
 directories. `factory update` detects an injected Attempt context and uses the
 Worker-local capability. Without that context it is a trusted operator command
 and requires `--id`.
+
+`--request-key` is optional for the operator, not for admission. When it is
+omitted, the CLI creates a random key and durably records it with the server
+endpoint and canonical caller-input fingerprint in its private operator state
+directory before the first request. A later invocation with the same pending
+fingerprint reuses that key. The CLI removes the pending record only after it
+receives a typed admission response that says `admitted`, `replayed`, or
+`rejected_before_commit`, and prints the key with every result. A timeout,
+connection loss, interruption, malformed response, or server error remains
+pending because it may have happened after commit. The control plane returns
+`rejected_before_commit` only when the transaction created no Run.
+This lets a new CLI process replay a request whose response was lost without
+turning all future identical commands into replays. Journal access is locked,
+it retains at most 100 pending entries, and its directory and file use `0700`
+and `0600` modes. At the limit, implicit key creation fails with the journal path
+and asks the operator to recover pending requests or supply an explicit key; it
+never silently evicts an uncertain request.
 
 `--wait` streams status and returns as soon as any Work needs input, using exit
 code 2, even while independent siblings continue. Otherwise it returns when the
@@ -657,7 +684,7 @@ option or context value that changes admitted Work. It excludes the request key
 itself and client-only `--wait`. It is computed and compared before repository,
 Procedure, configured-default, or current-Work reads.
 
-A new rebuild request must not reuse the original Build's explicit request key.
+A new rebuild request must not reuse the original Build's stored request key.
 After proving the new key is unused, one transaction requires every target to
 have no nonterminal Work and selects its most recently created terminal Work,
 ordered by `created_at DESC, id DESC`. It stores that target's
@@ -686,14 +713,20 @@ automatically. An explicit retry warns about duplicate effects when a process
 previously started because the agent may already have pushed, commented, or
 opened a pull request.
 
-Each retry creates a fresh local worktree. If the stable remote publish branch
-exists, preparation starts from its current fetched head. Otherwise it starts
-from the repository base only when no PR is recorded. A missing publish branch
-for known PR Work moves the Work to `needs-input` instead of guessing. The retry
-prompt identifies prior updates, known PR, publish ref, and duplicate-effect
-risk. Factory never force-pushes or deletes the ref. If the ref moves while an
-Attempt is active, the agent must reconcile a normal push or report
-`needs-input`.
+Retry first transactionally proves that no replacement names this Work as its
+predecessor and that no other nonterminal Work with the retry identity defined
+above exists. Each accepted retry then creates a fresh local worktree. If the
+stable remote publish branch exists, preparation starts from its current fetched
+head. Otherwise it starts from the repository base only when no PR is recorded.
+A missing publish branch for known PR Work fails preparation with a fixed
+recovery message that identifies the PR, ref, and recorded trusted PR head SHA.
+It tells the operator to restore the ref to exactly that SHA or admit warned
+replacement Work with `--rebuild`; a missing trusted SHA permits only the latter.
+Preparation re-fetches and proves the restored ref equals the recorded SHA. It
+does not create a resumable question without a checkpoint. The retry prompt
+identifies prior updates, known PR, publish ref, and duplicate-effect risk.
+Factory never force-pushes or deletes the ref. If the ref moves while an Attempt
+is active, the agent must reconcile a normal push or report `needs-input`.
 
 An agent update request with an expired or wrong token is rejected. An exact
 transport retry returns the stored update. A second identical Attempt-ending
@@ -814,9 +847,12 @@ remains visible and never silently drops an outcome.
   next Worker claim creates an Attempt, starting from the revalidated
   checkpoint SHA.
 - `AC-10`: A warned retry after process start continues from the stable remote
-  publish branch when one exists and does not create a second Work record.
+  publish branch when one exists and does not create a second Work record. It is
+  rejected without state change when replacement or matching nonterminal Work
+  exists.
 - `AC-11`: Replaying an admission or update after a lost response returns the
-  original stored result without duplication.
+  original stored result without duplication, including when a new CLI process
+  reuses a generated key from its pending-admission journal.
 - `AC-12`: Local and enrolled VM Workers use the same scoped update protocol
   without transmitting the operator credential, Worker credential, or Attempt
   lease token in that protocol.
@@ -840,13 +876,18 @@ remains visible and never silently drops an outcome.
 - `AC-20`: `--wait` returns 2 on needs-input, 0 when all Work finishes ready,
   no-change, or legacy succeeded, and 1 when finished Work includes failed or
   cancelled.
+- `AC-21`: Retry preparation for known PR Work with a missing publish ref fails
+  with the trusted recovery SHA and explicit recovery instructions, accepts only
+  a restored ref at that SHA, and never creates `needs-input` without a verified
+  checkpoint.
 
 ## 10. Test approach
 
-Store tests prove `INV-1` through `INV-4`, `INV-9`, `INV-12`, `INV-14`, and
-`INV-16` with transaction rollback, duplicate target, replay, partial outcome,
-queued, running, and needs-input cancellation, retry, manual-claim races, and
-legacy completion cases. HTTP tests prove CLI admission validation, source
+Store tests prove `INV-1` through `INV-4`, `INV-9`, `INV-12`, `INV-14`,
+`INV-16`, and `INV-19` with transaction rollback, duplicate target, replay,
+partial outcome, queued, running, and needs-input cancellation, retry of
+replaced Work, matching-nonterminal retry races, manual-claim races, and legacy
+completion cases. HTTP tests prove CLI admission validation, source
 normalization, message limits, cursor bounds, and operator updates for `AC-1`,
 `AC-3`, `AC-11`, `AC-15`, `AC-17`, and `AC-18`.
 
@@ -870,11 +911,14 @@ Admission tests prove the exact opaque-reference grammar and reject whitespace,
 prose, Unicode, empty, and overlength values without creating partial Work.
 
 CLI tests use a real loopback server to prove multi-reference admission,
-request replay, human and JSON output, `--wait`, opaque-reference repository
+explicit and generated-key replay across separate CLI processes, pending-journal
+locking, typed-response cleanup, uncertain-response retention, human and JSON
+output, `--wait`, opaque-reference repository
 requirements, runtime default and override, rebuild key conflicts,
 needs-input duplicate rejection, replay after a rebuild becomes terminal, wait
-exit codes, and agent-context routing. Replay tests also disable or delete the
-repository and change configured defaults before retrying the stored key. Browser
+exit codes, missing-PR-ref recovery, and agent-context routing. Replay tests also
+disable or delete the repository and change configured defaults before retrying
+the stored key. Browser
 component tests and a real browser flow prove `AC-2`, `AC-6`, `AC-9`, and
 accessibility at desktop and 390-pixel widths.
 
