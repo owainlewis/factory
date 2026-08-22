@@ -400,21 +400,29 @@ database-generation fence, and aggregate bytes and slots. The server stores the
 canonical preview digest; the token does not encode trusted data. Apply contains
 `request_key` and the preview token. It uses mutation scope
 `template-storage:compact`, rechecks the complete preview transactionally, and
-returns the recorded actions, membership, counts, and bytes. Replaying the same
-apply returns that result. An expired token returns
+returns a compact receipt containing a new compaction ID, the canonical preview
+digest, committed action and revision-member counts, counts by action kind,
+freed bytes and slots, and commit time. It does not repeat action or revision
+IDs; those belong to the operator-confirmed preview. The receipt is under the
+mutation ledger's 16 KiB result-envelope limit. Replaying the same apply returns
+that exact recorded receipt without needing any row deleted by the compaction.
+An expired token returns
 `template_compaction_preview_expired` and performs no work.
 
 SQLite also adds `mutation_requests`. Its primary key is the pair of
 `operation_scope` and client-generated `request_key`. It stores the SHA-256
-digest of the canonical request, result resource kind and ID, committed
-generation, optional revision ID, committed archive state, and creation time.
-The application checks this row before optimistic-concurrency validation. A
-matching replay returns the recorded mutation envelope and the client refetches
-resource detail. A different digest returns `request_key_conflict`. The ledger
-row and resource mutation commit in one transaction, so neither can exist
-alone. Each row has `expires_at = created_at + 90 days`. Exact replays remain
-available through that instant. Hourly maintenance deletes only expired rows in
-batches of 1,000. At 100,000 unexpired rows Factory first removes every expired
+digest of the canonical request, result resource kind and ID, canonical
+`result_envelope_json`, and creation time. Mutation response envelopes are
+reference-and-metadata receipts, never resource detail, and are limited to 16
+KiB; clients refetch detail after success. For a storage apply, the resource kind
+is `template_compaction` and the resource ID is the new compaction ID. The
+application checks this row before optimistic-concurrency validation. A matching
+replay returns the stored envelope byte-for-byte. A different digest returns
+`request_key_conflict`. The ledger row, result envelope, and resource mutation
+commit in one transaction, so none can exist alone. Each row has
+`expires_at = created_at + 90 days`. Exact replays remain available through that
+instant. Hourly maintenance deletes only expired rows in batches of 1,000. At
+100,000 unexpired rows Factory first removes every expired
 batch and then, if still full, stops new Template mutations and Task creates with
 `mutation_request_limit_reached`; exact replays and Runs continue. Health shows
 the row count and earliest expiry, so capacity returns within 90 days without an
@@ -728,7 +736,8 @@ run in linear time over at most one Template revision and one Task request.
   as specified.
 - `AC-22`: The authenticated storage panel previews at most 1,000 exact
   reclamation actions and at most 20,000 nested revision members in an 8 MiB
-  response, applies them idempotently from an unexpired token, and performs no
+  response, applies them idempotently from an unexpired token, durably replays
+  the same compact receipt after the reclaimed rows are gone, and performs no
   partial work for an expired token or changed reference fence.
 
 ## 10. Test approach
@@ -765,7 +774,9 @@ young tombstones, reject incomplete or newly referenced aggregates, exercise
 ledger expiry and cap recovery, and prove `INV-12` and `AC-18`. They retain
 duplicate provenance after body compaction and exercise
 the 1,000-action, 20,000-member, and serialized-response bounds at maximum
-storage as well as idempotent apply APIs. Privacy assertions prove compacted
+storage. A lost-response fixture deletes the maximum aggregate and proves that
+the replayed apply receipt is byte-identical without consulting deleted rows.
+Privacy assertions prove compacted
 rows retain no prompt or execution defaults in either source or derived Graph
 storage. Existing
 Linux, macOS, browser, migration, race, security, and release checks remain
