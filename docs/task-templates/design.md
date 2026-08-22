@@ -361,12 +361,22 @@ the whole Task creation. Direct Task creation omits `template_source`.
 Template release only, a direct Task request with neither `template_source` nor
 `request_key` remains valid for compatibility with the existing public request
 type and embedded composer. The server generates a random internal key, writes
-the Task and ledger receipt normally, returns that generated key in the mutation
-envelope, and marks the response with `Deprecation: true`. A repeated keyless
-request creates another Task, matching today's non-idempotent behavior; it
-cannot recover a lost response. The updated embedded composer always sends a
-client key. The keyless exception disappears with the intentional Task-to-
-Pipeline API rename, so it does not enter the Pipeline API.
+the Task and ledger receipt normally, returns the unchanged full
+`protocol.Task` JSON body, exposes the generated key only in an
+`X-Factory-Request-Key` response header, and marks the response with
+`Deprecation: true`. A repeated keyless request creates another Task, matching
+today's non-idempotent behavior; it cannot recover a lost response. The updated
+embedded composer always sends a client key. The keyless exception disappears
+with the intentional Task-to-Pipeline API rename, so it does not enter the
+Pipeline API.
+
+For the same compatibility window, a non-empty `request_key` on a direct Task
+request is an opaque, case-sensitive JSON string. Factory preserves its exact
+decoded UTF-8 bytes, applies no trimming or UUID validation, and relies on the
+existing 1 MiB HTTP request-body limit as its bound. This matches the current
+public `SaveTaskRequest` contract. Newly introduced Template mutation APIs and
+Template-derived Task creation require canonical client UUIDs. After the
+Pipeline rename, the new Pipeline API requires UUID keys for every create.
 
 Archive and restore use the same endpoint. Its body contains `archived`,
 `expected_generation`, and `request_key`. Restoring reclaims the Template's
@@ -458,13 +468,19 @@ mutation ledger's 16 KiB result-envelope limit. Replaying the same apply returns
 that exact recorded receipt without needing the preview or any row deleted by
 the compaction.
 
-SQLite also adds `mutation_requests`. Its primary key is the pair of
-`operation_scope` and client-generated `request_key`. It stores the SHA-256
-digest of the canonical request, result resource kind and ID, canonical
-`result_envelope_json`, and creation time. Mutation response envelopes are
+SQLite also adds `mutation_requests`. Its primary key is `operation_scope` plus
+the SHA-256 hash and byte length of the exact request-key string; it never stores
+the raw key. It also stores the SHA-256 digest of the canonical request, result
+resource kind and ID, canonical
+`result_envelope_json`, and creation time. Stored ledger envelopes are
 reference-and-metadata receipts, never resource detail, and are limited to 16
-KiB; clients refetch detail after success. For a storage apply, the resource kind
-is `template_compaction` and the resource ID is the new compaction ID. The
+KiB. Template mutation clients refetch detail after success. The existing
+`POST /api/v1/tasks` response contract is unchanged during this release: after a
+new create or keyed replay, the handler uses the receipt's Task ID to return the
+full current `protocol.Task` shape and status expected by existing clients. Task
+rows cannot be purged while their receipt is live, so replay can load that body.
+For a storage apply, the resource kind is `template_compaction` and the resource
+ID is the new compaction ID. The
 application checks this row before optimistic-concurrency validation. A matching
 replay returns the stored envelope byte-for-byte. A different digest returns
 `request_key_conflict`. The ledger row, result envelope, and resource mutation
@@ -473,11 +489,12 @@ commit in one transaction, so none can exist alone. Each row has
 instant.
 
 SQLite also adds `mutation_request_aliases` for durable legacy lookup after the
-Pipeline rename. Its primary key is legacy `operation_scope` plus `request_key`;
-it stores the frozen legacy request digest, migrated resource kind, ID and
-location, canonical `api_migrated` result envelope, creation time, and original
-expiry. The envelope is limited to 16 KiB and contains no resource detail. An
-old `(operation_scope, request_key)` can identify exactly one alias, and no live
+Pipeline rename. Its primary key is legacy `operation_scope` plus the same exact
+key hash and byte length; it stores no raw key. It also stores the frozen legacy
+request digest, migrated resource kind, ID and location, canonical
+`api_migrated` result envelope, creation time, and original expiry. The envelope
+is limited to 16 KiB and contains no resource detail. One semantic
+`(operation_scope, request_key)` can identify exactly one alias, and no live
 `mutation_requests` row may retain the same pair. New Pipeline mutation routes
 do not treat a pre-migration request as their own replay; removed legacy routes
 and scope-specific migration lookups read only the alias envelope.
@@ -497,18 +514,19 @@ accepted but not enforced. The scope for a Task create is `task:create`; each
 Template operation uses its operation plus Template ID where one exists. Keys
 are not global across unrelated scopes. A keyless compatibility create receives
 a server-generated internal key before the transaction and is recorded under
-the same scope, but only its returned envelope reveals that key.
+the same scope, but only its response header reveals that key.
 
 ### Naming and identity
 
 Ordinary user Template IDs, stored revision IDs, and
 `single_agent_source_node_id` values are distinct cryptographically random UUIDs
-from the existing `newID` path. Request keys are client-generated UUIDs and are
-validated before the transaction begins, except for the explicitly generated
-key on a keyless direct compatibility create. A generated key or resource-ID
-failure creates nothing. Revision numbers increase inside the same transaction
-that advances the Template generation. Names use the existing trimmed
-case-insensitive Task key rules.
+from the existing `newID` path. Request keys on new Template and
+Template-derived Task APIs are client-generated UUIDs validated before the
+transaction begins. Direct Task compatibility accepts the opaque legacy key or
+generates the explicit keyless fallback described above. A generated key or
+resource-ID failure creates nothing. Revision numbers increase inside the same
+transaction that advances the Template generation. Names use the existing
+trimmed case-insensitive Task key rules.
 
 Starter Templates use stable reserved keys such as `factory.review-code` and
 `factory.find-fix-bug`. A starter manifest is the explicit exception to random
@@ -810,8 +828,9 @@ run in linear time over at most one Template revision and one Task request.
 - `AC-11`: In the Task Template release, existing direct Task creation, editing,
   scheduling, admission, retries, and history continue without a Template. The
   existing keyless direct-create request still succeeds with a generated
-  compatibility key and deprecation response, while Template-derived creates
-  reject a missing key. The
+  compatibility key header, deprecation header, and unchanged Task-shaped JSON
+  body. A direct request with an existing non-UUID opaque key also succeeds,
+  while Template-derived creates reject a missing or non-UUID key. The
   later Pipeline release performs its separately approved pre-launch API rename
   and preserves only the bounded replay-only path in section 6.
 - `AC-12`: Every retained `single_agent_v1` fixture keeps identical source bytes
@@ -877,8 +896,11 @@ atomic Task provenance. Snapshot comparisons prove `INV-1` through `INV-7` and
 HTTP tests cover pagination, prompt omission from lists, full detail access,
 unknown and archived revisions, digest mismatch, request-key conflicts, and
 existing direct Task compatibility. They prove a keyless direct create succeeds
-with distinct generated keys and the deprecation marker, while a keyless
-Template-derived create fails and the updated composer supplies a key. They
+with distinct generated-key headers, the deprecation marker, and the unchanged
+full Task JSON response. They replay opaque whitespace-sensitive and non-UUID
+direct keys up to the existing body bound, verify raw keys are not persisted,
+and prove a keyless or non-UUID Template-derived create fails while the updated
+composer supplies a UUID. They
 cover duplicate source selection,
 profile overrides, archived-source duplication, and the replay-only migrated
 Task route at both sides of expiry. Structured log capture proves `INV-8` and
