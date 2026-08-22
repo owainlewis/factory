@@ -249,8 +249,10 @@ are two sizes of the same software procedure.
 - The composer clearly marks any procedure field changed from the source
   revision and previews the source revision number.
 - An existing Task shows its source Template and whether a newer revision exists.
-- Factory keeps direct Task creation without a Template. All new clients must
-  supply its existing `request_key` field so the server can enforce replay.
+- Factory keeps direct Task creation without a Template. New and updated clients
+  supply its existing `request_key` field so the server can enforce replay; the
+  bounded compatibility path below accepts current keyless direct clients until
+  the Pipeline API rename.
 - Template names are required, Unicode-trimmed, limited to 200 characters, and
   unique case-insensitively among active user Templates.
 - Summaries are optional and limited to 1 KiB of UTF-8. Prompts retain the
@@ -355,6 +357,16 @@ and stores their difference as a canonical `customized_fields` array. The
 request does not have to match the Template because customization is allowed.
 Supplying an unknown, archived, compacted, mismatched, or corrupt source rejects
 the whole Task creation. Direct Task creation omits `template_source`.
+`request_key` is required whenever `template_source` is present. During the Task
+Template release only, a direct Task request with neither `template_source` nor
+`request_key` remains valid for compatibility with the existing public request
+type and embedded composer. The server generates a random internal key, writes
+the Task and ledger receipt normally, returns that generated key in the mutation
+envelope, and marks the response with `Deprecation: true`. A repeated keyless
+request creates another Task, matching today's non-idempotent behavior; it
+cannot recover a lost response. The updated embedded composer always sends a
+client key. The keyless exception disappears with the intentional Task-to-
+Pipeline API rename, so it does not enter the Pipeline API.
 
 Archive and restore use the same endpoint. Its body contains `archived`,
 `expected_generation`, and `request_key`. Restoring reclaims the Template's
@@ -479,17 +491,20 @@ Task creation begins using this ledger for both direct and Template-derived
 Tasks. This fixes the current behavior where `SaveTaskRequest.RequestKey` is
 accepted but not enforced. The scope for a Task create is `task:create`; each
 Template operation uses its operation plus Template ID where one exists. Keys
-are not global across unrelated scopes.
+are not global across unrelated scopes. A keyless compatibility create receives
+a server-generated internal key before the transaction and is recorded under
+the same scope, but only its returned envelope reveals that key.
 
 ### Naming and identity
 
 Ordinary user Template IDs, stored revision IDs, and
 `single_agent_source_node_id` values are distinct cryptographically random UUIDs
 from the existing `newID` path. Request keys are client-generated UUIDs and are
-validated before the transaction begins. A generated resource-ID failure creates
-nothing. Revision numbers increase inside the same transaction that advances the
-Template generation. Names use the existing trimmed case-insensitive Task key
-rules.
+validated before the transaction begins, except for the explicitly generated
+key on a keyless direct compatibility create. A generated key or resource-ID
+failure creates nothing. Revision numbers increase inside the same transaction
+that advances the Template generation. Names use the existing trimmed
+case-insensitive Task key rules.
 
 Starter Templates use stable reserved keys such as `factory.review-code` and
 `factory.find-fix-bug`. A starter manifest is the explicit exception to random
@@ -651,11 +666,14 @@ duplicate, and Use template return `template_revision_compacted` with its ID,
 digest, and compaction time. Factory never substitutes the current revision.
 
 Create, edit, duplicate, archive, restore, and all Task-creation writes are
-atomic and idempotent through the durable mutation ledger. A retry with the same
-scope, request key, and canonical body returns the recorded result before
-checking the request's now-stale expected generation. Reusing the key with
-different content returns `request_key_conflict`. Database busy and temporary
-I/O failures return a retryable error without a resource or ledger orphan.
+atomic through the durable mutation ledger. Writes with a caller-supplied key
+are idempotent: a retry with the same scope, request key, and canonical body
+returns the recorded result before checking the request's now-stale expected
+generation. Reusing the key with different content returns
+`request_key_conflict`. A keyless direct compatibility create has only
+transactional atomicity, not client-visible replay, because each request gets a
+new internal key. Database busy and temporary I/O failures return a retryable
+error without a resource or ledger orphan.
 
 Archiving a user Template is reversible. Restore uses optimistic concurrency and
 leaves the Template archived on a name conflict. Archive does not disable Tasks,
@@ -774,8 +792,10 @@ run in linear time over at most one Template revision and one Task request.
 - `AC-6`: Archived Templates cannot create linked Tasks, but their prior
   revisions and existing Task provenance remain readable; restore either
   succeeds atomically or leaves the Template archived on a name conflict.
-- `AC-7`: Duplicate or lost-response retries create at most one Template,
-  revision, duplicate, archive transition, or Task.
+- `AC-7`: For every request with a caller-supplied key, duplicate or
+  lost-response retries create at most one Template, revision, duplicate,
+  archive transition, or Task. A keyless direct compatibility create retains the
+  documented pre-existing non-idempotent retry behavior.
 - `AC-8`: List, log, metric, and error surfaces do not expose full Template
   prompts.
 - `AC-9`: An unavailable execution-profile default blocks Task save until the
@@ -784,6 +804,9 @@ run in linear time over at most one Template revision and one Task request.
   not change a Task created from an earlier release.
 - `AC-11`: In the Task Template release, existing direct Task creation, editing,
   scheduling, admission, retries, and history continue without a Template. The
+  existing keyless direct-create request still succeeds with a generated
+  compatibility key and deprecation response, while Template-derived creates
+  reject a missing key. The
   later Pipeline release performs its separately approved pre-launch API rename
   and preserves only the bounded replay-only path in section 6.
 - `AC-12`: Every retained `single_agent_v1` fixture keeps identical source bytes
@@ -791,9 +814,11 @@ run in linear time over at most one Template revision and one Task request.
   its stored source UUID and identical prompt and execution defaults. An already
   compacted fixture remains a content-free tombstone with null procedure and
   Graph bodies and no invented Graph digest.
-- `AC-13`: A lost-response replay of every authoring mutation returns its
-  recorded result even when its original expected generation is now stale; a
-  changed request body returns `request_key_conflict`.
+- `AC-13`: A lost-response replay of every caller-keyed authoring mutation
+  returns its recorded result even when its original expected generation is now
+  stale; a changed request body returns `request_key_conflict`. A keyless direct
+  compatibility create cannot replay a lost response because the caller never
+  knew its generated key.
 - `AC-14`: A pre-Pipeline database migrates Template resources, all immutable
   revisions, Task provenance, and mutation-ledger results to Pipeline names
   without losing or retargeting a source revision. Each migrated Task preserves
@@ -845,7 +870,10 @@ atomic Task provenance. Snapshot comparisons prove `INV-1` through `INV-7` and
 
 HTTP tests cover pagination, prompt omission from lists, full detail access,
 unknown and archived revisions, digest mismatch, request-key conflicts, and
-existing direct Task compatibility. They cover duplicate source selection,
+existing direct Task compatibility. They prove a keyless direct create succeeds
+with distinct generated keys and the deprecation marker, while a keyless
+Template-derived create fails and the updated composer supplies a key. They
+cover duplicate source selection,
 profile overrides, archived-source duplication, and the replay-only migrated
 Task route at both sides of expiry. Structured log capture proves `INV-8` and
 `AC-8`; contract assertions prove `AC-16`, `AC-17`, and `AC-19`.
