@@ -424,7 +424,7 @@ not an agent update status and does not imply a pull request.
 | `running` | Worker Attempt | unchanged | agent `running` progress update |
 | `running` | Worker Attempt | `ready`, `needs-input`, `failed`, `no-change` | accepted outcome followed by stopped process |
 | `running` | Worker Attempt | `succeeded` or `failed` | legacy `process_exit` completion |
-| `running` | operator | `ready`, `failed`, `no-change` | trusted operator update |
+| `running` | operator | `ready`, `failed`, `no-change` | trusted operator update for `agent_update` Work |
 | `running` | either | `cancelled` | operator cancellation |
 | `needs-input` | none | `queued` | operator answer appends context; the next Worker claim creates the Attempt |
 | `needs-input` | none | `running` | trusted operator claims manual ownership |
@@ -499,6 +499,8 @@ Worker Attempt before taking manual ownership.
   `[A-Za-z0-9][A-Za-z0-9._-]*`. Whitespace, prose, and other characters are
   rejected before admission.
 - A trusted operator may update Work only when it has no active Attempt.
+- Semantic operator updates are accepted only for Work whose frozen outcome
+  contract is `agent_update`; they cannot convert a legacy `process_exit` Run.
 - A trusted operator cannot report `needs-input`; that outcome requires a
   Worker-owned checkpoint.
 - Queue, Work, update, Attempt, and Worker list APIs remain bounded and cursor
@@ -529,7 +531,8 @@ factory server start [--config PATH]
 Finite operator commands call the loopback API and never open SQLite or Worker
 directories. `factory update` detects an injected Attempt context and uses the
 Worker-local capability. Without that context it is a trusted operator command
-and requires `--id`.
+and requires `--id`. Both paths reject Work whose frozen outcome contract is
+`process_exit`; legacy completion remains owned by its existing controls.
 
 `--request-key` is optional for the operator, not for admission. When it is
 omitted, the CLI creates a random key and durably records it with the server
@@ -877,7 +880,7 @@ remains visible and never silently drops an outcome.
   override both resolve before admission and remain frozen in historical Work.
 - `AC-16`: An unconverted legacy Task's next manual and scheduled Runs retain
   their existing repository selection and exit-based success behavior without
-  receiving or accepting the injected `factory update` capability.
+  receiving or accepting agent or operator semantic `factory update` calls.
 - `AC-17`: Every Run freezes `outcome_contract`; converting a legacy Procedure
   increments its generation and cannot change admitted Runs.
 - `AC-18`: A manual ready update resolves or accepts operator PR head evidence,
