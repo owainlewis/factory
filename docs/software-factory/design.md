@@ -92,10 +92,12 @@ A developer runs:
 factory build LINEAR-123 LINEAR-124 --repo github.com/acme/api
 ```
 
-The CLI resolves the managed repository and sends one idempotent admission
-request containing the ordered references. The control plane selects the
-built-in `standard-build` Procedure, freezes its current generation, and
-creates one Run with two Work targets. Each Work has its own identity,
+The CLI performs only pure syntax normalization and sends one idempotent
+admission request containing the ordered references and unresolved selectors.
+The control plane checks an existing request key before reading repositories,
+Procedures, or defaults. For a new key, it resolves the managed repository,
+selects the built-in `standard-build` Procedure, freezes its current generation,
+and creates one Run with two Work targets. Each Work has its own identity,
 repository, context, state, progress history, result, and Attempts. Two targets
 may use the same repository.
 
@@ -440,6 +442,12 @@ manual ownership.
 - Every update invocation has a random request ID. A transport retry with the
   same Attempt and request ID, or the same operator Work and request ID, returns
   the stored response.
+- An admission request key returns the original Run only when its canonical
+  caller-input fingerprint matches. This lookup occurs before repository,
+  Procedure, default, state-dependent validation, or predecessor selection.
+  Reusing it for `--rebuild` or any different request conflicts.
+- Duplicate Build admission conflicts while matching Work is queued, running,
+  or needs-input.
 - A process exit without an outcome report fails with a fixed reason.
 - An operator answer is non-empty UTF-8 text of at most 8 KiB and requeues Work
   without changing the frozen Procedure or original context. The next Worker
@@ -482,6 +490,12 @@ Finite operator commands call the loopback API and never open SQLite or Worker
 directories. `factory update` detects an injected Attempt context and uses the
 Worker-local capability. Without that context it is a trusted operator command
 and requires `--id`.
+
+`--wait` streams status and returns as soon as any Work needs input, using exit
+code 2, even while independent siblings continue. Otherwise it returns when the
+Run finishes: exit 0 when every Work is ready or no-change, and exit 1 when any
+Work is failed or cancelled. The CLI always prints the Work counts and IDs
+before returning so the operator can answer or inspect the result.
 
 An operator `running` update atomically claims manual ownership when the Work
 has no active Attempt. Later operator updates require that ownership. A direct
@@ -560,6 +574,7 @@ source_key
 source_reference
 context_snapshot
 publish_branch
+predecessor_work_id
 state
 execution_owner: none | worker_attempt | operator
 waiting_reason
@@ -597,10 +612,31 @@ repository ID.
 
 `target_key` is the source key plus repository ID for a work item and the
 repository ID for a fleet target. It is unique inside one Run. The admission
-request key and normalized request digest make uncertain client replay return
-the original Run. A second active Build for the same work-item target conflicts.
-After terminal Work, `factory build` requires `--rebuild` to admit the same
-target again.
+request key and canonical caller-input fingerprint make uncertain client
+replay return the original Run. Admission looks up the request key before
+target validation, duplicate checks, or rebuild predecessor selection. A
+matching stored fingerprint returns its Run without consulting current Work;
+a different fingerprint conflicts. Any existing nonterminal Work for the same
+work-item target, including `needs-input`, blocks duplicate Build admission.
+After terminal Work,
+`factory build` requires `--rebuild` to admit the same target again.
+
+A caller fingerprint contains the operation, ordered syntactically normalized
+references or repository selectors, explicit repository selector presence and
+value, explicit runtime presence and value, rebuild flag, and every submitted
+option or context value that changes admitted Work. It excludes the request key
+itself and client-only `--wait`. It is computed and compared before repository,
+Procedure, configured-default, or current-Work reads.
+
+A new rebuild request must not reuse the original Build's explicit request key.
+After proving the new key is unused, one transaction requires every target to
+have no nonterminal Work and selects its most recently created terminal Work,
+ordered by `created_at DESC, id DESC`. It stores that target's
+`predecessor_work_id` on the replacement Work and admits the complete batch.
+If any target lacks a terminal predecessor, nothing is admitted. A lost-response
+retry with the same new key and caller fingerprint returns that stored rebuild
+Run even when a repository is disabled or deleted, configuration changes, or
+newer terminal Work now exists.
 
 An agent update request is unique by `(attempt_id, request_id)`. An operator
 update request is unique by `(work_id, request_id)`. The CLI generates the
@@ -755,6 +791,11 @@ outcome.
 - `AC-18`: A manual ready update resolves or accepts operator PR head evidence,
   succeeds without control-plane GitHub credentials, and replays idempotently
   by Work and request ID.
+- `AC-19`: Duplicate admission while matching Work needs input conflicts, and
+  a rebuild atomically binds every replacement to its deterministic terminal
+  predecessor Work with a new idempotency key.
+- `AC-20`: `--wait` returns 2 on needs-input, 0 when all Work finishes ready or
+  no-change, and 1 when finished Work includes failed or cancelled.
 
 ## 10. Test approach
 
@@ -784,7 +825,10 @@ prose, Unicode, empty, and overlength values without creating partial Work.
 
 CLI tests use a real loopback server to prove multi-reference admission,
 request replay, human and JSON output, `--wait`, opaque-reference repository
-requirements, runtime default and override, and agent-context routing. Browser
+requirements, runtime default and override, rebuild key conflicts,
+needs-input duplicate rejection, replay after a rebuild becomes terminal, wait
+exit codes, and agent-context routing. Replay tests also disable or delete the
+repository and change configured defaults before retrying the stored key. Browser
 component tests and a real browser flow prove `AC-2`, `AC-6`, `AC-9`, and
 accessibility at desktop and 390-pixel widths.
 
