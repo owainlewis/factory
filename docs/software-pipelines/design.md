@@ -115,13 +115,24 @@ committed it. Any remaining unignored, untracked file fails completion with a
 bounded reason. The Worker disables hooks for its own commit, verifies the
 output descends from the frozen input in a fixed verification environment, and
 creates an Attempt-scoped local ref to keep the commit reachable. Commit and
-ancestry verification use a fresh temporary Git directory pointed only at the
-repository cache's object directory. They ignore replacement refs, grafts,
-alternates, hooks, config includes, system and user config, and agent-written
-repository config. The Worker then creates and reads back the exact ref with
+ancestry verification use a reconstructed temporary object store. Under the
+repository mutation lock and after every agent for that repository has exited,
+the Worker hardlinks or copies only canonical loose-object directories and
+regular pack and index files from the cache. It rejects symlinks and copies no
+`objects/info` metadata, including local or HTTP alternates. A fresh temporary
+Git directory uses only that reconstructed store. It ignores replacement refs,
+grafts, hooks, config includes, system and user config, and agent-written
+repository config. Before ancestry evaluation, it verifies every pack and index
+checksum and runs strict object-integrity and connectivity checks. It enumerates
+the complete object closure reachable from the input and output commits,
+rehashes each canonical `type length\0content` byte sequence with the
+object format frozen in trusted Worker cache metadata before agent launch, not
+from agent-writable Git configuration, and requires the result to equal its
+requested object ID. The Worker then creates and reads back the exact ref with
 direct ref operations under the same fixed config. It proves both IDs name
-commit objects, output descends from input, and the ref resolves to output
-without executing agent-controlled behavior.
+cryptographically valid commit objects available without an alternate, output
+descends from input, the complete successor checkout is present, and the ref
+resolves to output without executing agent-controlled behavior.
 
 Only after the control plane accepts the full output commit under the active
 lease does it mark Implement succeeded and make Test eligible. Test is
@@ -600,10 +611,15 @@ Only the authenticated owner Worker with the active Attempt lease may report an
 output commit. The server validates IDs, Worker identity, commit format, Stage
 position, predecessor equality, and cancellation fences. The Worker disables
 hooks for its own automatic commit. It verifies objects and ancestry in a fresh
-Git directory with `GIT_NO_REPLACE_OBJECTS`, no graft file, no alternates, no
-repository config, and fixed empty system and global config. It creates and
-reads back the exact local ref through direct ref operations under that fixed
-config. It does not trust agent output to name a successor commit.
+Git directory with `GIT_NO_REPLACE_OBJECTS`, no graft file, no repository
+config, and fixed empty system and global config. That directory reads a
+reconstructed object store containing only regular canonical loose objects and
+pack files from the cache. It contains no `objects/info` directory, alternate
+metadata, or symlink. Pack checksums, strict connectivity, and a canonical
+rehash of every object reachable from input and output must pass before lineage
+is accepted. It creates and reads back the exact local ref through direct ref
+operations under that fixed config. It does not trust agent output to name a
+successor commit.
 
 Prompts, results, events, branches, local refs, and commit metadata may contain
 sensitive project information and keep current local retention rules. Git
@@ -683,8 +699,9 @@ cursor bounded. Attempt event and result limits remain unchanged.
   aggregate, and never starts from repository base or another Worker.
 - `AC-23`: Admission rejects a repository with no Worker eligible for every
   Stage, and owner capability loss later blocks visibly without rerouting.
-- `AC-24`: Replacement refs, grafts, alternates, or agent-written Git config
-  cannot make an unrelated output pass ancestry or local-ref verification.
+- `AC-24`: Replacement refs, grafts, cache-level local or HTTP alternates,
+  symlinked object storage, or agent-written Git config cannot make an unrelated
+  or externally stored output pass ancestry or local-ref verification.
 - `AC-25`: A scheduled occurrence with no complete owner candidate keeps its
   frozen snapshot and admits successfully after the eligible fleet returns.
 - `AC-26`: Repository detail shows the latest complete local-ref count, oldest
@@ -714,7 +731,11 @@ dirty tracked work, explicitly staged new files, untracked credential-like
 files, no-change success, response loss, lease expiry, reset history, malformed
 commit IDs, replacement refs, grafts, config includes, object alternates,
 local-ref conflict, missing objects, and corrupt cache state. Verification tests
-prove fixed Git configuration and `INV-19` through `AC-24`.
+put the reported commit only behind cache-level local and HTTP alternates and
+symlinked object paths, then prove the reconstructed store rejects it. A forged
+regular pack and index pair with mismatched object identity also fails checksum,
+strict-connectivity, or canonical rehash validation. The tests prove fixed Git
+configuration and `INV-19` through `AC-24`.
 Capability-intersection tests reject admission when no one Worker can run every
 Stage and block an owner whose later runtime becomes unhealthy for `AC-23`.
 
