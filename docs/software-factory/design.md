@@ -379,8 +379,8 @@ model.
 - `INV-4`: Two Work targets in one Run may use the same repository but cannot
   have the same target identity.
 - `INV-5`: One active Attempt lease owns one agent process.
-- `INV-6`: The injected agent update capability accepts updates only for its
-  current Work and Attempt.
+- `INV-6`: Only an `agent_update` Attempt receives the injected update
+  capability, which accepts updates only for its current Work and Attempt.
 - `INV-7`: The update protocol never contains a Worker credential, operator
   credential, or Attempt lease token.
 - `INV-8`: An Attempt-ending agent report becomes final only after its agent
@@ -479,6 +479,8 @@ Worker Attempt before taking manual ownership.
   or needs-input.
 - Under `outcome_contract=agent_update`, a process exit without an outcome
   report fails with a fixed reason. `process_exit` Runs retain legacy behavior.
+- A `process_exit` Attempt receives no update environment or prompt instruction,
+  and the Worker-local update endpoint rejects it from semantic agent updates.
 - An operator answer is non-empty UTF-8 text of at most 8 KiB and requeues Work
   without changing the frozen Procedure or original context. The next Worker
   claim creates the Attempt.
@@ -573,7 +575,7 @@ validation below.
 
 ### Agent update contract
 
-The Worker injects:
+For only an `agent_update` Attempt, the Worker injects:
 
 ```text
 FACTORY_WORK_ID
@@ -588,8 +590,10 @@ Worker stores only its digest and never forwards the token to the control
 plane. For each invocation, the helper creates a random request ID and reuses it
 for bounded transport retries. The Worker validates the token digest and Work
 and Attempt identity, performs the exact stored-request lookup, then validates
-the active lease, current lifecycle, request ID, status, message, and optional PR
-URL before forwarding a new typed update under the Worker lease.
+the frozen `agent_update` outcome contract, active lease, current lifecycle,
+request ID, status, message, and optional PR URL before forwarding a new typed
+update under the Worker lease. A `process_exit` Attempt has no token or socket
+and is rejected if it reaches this endpoint.
 
 The token is a scope and accidental-misuse guard, not a sandbox boundary. V1
 trusts processes running as the Worker operating-system user with the same host
@@ -873,7 +877,7 @@ remains visible and never silently drops an outcome.
   override both resolve before admission and remain frozen in historical Work.
 - `AC-16`: An unconverted legacy Task's next manual and scheduled Runs retain
   their existing repository selection and exit-based success behavior without
-  requiring `factory update`.
+  receiving or accepting the injected `factory update` capability.
 - `AC-17`: Every Run freezes `outcome_contract`; converting a legacy Procedure
   increments its generation and cannot change admitted Runs.
 - `AC-18`: A manual ready update resolves or accepts operator PR head evidence,
@@ -903,7 +907,7 @@ normalization, message limits, cursor bounds, and operator updates for `AC-1`,
 Worker and supervisor tests prove `INV-5` through `INV-8`, `INV-11`, `INV-17`,
 and `INV-18` with
 wrong tokens, expired-lease exact replay, expired-lease new-request rejection,
-terminal-report races, cancellation, forced exit,
+process-exit update rejection, terminal-report races, cancellation, forced exit,
 parent loss, stable publish continuation, preflight and post-stop PR identity
 validation, provider outage, branch movement after report, the 199-progress
 limit with a reserved outcome slot, dirty needs-input rejection, pushed and
