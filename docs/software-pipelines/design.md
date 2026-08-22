@@ -163,17 +163,20 @@ startup. Worker affinity starts at that point. A failed preparation before the
 call commits may release capacity and route to another eligible Worker; no
 later operation changes the owner or branch name.
 
-When the Implement agent exits successfully, the Worker stages modifications
-and deletions to tracked files. It never automatically adds an untracked file.
+When the Implement agent exits successfully, the Worker preserves the private
+Agent Git directory and reads its index under fixed configuration. It stages
+tracked modifications and deletions there. It never automatically adds an untracked file.
 A new file enters the Stage output only when the agent explicitly staged or
 committed it. Any remaining unignored, untracked file fails completion with a
 bounded reason. The Worker disables hooks for its own commit, verifies the
 output descends from the frozen input in a fixed verification environment, and
 creates an Attempt-scoped local ref to keep the commit reachable. Commit and
 ancestry verification use a validated temporary object snapshot. Under the
-repository mutation lock, the Worker freezes a manifest of canonical loose
-objects and regular pack and index files, opens every source without following
-symlinks, and copies it to a private store. It does not wait for unrelated
+repository mutation lock, the Worker freezes one manifest over the union of the
+read-only cache objects and the Attempt's private writable object directory.
+It includes canonical loose objects and regular pack and index files, opens
+every source without following symlinks, and copies it to a verification store.
+It does not wait for unrelated
 agents in other worktrees. Worker fetch, repack, ref, and cleanup operations use
 the same lock. Before copying, the Worker sums manifest files and bytes and
 atomically reserves temporary capacity. V1 permits at most 1,000,000 files,
@@ -192,21 +195,38 @@ the complete object closure reachable from the input and output commits,
 rehashes each canonical `type length\0content` byte sequence with the
 object format frozen in trusted Worker cache metadata before agent launch, not
 from agent-writable Git configuration, and requires the result to equal its
-requested object ID. The Worker then creates and reads back the exact ref with
-direct ref operations under the same fixed config. It proves both IDs name
+requested object ID. The Worker then creates and reads back a temporary
+verification ref with direct operations under the same fixed config. It proves both IDs name
 cryptographically valid commit objects available without an alternate, output
 descends from input, the complete successor checkout is present, and the ref
 resolves to output without executing agent-controlled behavior.
 
+After proof, the Worker materializes every reachable output object missing from
+the cache as canonical loose-object content in an owner-only quarantine
+directory. Under the mutation lock it fsyncs and atomically installs each object
+only when a missing or byte-identical destination is observed. It imports no
+private config, refs, index, pack, alternate, or unreachable object. It then
+proves the output commit resolves from the cache alone and creates the
+Attempt-scoped ref. A staged new file and an Agent-created commit therefore
+survive container exit only through the same validated reachable-object import.
+
 Snapshot directories and reservations have owner-only manifests. They are
 released after verification whether completion is accepted or rejected.
-Startup recovery removes an incomplete snapshot only when no live completion
-owns its manifest, then releases the recorded reservation. The Attempt worktree
-and local ref follow their separate retention rules and are never deleted by
-snapshot cleanup.
+Startup recovery removes an incomplete snapshot or quarantine only when no live
+completion owns its manifest, then releases the recorded reservation. The
+private Agent Git directory remains with the Attempt until validated import and
+completion reconciliation finish. The Attempt worktree and local ref follow
+their separate retention rules and are never deleted by snapshot cleanup.
 
-Only after the control plane accepts the full output commit under the active
-lease does it mark Implement succeeded and make Test eligible. Test is
+Handoff completion is two-phase. Under the active Attempt lease, the Worker
+first proposes the verified output and Attempt ref. The control plane records a
+pending branch transition with old head, candidate head, and random transition
+ID, but does not accept the output, succeed the Session, or promote Test. The
+Worker fsyncs that transition into the owned branch manifest, compare-and-swaps
+the local working branch from old to candidate under the mutation lock, marks
+the transition ready, and acknowledges it. Only then does one control-plane
+transaction accept the output, mark Implement succeeded, update the Track head,
+and make Test eligible. Test is
 claimable only by the Track owner Worker. That Worker creates a fresh Attempt
 worktree at the exact Implement commit. Test never reuses Implement's worktree,
 so failed or dirty work remains inspectable without contaminating its input.
@@ -260,9 +280,10 @@ conditional block skipped as a success-like transition and advances to the
 next unconditional Stage or completes the Track. A timeout fails the Gate.
 Factory never starts an Agent with an empty invented feedback set.
 
-An Agent Stage that makes no changes records its exact input commit as output
-and creates the same Attempt-scoped local ref. Every successful Agent handoff
-therefore has one uniform commit proof.
+A multi-stage Agent that makes no changes records its exact input commit as
+output and creates the same Attempt-scoped local ref. Every successful Agent
+handoff therefore has one uniform commit proof. A one-stage Pipeline keeps the
+current completion contract and creates no handoff ref.
 
 Git is the code and file channel between Stages. A Stage that produces a
 specification, report, or other successor input writes it into the repository
@@ -367,7 +388,8 @@ decide whether local Git objects exist.
 
 The Worker owns repository preparation, Attempt worktrees, local commit and ref
 creation, exact-input verification, runtime execution, branch publication,
-bounded `gh` actions, retention, and recovery. It does not choose the next
+credential-isolated provider helper, bounded `gh` actions, retention, and
+recovery. It does not choose the next
 Stage, interpret provider text as trusted instructions, or change dependency
 state.
 
@@ -487,14 +509,15 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   retained-worktree links migrate without loss.
 - `INV-17`: Committed Run or Track cancellation prevents every later
   completion or retry from promoting a successor. It may record the observed
-  result of one publication authorized before the cancellation fence.
+  result of one publication authorized before the cancellation fence or
+  reconcile and roll back one local branch transition proposed before it.
 - `INV-18`: A pending scheduled occurrence freezes the same complete ordered
   Pipeline snapshot as manual admission.
 - `INV-19`: Commit ancestry and local-ref proof ignore every agent-writable Git
   replacement, graft, hook, helper, include, alternate, and configuration path.
 - `INV-20`: A one-Agent-Stage Pipeline preserves the current persistent and
-  fake-cloud execution contracts and creates no intermediate handoff solely for
-  sequencing.
+  fake-cloud execution contracts and creates no handoff ref, including for a
+  no-change completion.
 - `INV-21`: One multi-stage Track has one immutable working-branch name, and
   its accepted head advances only by descendant commits accepted from that
   Track.
@@ -520,6 +543,23 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   permission.
 - `INV-29`: A PR review Gate can choose an outcome only when the provider head
   observed under its Gate-check lease equals the exact target published commit.
+- `INV-30`: An existing working branch is reusable only when its durable owner
+  is the same Track and its local and remote heads match the Track's expected
+  commits.
+- `INV-31`: An Agent process in a Pipeline with provider Stages has no provider
+  write credential or access to the privileged typed helper.
+- `INV-32`: A private Agent object becomes a handoff input only after canonical
+  rehash, reachable-closure validation, cache import, cache-only resolution,
+  and Attempt-ref proof.
+- `INV-33`: A Track accepted head and successor advance only after the matching
+  write-ahead local branch transition is ready and finalized.
+- `INV-34`: Once completion proposal records `finalizing`, Agent-lease or
+  transition-lease expiry cannot terminalize or reassign the Session. Only
+  successful finalize, owner reconciliation, explicit lost-owner abandonment,
+  or a proven ref conflict can leave that state.
+- `INV-35`: Lost-owner abandonment permanently fences finalization, never
+  accepts the candidate or promotes a successor, releases capacity, and leaves
+  a durable rollback-only transition tombstone. Its failure is non-retriable.
 
 ### Requirements
 
@@ -571,9 +611,14 @@ reviewed. Each Run renders its frozen Stage order and repository Tracks.
   eligible for every frozen Agent runtime, execution profile, and
   Worker-executed Action capability. First-Agent routing selects only from that
   complete capability intersection.
-- Pipeline concurrency limits `queued`, `preparing`, and `running` Sessions in
-  the Run. Stage concurrency limits the same states for that Stage. `waiting`,
-  concurrency-blocked, and terminal Sessions consume no slot.
+- A Pipeline containing Open PR, Update PR, or PR review requires a persistent
+  Worker advertising `provider_credential_isolation`. V1 readiness requires
+  rootless Podman 5+, the frozen image digest, keep-ID user namespace, the fixed
+  mount layout, isolated runtime secret, no helper or host sockets, an
+  uncredentialed remote, and the host-only typed provider helper.
+- Pipeline concurrency limits `queued`, `preparing`, `running`, and `finalizing`
+  Sessions in the Run. Stage concurrency limits the same states for that Stage.
+  `waiting`, concurrency-blocked, and terminal Sessions consume no slot.
 - The software-work view sorts actionable blocked and failed Sessions first,
   then active work, then recent successful or cancelled work.
 - The editor always shows guaranteed and conditional-maximum Agent starts and
@@ -594,6 +639,10 @@ remain the same under Pipeline names.
 
 Every Stage has common identity, name, position, kind, `run_if`, and optional
 concurrency limit, plus one kind-specific configuration:
+
+This example is a saved Pipeline response. Create and preview requests omit the
+server-assigned Stage `id` fields; update requests include the returned IDs for
+unchanged Stages.
 
 ```json
 {
@@ -738,12 +787,25 @@ Attempt it already owns for a migrated one-stage Pipeline, but it cannot receive
 another claim until it registers with Pipeline support. New Workers understand
 one-stage Sessions without Track lineage and multi-stage owner-affine Sessions.
 
-Agent Attempt completion adds `output_commit` for multi-stage success. The server
-rejects a missing, malformed, unexpected-input, or wrong-Worker identity before
-changing Session state. The authenticated owner Worker attests that it proved
-ancestry and local-ref read-back because the control plane does not hold Git
+Multi-stage Agent completion has propose and finalize endpoints. Propose adds
+`output_commit` and Attempt-ref proof, rejects malformed, unexpected-input, or
+wrong-Worker identity, atomically consumes the Attempt lease, moves the Session
+to durable `finalizing`, and returns one pending branch transition. Finalize
+requires the same transition ID plus a ready
+branch-manifest acknowledgement and atomically accepts output, updates the Track
+head, succeeds the Session, and promotes its successor. Replays return the
+stored phase result. The authenticated owner attests to object, ancestry,
+cache-only resolution, and ref proof because the control plane holds no Git
 objects. A one-stage Pipeline keeps the current completion contract and does
 not require a local handoff ref.
+
+`finalizing` work uses a separate short owner-only transition lease delivered
+on the Worker's outbound poll. Normal Attempt lost-lease recovery sees the
+durable state and cannot fail, cancel, or reassign the Session. Transition-lease
+expiry only makes the same transition eligible for reconciliation by the Track
+owner; it never creates another Agent Attempt. After the existing lost-Worker
+threshold, an operator may explicitly abandon finalization through the bounded
+control-plane action described in the lifecycle section.
 
 Pipeline authoring and admission share a versioned canonical Agent prompt
 formatter with the Worker. It validates the complete UTF-8 payload, including
@@ -753,11 +815,15 @@ and Worker startup use the same formatter and bound.
 
 The database gains Pipeline Stage and Track tables. Sessions gain Track and
 Stage foreign keys, kind, `waiting` and `skipped` states, input and output
-commits, bounded typed output, skip class, reason, and the Session whose outcome
+commits, durable `finalizing` state and transition lease, bounded typed output,
+skip class, reason, and the Session whose outcome
 caused the skip. Skip class distinguishes `conditional_success` from
-`causal_failure` and cancellation. Tracks store owner Worker, immutable working-branch name, frozen base
-commit, current accepted commit, published commit, pull-request identity,
-publication authorization and per-feed baselines, review outcome, and workspace health. A Worker repository-ref projection
+`causal_failure` and cancellation. Tracks store owner Worker, immutable working
+branch, branch owner IDs, expected local and remote heads, frozen base commit,
+current accepted commit, published commit, pull-request identity, publication
+authorization and per-feed baselines, pending branch transition, review outcome,
+workspace health, and any rollback-only transition tombstone. A Worker
+repository-ref projection
 stores only the latest complete inventory scan and its health metadata. The
 current unique Run and repository constraint becomes a unique Track and Stage
 constraint.
@@ -900,11 +966,30 @@ The control plane generates the Track working branch once at admission from
 stored identities, with the bounded shape
 `factory/<pipeline-slug>/<run-short-id>/<repository-slug>`. Normalized slugs are
 display aids; the immutable Run fragment prevents identity from depending on a
-later rename. A collision with an existing local or remote branch fails
-preparation visibly. Factory never silently adopts, deletes, or overwrites that
-branch. Provider records use the provider repository identity plus pull-request
-number as durable identity; a changed title or URL does not create another
-record.
+later rename. The Track stores branch owner Run and Track IDs plus the expected
+local and, after publication, remote head. Before local branch creation, the
+Worker writes and fsyncs an owner-only `pending` branch manifest containing
+repository, Run, Track, branch, and expected initial commit. Under the
+repository mutation lock it creates the ref by compare-and-swap from missing,
+then atomically marks the manifest `ready` and fsyncs its directory. It sends
+the prepared acknowledgement only after `ready` is durable.
+
+Recovery finishes a pending manifest when the ref is missing or matches its
+expected commit and marks repository health corrupt when it conflicts. A ref
+without a matching ready manifest is unowned even when its name and commit
+happen to match. Every accepted-head advance adds a pending transition with
+control-plane transition ID, old head, and candidate head to this manifest,
+fsyncs it before the ref CAS, and marks it ready before final completion.
+Recovery completes a missing or matching CAS and replays the acknowledgement;
+a mismatched ref fails the Session without promotion.
+
+Retry and later Stages reuse an existing branch only when the
+ready manifest owner matches this Track and its ref equals the Track's expected
+accepted commit. Publication updates expected remote head through the separate
+publication authorization and never rewrites branch ownership. A missing,
+unowned, or conflicting branch fails without adoption, deletion, reset, or overwrite.
+Provider records use the provider repository identity plus pull-request number
+as durable identity; a changed title or URL does not create another record.
 
 ## 7. Failure behavior and lifecycle
 
@@ -924,12 +1009,42 @@ Session as failed with a bounded actionable reason. The worktree is retained.
 The same transaction skips every later waiting Session with this failure as
 cause. No downstream Session becomes routeable.
 
-Success completion records output identity, marks the Session succeeded, and
-promotes its direct successor in one database transaction. With capacity
+Finalizing a ready branch transition records output identity, advances the
+Track head, marks the Session succeeded, and promotes its direct successor in
+one database transaction. With capacity
 available, the successor becomes routeable to the owner Worker in that
 transaction. Without capacity, it becomes blocked with the canonical
 nonactionable concurrency reason. Existing claim materialization rechecks it
 on each healthy owner Worker poll and promotes it when capacity exists.
+
+A `finalizing` branch transition blocks another Attempt and remains owner-affine.
+Owner recovery claims its transition lease, finishes or verifies the manifest
+and ref CAS, and replays finalize. Expiry of the consumed Agent lease or any
+transition lease cannot invoke normal lost-Attempt failure. Crash before propose
+leaves no transition; crash after propose, manifest fsync, ref CAS, ready
+transition, or finalize response restarts at that exact phase. A conflicting
+ref fails the Session and skips successors. No successor observes a candidate
+head.
+
+If the owner passes the existing lost-Worker threshold, the Run detail offers
+`Abandon finalization`. It requires explicit operator confirmation and is
+available only while the Session is finalizing and the owner remains lost. One
+database transaction fences the transition ID against finalize, records an
+`abandoned_unreconciled` rollback-only tombstone, quarantines the Track
+workspace, fails the Session with `owner_lost_during_finalize`, skips its
+successors, and releases Pipeline and Stage capacity. If Run or Track
+cancellation already committed, it records cancelled instead of failed. It
+never accepts the candidate commit or updates the Track accepted head. The
+confirmation says this failure cannot be retried and the operator must start a
+new Run.
+
+Finalize and abandonment are ordered by that transaction. A finalize that
+committed first makes abandonment an idempotent no-op. Abandonment that commits
+first makes every late finalize or ready acknowledgement reject permanently.
+When the same Worker later returns, recovery may only verify the old head or
+compare-and-swap the exact candidate back to the old head, then mark the
+tombstone rolled back. Any other ref marks repository health corrupt. It cannot
+finalize, reopen the Session, clear the quarantine, or start a successor.
 
 An Open PR Action fails without advancing when branch publication is rejected,
 the remote branch moved unexpectedly, `gh` is unauthenticated, provider rate
@@ -1008,7 +1123,11 @@ When a Session fails, every later waiting Session in that Track becomes skipped
 and records the failed Session as cause. This is distinct from a success-like
 typed conditional skip. Retrying the failed Session reopens the
 Run, returns only never-started successors skipped by that failure to waiting,
-and uses the same input. A successor with an Attempt is never reset.
+and uses the same input. A successor with an Attempt is never reset. The retry
+transaction rejects `owner_lost_during_finalize` and every Session or Track
+with a rollback-only transition tombstone. Neither automatic nor manual retry
+can reopen abandoned work, even after local rollback completes; the operator
+starts a new Run.
 
 Cancelling a Run first commits its cancellation timestamp, marks queued Sessions
 cancelled, marks waiting or concurrency-blocked Sessions skipped, and then
@@ -1023,7 +1142,17 @@ lost. That replay performs no new state change. With no stored result, it
 accepts only an idempotent cancellation acknowledgement from the active
 Attempt. That acknowledgement stores no output and marks the Session cancelled.
 New success, failure, and unauthorised output publication are rejected and
-cannot promote a successor. Publication authorization and cancellation are
+cannot promote a successor.
+
+Branch-transition proposal and cancellation are ordered. Cancellation first
+rejects propose. Proposal first records cancellation pending until owner
+recovery completes or verifies the local CAS, compare-and-swaps candidate back
+to the old head, marks the transition abandoned, and acknowledges cancellation.
+After the lost-Worker threshold, the operator may instead confirm lost-owner
+abandonment; this terminalizes cancellation with the rollback-only tombstone
+and releases capacity without waiting for the Worker. A conflicting ref marks
+repository health corrupt and requires repair; it never promotes. Publication
+authorization and cancellation are
 ordered in the database. If cancellation commits first, authorization is
 rejected and the Worker cannot begin the remote write. If authorization commits
 first, cancellation records that one publication may already be in flight. The
@@ -1034,17 +1163,20 @@ loss retains the authorization for read-only reconciliation; it cannot
 authorize another candidate. The UI says `cancelled after publication was
 authorised` until the remote state is known.
 
-If the active Attempt instead loses its lease, recovery terminalizes
-the Session as cancelled because the committed cancellation fence is
-authoritative, not failed. A cancelled Run or Track cannot reopen through
-Session retry; the operator starts a new Pipeline Run.
+If a preparing or running Attempt instead loses its lease, recovery
+terminalizes the Session as cancelled because the committed cancellation fence
+is authoritative, not failed. A finalizing Session is different: its Agent
+lease was consumed by proposal, so the normal lost-Attempt sweeper ignores it.
+The owner must claim a transition lease and finish the stored cancellation
+rollback. A cancelled Run or Track cannot reopen through Session retry; the
+operator starts a new Pipeline Run.
 
 `waiting` is neither claimable nor terminal. `skipped` is terminal. A Run is
-active while any Session is blocked, queued, preparing, running, or waiting.
-The canonical concurrency block counts as active but not actionable. A Run
-needs attention when another actionable blocked or failed Session exists. It
-becomes terminal when every Session is succeeded, failed, cancelled, or
-skipped. Terminal aggregate state uses these ordered predicates:
+active while any Session is blocked, queued, preparing, running, finalizing,
+or waiting. The canonical concurrency block counts as active but not
+actionable. A Run needs attention when another actionable blocked or failed
+Session exists. It becomes terminal when every Session is succeeded, failed,
+cancelled, or skipped. Terminal aggregate state uses these ordered predicates:
 
 1. `succeeded` when every Track completed every Stage by success or a
    success-like conditional skip.
@@ -1063,7 +1195,9 @@ If the owner Worker is offline, every later or retried Session remains blocked
 with `Waiting for Track owner Worker <name>.` This is operational, not
 actionable, while the Worker is registered and within its recovery window. It
 becomes actionable after the existing lost-Worker threshold. Returning the
-same Worker resumes claims.
+same Worker resumes claims. A finalizing Session instead exposes the explicit
+abandonment action after that threshold because its local branch may already
+contain an unaccepted candidate.
 
 If the owner remains online but loses a runtime or profile capability required
 by a later Stage, that Session blocks on the owner with the exact health reason.
@@ -1090,10 +1224,36 @@ Worker leases and Attempt recovery remain otherwise unchanged.
 ## 8. Security, privacy, and operations
 
 The local operator boundary does not change. Current persistent coding runtimes
-are not a security sandbox. Multi-stage Agent execution has the same trust
-level as current one-stage execution on that Worker. Pull-request Stages use the
-Worker's existing authenticated `gh` and Git credentials. Credentials remain on
-the Worker and are never returned to the control plane or browser.
+are not a general code sandbox, but a Pipeline with provider Stages requires an
+enforced provider-credential boundary. V1 uses one backend: rootless Podman 5 or
+newer with a digest-pinned Factory Agent image. Linux runs rootless Podman
+directly; macOS uses the operator-provisioned rootless Podman machine. The
+execution profile freezes image digest and runtime adapter. Worker readiness
+pulls the image, launches a self-test container, and refuses the capability if
+the runtime, image, user namespace, or mount policy differs.
+
+The Worker builds a private Agent Git directory with a writable index, refs,
+config, and object directory plus a read-only alternate to the repository cache
+object directory. The container uses `--userns=keep-id` and mounts only the
+Attempt files at `/workspace` read-write, the private Git directory at
+`/factory/git` read-write, and cache objects at `/factory/base-objects`
+read-only. Its `.git` file points to `/factory/git`; no host repository config,
+refs, home, SSH agent, provider helper, Podman socket, or Worker socket is
+mounted. Fixed Git configuration uses empty system and global files, disables
+prompts and credential helpers, and removes credentialed remotes. The runtime
+adapter mounts only model-runtime authentication from an Attempt-scoped
+read-only secret into container tmpfs and destroys it at exit. Agent `gh` and
+`git push` therefore have no provider credential or writable remote.
+
+The Worker daemon remains outside the container and retains authenticated Git
+and `gh` credentials. Only its typed lease-bound code can execute Open PR,
+Update PR, and Gate calls; it accepts the frozen adapter fields, not arbitrary
+commands, repositories, refs, or URLs. Provider credentials and helper code are
+never mounted or exposed over a container-accessible socket. A Worker advertises
+`provider_credential_isolation` only after the real container self-test proves
+workspace Git operation, model-runtime startup, provider-mutation denial, mount
+read-only behavior, and cleanup. Existing one-stage Pipelines keep their current
+trust contract.
 
 Only the authenticated owner Worker with the active Attempt lease may report an
 output commit. The server validates IDs, Worker identity, commit format, Stage
@@ -1102,12 +1262,14 @@ hooks for its own automatic commit. It verifies objects and ancestry in a fresh
 Git directory with `GIT_NO_REPLACE_OBJECTS`, no graft file, no repository
 config, and fixed empty system and global config. That directory reads a
 manifest-frozen, copy-verified object snapshot containing only regular canonical
-loose objects and pack files from the cache. It contains no `objects/info` directory, alternate
+loose objects and pack files from the cache and private Agent object directory.
+It contains no `objects/info` directory, alternate
 metadata, or symlink. Pack checksums, strict connectivity, and a canonical
 rehash of every object reachable from input and output must pass before lineage
-is accepted. It creates and reads back the exact local ref through direct ref
-operations under that fixed config. It does not trust agent output to name a
-successor commit.
+is accepted. Only verified reachable objects are installed canonically into the
+cache, and cache-only resolution must pass before the local ref and branch
+transition are acknowledged. It does not trust agent output to name a successor
+commit.
 
 Prompts, results, events, branches, local refs, provider metadata, feedback
 snapshots, and commit metadata may contain sensitive project information and
@@ -1127,7 +1289,8 @@ name, and self-asserted role are not authorization evidence.
 
 Multi-stage Pipelines require one persistent Worker that can prepare the
 repository for the Track. Pull-request Stages additionally require healthy
-`git` and authenticated `gh` capabilities with repository access. One-stage
+`git`, authenticated `gh`, and provider-credential-isolation capabilities with
+repository access. One-stage
 Pipelines keep current behavior. A repository unavailable to a Worker is
 handled by existing routing before owner freeze and by owner-affinity failure
 afterward.
@@ -1188,9 +1351,10 @@ overflow is actionable rather than retried indefinitely.
 - `AC-11`: The UI calls the authoring resource Pipeline and does not expose a
   second general-purpose Task board.
 - `AC-12`: A current one-Stage Pipeline still runs successfully on persistent
-  and fake-cloud profiles without local Stage handoff fields.
-- `AC-13`: Response loss or lease expiry after local-ref creation does not block
-  a new Attempt; only the accepted commit feeds the successor.
+  and fake-cloud profiles without local Stage handoff fields or no-change ref.
+- `AC-13`: Before a successful completion proposal, response loss or lease
+  expiry after local-ref creation does not block a new Attempt; only an output
+  accepted through finalization feeds the successor.
 - `AC-14`: A pending scheduled occurrence retains frozen Stage order and
   settings after the Pipeline is edited, pauses while its schedule is disabled
   or its Pipeline is archived, and resumes unchanged only when the Pipeline is
@@ -1295,6 +1459,31 @@ overflow is actionable rather than retried indefinitely.
   limits fail before acceptance with an actionable reason. Success, failure,
   crash, and restart release the temporary directory and reservation without
   removing retained Attempt evidence.
+- `AC-46`: First preparation rejects an unowned branch collision. Retry and a
+  later Stage reuse the owned Track branch only at the stored expected head;
+  missing or conflicting state is never adopted, reset, or overwritten. Crash
+  recovery completes only the matching write-ahead manifest and ref pair.
+- `AC-47`: In a provider Pipeline, Agent attempts to mutate through `git push`,
+  `gh`, credential helpers, an SSH agent, or the typed helper are denied. Open
+  PR, Update PR, and Gate operations still succeed through the privileged
+  lease-bound helper. The Agent can edit and commit through the specified
+  rootless Podman Git mount layout without host repository or provider access.
+- `AC-48`: A staged new file and Agent-created commit in the private container
+  Git directory are validated with base objects, imported as canonical reachable
+  cache objects, resolved without an alternate, and preserved in the successor.
+- `AC-49`: Crash or response loss at every propose, transition-manifest, branch
+  CAS, ready, and finalize boundary recovers one accepted head or a cancelled
+  rollback. No successor starts from a candidate before finalize.
+- `AC-50`: Agent-lease and transition-lease expiry after proposal leave the
+  Session finalizing and owner-affine at every transition phase. Reconciliation
+  is reissued only to that owner and reaches finalize, cancellation rollback,
+  or a proven conflict without an early successor or replacement Attempt.
+- `AC-51`: After permanent owner loss before or after branch CAS, explicit
+  abandonment rejects every late finalize, releases concurrency, terminalizes
+  the Track without accepting the candidate, and retains a rollback-only
+  tombstone. A returning owner can restore the exact old head or report a
+  conflict, but manual and automatic retry can never revive or promote the
+  abandoned Session.
 
 ## 10. Test approach
 
@@ -1303,7 +1492,7 @@ owner-only routing, aggregate state, retry, cancellation races, generation
 snapshots, typed Stage validation, Gate polling and outcomes, conditional
 promotion and success-like skip, concurrency-block promotion, schedule
 snapshots, structural cost estimates, limits, and every terminal predicate.
-They prove the persisted portions of `INV-1` through `INV-29`;
+They prove the persisted portions of `INV-1` through `INV-35`;
 Worker integration tests prove the Git and worktree portions.
 
 Worker integration tests use two Workers and local bare origins. They prove a
@@ -1325,8 +1514,29 @@ never accepts the partial snapshot for `AC-43`. Fixtures cross each file, byte,
 time, retry, free-space, and concurrent-reservation boundary by one unit and
 prove cleanup and reservation recovery after success, failure, crash, and
 restart for `AC-45`.
+Container Git tests stage a new file and create a commit in the private Git
+directory, then prove union validation imports only its reachable canonical
+objects, resolves the commit from cache alone, and gives the complete checkout
+to the successor for `AC-48`.
 Capability-intersection tests reject admission when no one Worker can run every
 Stage and block an owner whose later runtime becomes unhealthy for `AC-23`.
+Branch preparation tests reject unowned collisions and mismatched heads, then
+reuse an owned matching branch across preparation loss, retry, and later Stages
+for `AC-46`. Crash injection before and after pending-manifest fsync, ref
+compare-and-swap, ready transition, and prepared acknowledgement proves
+recovery finishes only matching owned state and never adopts a ref-only branch.
+Accepted-head tests crash before and after completion propose, transition
+manifest fsync, branch CAS, ready acknowledgement, and finalize commit and
+response. They prove exact recovery, cancellation rollback, and no early
+successor for `AC-49`. At every phase they expire both the consumed Agent lease
+and repeated transition leases, then prove the lost-Attempt sweeper leaves the
+Session finalizing, reconciliation stays owner-only, and no replacement Attempt
+or successor appears before the terminal result for `AC-50`. Permanent-owner-
+loss tests abandon before and after branch CAS, with and without a cancellation
+fence, and prove terminal aggregate state, immediate slot release, permanent
+finalize rejection, rollback-only recovery, and conflict quarantine for
+`AC-51`. Retry tests before and after rollback-only reconciliation prove both
+manual and automatic paths return the permanent failure and create no Attempt.
 
 Recovery tests restart the owner Worker between Stages and prove it recovers
 repository cache, local refs, retained worktrees, and manifest state before
@@ -1391,7 +1601,13 @@ completion, stale approved commit with a moved PR head, remote divergence, and
 same-branch feedback updates for `AC-33` through `AC-44`. They prove no command can push the base branch, tags,
 or an operator-owned ref. A two-round fixture proves approval passes through the
 prior publication while requested feedback makes round two target the commit
-published by round one.
+published by round one. Credential-isolation fixtures give the privileged
+helper a working provider credential while a real rootless Podman container can
+edit, stage, commit, and run the frozen model adapter through the exact V1 mount
+layout. Agent `git push`, `gh` mutation, credential-helper, SSH-agent, host-home,
+Podman-socket, and helper-socket attempts all fail for `AC-47`. The self-test
+also rejects a mutable image tag, rootful engine, wrong user namespace,
+unexpected mount, or writable base-object mount.
 
 React tests prove one-Stage defaults, graph insertion and reorder, inspector
 fields, atomic review-block add, move, and delete, structural cost calculations, telemetry fallback, card grouping,
@@ -1410,8 +1626,10 @@ Stage and Track navigation, and Enter and Space activation.
   detail shows actual telemetry. It does not claim that more Stages are higher
   quality.
 - An offline owner Worker blocks its Tracks. The UI makes that explicit and the
-  existing Worker recovery path resumes exact local state. Cross-Worker
-  continuation needs a later remote-checkpoint design.
+  existing Worker recovery path resumes exact local state. A finalizing Track
+  can be abandoned after the lost threshold, but that is a one-way failure path
+  that quarantines its unresolved local branch. Cross-Worker continuation needs
+  a later remote-checkpoint design.
 - A lost local repository cache can lose intermediate lineage. V1 fails visibly
   rather than continuing from the wrong code. Operators who need disaster
   recovery should include Worker data directories in host backup.
