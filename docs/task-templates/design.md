@@ -140,9 +140,10 @@ the execution-profile catalog only to describe and validate saved defaults. It
 does not decide Worker eligibility or mutate Tasks.
 
 The Task creation service validates the final prefilled or customized Task,
-loads the named Template revision when provenance is supplied, computes the
-customized-field set, and writes the Task plus provenance atomically. It does
-not copy repository or schedule data from a Template.
+loads the named Template revision when provenance is supplied, normalizes both
+through the shared procedure-field path, computes the customized-field set from
+those final normalized values, and writes the Task plus provenance atomically.
+It does not copy repository or schedule data from a Template.
 
 The Template library UI owns list, search, preview, create, edit, duplicate,
 archive, and Use template interactions. It does not run a Template directly.
@@ -301,6 +302,17 @@ object. V1 accepts only:
 }
 ```
 
+`single_agent_v1` uses the existing Task normalization exactly. One shared
+server function trims the prompt, lowercases and trims runtime, trims the
+execution-profile ID, maps `protocol.PersistentAutoProfileID`
+(`"persistent-auto"`) to an empty ID, then applies the existing prompt, runtime,
+profile, timeout, and concurrency validation. Template create, procedure edit,
+starter seeding, Save as template,
+and Task normalization all call this function before canonical JSON encoding,
+digesting, or request comparison. The stored revision therefore contains only
+normalized procedure values. A later `graph_v1` applies the same normalization
+to every Agent node. Duplicate copies already-normalized canonical values.
+
 `PATCH` treats name and summary as Template metadata. Every successful metadata
 mutation increments Template generation but does not create a revision or
 advance `current_revision_id`. Supplying a canonically different procedure
@@ -355,9 +367,11 @@ Task creation keeps the existing full Task fields and adds optional provenance:
 ```
 
 When `template_source` is present, the server loads that exact revision,
-verifies the digest, compares prompt, runtime, profile, timeout, and concurrency,
-and stores their difference as a canonical `customized_fields` array. The
-request does not have to match the Template because customization is allowed.
+verifies the digest, normalizes the final Task through the shared path, compares
+its prompt, runtime, profile, timeout, and concurrency with the stored normalized
+procedure, and stores their difference as a canonical `customized_fields`
+array. The request does not have to match the Template because customization is
+allowed.
 Supplying an unknown, archived, compacted, mismatched, or corrupt source rejects
 the whole Task creation. Direct Task creation omits `template_source`.
 `request_key` is required whenever `template_source` is present. During the Task
@@ -884,7 +898,11 @@ run in linear time over at most one Template revision and one Task request.
 - `AC-3`: Editing a Template procedure creates a new revision and leaves all
   existing Task and Run snapshots byte-for-byte unchanged.
 - `AC-4`: Customizing a prefilled prompt or execution default records the exact
-  canonical field name and the Task runs the customized value.
+  canonical field name and the Task runs the customized value. Submitting a
+  value semantically identical after Task normalization, including whitespace,
+  runtime-case, or `protocol.PersistentAutoProfileID` (`"persistent-auto"`)
+  differences, does not mark it as customized and stores the same normalized
+  executable value as the revision.
 - `AC-5`: Saving a Task as a Template omits repositories, schedule, pending
   occurrence, archive state, and history.
 - `AC-6`: Archived Templates cannot create linked Tasks, but their prior
@@ -978,8 +996,13 @@ run in linear time over at most one Template revision and one Task request.
 
 Store tests cover revision creation, optimistic concurrency, actor-scoped
 idempotency, archive and restore, stable starter seeding, name conflicts, byte
-limits, and atomic Task provenance. Snapshot comparisons prove `INV-1` through
-`INV-7` and `AC-2` through `AC-7`; metadata-only fixtures prove `AC-20`.
+limits, shared Task and Template procedure normalization, and atomic Task
+provenance. Table fixtures cover leading and trailing prompt whitespace,
+mixed-case runtime, padded profile ID, the exact
+`protocol.PersistentAutoProfileID` (`"persistent-auto"`) sentinel, and
+numeric boundaries across Template create, edit, starter seed, Save as template,
+and sourced Task creation. Snapshot comparisons prove `INV-1` through `INV-7`
+and `AC-2` through `AC-7`; metadata-only fixtures prove `AC-20`.
 
 HTTP tests cover pagination, prompt omission from lists, full detail access,
 unknown and archived revisions, digest mismatch, request-key conflicts, and
