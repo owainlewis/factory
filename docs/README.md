@@ -5,3 +5,4 @@
 - [Architecture](../ARCHITECTURE.md)
 - [VM deployment](vm-deployment.md)
 - [Development](development.md)
+- [Article: coding workflows in Python](coding-workflows-in-code.md)
