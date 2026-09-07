@@ -157,6 +157,25 @@ with open(os.environ["GH_LOG"], "a") as log:
         self.assertIn("opened https://github.com/owner/project/pull/7", self.output.getvalue())
         self.assert_source_unchanged()
 
+    def test_remote_credentials_are_not_passed_to_gh_or_logged_on_failure(self):
+        secret = "FAKE_TOKEN_FOR_TEST"
+        remote = f"https://x-access-token:{secret}@github.example.com:8443/owner/project.git?token={secret}"
+        calls = []
+
+        def respond(args, **kwargs):
+            calls.append(args)
+            if args[:3] == ["git", "remote", "get-url"]:
+                return SimpleNamespace(returncode=0, stdout=remote, stderr="")
+            return SimpleNamespace(returncode=1, stdout="", stderr="GitHub unavailable")
+
+        with patch.object(flow.subprocess, "run", side_effect=respond):
+            with self.assertRaises(RuntimeError) as error:
+                flow.flow("Add a --json flag")
+        self.assertEqual(calls[1][3], "https://github.example.com:8443/owner/project.git")
+        self.assertNotIn(secret, str(error.exception))
+        self.assertNotIn(secret, repr(calls[1]))
+        self.codex_factory.assert_not_called()
+
     def test_refuses_to_publish_incomplete_or_unreviewed_work(self):
         for mode, message in [
             ("blocked", "agent blocked"),

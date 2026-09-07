@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 from uuid import uuid4
+from urllib.parse import urlsplit, urlunsplit
 
 from openai_codex import Codex, CodexConfig, Sandbox
 from openai_codex.types import TurnStatus
@@ -77,6 +78,10 @@ def flow(task: str) -> int:
         raise RuntimeError("codex was not found on PATH; install Codex or set FLOW_CODEX_BIN")
     source = Path.cwd()
     remote = run(["git", "remote", "get-url", "origin"], source)
+    # gh needs the repository address, not credentials carried by Git's remote.
+    address = urlsplit(remote)
+    if address.netloc:
+        remote = urlunsplit((address.scheme, address.netloc.rsplit("@", 1)[-1], address.path, "", ""))
     repo = json.loads(run(["gh", "repo", "view", remote, "--json", "nameWithOwner"], source))["nameWithOwner"]
     run(["git", "fetch", "-q", "origin", "refs/heads/main"], source)
     base_head = run(["git", "rev-parse", "FETCH_HEAD"], source)
