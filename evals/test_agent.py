@@ -73,7 +73,17 @@ def codex_review_status(state="Running", head="abcdef0"):
 
 class AgentTests(unittest.TestCase):
     def setUp(self):
-        login = patch.object(agent, "gh", return_value={"login": "builder"})
+        login = patch.object(
+            agent,
+            "gh",
+            return_value={
+                "login": "builder",
+                "state": "OPEN",
+                "closingIssuesReferences": [
+                    {"url": "https://github.com/owner/repo/issues/123"}
+                ],
+            },
+        )
         login.start()
         self.addCleanup(login.stop)
         poll = patch.object(agent, "wait_for_ci", return_value={"ci_status": "passed"})
@@ -287,11 +297,12 @@ class AgentTests(unittest.TestCase):
                 "item/completed",
                 "commandExecution",
                 exit_code=1,
-                aggregated_output="FAIL: regression\x1b[2J",
+                aggregated_output="FAIL: secret-token-123\x1b[2J",
                 status=SimpleNamespace(value="completed"),
             )
             self.assertIn("Command finished: exit 1", self.progress.getvalue())
-            self.assertIn("FAIL: regression\\x1b[2J", self.progress.getvalue())
+            self.assertNotIn("secret-token-123", self.progress.getvalue())
+            self.assertIn("raw output is not logged", self.progress.getvalue())
             self.assertNotIn("\x1b", self.progress.getvalue())
             yield item_event(
                 "item/completed",
@@ -442,6 +453,38 @@ class AgentTests(unittest.TestCase):
                 agent.run_codex("implement issue")
         factory.assert_not_called()
 
+    def test_closed_or_unrelated_pr_is_rejected_and_number_is_preserved(self):
+        report = {"status": "completed", "pr_number": 467, "summary": "done"}
+        for state, issues in [
+            ("CLOSED", [{"url": "https://github.com/owner/repo/issues/123"}]),
+            ("MERGED", [{"url": "https://github.com/owner/repo/issues/123"}]),
+            ("OPEN", [{"url": "https://github.com/other/repo/issues/123"}]),
+            ("OPEN", []),
+        ]:
+            with (
+                self.subTest(state=state, issues=issues),
+                patch.object(agent, "run_codex", return_value=report),
+                patch.object(
+                    agent,
+                    "gh",
+                    return_value={"state": state, "closingIssuesReferences": issues},
+                ),
+                contextlib.redirect_stdout(io.StringIO()) as output,
+            ):
+                self.assertEqual(
+                    agent.main(["https://github.com/owner/repo/issues/123"]), 1
+                )
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["pr_number"], 467)
+            self.assertEqual(result["status"], "failed")
+        self.poll.assert_not_called()
+
+    def test_issue_comment_url_validates_against_canonical_issue(self):
+        agent.validate_pr(
+            "https://github.com/owner/repo/issues/123/#issuecomment-42", 467
+        )
+        agent.validate_pr("https://github.com/OWNER/REPO/issues/123", 467)
+
 
 class FeedbackTests(unittest.TestCase):
     def setUp(self):
@@ -461,11 +504,11 @@ class FeedbackTests(unittest.TestCase):
 
     def poll(self, snapshots, *, clock=None, reviews=None, head="abc"):
         replies = [
-            *snapshots,
+            *[{"state": "OPEN", **snapshot} for snapshot in snapshots],
             [[{"body": "bot summary"}]],
             reviews or [[]],
             [[{"body": "fix this", "path": "agent.py"}]],
-            {"headRefOid": head},
+            {"headRefOid": head, "state": "OPEN"},
         ]
 
         def respond(*args, **kwargs):
@@ -550,6 +593,7 @@ class FeedbackTests(unittest.TestCase):
         statuses = iter(statuses)
         calls = []
         pr = {
+            "state": "OPEN",
             "headRefOid": "abcdef0123456789",
             "statusCheckRollup": [{"state": "SUCCESS", "context": "check"}],
         }
@@ -629,6 +673,11 @@ class FeedbackTests(unittest.TestCase):
             "Finding Check `if lower < value and value > upper` and `<p>` output.",
             self.output.getvalue(),
         )
+
+    def test_closed_pr_stops_polling(self):
+        with patch.object(agent, "gh", return_value={"state": "CLOSED"}):
+            with self.assertRaisesRegex(RuntimeError, "no longer open"):
+                agent.wait_for_ci("owner/repo", 467)
 
 
 class IterationTests(unittest.TestCase):
@@ -905,8 +954,36 @@ class IterationTests(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(run.call_count, 1)
 
+    def test_new_ci_failure_without_a_push_gets_a_repair_pass(self):
+        failed = self.feedback("failed", body="Looks good")
+        for initial_status in ("passed", "failed"):
+            initial = self.feedback(initial_status, body="Looks good")
+            initial["checks"] = [
+                {
+                    "name": "first",
+                    "state": "FAILURE" if initial_status == "failed" else "SUCCESS",
+                }
+            ]
+            failed["checks"] = [{"name": "second", "state": "FAILURE"}]
+            with (
+                self.subTest(initial_status=initial_status),
+                patch.object(agent, "run_codex", return_value=self.report) as run,
+                patch.object(
+                    agent,
+                    "wait_for_ci",
+                    side_effect=[
+                        failed,
+                        self.feedback(head="fixed", body="Looks good"),
+                    ],
+                ),
+            ):
+                result = agent.iterate(self.task, "owner/repo", self.report, initial)
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(run.call_count, 2)
+
     def test_late_repair_exception_retains_pr_in_cli_result(self):
         with (
+            patch.object(agent, "validate_pr"),
             patch.object(agent, "implement", return_value=self.report),
             patch.object(agent, "wait_for_ci", return_value=self.feedback("failed")),
             patch.object(
