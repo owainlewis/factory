@@ -7,6 +7,7 @@
 
 import argparse
 from contextlib import closing
+from html import unescape
 import json
 from pathlib import Path
 import re
@@ -51,7 +52,12 @@ Review the supplied feedback against the current code; old or resolved comments
 may be included. Fix valid outstanding findings and diagnose failed checks using
 gh (including failure logs). Do not make changes just to satisfy stale feedback.
 
-Run relevant checks and obtain a fresh read-only subagent review of changes.
+Triage first. If CI passed and there are no actionable findings, return completed
+with a brief reason. Do not rerun tests, request another review, or post a comment
+just to reconfirm unchanged code. Positive reviews and bot status notices need no
+response. For a disputed finding, explain the dismissal on the original comment.
+
+If changes are needed, run relevant checks and obtain a fresh read-only subagent review.
 Fix valid findings, commit with a Conventional Commit, and push to the same PR.
 Reply to addressed review comments with verification evidence and resolve them
 when fully addressed. Explain dismissals. Prefix your GitHub replies with
@@ -99,32 +105,38 @@ def log(message: str) -> None:
         for char in message[:4000]
     )
     if len(message) > 4000:
-        display += "\n    [truncated; full feedback is still available to the agent]"
+        display += "\n    [truncated]"
     print(f"[{time.strftime('%H:%M:%S')}] {display}", file=sys.stderr, flush=True)
 
 
-def log_feedback(feedback: dict) -> None:
-    log(f"Feedback: CI {feedback['ci_status']} for PR #{feedback['pr_number']}")
-    for check in feedback["checks"]:
-        name = check.get("name", check.get("context", "check"))
-        state = check.get("conclusion") or check.get("status") or check.get("state")
-        log(f"  {name}: {state}")
-    count = 0
-    for kind in ("reviews", "review_comments", "comments"):
-        for item in feedback[kind]:
-            body = item.get("body") or item.get("state")
-            if not body:
-                continue
-            count += 1
-            author = (item.get("user") or {}).get("login", "unknown")
-            location = (
-                f" ({item['path']}:{item.get('line') or '?'})"
-                if item.get("path")
-                else ""
-            )
-            log(f"  {kind} by {author}{location}:\n    " + body.replace("\n", "\n    "))
-    if not count:
-        log("  No review feedback available.")
+def preview(text: str, limit: int = 240) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def log_feedback(items: dict) -> None:
+    """Display new comments briefly; the agent still receives their full text."""
+    if items:
+        log(f"Feedback: {len(items)} new review item(s) to assess.")
+    for item in list(items.values())[:5]:
+        author = (item.get("user") or {}).get("login", "unknown")
+        location = (
+            f" ({item['path']}:{item.get('line') or '?'})" if item.get("path") else ""
+        )
+        body = item.get("body") or item.get("state") or ""
+        # Strip common prose formatting, preserving code and comparisons.
+        body = re.sub(
+            r"(`+).*?\1|</?(?:h[1-6]|details|summary|sub|br|p|strong|em)(?:\s[^<>]*)?/?>",
+            lambda match: match[0] if match[0].startswith("`") else " ",
+            body,
+            flags=re.DOTALL,
+        )
+        excerpt = preview(unescape(body))
+        log(f"  {author}{location}: {excerpt}")
+        if item.get("html_url"):
+            log(f"  {item['html_url']}")
+    if len(items) > 5:
+        log(f"  {len(items) - 5} more items available on the PR.")
 
 
 def log_agent_event(event) -> None:
@@ -141,7 +153,7 @@ def log_agent_event(event) -> None:
             log(f"Agent: {item.text}")
     elif item.type == "commandExecution":
         if not finished:
-            log(f"Running: {item.command}")
+            log(f"Running: {preview(item.command)}")
         else:
             outcome = (
                 f"exit {item.exit_code}"
@@ -213,13 +225,38 @@ def implement(task: str) -> dict:
     return report
 
 
+def is_review_status(item: dict) -> bool:
+    """Recognize Codex's activity notice, which never contains review findings."""
+    return (item.get("user") or {}).get("login") == "chatgpt-codex-connector[bot]" and (
+        item.get("body") or ""
+    ).startswith("<!-- codex-pull-request-review-summary -->")
+
+
+def pending_reviewers(feedback: dict) -> list[str]:
+    for item in feedback["comments"]:
+        if not is_review_status(item):
+            continue
+        for row in item["body"].splitlines():
+            cells = row.split("|")
+            if len(cells) < 5:
+                continue
+            commit = re.fullmatch(r"`([0-9a-f]{7,40})`", cells[3].strip())
+            if (
+                commit
+                and feedback["head_sha"].startswith(commit[1])
+                and re.search(r"\*\*(Running|Queued|Pending)\*\*", cells[2])
+            ):
+                return ["Codex"]
+    return []
+
+
 def wait_for_ci(
     repo: str, pr_number: int, *, timeout: float = 1200, interval: float = 30
 ) -> dict:
-    """Wait for visible CI checks, then collect available reviews (including history).
+    """Wait for visible checks and known active bot reviews, within one timeout.
 
-    An empty check list keeps waiting. Human reviews may still arrive after return.
-    This only collects feedback; it does not run an agent or repair failures.
+    An empty check list keeps waiting. Later human reviews are outside this wait.
+    Keep unknown comment formats for agent assessment rather than guessing intent.
     """
     if timeout <= 0 or interval <= 0:
         raise ValueError("timeout and interval must be positive")
@@ -245,53 +282,93 @@ def wait_for_ci(
         )
         remaining = deadline - time.monotonic()
         if finished or remaining <= 0:
-            break
+            passed = finished and all(
+                c.get("conclusion", c.get("state")) in {"SUCCESS", "NEUTRAL", "SKIPPED"}
+                for c in checks
+            )
+            feedback = {
+                "pr_number": pr_number,
+                "head_sha": pr["headRefOid"],
+                "ci_status": "passed"
+                if passed
+                else "failed"
+                if finished
+                else "timed_out",
+                "checks": checks,
+            }
+            # Read activity notices before findings so a completed review's
+            # findings cannot be missed by collecting them while it still ran.
+            for key, endpoint in {
+                "comments": f"issues/{pr_number}/comments",
+                "reviews": f"pulls/{pr_number}/reviews",
+                "review_comments": f"pulls/{pr_number}/comments",
+            }.items():
+                pages = gh("api", f"repos/{repo}/{endpoint}", "--paginate", "--slurp")
+                feedback[key] = [item for page in pages for item in page]
+            current = gh(
+                "pr", "view", str(pr_number), "--repo", repo, "--json", "headRefOid"
+            )
+            if current["headRefOid"] != feedback["head_sha"]:
+                raise RuntimeError(
+                    "PR head changed while collecting feedback; run again"
+                )
+            feedback["pending_reviewers"] = pending_reviewers(feedback)
+            if not feedback["pending_reviewers"]:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            status = f"CI {feedback['ci_status']}; waiting for Codex review"
+        else:
+            pending = [
+                c.get("name", c.get("context", "check"))
+                for c in checks
+                if c.get("status") != "COMPLETED"
+                and c.get("state") not in {"SUCCESS", "FAILURE", "ERROR"}
+            ]
+            status = (
+                f"Waiting for {', '.join(pending)}"
+                if checks
+                else "No checks registered yet"
+            )
         delay = min(interval, remaining)
-        status = "Checks still running" if checks else "No checks registered yet"
-        log(f"{status}; checking again in {delay:g}s.")
+        log(f"{preview(status)}; checking again in {delay:g}s.")
         time.sleep(delay)
 
-    passed = finished and all(
-        c.get("conclusion", c.get("state")) in {"SUCCESS", "NEUTRAL", "SKIPPED"}
-        for c in checks
+    log(
+        f"CI {feedback['ci_status']}: {len(checks)} checks, "
+        f"head {feedback['head_sha'][:7]}."
     )
-    feedback = {
-        "pr_number": pr_number,
-        "head_sha": pr["headRefOid"],
-        "ci_status": "passed" if passed else "failed" if finished else "timed_out",
-        "checks": checks,
-    }
-    log("Collecting code review feedback...")
-    # Review bodies and inline comments are separate GitHub endpoints. Include all
-    # pages and retain commit IDs so earlier feedback is not mistaken for new review.
-    for key, endpoint in {
-        "reviews": f"pulls/{pr_number}/reviews",
-        "review_comments": f"pulls/{pr_number}/comments",
-        "comments": f"issues/{pr_number}/comments",
-    }.items():
-        pages = gh("api", f"repos/{repo}/{endpoint}", "--paginate", "--slurp")
-        feedback[key] = [item for page in pages for item in page]
-    current = gh("pr", "view", str(pr_number), "--repo", repo, "--json", "headRefOid")
-    if current["headRefOid"] != feedback["head_sha"]:
-        raise RuntimeError("PR head changed while collecting feedback; run again")
-    log_feedback(feedback)
+    for check in checks:
+        state = check.get("conclusion") or check.get("status") or check.get("state")
+        if state not in {"SUCCESS", "NEUTRAL", "SKIPPED"}:
+            name = check.get("name", check.get("context", "check"))
+            log(f"  {name}: {state}")
     return feedback
 
 
-def review_items(feedback: dict, repair_author: str | None = None) -> set[str]:
+def review_items(feedback: dict, repair_author: str | None = None) -> dict:
     """Identify review text, ignoring metadata that changes when a commit is pushed."""
-    return {
-        json.dumps([kind, item.get("id"), item.get("body"), item.get("state")])
-        for kind in ("reviews", "review_comments", "comments")
-        for item in feedback.get(kind, [])
-        if kind != "reviews" or item.get("state") not in {"APPROVED", "DISMISSED"}
-        if item.get("body") or item.get("state") == "CHANGES_REQUESTED"
-        if not (
-            repair_author
-            and item.get("user", {}).get("login") == repair_author
-            and (item.get("body") or "").startswith("[agent.py repair]")
-        )
-    }
+    items = {}
+    for kind in ("reviews", "review_comments", "comments"):
+        for item in feedback.get(kind, []):
+            body = item.get("body") or ""
+            if kind == "reviews" and item.get("state") in {"APPROVED", "DISMISSED"}:
+                continue
+            if not body and item.get("state") != "CHANGES_REQUESTED":
+                continue
+            if kind == "comments" and is_review_status(item):
+                continue
+            author = (item.get("user") or {}).get("login")
+            if (
+                repair_author
+                and author == repair_author
+                and body.startswith("[agent.py repair]")
+            ):
+                continue
+            key = json.dumps([kind, item.get("id"), body, item.get("state")])
+            items[key] = {**item, "kind": kind}
+    return items
 
 
 def iterate(task: str, repo: str, report: dict, feedback: dict) -> dict:
@@ -299,32 +376,51 @@ def iterate(task: str, repo: str, report: dict, feedback: dict) -> dict:
     reviewed = set()
     repair_author = (
         gh("api", "user")["login"]
-        if feedback["ci_status"] != "timed_out" and review_items(feedback)
+        if feedback["ci_status"] != "timed_out"
+        and not feedback.get("pending_reviewers")
+        and review_items(feedback)
         else None
     )
     pr_number = report["pr_number"]
-    for attempt in range(1, 4):
-        if feedback["ci_status"] == "timed_out":
+    for attempt in range(4):
+        if feedback["ci_status"] == "timed_out" or feedback.get("pending_reviewers"):
+            waiting = ", ".join(feedback.get("pending_reviewers") or ["CI"])
             return {
                 **report,
                 "status": "blocked",
-                "summary": "Timed out waiting for CI.",
+                "summary": f"Timed out waiting for {waiting}.",
             }
-        if feedback["ci_status"] == "passed" and not (
-            review_items(feedback, repair_author) - reviewed
-        ):
+        new_items = {
+            key: item
+            for key, item in review_items(feedback, repair_author).items()
+            if key not in reviewed
+        }
+        log_feedback(new_items)
+        if feedback["ci_status"] == "passed" and not new_items:
+            log(
+                f"CI passed; no new review feedback. Feedback passes used: {attempt}/3."
+            )
             return report
+        if attempt == 3:
+            break
 
         if repair_author is None:
             repair_author = gh("api", "user")["login"]
         log(
-            f"Starting AI agent to address feedback (pass {attempt}/3, PR #{pr_number})."
+            f"Starting AI agent to assess feedback and fix valid findings "
+            f"(pass {attempt + 1}/3, PR #{pr_number})."
         )
+        # Send only unseen review text, retaining metadata and current check results.
+        current_feedback = {**feedback}
+        for kind in ("reviews", "review_comments", "comments"):
+            current_feedback[kind] = [
+                item for item in new_items.values() if item["kind"] == kind
+            ]
         repaired = run_codex(
             REPAIR_PROMPT.format(
                 task=task,
                 pr_number=pr_number,
-                feedback=json.dumps(feedback),
+                feedback=json.dumps(current_feedback),
             )
         )
         if repaired["pr_number"] != pr_number:
@@ -333,13 +429,9 @@ def iterate(task: str, repo: str, report: dict, feedback: dict) -> dict:
         if report["status"] != "completed":
             return report
 
-        reviewed.update(review_items(feedback))
+        reviewed.update(new_items)
         previous_head = feedback["head_sha"]
         feedback = wait_for_ci(repo, pr_number)
-        if feedback["ci_status"] == "passed" and not (
-            review_items(feedback, repair_author) - reviewed
-        ):
-            return report
         if feedback["head_sha"] == previous_head and feedback["ci_status"] == "failed":
             return {
                 **report,
@@ -358,6 +450,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Implement a GitHub issue with Codex.")
     parser.add_argument("task", type=issue_url, metavar="ISSUE_URL")
     args = parser.parse_args(argv)
+    started = time.monotonic()
     report = {"status": "failed", "pr_number": None, "summary": ""}
     try:
         repo = "/".join(urlparse(args.task).path.split("/")[1:3])
@@ -374,7 +467,12 @@ def main(argv: list[str] | None = None) -> int:
             "summary": str(error) or type(error).__name__,
         }
         exit_code = 1
-    log(f"Finished: {report['status']}. {report['summary']}")
+    log(
+        f"Finished: {report['status']} in {time.monotonic() - started:.0f}s. "
+        f"{report['summary']}"
+    )
+    if report["pr_number"] is not None:
+        log(f"PR: https://github.com/{repo}/pull/{report['pr_number']}")
     print(json.dumps(report))
     return exit_code
 

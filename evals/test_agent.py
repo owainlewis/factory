@@ -56,6 +56,21 @@ def streamed_codex(events):
     return factory, thread
 
 
+def codex_review_status(state="Running", head="abcdef0"):
+    """The status-only comment format observed in the issue #472 run."""
+    return {
+        "id": 10,
+        "user": {"login": "chatgpt-codex-connector[bot]"},
+        "body": (
+            "<!-- codex-pull-request-review-summary -->\n"
+            "## Codex Review Summary\n"
+            "| Review | Status | Commit | Review trigger |\n"
+            "| --- | --- | --- | --- |\n"
+            f"| 📝 **Code Review** | **{state}** | `{head}` | PR opened |\n"
+        ),
+    }
+
+
 class AgentTests(unittest.TestCase):
     def setUp(self):
         login = patch.object(agent, "gh", return_value={"login": "builder"})
@@ -447,9 +462,9 @@ class FeedbackTests(unittest.TestCase):
     def poll(self, snapshots, *, clock=None, reviews=None, head="abc"):
         replies = [
             *snapshots,
+            [[{"body": "bot summary"}]],
             reviews or [[]],
             [[{"body": "fix this", "path": "agent.py"}]],
-            [[{"body": "bot summary"}]],
             {"headRefOid": head},
         ]
 
@@ -485,11 +500,11 @@ class FeedbackTests(unittest.TestCase):
         self.assertEqual(result["ci_status"], "passed")
         progress = self.output.getvalue()
         self.assertIn("Waiting for feedback on owner/repo#467", progress)
-        self.assertIn("Checks still running; checking again in 2s", progress)
-        self.assertIn("Collecting code review feedback", progress)
-        self.assertIn("Feedback: CI passed", progress)
-        self.assertIn("fix this", progress)
-        self.assertIn("bot summary", progress)
+        self.assertIn("Waiting for check; checking again in 2s", progress)
+        self.assertIn("CI passed: 1 checks", progress)
+        # Comments are displayed once when assessed, not at every CI snapshot.
+        self.assertNotIn("fix this", progress)
+        self.assertNotIn("bot summary", progress)
         self.assertEqual(len(result["reviews"]), 2)
         self.assertEqual(result["review_comments"][0]["path"], "agent.py")
         self.assertEqual(result["comments"][0]["body"], "bot summary")
@@ -531,6 +546,90 @@ class FeedbackTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "authentication failed"):
                 agent.wait_for_ci("owner/repo", 467)
 
+    def poll_codex_review(self, statuses, *, clock=None, review_head="abcdef0"):
+        statuses = iter(statuses)
+        calls = []
+        pr = {
+            "headRefOid": "abcdef0123456789",
+            "statusCheckRollup": [{"state": "SUCCESS", "context": "check"}],
+        }
+
+        def respond(*args):
+            calls.append(args)
+            if args[0] == "pr":
+                return pr
+            if args[1].endswith("issues/467/comments"):
+                return [[codex_review_status(next(statuses), review_head)]]
+            if args[1].endswith("pulls/467/comments"):
+                return [[{"id": 20, "body": "A real finding", "user": None}]]
+            return [[]]
+
+        with (
+            patch.object(agent, "gh", side_effect=respond),
+            patch.object(agent.time, "monotonic", side_effect=clock or [0, 1, 2, 3]),
+            patch.object(agent.time, "sleep") as sleep,
+        ):
+            result = agent.wait_for_ci("owner/repo", 467, timeout=10, interval=2)
+        return result, calls, sleep
+
+    def test_green_ci_waits_for_active_codex_review_then_collects_findings(self):
+        result, calls, sleep = self.poll_codex_review(["Running", "Completed"])
+        self.assertEqual(result["ci_status"], "passed")
+        self.assertEqual(result["pending_reviewers"], [])
+        self.assertEqual(result["review_comments"][0]["body"], "A real finding")
+        sleep.assert_called_once_with(2)
+        self.assertIn("CI passed; waiting for Codex review", self.output.getvalue())
+        # Observe completion before fetching the findings it promises are ready.
+        endpoints = [call[1] for call in calls if call[0] == "api"]
+        self.assertEqual(
+            endpoints[-3:],
+            [
+                "repos/owner/repo/issues/467/comments",
+                "repos/owner/repo/pulls/467/reviews",
+                "repos/owner/repo/pulls/467/comments",
+            ],
+        )
+
+    def test_active_review_uses_existing_deadline(self):
+        result, _, sleep = self.poll_codex_review(["Running"], clock=[0, 9, 11])
+        self.assertEqual(result["ci_status"], "passed")
+        self.assertEqual(result["pending_reviewers"], ["Codex"])
+        sleep.assert_not_called()
+
+    def test_stale_or_completed_review_does_not_keep_waiting(self):
+        for state, head in [("Running", "aaaaaaa"), ("Completed", "abcdef0")]:
+            with self.subTest(state=state, head=head):
+                result, _, sleep = self.poll_codex_review([state], review_head=head)
+            self.assertEqual(result["pending_reviewers"], [])
+            sleep.assert_not_called()
+
+    def test_comment_preview_is_short_but_full_feedback_is_retained(self):
+        body = "<h3>Finding</h3>\n" + "More detail &amp; evidence. " * 100
+        feedback = {
+            "comments": [
+                {
+                    "body": body,
+                    "html_url": "https://github.com/o/r/pull/1#issuecomment-2",
+                }
+            ]
+        }
+        items = agent.review_items(feedback)
+        agent.log_feedback(items)
+        output = self.output.getvalue()
+        self.assertNotIn("<h3>", output)
+        self.assertIn("Finding More detail & evidence.", output)
+        self.assertIn("https://github.com/o/r/pull/1#issuecomment-2", output)
+        self.assertLess(len(output), 500)
+        self.assertEqual(next(iter(items.values()))["body"], body)
+
+    def test_comment_preview_preserves_comparisons_and_code(self):
+        body = "<h3>Finding</h3> Check `if lower < value and value > upper` and `<p>` output."
+        agent.log_feedback(agent.review_items({"comments": [{"body": body}]}))
+        self.assertIn(
+            "Finding Check `if lower < value and value > upper` and `<p>` output.",
+            self.output.getvalue(),
+        )
+
 
 class IterationTests(unittest.TestCase):
     task = "https://github.com/owner/repo/issues/123"
@@ -560,6 +659,73 @@ class IterationTests(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(result["status"], "completed")
 
+    def test_status_update_does_not_repeat_assessment_of_positive_review(self):
+        # The real run spent two passes rechecking unchanged code because this
+        # status notice changed from Running to Completed beside a positive review.
+        positive_review = {
+            "id": 11,
+            "user": {"login": "greptile-apps[bot]"},
+            "body": (
+                "<h3>Greptile Summary</h3>\n"
+                "The PR appears safe to merge with no actionable correctness, "
+                "security, or quality issues identified."
+            ),
+        }
+        initial = {
+            **self.feedback(),
+            "comments": [codex_review_status(), positive_review],
+        }
+        final = {
+            **self.feedback(),
+            "comments": [codex_review_status("Completed"), positive_review],
+        }
+        with (
+            patch.object(agent, "run_codex", return_value=self.report) as run,
+            patch.object(agent, "wait_for_ci", return_value=final),
+        ):
+            result = agent.iterate(self.task, "owner/repo", self.report, initial)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(run.call_count, 1)
+        self.assertNotIn("codex-pull-request-review-summary", run.call_args.args[0])
+        self.assertNotIn("<h3>", self.progress.getvalue())
+
+    def test_status_notice_alone_needs_no_agent(self):
+        feedback = {**self.feedback(), "comments": [codex_review_status("Completed")]}
+        with patch.object(agent, "run_codex") as run:
+            result = agent.iterate(self.task, "owner/repo", self.report, feedback)
+        self.assertEqual(result["status"], "completed")
+        run.assert_not_called()
+
+    def test_status_marker_does_not_hide_human_or_inline_feedback(self):
+        human = {**codex_review_status(), "user": {"login": "reviewer"}}
+        inline = {**codex_review_status(), "path": "agent.py", "line": 12}
+        for kind, item in [("comments", human), ("review_comments", inline)]:
+            with self.subTest(kind=kind):
+                self.assertTrue(agent.review_items({kind: [item]}))
+
+    def test_only_new_feedback_is_logged_and_sent_on_later_passes(self):
+        initial = self.feedback(body="First finding")
+        updated = self.feedback(head="fixed", body="First finding")
+        updated["comments"] = [{"id": 2, "body": "Second finding", "user": None}]
+        with (
+            patch.object(agent, "run_codex", return_value=self.report) as run,
+            patch.object(agent, "wait_for_ci", side_effect=[updated, updated]),
+        ):
+            result = agent.iterate(self.task, "owner/repo", self.report, initial)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(run.call_count, 2)
+        self.assertNotIn("First finding", run.call_args.args[0])
+        self.assertIn("Second finding", run.call_args.args[0])
+        self.assertEqual(self.progress.getvalue().count("First finding"), 1)
+
+    def test_pending_review_timeout_blocks_even_with_green_ci(self):
+        feedback = {**self.feedback(), "pending_reviewers": ["Codex"]}
+        with patch.object(agent, "run_codex") as run:
+            result = agent.iterate(self.task, "owner/repo", self.report, feedback)
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("Codex", result["summary"])
+        run.assert_not_called()
+
     def test_review_is_assessed_even_when_ci_passes(self):
         feedback = self.feedback(body="Fix a bug")
         with (
@@ -576,7 +742,8 @@ class IterationTests(unittest.TestCase):
         self.assertIn("Fix a bug", run.call_args.args[0])
         self.assertIn("PR #467", run.call_args.args[0])
         self.assertIn(
-            "Starting AI agent to address feedback (pass 1/3", self.progress.getvalue()
+            "Starting AI agent to assess feedback and fix valid findings (pass 1/3",
+            self.progress.getvalue(),
         )
         wait.assert_called_once_with("owner/repo", 467)
 
