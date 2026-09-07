@@ -24,6 +24,38 @@ with patch.dict(sys.modules, {"openai_codex": sdk, "openai_codex.types": sdk_typ
     spec.loader.exec_module(agent)
 
 
+def item_event(method, kind, **fields):
+    return SimpleNamespace(
+        method=method,
+        payload=SimpleNamespace(
+            item=SimpleNamespace(root=SimpleNamespace(type=kind, **fields))
+        ),
+    )
+
+
+def message_event(text, phase="final_answer"):
+    return item_event(
+        "item/completed",
+        "agentMessage",
+        text=text,
+        phase=SimpleNamespace(value=phase) if phase is not None else None,
+    )
+
+
+def completed_event(status="completed", error=None):
+    return SimpleNamespace(
+        method="turn/completed",
+        payload=SimpleNamespace(turn=SimpleNamespace(status=status, error=error)),
+    )
+
+
+def streamed_codex(events):
+    factory = MagicMock()
+    thread = factory.return_value.__enter__.return_value.thread_start.return_value
+    thread.turn.return_value.stream.return_value = (event for event in events)
+    return factory, thread
+
+
 class AgentTests(unittest.TestCase):
     def setUp(self):
         login = patch.object(agent, "gh", return_value={"login": "builder"})
@@ -173,13 +205,11 @@ class AgentTests(unittest.TestCase):
         self.assertIn("without a PR number", result["summary"])
 
     def test_installed_cli_runs_in_current_repository(self):
-        factory = MagicMock()
-        client = factory.return_value.__enter__.return_value
-        thread = client.thread_start.return_value
         report = {"status": "completed", "pr_number": 467, "summary": "done"}
-        thread.run.return_value = SimpleNamespace(
-            status="completed", final_response=json.dumps(report)
+        factory, thread = streamed_codex(
+            [message_event(json.dumps(report)), completed_event()]
         )
+        client = factory.return_value.__enter__.return_value
         with (
             patch.object(agent, "Codex", factory),
             patch.object(agent.shutil, "which", return_value="/bin/codex"),
@@ -187,17 +217,13 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(agent.run_codex("implement issue"), report)
         self.assertEqual(factory.call_args.args[0].codex_bin, "/bin/codex")
         self.assertEqual(client.thread_start.call_args.kwargs["cwd"], str(Path.cwd()))
-        thread.run.assert_called_once_with(
+        thread.turn.assert_called_once_with(
             "implement issue", output_schema=agent.RESULT_SCHEMA
         )
+        thread.run.assert_not_called()
 
     def test_invalid_agent_json_becomes_a_failed_result(self):
-        factory = MagicMock()
-        client = factory.return_value.__enter__.return_value
-        client.thread_start.return_value.run.return_value = SimpleNamespace(
-            status="completed",
-            final_response="not JSON",
-        )
+        factory, _ = streamed_codex([message_event("not JSON"), completed_event()])
         with (
             patch.object(agent, "Codex", factory),
             patch.object(agent.shutil, "which", return_value="/bin/codex"),
@@ -212,12 +238,14 @@ class AgentTests(unittest.TestCase):
         self.assertTrue(report["summary"])
 
     def test_failed_turn_is_not_returned_as_success(self):
-        factory = MagicMock()
-        client = factory.return_value.__enter__.return_value
-        client.thread_start.return_value.run.return_value = SimpleNamespace(
-            status="failed",
-            error=SimpleNamespace(message="model unavailable"),
-            final_response="partial",
+        factory, _ = streamed_codex(
+            [
+                message_event("partial"),
+                completed_event(
+                    status=SimpleNamespace(value="failed"),
+                    error=SimpleNamespace(message="model unavailable"),
+                ),
+            ]
         )
         with (
             patch.object(agent, "Codex", factory),
@@ -225,6 +253,170 @@ class AgentTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "model unavailable"):
                 agent.run_codex("implement issue")
+
+    def test_progress_arrives_before_completion_and_stdout_stays_json(self):
+        report = {"status": "completed", "pr_number": 467, "summary": "done"}
+        output = io.StringIO()
+
+        def events():
+            yield message_event("Checking the implementation.", phase="commentary")
+            self.assertIn(
+                "Agent: Checking the implementation.", self.progress.getvalue()
+            )
+            self.assertEqual(output.getvalue(), "")
+            yield item_event(
+                "item/started", "commandExecution", command="go test ./..."
+            )
+            self.assertIn("Running: go test ./...", self.progress.getvalue())
+            yield item_event(
+                "item/completed",
+                "commandExecution",
+                exit_code=1,
+                aggregated_output="FAIL: regression\x1b[2J",
+                status=SimpleNamespace(value="completed"),
+            )
+            self.assertIn("Command finished: exit 1", self.progress.getvalue())
+            self.assertIn("FAIL: regression\\x1b[2J", self.progress.getvalue())
+            self.assertNotIn("\x1b", self.progress.getvalue())
+            yield item_event(
+                "item/completed",
+                "fileChange",
+                status=SimpleNamespace(value="completed"),
+                changes=[SimpleNamespace(path="internal/triggers/cron.go")],
+            )
+            self.assertIn(
+                "File changes (completed): internal/triggers/cron.go",
+                self.progress.getvalue(),
+            )
+            yield message_event(json.dumps(report))
+            self.assertNotIn(json.dumps(report), self.progress.getvalue())
+            self.assertEqual(output.getvalue(), "")
+            yield completed_event()
+
+        factory, _ = streamed_codex(events())
+        with (
+            patch.object(agent, "Codex", factory),
+            patch.object(agent.shutil, "which", return_value="/bin/codex"),
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertEqual(
+                agent.main(["https://github.com/owner/repo/issues/123"]), 0
+            )
+        self.assertEqual(json.loads(output.getvalue()), report)
+        self.assertEqual(len(output.getvalue().splitlines()), 1)
+
+    def test_final_response_takes_precedence_over_other_messages(self):
+        report = {"status": "completed", "pr_number": 467, "summary": "done"}
+        factory, _ = streamed_codex(
+            [
+                message_event("Starting work.", phase="commentary"),
+                message_event(json.dumps(report)),
+                message_event("Unphased message.", phase=None),
+                message_event("Later progress.", phase="commentary"),
+                completed_event(),
+            ]
+        )
+        with (
+            patch.object(agent, "Codex", factory),
+            patch.object(agent.shutil, "which", return_value="/bin/codex"),
+        ):
+            self.assertEqual(agent.run_codex("implement issue"), report)
+
+    def test_unphased_response_is_supported(self):
+        report = {"status": "completed", "pr_number": 467, "summary": "done"}
+        factory, _ = streamed_codex(
+            [
+                message_event("Earlier message.", phase=None),
+                message_event(json.dumps(report), phase=None),
+                completed_event(),
+            ]
+        )
+        with (
+            patch.object(agent, "Codex", factory),
+            patch.object(agent.shutil, "which", return_value="/bin/codex"),
+        ):
+            self.assertEqual(agent.run_codex("implement issue"), report)
+
+    def test_unknown_item_payloads_do_not_abort_the_turn(self):
+        report = {"status": "completed", "pr_number": 467, "summary": "done"}
+        unknown = SimpleNamespace(params={"item": {"type": "futureItem"}})
+        factory, _ = streamed_codex(
+            [
+                SimpleNamespace(method="item/started", payload=unknown),
+                SimpleNamespace(method="item/completed", payload=unknown),
+                message_event(json.dumps(report)),
+                completed_event(),
+            ]
+        )
+        with (
+            patch.object(agent, "Codex", factory),
+            patch.object(agent.shutil, "which", return_value="/bin/codex"),
+        ):
+            self.assertEqual(agent.run_codex("implement issue"), report)
+
+    def test_missing_completion_does_not_accept_partial_result(self):
+        report = {"status": "completed", "pr_number": 467, "summary": "done"}
+        factory, _ = streamed_codex([message_event(json.dumps(report))])
+        with (
+            patch.object(agent, "Codex", factory),
+            patch.object(agent.shutil, "which", return_value="/bin/codex"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "without a completed turn"):
+                agent.run_codex("implement issue")
+
+    def test_interrupted_turn_reports_status_without_error(self):
+        factory, _ = streamed_codex(
+            [completed_event(status=SimpleNamespace(value="interrupted"))]
+        )
+        with (
+            patch.object(agent, "Codex", factory),
+            patch.object(agent.shutil, "which", return_value="/bin/codex"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "did not complete: interrupted"):
+                agent.run_codex("implement issue")
+
+    def test_stream_is_closed_if_progress_logging_fails(self):
+        factory, thread = streamed_codex(
+            [message_event("Reading.", phase="commentary")]
+        )
+        stream = MagicMock(wraps=thread.turn.return_value.stream.return_value)
+        stream.__iter__.return_value = iter(
+            [message_event("Reading.", phase="commentary")]
+        )
+        thread.turn.return_value.stream.return_value = stream
+        with (
+            patch.object(agent, "Codex", factory),
+            patch.object(agent.shutil, "which", return_value="/bin/codex"),
+            patch.object(
+                agent, "log_agent_event", side_effect=OSError("closed stderr")
+            ),
+        ):
+            with self.assertRaisesRegex(OSError, "closed stderr"):
+                agent.run_codex("implement issue")
+        stream.close.assert_called_once()
+
+    def test_progress_ignores_unrelated_events_and_handles_missing_exit_code(self):
+        agent.log_agent_event(SimpleNamespace(method="item/agentMessage/delta"))
+        self.assertEqual(self.progress.getvalue(), "")
+        agent.log_agent_event(
+            item_event(
+                "item/completed",
+                "commandExecution",
+                exit_code=None,
+                status=SimpleNamespace(value="declined"),
+                aggregated_output=None,
+            )
+        )
+        self.assertIn("Command finished: declined", self.progress.getvalue())
+        agent.log_agent_event(
+            item_event(
+                "item/started",
+                "collabAgentToolCall",
+                tool=SimpleNamespace(value="spawnAgent"),
+                status=SimpleNamespace(value="inProgress"),
+            )
+        )
+        self.assertIn("Subagent: spawnAgent (inProgress)", self.progress.getvalue())
 
     def test_missing_cli_never_starts_sdk(self):
         with (

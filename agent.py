@@ -6,6 +6,7 @@
 
 
 import argparse
+from contextlib import closing
 import json
 from pathlib import Path
 import re
@@ -126,6 +127,37 @@ def log_feedback(feedback: dict) -> None:
         log("  No review feedback available.")
 
 
+def log_agent_event(event) -> None:
+    """Show useful turn activity without printing token deltas."""
+    if event.method not in {"item/started", "item/completed"}:
+        return
+    # The SDK preserves unfamiliar payloads as UnknownNotification objects.
+    if not hasattr(event.payload, "item"):
+        return
+    item = event.payload.item.root
+    finished = event.method == "item/completed"
+    if item.type == "agentMessage" and finished:
+        if (item.phase is None or item.phase.value != "final_answer") and item.text:
+            log(f"Agent: {item.text}")
+    elif item.type == "commandExecution":
+        if not finished:
+            log(f"Running: {item.command}")
+        else:
+            outcome = (
+                f"exit {item.exit_code}"
+                if item.exit_code is not None
+                else item.status.value
+            )
+            log(f"Command finished: {outcome}")
+            if item.exit_code != 0 and item.aggregated_output:
+                log(f"Command output:\n{item.aggregated_output}")
+    elif item.type == "fileChange" and finished:
+        paths = ", ".join(change.path for change in item.changes)
+        log(f"File changes ({item.status.value}): {paths}")
+    elif item.type == "collabAgentToolCall":
+        log(f"Subagent: {item.tool.value} ({item.status.value})")
+
+
 def run_codex(prompt: str) -> dict:
     codex_bin = shutil.which("codex")
     if not codex_bin:
@@ -133,11 +165,34 @@ def run_codex(prompt: str) -> dict:
     log(f"Using Codex: {codex_bin}")
     with Codex(CodexConfig(codex_bin=codex_bin)) as codex:
         thread = codex.thread_start(cwd=str(Path.cwd()), sandbox=Sandbox.full_access)
-        result = thread.run(prompt, output_schema=RESULT_SCHEMA)
-        if result.status != TurnStatus.completed:
-            detail = result.error.message if result.error else result.status.value
+        turn = thread.turn(prompt, output_schema=RESULT_SCHEMA)
+        completed = None
+        final_response = None
+        unphased_response = None
+        with closing(turn.stream()) as events:
+            for event in events:
+                log_agent_event(event)
+                if event.method == "item/completed" and hasattr(event.payload, "item"):
+                    item = event.payload.item.root
+                    if item.type == "agentMessage":
+                        if (
+                            item.phase is not None
+                            and item.phase.value == "final_answer"
+                        ):
+                            final_response = item.text
+                        elif item.phase is None:
+                            unphased_response = item.text
+                elif event.method == "turn/completed":
+                    completed = event.payload.turn
+        if completed is None:
+            raise RuntimeError("coding agent stream ended without a completed turn")
+        if completed.status != TurnStatus.completed:
+            detail = (
+                completed.error.message if completed.error else completed.status.value
+            )
             raise RuntimeError(f"coding agent did not complete: {detail}")
-        report = json.loads(result.final_response or "")
+        response = final_response if final_response is not None else unphased_response
+        report = json.loads(response or "")
         log(f"AI agent {report['status']}: {report['summary']}")
         return report
 
