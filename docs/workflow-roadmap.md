@@ -24,7 +24,7 @@ There are competing delivery examples:
 
 - [The foreman prompt](../examples/prompts/foreman.md) asks an agent to orchestrate planning, building, review, GitHub state, and recovery.
 - [The self-contained issue-to-PR workflow](../examples/workflows/issue-to-pr/README.md) supplies its own configuration and foreman prompt, with fresh planning, build, review, and repair agents, issue-state labels, and explicit GitHub verification gates. It has no fixed repair-pass cap.
-- [The Python flow example](../examples/workflows/flow/flow.py) owns Git/GitHub mechanics and keeps one coding session across repairs.
+- [The Python flow example](../examples/workflows/flow/flow.py) owns Git/GitHub mechanics, creates an isolated worktree, runs implementation with subagent review, opens the PR, and exits.
 - [The issue launcher](../agent.py) accepts a GitHub issue URL, asks agents to implement and repair, polls CI, and limits repair passes. It starts a new coding session per call and has no durable workflow checkpoint.
 
 These are useful experiments, not one supported contract. The issue launcher's argument input also differs from Machinist's stdin interface. Its control-flow tests do not demonstrate unattended delivery quality or high concurrency.
