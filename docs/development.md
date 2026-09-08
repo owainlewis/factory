@@ -23,6 +23,18 @@ assets allow a direct Go build:
 go build ./...
 ```
 
+## Run locally
+
+Start the control plane and managed worker together:
+
+```sh
+just local
+```
+
+The control plane uses the repository's `examples/config.toml`. The managed
+worker continues to use `~/.machinist/worker.toml` because executors,
+credentials, and repository paths are machine-owned configuration.
+
 ## Verify
 
 Run the complete project check before opening a pull request:
@@ -32,13 +44,14 @@ just check
 ```
 
 This installs the locked frontend dependencies, runs frontend tests, rebuilds
-the embedded assets, checks and vets the Go code, runs Go tests with the race
-detector, and builds all Go packages.
+the embedded assets, runs Python eval tests, checks and vets the Go code, runs
+Go tests with the race detector, and builds all Go packages.
 
 Focused commands are also available:
 
 ```sh
 just test
+python3 -m unittest discover -s evals -p 'test_*.py'
 cd internal/controlplane/web && npm test
 go test ./internal/runner
 ```

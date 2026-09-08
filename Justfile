@@ -9,7 +9,7 @@ build: frontend
 
 # Start the local control plane.
 control-plane: build
-    ./bin/machinist start
+    ./bin/machinist start --config=examples/config.toml
 
 # Start the local managed worker.
 worker: build
@@ -30,7 +30,7 @@ local: build
     trap cleanup EXIT
     trap 'exit 130' INT TERM
 
-    ./bin/machinist start &
+    ./bin/machinist start --config=examples/config.toml &
     control_plane_pid=$!
     ./bin/machinist worker start &
     worker_pid=$!

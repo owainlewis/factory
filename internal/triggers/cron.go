@@ -131,7 +131,7 @@ func parseCronField(input, fieldName string, min, max int, named map[string]int,
 		}
 		// In cron syntax, a step on one value means "from this value through
 		// the field maximum" (for example, 5/15 in the minute field).
-		if step > 1 && base != "*" && !strings.Contains(base, "-") {
+		if strings.Contains(item, "/") && base != "*" && !strings.Contains(base, "-") {
 			end = max
 		}
 		for value := start; value <= end; value += step {
