@@ -32,6 +32,8 @@ def run_agent(prompt: str, cwd: Path, *, write: bool = False) -> str:
         if result.status != TurnStatus.completed:
             detail = result.error.message if result.error else result.status.value
             raise RuntimeError(f"agent did not complete: {detail}")
+        if result.final_response is None:
+            raise RuntimeError("agent completed without a final response")
         return result.final_response
 
 
