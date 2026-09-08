@@ -248,13 +248,35 @@ Keep fixing the change until the checks pass. Try at most three times.
 
 The coding agent should diagnose failures. The outer workflow can count the repair calls.
 
-Here is a complete local retry function. Pass it an existing maker thread, the worktree, and a real test command as an argument list:
+Here is a complete local retry function for macOS and Linux. Pass it an existing maker thread, the worktree, and a real test command as an argument list:
 
 ```python
+import os
+import signal
 import subprocess
 
-
 from openai_codex.types import TurnStatus
+
+
+def run_check(command, cwd, timeout=120):
+    with subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            raise
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def repair_until_green(maker, cwd, check_command, max_repairs=3):
@@ -263,13 +285,7 @@ def repair_until_green(maker, cwd, check_command, max_repairs=3):
 
     for attempt in range(max_repairs + 1):
         try:
-            check = subprocess.run(
-                check_command,
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
+            check = run_check(check_command, cwd)
         except subprocess.TimeoutExpired:
             return {"status": "blocked", "summary": "Local check timed out."}
 
@@ -289,6 +305,8 @@ def repair_until_green(maker, cwd, check_command, max_repairs=3):
 ```
 
 For a Go repository, the command might be `["go", "test", "./..."]`. Choose the command that actually verifies the task rather than assuming one command suits every project.
+
+The check helper starts a new process group and kills that group on timeout, including test workers that stay in the group. A runner that deliberately detaches workers needs stronger containment from the runtime.
 
 The loop checks the initial result and checks again after every repair, including the third. Zero is also a useful budget: run the check once and return without starting a repair agent.
 
