@@ -18,14 +18,22 @@ def check(workspace: Path, suite: str) -> dict:
         ("8000-8002", [8000, 8001, 8002]),
         ("80-82,81-83", [80, 81, 82, 83]),
     ]
-    if suite == "full":
+    if suite in {"full", "expanded"}:
         examples += [("1,65535", [1, 65535]), ("42-42", [42])]
         examples += [
             (value, None)
             for value in ("0", "65536", "3-1", "", "80,", "x", "-1", "1-2-3")
         ]
+    if suite == "expanded":
+        examples += [
+            ("8000 - 8002", [8000, 8001, 8002]),
+            (" 80 - 82,81 ", [80, 81, 82]),
+            ("1 - 1", [1]),
+        ]
     failures = []
+    passed_checks = []
     for value, expected in examples:
+        before = len(failures)
         try:
             actual = parse(value)
             if expected is None or actual != expected:
@@ -35,13 +43,20 @@ def check(workspace: Path, suite: str) -> dict:
         except ValueError:
             if expected is not None:
                 failures.append(f"parse_ports({value!r}): unexpected ValueError")
-    return {"passed": not failures, "checks": len(examples), "failures": failures}
+        if len(failures) == before:
+            passed_checks.append(repr(value))
+    return {
+        "passed": not failures,
+        "checks": len(examples),
+        "failures": failures,
+        "passed_checks": passed_checks,
+    }
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("workspace", type=Path)
-    parser.add_argument("--suite", choices=("ci", "full"), default="full")
+    parser.add_argument("--suite", choices=("ci", "full", "expanded"), default="full")
     args = parser.parse_args()
     try:
         result = check(args.workspace, args.suite)

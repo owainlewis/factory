@@ -5,6 +5,11 @@ on repeated context during repairs. This suite compares two ways to handle the *
 stage** of `agent.py`. It is a starting experiment, not a benchmark of full delivery. The [first pilot](agent-benchmark-pilot.md) records
 six successful trials and the limits of what they show.
 
+[Experiment 2](agent-benchmark-experiment-2.md) completed 24 matched trials with
+timing, correctness, repair-cycle metrics, and a retained-context candidate. The
+[results and trial data](agent-benchmark-experiment-2-results.md) show a small local time
+advantage for the current script, but the candidate failed its adoption rule.
+
 ## Run locally
 
 Use your installed, authenticated Codex CLI and `uv`. No API key setup is needed when the
@@ -16,12 +21,12 @@ uv run evals/agent_benchmark.py run \
   --cases repair --repeats 1
 ```
 
-Then run all three cases three times, producing 18 trials:
+Then run the original three cases three times, producing 18 trials:
 
 ```sh
 uv run evals/agent_benchmark.py run \
   --output .machinist/benchmarks/baseline-v1 \
-  --repeats 3 --seed 1
+  --cases clean repair review-only --repeats 3 --seed 1
 ```
 
 The output directory must be new. The suite creates ordinary local fixture folders,
@@ -48,8 +53,9 @@ python3 -m unittest evals.test_agent_benchmark
 | --- | --- | --- |
 | `scripted` | Production `agent.iterate()` and `REPAIR_PROMPT`, with local feedback replacing GitHub | Fresh conversation for each repair pass |
 | `prompted` | One autonomous prompt tells the agent to triage, fix, review, check feedback, and stop | One conversation retains context |
+| `scripted-reuse` (opt in) | Production Python loop with the same prompts | One maker conversation across repair calls |
 
-Both arms use production `run_codex()`, the same CLI and SDK, identical starting code,
+All arms use production `run_codex()`, the same CLI and SDK, identical starting code,
 requirements, feedback, acceptance checks, sandbox settings, and review budget: at most
 three repair passes, each with at most three fresh review rounds. The baseline is a real
 autonomous prompt, not a deliberately vague instruction. It gets the same instruction to
@@ -68,10 +74,13 @@ The cases use a small port-list parser so runs are inexpensive and defects are t
 | `clean` | Correct code, green CI, no review findings | Cost of deciding there is nothing to do |
 | `repair` | Range expansion drops the final port; CI fails | Repair, verification, and independent review |
 | `review-only` | Port zero is accepted; CI misses it but a review identifies it | Acting on valid review feedback despite green CI |
+| `follow-up` | Initial range bug, then a follow-up client requirement | Repeated repair work and retained maker context |
 
 The final checker lives outside the agent workspace, covers more than CI, and is hashed
-by the runner. Completion requires passing acceptance checks, a completed report for PR
-1, and a native review agent when code changed. The child count establishes participation,
+by the runner. The controller runs it inside a Codex read-only sandbox. The feedback CLI
+requests the controller result through local files, without importing agent-written code. Completion requires passing acceptance checks, a completed report for PR
+1, and native reviewer participation when code changed. Final feedback must cover the final
+code, and follow-up cases must receive their follow-up requirement. The child count establishes participation,
 not the quality or independence of its reasoning. Read the saved logs and native Codex
 sessions before using a result in published material.
 
@@ -81,7 +90,9 @@ Read success and failure first. A cheap failure is not a win. Every attempted tr
 in the report. Per-case token ratios use only pairs where both arms succeeded with complete
 usage and matching recorded model and reasoning settings. Source changes during a run
 invalidate the experiment. Keep the excluded pairs and failure rate visible alongside that conditional ratio.
-A ratio below 1 means fewer reported tokens for the scripted arm on that case.
+A ratio below 1 favours the first named arm. The report includes per-case medians and
+ranges for token counts and elapsed time, matched wins, repair cycles, regressions, and
+false completion. Correct code with missing usage is labelled INCOMPLETE.
 
 The meter reads the final cumulative token counter once for each root and recursively
 identified native subagent. It does not add cumulative snapshots or treat missing records
@@ -94,7 +105,7 @@ Missing or unreadable records invalidate token accounting. Only native agents re
 through spawn calls or native subagent activity records are counted. Nested model clients are prohibited in the common
 instructions; this is a cooperative local benchmark, not a hostile-agent containment test.
 
-The suite pairs the two arms, shuffles case order, and randomizes which arm runs first.
+The suite groups selected arms by case and repetition, then randomizes group and arm order.
 This reduces order effects but does not control server-side caches or service load.
 One repeat is a wiring check. Three repeats reveal obvious variance, not statistical proof.
 Do not combine the no-work case with repair cases to claim general token savings.
