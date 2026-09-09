@@ -1,5 +1,9 @@
 # Local evals
 
+For a local token-efficiency comparison of `agent.py` repair orchestration against one
+autonomous prompt, see [the agent benchmark](agent-benchmark.md). It creates no GitHub
+resources. The older smoke tests below exercise live GitHub workflows.
+
 The first Machinist eval exercises the complete default workflow and checks its issue-label
 lifecycle. It is intentionally small. It does not judge implementation quality.
 
