@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "factory-cli"
+version = "0.1.0"
+description = "Plan, build, validate, and merge a task with Claude."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["claude-agent-sdk>=0.1.81,<0.2"]
+
+[project.scripts]
+factory = "factory.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.11"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/factory"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
