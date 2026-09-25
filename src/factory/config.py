@@ -26,7 +26,10 @@ class Check(Model):
 
     @model_validator(mode="after")
     def one_source(self):
-        if bool(self.command) == bool(self.prompt):
+        if (self.command is not None) and (self.prompt is not None):
+            raise ValueError("A check needs exactly one of command or prompt")
+        value = self.command if self.command is not None else self.prompt
+        if value is None or not value.strip():
             raise ValueError("A check needs exactly one nonempty command or prompt")
         return self
 
