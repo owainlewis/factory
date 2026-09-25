@@ -1,0 +1,14 @@
+[stages.build]
+prompt = "BUILD.md"
+checks = ["test", "review"]
+
+[stages.triage]
+prompt = "TRIAGE.md"
+pre = ["gh auth status"]
+tools = ["Read", "Glob", "Grep", "Bash"]
+
+[checks.test]
+command = "uv run pytest"
+
+[checks.review]
+prompt = "REVIEW.md"

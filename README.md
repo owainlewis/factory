@@ -1,150 +1,163 @@
 # factory
 
-A minimal software factory using the Claude Agent SDK.
+Run one task stage, check the result, and retry with feedback.
 
-```text
-task → plan → build → check → review → PR
-                ↑        │       │
-                └────────┴───────┘
-                   repair feedback
+```sh
+factory "Add pagination" --stage=build --check=test,review --attempts=3
+factory "Triage open GitHub issues" --stage=triage
 ```
 
-Claude reads the repository, makes a plan, and edits code. Python controls the
-workflow, allows up to three build attempts, and optionally opens a pull request.
+A stage is a Markdown prompt. A check is a shell command or an agent prompt with
+structured output. Factory has one fixed loop:
+
+```text
+setup once → worker → checks in order → done
+               ↑         │
+               └─ retry ─┘
+```
 
 ## Install
 
-Requires macOS or Linux, Python 3.11+, Git, and Claude Code 2.1.223+ installed
-on PATH. Factory uses that CLI through the Agent SDK so the built-in
-`/code-review` command is available. Authenticate with your Claude Code login
-or `ANTHROPIC_API_KEY`. GitHub issue input and PR creation also need `gh`
-authenticated with `gh auth login`.
+Requires macOS or Linux, Python 3.11+, and Claude Code installed and authenticated
+on PATH. Prompts using Claude's code-review skill need Claude Code 2.1.223+.
 
 ```sh
 git clone https://github.com/owainlewis/factory.git
 cd factory
-uv sync
 uv tool install .
 ```
 
-Alternatively: `pip install .` in a virtual environment.
+Or run `pip install .` in a virtual environment. An existing Claude Code login
+works; setting `ANTHROPIC_API_KEY` uses API authentication instead.
 
-## Use
+## Configure a project
 
-Run against a repository with at least one commit and a clean working tree.
-Configure Git's `user.name` and `user.email` so Factory can commit.
+Create `.factory/config.toml` and the prompt files alongside it:
 
-```sh
-cd /path/to/your/project
+```toml
+[stages.build]
+prompt = "BUILD.md"
+checks = ["test", "review"]
 
-factory "Add a slugify function with tests" --check "uv run pytest"
+[stages.triage]
+prompt = "TRIAGE.md"
+pre = ["gh auth status"]
+tools = ["Read", "Glob", "Grep", "Bash"]
 
-factory https://github.com/owner/repo/issues/42 --check "npm ci && npm test"
+[checks.test]
+command = "uv run pytest"
 
-# Prompt for the task interactively.
-factory --check "make test"
-
-# Push and open a PR after local checks and Claude Code review pass.
-factory "Fix empty input handling" --check "uv run pytest" --pr
+[checks.review]
+prompt = "REVIEW.md"
 ```
 
-`--repo /path/to/project` targets another checkout. `--model` selects a Claude
-model. `--max-turns` limits each agent stage (default 30); `--timeout` limits
-each agent stage and validation command (default 600 seconds). `--attempts` sets
-the total number of build attempts, including the first (default 3).
-Run `factory --help` for all options.
+This repository's `.factory/` directory contains working examples. Write prompts
+as ordinary Markdown: Factory appends JSON context containing the task, workspace,
+and previous failure feedback. Checks also receive the worker's latest summary.
+No prompt-template syntax is needed; braces and code examples remain literal.
 
-The check runs in a fresh worktree: ignored files, local virtual environments,
-and installed dependencies are not copied. Include setup in the check when
-needed, for example `uv sync --locked && uv run pytest`.
+Prompts are resolved relative to the configuration file and read before setup.
+Run from the project directory or select it with `--cwd /path/to/project`.
+`--config` selects another config file, relative to that starting directory.
 
-## What happens
+`--check=test,review` overrides the stage's configured checks in that order;
+`--check=` explicitly disables them. Without an override the stage's checks are
+used. No configured checks means success when the task agent completes.
 
-1. **Plan:** a read-only Claude session inspects the repository and writes a plan.
-2. **Build:** a fresh session receives the task, fixed plan, and previous feedback.
-   Factory commits each attempt to `factory/<run-id>`.
-3. **Check:** your required `--check` command runs against that commit. Nonzero
-   exit output goes back to the builder, bounded to its last 12,000 characters.
-4. **Review:** a fresh session runs Claude's built-in `/code-review` against the
-   full base-to-candidate diff. Actionable findings go back to the builder.
-   Every repair must pass checks and a new review.
-5. **PR:** with `--pr`, push the exact checked and reviewed commit to `origin`
-   and open a PR targeting the branch you started on. Without it, leave the
-   result local. GitHub CI and human approval follow; Factory does not merge.
+## Checks and retries
 
-There is one review stage; the builder has no review subagent. Claude's built-in
-review may use its own internal agents and shell commands. The SDK enforces a
-JSON Schema generated from Pydantic models; Factory validates only the result's
-`structured_output` field. A completed review with no findings clears the gate.
-Missing, invalid, or incomplete results stop the run. There is no text or Markdown
-parsing fallback. The schema guarantees the shape of the result, not the
-correctness of the review's judgments.
+Checks stop at the first unsuccessful result. A retry runs the worker again with
+that feedback, then reruns **all** checks in order in the same workspace. Setup
+never repeats. `--attempts` includes the first attempt and defaults to **1**;
+opt into retries only for tasks that can safely revise their previous work.
 
-Factory invokes the review skill from a normal SDK turn, allowing that turn to
-finish through StructuredOutput. Direct `/code-review` dispatch returns text
-and bypasses structured output in the tested CLI version.
+Command checks use exit status:
 
+| Exit | Meaning |
+| --- | --- |
+| 0 | Pass |
+| 1 | Fixable failure: give the last 12 KB of output to the worker |
+| Anything else | Stop for human attention |
 
-After three unsuccessful attempts the run needs human attention. Timeouts,
-SDK/authentication errors, unexpected checkout changes, and a builder that makes
-no changes stop immediately. GitHub CI failures are handled manually in this
-version. `--merge` has been removed in favor of PRs and human approval.
+Wrap commands that use different exit conventions. For example, pytest exit 2
+(collection failure) stops rather than automatically treating it as a test failure.
 
-Issue URLs are expanded into their title and body using `gh issue view`. Factory
-always builds in the local repository you selected; an issue URL does not clone
-or switch repositories. Other input is treated as a literal task prompt.
+Agent checks return this SDK schema, validated with strict Pydantic models:
 
-Each run prints its artifact directory under the repository's Git directory:
+```json
+{"status": "retry", "feedback": "src/api.py:42: empty input causes an exception."}
+```
+
+`status` is `pass`, `retry`, or `stop`. Unsuccessful checks must provide feedback.
+There is no free-form text parsing fallback. Missing or invalid structured output,
+SDK/authentication errors, and timeouts stop the run rather than triggering repairs.
+Schemas validate result structure, not the correctness of the agent's judgment.
+
+Stage tools default to `Read`, `Glob`, `Grep`, `Write`, `Edit`, and `Bash`. Agent
+checks default to `Read`, `Glob`, `Grep`, `Bash`, `Skill`, and `Agent`. Override
+`tools` on any stage or prompt check. These tools are pre-approved; use trusted
+configuration and prompts. Shell access is not a read-only sandbox. Checks should
+inspect work without editing it or publishing anything.
+
+## Setup and worktrees
+
+Setup commands run once in the starting directory. The configured `cwd` is used
+by the worker and every check. It must exist after setup completes.
+
+```toml
+[stages.build]
+prompt = "BUILD.md"
+pre = ["git worktree add -b factory/$FACTORY_RUN_ID \"$FACTORY_WORKSPACE\" HEAD"]
+cwd = ".worktrees/{run_id}"
+checks = ["test", "review"]
+```
+
+`cwd` is relative to the starting directory (absolute paths also work).
+`{run_id}` is replaced with a unique ID in `cwd` only. Commands receive:
+
+- `FACTORY_RUN_ID`: the run ID.
+- `FACTORY_ROOT`: the original absolute directory.
+- `FACTORY_WORKSPACE`: the resolved absolute workspace.
+
+Commands are passed unchanged to the shell. Quote environment variables normally.
+For longer setup, use `pre = ["./scripts/create-worktree.sh"]`. Setup can also
+install dependencies; dependencies and ignored files are not copied into worktrees.
+Any nonzero setup exit stops immediately. A shell `cd` inside setup or an agent
+cannot change the runner's working directory. There is no dynamic workspace handoff.
+
+Factory contains no Git-specific orchestration. It doesn't require a repository,
+create commits, push, open PRs, or merge. Those are separate tasks or scripts.
+Keep publishing outside the retry loop to avoid duplicate side effects.
+
+## Logs and limits
+
+Every run prints its directory under `.factory/runs/<run-id>/`:
 
 ```text
-factory/<run-id>/
-  run.json         # current stage, task, branch, commit, errors
-  plan.md
-  plan.log
-  attempt-1/       # one directory per build attempt
-    build.log
-    summary.md
-    diff.patch
-    validation.log
-    review.log    # when checks pass
-    review.json
-  pr.md           # when --pr is used
+run.json
+setup-1.log
+attempt-1/
+  stage.log
+  summary.md
+  check-1.log
+  check-1.json
 ```
 
-The editable worktree lives beside the original repository at
-`.<repo-name>-factory-<run-id>/`; its full path is printed and saved in `run.json`.
+Add `.factory/runs/` and, if used, `.worktrees/` to `.gitignore`. Workspace and logs
+are preserved on success, failure, and interruption. There is no automatic cleanup
+or resume. Logs may contain task and repository content.
 
-Failures return a nonzero exit code, record `needs_attention` in `run.json`,
-and preserve every attempt and the worktree. Inspect the latest feedback before
-continuing manually. There is no automatic resume. Logs may contain repository
-and task content; they stay local and are not included in generated commits.
+`--timeout` limits each command or agent invocation (600 seconds by default).
+`--max-turns` limits each agent invocation (30 by default). `--model` selects the
+Claude model. Omit the task argument to enter it interactively.
 
-After review, clean up a run with `git worktree remove <printed-worktree-path>`.
-Delete its branch with `git branch -d factory/<run-id>` once merged. Artifact
-logs remain available until you remove the run directory.
+## Migration
 
-## Scope
-
-This is a small local CLI, not a job server. It has no queue or CI repair loop.
-The builder can read and edit files but cannot run shell commands or install
-dependencies. The orchestrator runs your check; the reviewer also has shell
-access for inspection. Factory checks that review leaves the checkout unchanged.
-
-A worktree isolates changes, not process access. Use trusted repositories and
-validation commands. Passing tests is not proof that the task is correct;
-review the diff before merging when the change warrants it.
-
-## Prompts
-
-Stage instructions live in `src/factory/prompts/`:
-
-- `PLAN.md`: repository inspection, acceptance criteria, and implementation plan.
-- `BUILD.md`: task, plan, previous feedback, and validation command.
-- `VERIFY.md`: invoke Claude Code review and return the structured result.
-
-Templates use named placeholders such as `{task}` and `{commit}`. They ship with
-both the wheel and source distribution. Retry limits, tool permissions, the
-review schema, and publishing gates remain in Python.
+This replaces the fixed plan/build/review/PR pipeline. `--stage` selects one
+worker; `--check` now takes configured check names rather than a shell command.
+`--cwd` replaces `--repo`. Automatic GitHub issue fetching and `--pr` are removed:
+a prompt can use `gh` when needed. Built-in prompts moved to the project's
+`.factory/` directory; copy them to another project to reuse them.
 
 ## Development
 
@@ -155,6 +168,5 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-Tests use temporary real Git repositories and a fake agent, so they require no
-API key or paid model calls. SDK documentation:
-[Claude Agent SDK for Python](https://github.com/anthropics/claude-agent-sdk-python).
+Tests use real command processes, temporary directories, and fake agents. No API
+key or paid model call is required.
