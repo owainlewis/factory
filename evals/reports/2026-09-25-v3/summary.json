@@ -1,0 +1,153 @@
+{
+  "subagent": {
+    "trials": 36,
+    "accepted": 29,
+    "acceptance_passed": 31,
+    "false_completion": 5,
+    "execution_completed": 34,
+    "usage_complete": 34,
+    "median_seconds": 75.52612276258878,
+    "p90_seconds_nearest_rank": 165.7596469768323,
+    "total_seconds": 3292.929023262579,
+    "list_price_usd": 6.9561017,
+    "list_price_per_accepted": 0.23986557586206894,
+    "usage_all_models": {
+      "input_tokens": 918,
+      "output_tokens": 271469,
+      "cache_read_input_tokens": 8001141,
+      "cache_creation_input_tokens": 758478
+    },
+    "per_case": {
+      "atomic-save": {
+        "accepted": 1,
+        "runs": 3
+      },
+      "batch-update": {
+        "accepted": 3,
+        "runs": 3
+      },
+      "config-overlay": {
+        "accepted": 3,
+        "runs": 3
+      },
+      "csv-export": {
+        "accepted": 3,
+        "runs": 3
+      },
+      "cursor-pagination": {
+        "accepted": 3,
+        "runs": 3
+      },
+      "due-report": {
+        "accepted": 3,
+        "runs": 3
+      },
+      "jsonl-import": {
+        "accepted": 1,
+        "runs": 3
+      },
+      "label-filter": {
+        "accepted": 3,
+        "runs": 3
+      },
+      "optimistic-update": {
+        "accepted": 0,
+        "runs": 3
+      },
+      "pagination": {
+        "accepted": 3,
+        "runs": 3
+      },
+      "schema-migration": {
+        "accepted": 3,
+        "runs": 3
+      },
+      "timestamp-order": {
+        "accepted": 3,
+        "runs": 3
+      }
+    },
+    "all_three_accepted_cases": 9,
+    "errors": {
+      "TimeoutError: ": 2
+    },
+    "resolved_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  "factory_matched": {
+    "trials": 36,
+    "accepted": 30,
+    "acceptance_passed": 30,
+    "false_completion": 6,
+    "execution_completed": 36,
+    "usage_complete": 36,
+    "median_seconds": 48.6415810235776,
+    "p90_seconds_nearest_rank": 101.25054216571152,
+    "total_seconds": 2229.8424235512502,
+    "list_price_usd": 7.1859664,
+    "list_price_per_accepted": 0.23953221333333333,
+    "usage_all_models": {
+      "input_tokens": 107725,
+      "output_tokens": 199135,
+      "cache_read_input_tokens": 8308042,
+      "cache_creation_input_tokens": 857537
+    },
+    "per_case": {
+      "atomic-save": {
+        "accepted": 2,
+        "runs": 3
+      },
+      "batch-update": {
+        "accepted": 3,
+        "runs": 3
+      },
+      "config-overlay": {
+        "accepted": 3,
+        "runs": 3
+      },
+      "csv-export": {
+        "accepted": 3,
+        "runs": 3
+      },
+      "cursor-pagination": {
+        "accepted": 3,
+        "runs": 3
+      },
+      "due-report": {
+        "accepted": 2,
+        "runs": 3
+      },
+      "jsonl-import": {
+        "accepted": 2,
+        "runs": 3
+      },
+      "label-filter": {
+        "accepted": 3,
+        "runs": 3
+      },
+      "optimistic-update": {
+        "accepted": 0,
+        "runs": 3
+      },
+      "pagination": {
+        "accepted": 3,
+        "runs": 3
+      },
+      "schema-migration": {
+        "accepted": 3,
+        "runs": 3
+      },
+      "timestamp-order": {
+        "accepted": 3,
+        "runs": 3
+      }
+    },
+    "all_three_accepted_cases": 8,
+    "errors": {},
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ]
+  }
+}

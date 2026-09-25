@@ -195,3 +195,11 @@ all cases and repetitions; do not tune against intermediate outcomes. Report
 acceptance, false completions, all-pass cases, time, total usage/cost, and actual
 review completion. These synthetic tasks and concurrent timings cannot establish
 production reliability or saved human time.
+
+The [matched 72-trial comparison](reports/2026-09-25-v3/README.md) found 30/36
+end-to-end successes for Factory versus 29/36 for direct Claude with subagent
+review. Direct produced test-passing code in 31/36 trials, including two unfinished
+review loops. Factory's median was 48.6 seconds versus 75.5 seconds. The report
+includes actual review execution, incomplete timeout telemetry, per-task
+repeatability and a separately labelled post-run descriptor-leak audit. It does
+not establish a code-quality advantage for scripted orchestration.
