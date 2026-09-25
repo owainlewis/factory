@@ -25,7 +25,8 @@ from claude_agent_sdk import AgentDefinition, ResultMessage
 from factory import runner
 
 ROOT = Path(__file__).resolve().parent
-MODES = ("raw", "prompted", "factory", "claude_cli", "subagent", "factory_matched")
+VARIANTS = {"factory_verified": "factory_matched", "subagent_verified": "subagent"}
+MODES = ("raw", "prompted", "factory", "claude_cli", "subagent", "factory_matched", *VARIANTS)
 MATCHED = {"subagent", "factory_matched"}
 TOOLS = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"]
 CONSTRAINTS = """
@@ -37,17 +38,22 @@ Visible checks: python -m unittest discover -s tests -v
 
 
 def constraints(mode):
-    if mode in MATCHED:
+    if VARIANTS.get(mode, mode) in MATCHED:
         return CONSTRAINTS.replace("delegate to other agents, ", "") + (
             "Only the designated reviewer may be invoked as a foreground subagent.\n"
         )
     return CONSTRAINTS
 
 
-def reviewer_definition(max_turns=40):
+def review_prompt(mode):
+    name = "review_verified" if mode in VARIANTS else "review_matched"
+    return ROOT / f"prompts/{name}.md"
+
+
+def reviewer_definition(max_turns=40, mode="subagent"):
     return {
         "description": "Independent code reviewer for completed task changes.",
-        "prompt": (ROOT / "prompts/review_matched.md").read_text(),
+        "prompt": review_prompt(mode).read_text(),
         "tools": ["Read", "Glob", "Grep", "Bash"],
         "model": "inherit",
         "maxTurns": max_turns,
@@ -163,7 +169,8 @@ def validate_cases(cases, output):
 
 async def cli_agent(args, workspace, directory):
     """Keep Claude Code's default system prompt; record its JSON result directly."""
-    mode = getattr(args, "mode", "claude_cli")
+    profile = getattr(args, "mode", "claude_cli")
+    mode = VARIANTS.get(profile, profile)
     available_tools = TOOLS + (["Agent"] if mode in MATCHED else [])
     command = [
         shutil.which("claude") or "claude",
@@ -187,7 +194,9 @@ async def cli_agent(args, workspace, directory):
     ]
     prompt = args.task + "\n\n" + constraints(mode)
     if mode == "subagent":
-        command.extend(["--agents", json.dumps({"reviewer": reviewer_definition(args.max_turns)})])
+        command.extend(
+            ["--agents", json.dumps({"reviewer": reviewer_definition(args.max_turns, profile)})]
+        )
         prompt = (
             (ROOT / "prompts/subagent.md").read_text().replace("{attempts}", str(args.attempts))
             + "\n\nTask:\n"
@@ -246,10 +255,10 @@ async def trial_worker(spec_path):
     original_query = runner.query
 
     async def measured_query(**kwargs):
-        if spec["mode"] == "factory_matched":
+        if VARIANTS.get(spec["mode"], spec["mode"]) == "factory_matched":
             kwargs["options"].system_prompt = {"type": "preset", "preset": "claude_code"}
             kwargs["options"].agents = {
-                "reviewer": AgentDefinition(**reviewer_definition(spec["max_turns"]))
+                "reviewer": AgentDefinition(**reviewer_definition(spec["max_turns"], spec["mode"]))
             }
         async for message in original_query(**kwargs):
             if isinstance(message, ResultMessage):
@@ -274,9 +283,10 @@ async def trial_worker(spec_path):
     outcome = {"completed": False, "error": None}
     try:
         async with asyncio.timeout(spec["seconds"]):
-            if spec["mode"] in {"claude_cli", "subagent"}:
+            mode = VARIANTS.get(spec["mode"], spec["mode"])
+            if mode in {"claude_cli", "subagent"}:
                 await cli_agent(args, workspace, directory)
-            elif spec["mode"] in {"factory", "factory_matched"}:
+            elif mode in {"factory", "factory_matched"}:
                 await runner.run(args)
             else:
                 summary = await runner.agent(
@@ -330,12 +340,13 @@ def prepare_trial(case, mode, repetition, args, directory):
         "attempts": args.attempts,
     }
     write_json(directory / "spec.json", spec)
+    base_mode = VARIANTS.get(mode, mode)
     (directory / "BUILD.md").write_text(
-        (ROOT / f"prompts/{'raw' if mode == 'claude_cli' else mode}.md").read_text()
+        (ROOT / f"prompts/{'raw' if base_mode == 'claude_cli' else base_mode}.md").read_text()
         + constraints(mode)
     )
     shutil.copyfile(
-        ROOT / ("prompts/review_matched.md" if mode in MATCHED else "prompts/review.md"),
+        review_prompt(mode) if base_mode in MATCHED else ROOT / "prompts/review.md",
         directory / "REVIEW.md",
     )
     (directory / "config.toml").write_text("""[stages.build]
@@ -347,7 +358,7 @@ command = "python -m unittest discover -s tests -v"
 prompt = "REVIEW.md"
 tools = ["Read", "Glob", "Grep", "Bash"]
 """)
-    if mode == "factory_matched":
+    if base_mode == "factory_matched":
         path = directory / "config.toml"
         config = path.read_text().replace(
             'prompt = "BUILD.md"', 'prompt = "BUILD.md"\ntools = ' + json.dumps(TOOLS + ["Agent"])
@@ -421,7 +432,9 @@ def execute_trial(case, directory, spec):
         "worker_attempts": state.get("attempt", 1),
         "human_interventions": 0,
         "human_review": None,
-        "subagent_review": subagent_evidence(directory) if spec["mode"] == "subagent" else None,
+        "subagent_review": subagent_evidence(directory)
+        if VARIANTS.get(spec["mode"], spec["mode"]) == "subagent"
+        else None,
         "subagent_stats": [m["subagent_stats"] for m in messages if "subagent_stats" in m],
     }
     write_json(directory / "result.json", result)

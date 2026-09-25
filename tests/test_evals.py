@@ -204,3 +204,19 @@ def test_model_usage_includes_children_and_auxiliary_models_without_double_count
         "cache_read_input_tokens": 100,
         "cache_creation_input_tokens": 0,
     }
+
+
+def test_verified_profiles_change_only_reviewer_instructions(tmp_path):
+    case = ROOT / "evals/cases/pagination"
+    args = SimpleNamespace(model="test", seconds=300, max_turns=40, attempts=3)
+    for improved, baseline in evals.VARIANTS.items():
+        new, old = tmp_path / improved, tmp_path / baseline
+        evals.prepare_trial(case, improved, 1, args, new)
+        evals.prepare_trial(case, baseline, 1, args, old)
+        for name in ("BUILD.md", "config.toml", "workspace/AGENTS.md", "workspace/app.py"):
+            assert (new / name).read_text() == (old / name).read_text()
+        reviewer = evals.reviewer_definition(40, improved)
+        assert (new / "REVIEW.md").read_text() == reviewer["prompt"]
+        assert reviewer["prompt"] == (ROOT / ".factory/REVIEW.md").read_text()
+        assert reviewer["prompt"] != (old / "REVIEW.md").read_text()
+        assert reviewer["tools"] == evals.reviewer_definition()["tools"]

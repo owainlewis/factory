@@ -203,3 +203,43 @@ review loops. Factory's median was 48.6 seconds versus 75.5 seconds. The report
 includes actual review execution, incomplete timeout telemetry, per-task
 repeatability and a separately labelled post-run descriptor-leak audit. It does
 not establish a code-quality advantage for scripted orchestration.
+
+## Reviewer improvement experiment (v4)
+
+The candidate `.factory/REVIEW.md` asks the reviewer to choose up to three
+high-risk assumptions from the task, run focused independent probes, provide
+concrete evidence, and focus re-review on repairs and affected behavior. It also
+removes the project template's dependence on an optional code-review skill.
+The historical benchmark reviewer already used direct review without that skill;
+its instructions remain unchanged as `review_matched.md`.
+
+The experiment changes only reviewer instructions: `factory_matched` is the
+current control; `factory_verified` uses the candidate reviewer; and
+`subagent_verified` gives direct Claude exactly the same candidate reviewer.
+The latter profiles reuse their existing builder instructions, tools, model,
+system-prompt settings and budgets. The evaluated candidate prompt is an exact,
+tested copy of the project prompt. No runner stages or result-schema fields were
+added. A prompt requests evidence; it does not mechanically prove probes ran.
+
+```sh
+uv run python evals/run.py run \
+  --cases atomic-save,due-report,jsonl-import,optimistic-update,inventory-reservation,dependency-order,slice-ranges,cache-expiry \
+  --modes factory_matched,factory_verified,subagent_verified \
+  --repetitions 2 --model claude-sonnet-5 --seconds 300 --jobs 3 \
+  --output evals/results/reviewer-comparison-v4
+```
+
+This is 48 fresh trials: four selected regressions plus four newly authored tasks,
+three profiles and two repetitions. Keep the regression and fresh-task results
+separate. The fresh cases were authored for this experiment, not independently
+sourced or an external holdout. Freeze prompts and tests before execution; do not
+tune or rerun failed trials. Preserve the prior acceptance tests unchanged, and
+keep descriptor fault-injection diagnostics separate from frozen scores.
+
+Primary outcome: completed within the deadline AND independently correct.
+Also report correctness alone, false completions, timeouts, repeatability,
+median/tail latency, usage completeness, and cost including failures. Compare
+old versus revised Factory to estimate the prompt change's effect, then compare
+revised Factory versus revised direct prompting to assess orchestration. These
+are small synthetic samples; no automatic promotion is justified by a small
+score difference. Preserve prompt regressions and report mixed outcomes honestly.
