@@ -41,8 +41,10 @@ def resolve_task(value: str, cwd: Path) -> str:
 def parse_review(text: str) -> dict:
     """Accept only an explicit findings list; ambiguous output is never approval."""
     text = text.strip()
-    if text.startswith("```json\n") and text.endswith("\n```"):
-        text = text[8:-4]
+    # The native command may put an explanation before its final JSON block.
+    block = re.search(r"```json\s*\n(.*?)\n```$", text, re.DOTALL)
+    if block and text.count("```") == 2:
+        text = block[1]
     try:
         items = json.loads(text)
         if not isinstance(items, list):

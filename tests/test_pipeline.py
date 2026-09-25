@@ -370,3 +370,13 @@ def test_native_review_findings_are_feedback():
 def test_ambiguous_review_text_is_not_approval(text):
     with pytest.raises(cli.FactoryError, match="invalid findings"):
         cli.parse_review(text)
+
+
+def test_native_clear_review_with_explanation():
+    text = "The net diff only adds a docstring. Nothing to flag.\n\n```json\n[]\n```"
+    assert cli.parse_review(text) == {"status": "clear", "findings": []}
+
+
+def test_multiple_review_blocks_are_ambiguous():
+    with pytest.raises(cli.FactoryError, match="invalid findings"):
+        cli.parse_review("```json\n[]\n```\n```json\n[]\n```")
