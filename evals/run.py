@@ -20,12 +20,13 @@ from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
 
-from claude_agent_sdk import ResultMessage
+from claude_agent_sdk import AgentDefinition, ResultMessage
 
 from factory import runner
 
 ROOT = Path(__file__).resolve().parent
-MODES = ("raw", "prompted", "factory", "claude_cli")
+MODES = ("raw", "prompted", "factory", "claude_cli", "subagent", "factory_matched")
+MATCHED = {"subagent", "factory_matched"}
 TOOLS = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"]
 CONSTRAINTS = """
 Use only this workspace; do not inspect parent directories or evaluation assets.
@@ -35,10 +36,75 @@ Visible checks: python -m unittest discover -s tests -v
 """
 
 
+def constraints(mode):
+    if mode in MATCHED:
+        return CONSTRAINTS.replace("delegate to other agents, ", "") + (
+            "Only the designated reviewer may be invoked as a foreground subagent.\n"
+        )
+    return CONSTRAINTS
+
+
+def reviewer_definition(max_turns=40):
+    return {
+        "description": "Independent code reviewer for completed task changes.",
+        "prompt": (ROOT / "prompts/review_matched.md").read_text(),
+        "tools": ["Read", "Glob", "Grep", "Bash"],
+        "model": "inherit",
+        "maxTurns": max_turns,
+        "background": False,
+    }
+
+
+def subagent_evidence(directory):
+    """Audit native tool events, never infer delegation from final prose."""
+    log = directory / "transcript.jsonl"
+    calls, completed = {}, set()
+    if log.exists():
+        for line in log.read_text().splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            for block in event.get("message", {}).get("content", []):
+                if not isinstance(block, dict):
+                    continue
+                if (
+                    block.get("type") == "tool_use"
+                    and block.get("name") == "Agent"
+                    and block.get("input", {}).get("subagent_type") == "reviewer"
+                ):
+                    calls[block["id"]] = block["input"]
+                if (
+                    block.get("type") == "tool_result"
+                    and not block.get("is_error")
+                    and block.get("tool_use_id") in calls
+                ):
+                    completed.add(block["tool_use_id"])
+    return {"requested": len(calls), "returned_without_tool_error": len(completed)}
+
+
 def write_json(path, data):
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(data, indent=2) + "\n")
     temporary.replace(path)
+
+
+def model_usage_totals(messages):
+    """Include subagents and auxiliary models; top-level usage can omit them."""
+    fields = {
+        "input_tokens": "inputTokens",
+        "output_tokens": "outputTokens",
+        "cache_read_input_tokens": "cacheReadInputTokens",
+        "cache_creation_input_tokens": "cacheCreationInputTokens",
+    }
+    return {
+        key: sum(
+            usage.get(provider_key, 0)
+            for message in messages
+            for usage in message.get("model_usage", {}).values()
+        )
+        for key, provider_key in fields.items()
+    }
 
 
 def digest(path):
@@ -97,6 +163,8 @@ def validate_cases(cases, output):
 
 async def cli_agent(args, workspace, directory):
     """Keep Claude Code's default system prompt; record its JSON result directly."""
+    mode = getattr(args, "mode", "claude_cli")
+    available_tools = TOOLS + (["Agent"] if mode in MATCHED else [])
     command = [
         shutil.which("claude") or "claude",
         "-p",
@@ -108,15 +176,23 @@ async def cli_agent(args, workspace, directory):
         "--max-turns",
         str(args.max_turns),
         "--tools",
-        ",".join(TOOLS),
+        ",".join(available_tools),
         "--allowedTools",
-        ",".join(TOOLS),
+        ",".join(available_tools),
         "--permission-mode",
         "dontAsk",
         "--setting-sources",
         "",
         "--strict-mcp-config",
     ]
+    prompt = args.task + "\n\n" + constraints(mode)
+    if mode == "subagent":
+        command.extend(["--agents", json.dumps({"reviewer": reviewer_definition(args.max_turns)})])
+        prompt = (
+            (ROOT / "prompts/subagent.md").read_text().replace("{attempts}", str(args.attempts))
+            + "\n\nTask:\n"
+            + prompt
+        )
     log = directory / "transcript.jsonl"
     with log.open("w") as stdout, (directory / "stderr.log").open("w") as stderr:
         process = await asyncio.create_subprocess_exec(
@@ -129,7 +205,7 @@ async def cli_agent(args, workspace, directory):
             env={**os.environ, "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"},
         )
         try:
-            await process.communicate((args.task + "\n\n" + CONSTRAINTS).encode())
+            await process.communicate(prompt.encode())
         except BaseException:
             if process.returncode is None:
                 try:
@@ -170,6 +246,11 @@ async def trial_worker(spec_path):
     original_query = runner.query
 
     async def measured_query(**kwargs):
+        if spec["mode"] == "factory_matched":
+            kwargs["options"].system_prompt = {"type": "preset", "preset": "claude_code"}
+            kwargs["options"].agents = {
+                "reviewer": AgentDefinition(**reviewer_definition(spec["max_turns"]))
+            }
         async for message in original_query(**kwargs):
             if isinstance(message, ResultMessage):
                 with telemetry.open("a") as stream:
@@ -178,6 +259,7 @@ async def trial_worker(spec_path):
 
     runner.query = measured_query
     args = SimpleNamespace(
+        mode=spec["mode"],
         cwd=workspace,
         config=directory / "config.toml",
         stage="build",
@@ -192,9 +274,9 @@ async def trial_worker(spec_path):
     outcome = {"completed": False, "error": None}
     try:
         async with asyncio.timeout(spec["seconds"]):
-            if spec["mode"] == "claude_cli":
+            if spec["mode"] in {"claude_cli", "subagent"}:
                 await cli_agent(args, workspace, directory)
-            elif spec["mode"] == "factory":
+            elif spec["mode"] in {"factory", "factory_matched"}:
                 await runner.run(args)
             else:
                 summary = await runner.agent(
@@ -219,7 +301,7 @@ def prepare_trial(case, mode, repetition, args, directory):
     directory.mkdir(parents=True)
     workspace = directory / "workspace"
     shutil.copytree(case / "workspace", workspace)
-    (workspace / "AGENTS.md").write_text(CONSTRAINTS)
+    (workspace / "AGENTS.md").write_text(constraints(mode))
     (workspace / ".gitignore").write_text(".factory/\n__pycache__/\n")
     for command in [
         ["git", "init", "-q"],
@@ -249,9 +331,13 @@ def prepare_trial(case, mode, repetition, args, directory):
     }
     write_json(directory / "spec.json", spec)
     (directory / "BUILD.md").write_text(
-        (ROOT / f"prompts/{'raw' if mode == 'claude_cli' else mode}.md").read_text() + CONSTRAINTS
+        (ROOT / f"prompts/{'raw' if mode == 'claude_cli' else mode}.md").read_text()
+        + constraints(mode)
     )
-    shutil.copyfile(ROOT / "prompts/review.md", directory / "REVIEW.md")
+    shutil.copyfile(
+        ROOT / ("prompts/review_matched.md" if mode in MATCHED else "prompts/review.md"),
+        directory / "REVIEW.md",
+    )
     (directory / "config.toml").write_text("""[stages.build]
 prompt = "BUILD.md"
 checks = ["tests", "review"]
@@ -261,6 +347,12 @@ command = "python -m unittest discover -s tests -v"
 prompt = "REVIEW.md"
 tools = ["Read", "Glob", "Grep", "Bash"]
 """)
+    if mode == "factory_matched":
+        path = directory / "config.toml"
+        config = path.read_text().replace(
+            'prompt = "BUILD.md"', 'prompt = "BUILD.md"\ntools = ' + json.dumps(TOOLS + ["Agent"])
+        )
+        path.write_text(config)
     return spec
 
 
@@ -321,6 +413,7 @@ def execute_trial(case, directory, spec):
         "accepted": bool(execution["completed"] and score["passed"]),
         "false_completion": bool(execution["completed"] and not score["passed"]),
         "usage": usage,
+        "usage_all_models": model_usage_totals(messages),
         "usage_complete": bool(messages) and execution["completed"],
         "list_price_usd": sum(m.get("total_cost_usd") or 0 for m in messages),
         "resolved_models": sorted({model for m in messages for model in m.get("model_usage", {})}),
@@ -328,6 +421,8 @@ def execute_trial(case, directory, spec):
         "worker_attempts": state.get("attempt", 1),
         "human_interventions": 0,
         "human_review": None,
+        "subagent_review": subagent_evidence(directory) if spec["mode"] == "subagent" else None,
+        "subagent_stats": [m["subagent_stats"] for m in messages if "subagent_stats" in m],
     }
     write_json(directory / "result.json", result)
     print(
@@ -395,7 +490,7 @@ def main():
     parser.add_argument("action", choices=["validate", "run", "report", "grade", "_worker"])
     parser.add_argument("worker_spec", nargs="?", type=Path)
     parser.add_argument("--cases", help="Comma-separated case names; default all")
-    parser.add_argument("--modes", default=",".join(MODES))
+    parser.add_argument("--modes", default="raw,prompted,factory,claude_cli")
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--model", default="sonnet")
     parser.add_argument("--seconds", type=int, default=300, help="Whole-trial wall-clock budget")

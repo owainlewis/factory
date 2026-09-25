@@ -135,3 +135,72 @@ def test_atomic_acceptance_allows_direct_function_imports(tmp_path):
     source = source.replace("os.replace(temporary, path)", "replace(temporary, path)")
     (tmp_path / "app.py").write_text(source)
     assert evals.grade(case, tmp_path, tmp_path / "score")["passed"]
+
+
+def test_matched_profiles_allow_review_and_share_reviewer_instructions(tmp_path):
+    import tomllib
+
+    case = ROOT / "evals/cases/pagination"
+    args = SimpleNamespace(model="test", seconds=1, max_turns=40, attempts=3)
+    for mode in ["subagent", "factory_matched"]:
+        trial = tmp_path / mode
+        evals.prepare_trial(case, mode, 1, args, trial)
+        assert "delegate to other agents" not in (trial / "workspace/AGENTS.md").read_text()
+        assert (trial / "REVIEW.md").read_text() == evals.reviewer_definition()["prompt"]
+    config = tomllib.loads((tmp_path / "factory_matched/config.toml").read_text())
+    assert "Agent" in config["stages"]["build"]["tools"]
+    assert config["checks"]["review"]["tools"] == evals.reviewer_definition()["tools"]
+    assert evals.reviewer_definition()["model"] == "inherit"
+
+
+def test_subagent_audit_requires_real_tool_events_and_successful_return(tmp_path):
+    log = tmp_path / "transcript.jsonl"
+    events = [
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "I reviewed using a subagent"}]},
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Agent",
+                        "id": "one",
+                        "input": {"subagent_type": "reviewer"},
+                    }
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [{"type": "tool_result", "tool_use_id": "one", "is_error": True}]
+            },
+        },
+    ]
+    log.write_text("\n".join(json.dumps(e) for e in events))
+    assert evals.subagent_evidence(tmp_path) == {"requested": 1, "returned_without_tool_error": 0}
+    events[-1]["message"]["content"][0]["is_error"] = False
+    log.write_text("\n".join(json.dumps(e) for e in events))
+    assert evals.subagent_evidence(tmp_path) == {"requested": 1, "returned_without_tool_error": 1}
+
+
+def test_model_usage_includes_children_and_auxiliary_models_without_double_counting():
+    messages = [
+        {
+            "usage": {"output_tokens": 5},
+            "model_usage": {
+                "primary": {"outputTokens": 15, "cacheReadInputTokens": 100},
+                "auxiliary": {"outputTokens": 2},
+            },
+        },
+        {"model_usage": {"primary": {"outputTokens": 3, "inputTokens": 4}}},
+    ]
+    assert evals.model_usage_totals(messages) == {
+        "input_tokens": 4,
+        "output_tokens": 20,
+        "cache_read_input_tokens": 100,
+        "cache_creation_input_tokens": 0,
+    }

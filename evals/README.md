@@ -151,3 +151,47 @@ records also retain per-model usage, which may include auxiliary model activity.
 The list-price estimate comes from the provider's result, not a calculation from
 our token columns. `usage_complete` means final records were received for a
 successful execution; it is not an independent billing reconciliation.
+
+## Matched subagent-review comparison
+
+To isolate enforced orchestration from the benefit of having a reviewer:
+
+```sh
+# 12 cases × 2 modes × 3 repetitions = 72 fresh trials.
+uv run python evals/run.py run --modes subagent,factory_matched \
+  --repetitions 3 --model claude-sonnet-5 --seconds 300 --jobs 3 \
+  --output evals/results/subagent-comparison-v3
+```
+
+Both profiles use Claude Code's default system prompt, the same primary model,
+workspace, task, builder tools (including Agent), reviewer instructions and
+read/check tools. The direct `subagent` profile is explicitly prompted to build,
+test, invoke the designated foreground reviewer, repair findings, and re-review.
+The `factory_matched` profile uses Factory to enforce tests and independent
+structured review, with bounded repairs. Its SDK calls opt into the Claude Code
+system-prompt preset; the historical `factory` profile remains unchanged.
+
+The common reviewer is `prompts/review_matched.md`. Neither profile uses the
+optional Claude Code code-review skill. The subagent inherits its parent's model.
+Factory uses separate SDK sessions and validates structured review output; the
+direct parent coordinates its reviewer within a continuing conversation. Those
+context and enforcement differences are part of the treatment, not eliminated
+confounders. Both have a 300-second whole-trial deadline and a 40-turn per-call
+ceiling. Three implementation/review cycles are enforced by Factory and requested
+in the direct prompt. These are not equal total token budgets.
+
+Record actual Agent tool calls and successful returns in `subagent_review`, plus
+native final `subagent_stats`. A prose claim to have reviewed is not evidence.
+Report missing or incomplete reviews separately without excluding such trials
+from the correctness denominator. `usage_all_models` sums per-model totals from
+final result records, including child and auxiliary models. The older `usage`
+field can omit subagent tokens and must not be used to compare total consumption
+for this pair. Timeouts can lose final telemetry; usage and cost are lower bounds
+when this occurs.
+
+Freeze prompts and cases before the 72-run experiment. The two-run pilot is an
+adapter/permission check and is excluded from reported comparison results. Run
+all cases and repetitions; do not tune against intermediate outcomes. Report
+acceptance, false completions, all-pass cases, time, total usage/cost, and actual
+review completion. These synthetic tasks and concurrent timings cannot establish
+production reliability or saved human time.
