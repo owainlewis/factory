@@ -102,3 +102,27 @@ def test_successful_agent_exit_is_not_accepted_without_correct_code(tmp_path, mo
     assert not result["accepted"]
     assert result["false_completion"]
     assert not result["usage_complete"]
+
+
+def test_direct_cli_keeps_default_prompt_and_records_structured_usage(tmp_path, monkeypatch):
+    import asyncio
+    import sys
+
+    executable = tmp_path / "claude"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json, sys\n"
+        'assert "--system-prompt" not in sys.argv\n'
+        'assert "--setting-sources" in sys.argv\n'
+        'assert "task text" in sys.stdin.read()\n'
+        'print(json.dumps({"type":"result","subtype":"success","is_error":False,'
+        '"result":"done","usage":{"output_tokens":7},"modelUsage":{"test":{}}}))\n'
+    )
+    executable.chmod(0o755)
+    monkeypatch.setattr(evals.shutil, "which", lambda _: str(executable))
+    args = SimpleNamespace(model="test", max_turns=3, task="task text")
+    asyncio.run(evals.cli_agent(args, tmp_path, tmp_path))
+    usage = json.loads((tmp_path / "usage.jsonl").read_text())
+    assert usage["usage"]["output_tokens"] == 7
+    assert usage["model_usage"] == {"test": {}}
+    assert (tmp_path / "summary.md").read_text() == "done"

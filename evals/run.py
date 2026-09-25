@@ -24,7 +24,7 @@ from claude_agent_sdk import ResultMessage
 from factory import runner
 
 ROOT = Path(__file__).resolve().parent
-MODES = ("raw", "prompted", "factory")
+MODES = ("raw", "prompted", "factory", "claude_cli")
 TOOLS = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"]
 CONSTRAINTS = """
 Use only this workspace; do not inspect parent directories or evaluation assets.
@@ -94,6 +94,73 @@ def validate_cases(cases, output):
         raise SystemExit("Invalid cases: " + ", ".join(failures))
 
 
+async def cli_agent(args, workspace, directory):
+    """Keep Claude Code's default system prompt; record its JSON result directly."""
+    command = [
+        shutil.which("claude") or "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--model",
+        args.model,
+        "--max-turns",
+        str(args.max_turns),
+        "--tools",
+        ",".join(TOOLS),
+        "--allowedTools",
+        ",".join(TOOLS),
+        "--permission-mode",
+        "dontAsk",
+        "--setting-sources",
+        "",
+        "--strict-mcp-config",
+    ]
+    log = directory / "transcript.jsonl"
+    with log.open("w") as stdout, (directory / "stderr.log").open("w") as stderr:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=workspace,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=stdout,
+            stderr=stderr,
+            start_new_session=True,
+            env={**os.environ, "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"},
+        )
+        try:
+            await process.communicate((args.task + "\n\n" + CONSTRAINTS).encode())
+        except BaseException:
+            if process.returncode is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                await process.wait()
+            raise
+    results = []
+    for line in log.read_text().splitlines():
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        if message.get("type") == "result":
+            message["model_usage"] = message.get("modelUsage", {})
+            results.append(message)
+    with (directory / "usage.jsonl").open("w") as output:
+        for result in results:
+            output.write(json.dumps(result) + "\n")
+    final = results[-1] if results else {}
+    if (
+        process.returncode
+        or final.get("subtype") != "success"
+        or final.get("is_error")
+        or final.get("permission_denials")
+        or not final.get("result")
+    ):
+        raise runner.FactoryError(f"Claude CLI failed; see {log}")
+    (directory / "summary.md").write_text(final["result"])
+
+
 async def trial_worker(spec_path):
     spec = json.loads(spec_path.read_text())
     directory = spec_path.parent
@@ -124,7 +191,9 @@ async def trial_worker(spec_path):
     outcome = {"completed": False, "error": None}
     try:
         async with asyncio.timeout(spec["seconds"]):
-            if spec["mode"] == "factory":
+            if spec["mode"] == "claude_cli":
+                await cli_agent(args, workspace, directory)
+            elif spec["mode"] == "factory":
                 await runner.run(args)
             else:
                 summary = await runner.agent(
@@ -178,7 +247,9 @@ def prepare_trial(case, mode, repetition, args, directory):
         "attempts": args.attempts,
     }
     write_json(directory / "spec.json", spec)
-    (directory / "BUILD.md").write_text((ROOT / f"prompts/{mode}.md").read_text() + CONSTRAINTS)
+    (directory / "BUILD.md").write_text(
+        (ROOT / f"prompts/{'raw' if mode == 'claude_cli' else mode}.md").read_text() + CONSTRAINTS
+    )
     shutil.copyfile(ROOT / "prompts/review.md", directory / "REVIEW.md")
     (directory / "config.toml").write_text("""[stages.build]
 prompt = "BUILD.md"

@@ -2,7 +2,7 @@ import json
 
 def parse_jsonl(text):
     rows, errors, seen = [], [], set()
-    for number,line in enumerate(text.split('\n'),1):
+    for number,line in enumerate(text.splitlines(),1):
         if not line.strip():
             continue
         try:

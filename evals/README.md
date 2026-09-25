@@ -1,7 +1,8 @@
 # Evaluating Factory
 
 This suite compares **automated task-only prompting**, a **reusable workflow
-prompt**, and **Factory's enforced tests + separate review + bounded repair**.
+prompt**, **Factory's enforced tests + separate review + bounded repair**, and direct
+**Claude Code (`claude -p`) with its default system prompt**.
 It measures correctness and repeatability on small standard-library Python tasks.
 It is not a timed comparison with a person operating Claude Code interactively.
 
@@ -15,9 +16,9 @@ uv run python evals/run.py validate
 
 # Nine-run smoke test before a larger experiment.
 uv run python evals/run.py run --cases pagination,atomic-save,optimistic-update \
-  --repetitions 1 --output evals/results/pilot
+  --modes raw,prompted,factory --repetitions 1 --output evals/results/pilot
 
-# 12 tasks × 3 modes × 3 repetitions = 108 runs.
+# 12 tasks × 4 modes × 3 repetitions = 144 runs.
 uv run python evals/run.py run --repetitions 3 --jobs 3 \
   --output evals/results/comparison
 
@@ -35,9 +36,12 @@ part of CI. Ordinary `uv run pytest` verifies the harness without credentials.
 
 All modes receive identical task text, starting code, visible tests, tools, model,
 workspace restrictions, and whole-trial wall-clock allowance. Raw and prompted
-modes have one agent session and may run tools, tests, and repairs within it.
+SDK modes have one agent session and may run tools, tests, and repairs within it.
 Factory uses the actual `factory.runner.run`, including fresh review and repair
-sessions. No production runner is replaced. Its SDK query stream is observed to
+sessions. The `claude_cli` mode invokes the installed CLI directly without overriding its
+default system prompt. Settings and tool permissions match the other modes, but
+the different built-in system prompt is an intentional real-world baseline.
+No production runner is replaced. Its SDK query stream is observed to
 capture structured `ResultMessage` usage; natural-language logs aren't parsed.
 
 `--seconds` (default 300) applies to the **entire trial**, not each Factory stage.
@@ -121,3 +125,18 @@ uv run python evals/run.py grade --cases pagination \
 
 Record active human minutes, total elapsed time, prompts/interventions, and model
 usage alongside that result. Do not label an automated prompting run as manual.
+
+
+## Suite revisions and evidence
+
+The [first experiment](reports/2026-09-25-v1/README.md) preserves original metrics,
+manifests, and a separately labelled follow-up audit. It is not rescored in place.
+The audit exposed missing acceptance criteria: JSONL Unicode line separators,
+strict calendar-date formatting, and atomic-write file modes. The current suite
+adds those tests and fixes the reference implementations. Prompts and task text
+were not tuned to the audit outcomes. Comparisons across these suite revisions
+must distinguish new acceptance coverage from a change in agent performance.
+
+The four `heldout` labels describe the original development split. These cases
+have now been evaluated and inspected; they are not an untouched future holdout.
+Add fresh cases before making claims about generalization.

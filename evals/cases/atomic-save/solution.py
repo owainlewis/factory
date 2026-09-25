@@ -1,19 +1,28 @@
 import json
 import os
-import tempfile
+import stat
 from pathlib import Path
+from uuid import uuid4
+
 
 def save(path, data):
     path = Path(path)
-    temporary = None
+    temporary = path.parent / f'.{path.name}.{uuid4().hex}.tmp'
+    # O_EXCL avoids clobbering another file; mode 0666 respects the process umask.
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
     try:
-        with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as f:
-            temporary = f.name
+        with os.fdopen(fd, 'w') as f:
             json.dump(data, f)
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except FileNotFoundError:
+            pass
+        else:
+            temporary.chmod(mode)
         os.replace(temporary, path)
     finally:
-        if temporary is not None and os.path.exists(temporary):
-            os.unlink(temporary)
+        temporary.unlink(missing_ok=True)
+
 
 def load(path):
     with open(path) as f:

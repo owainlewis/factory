@@ -1,0 +1,542 @@
+[
+  {
+    "trial": "jsonl-import--prompted--2",
+    "cohort": "comparison-v1",
+    "case": "jsonl-import",
+    "mode": "prompted",
+    "repetition": 2,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "jsonl-import--prompted--1",
+    "cohort": "comparison-v1",
+    "case": "jsonl-import",
+    "mode": "prompted",
+    "repetition": 1,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "jsonl-import--factory--1",
+    "cohort": "comparison-v1",
+    "case": "jsonl-import",
+    "mode": "factory",
+    "repetition": 1,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "jsonl-import--prompted--3",
+    "cohort": "comparison-v1",
+    "case": "jsonl-import",
+    "mode": "prompted",
+    "repetition": 3,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "jsonl-import--raw--2",
+    "cohort": "comparison-v1",
+    "case": "jsonl-import",
+    "mode": "raw",
+    "repetition": 2,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "jsonl-import--raw--1",
+    "cohort": "comparison-v1",
+    "case": "jsonl-import",
+    "mode": "raw",
+    "repetition": 1,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "jsonl-import--factory--2",
+    "cohort": "comparison-v1",
+    "case": "jsonl-import",
+    "mode": "factory",
+    "repetition": 2,
+    "original_accepted": true,
+    "audit": {
+      "passed": true,
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "jsonl-import--raw--3",
+    "cohort": "comparison-v1",
+    "case": "jsonl-import",
+    "mode": "raw",
+    "repetition": 3,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "jsonl-import--factory--3",
+    "cohort": "comparison-v1",
+    "case": "jsonl-import",
+    "mode": "factory",
+    "repetition": 3,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "jsonl-import--claude_cli--3",
+    "cohort": "cli-v1",
+    "case": "jsonl-import",
+    "mode": "claude_cli",
+    "repetition": 3,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "jsonl-import--claude_cli--1",
+    "cohort": "cli-v1",
+    "case": "jsonl-import",
+    "mode": "claude_cli",
+    "repetition": 1,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "jsonl-import--claude_cli--2",
+    "cohort": "cli-v1",
+    "case": "jsonl-import",
+    "mode": "claude_cli",
+    "repetition": 2,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "due-report--raw--2",
+    "cohort": "comparison-v1",
+    "case": "due-report",
+    "mode": "raw",
+    "repetition": 2,
+    "original_accepted": true,
+    "audit": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "due-report--prompted--2",
+    "cohort": "comparison-v1",
+    "case": "due-report",
+    "mode": "prompted",
+    "repetition": 2,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "due-report--prompted--3",
+    "cohort": "comparison-v1",
+    "case": "due-report",
+    "mode": "prompted",
+    "repetition": 3,
+    "original_accepted": true,
+    "audit": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "due-report--raw--1",
+    "cohort": "comparison-v1",
+    "case": "due-report",
+    "mode": "raw",
+    "repetition": 1,
+    "original_accepted": true,
+    "audit": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "due-report--factory--3",
+    "cohort": "comparison-v1",
+    "case": "due-report",
+    "mode": "factory",
+    "repetition": 3,
+    "original_accepted": true,
+    "audit": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "due-report--prompted--1",
+    "cohort": "comparison-v1",
+    "case": "due-report",
+    "mode": "prompted",
+    "repetition": 1,
+    "original_accepted": true,
+    "audit": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "due-report--raw--3",
+    "cohort": "comparison-v1",
+    "case": "due-report",
+    "mode": "raw",
+    "repetition": 3,
+    "original_accepted": true,
+    "audit": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "due-report--factory--1",
+    "cohort": "comparison-v1",
+    "case": "due-report",
+    "mode": "factory",
+    "repetition": 1,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "due-report--factory--2",
+    "cohort": "comparison-v1",
+    "case": "due-report",
+    "mode": "factory",
+    "repetition": 2,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "due-report--claude_cli--3",
+    "cohort": "cli-v1",
+    "case": "due-report",
+    "mode": "claude_cli",
+    "repetition": 3,
+    "original_accepted": true,
+    "audit": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "due-report--claude_cli--1",
+    "cohort": "cli-v1",
+    "case": "due-report",
+    "mode": "claude_cli",
+    "repetition": 1,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "due-report--claude_cli--2",
+    "cohort": "cli-v1",
+    "case": "due-report",
+    "mode": "claude_cli",
+    "repetition": 2,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "atomic-save--raw--3",
+    "cohort": "comparison-v1",
+    "case": "atomic-save",
+    "mode": "raw",
+    "repetition": 3,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "atomic-save--raw--2",
+    "cohort": "comparison-v1",
+    "case": "atomic-save",
+    "mode": "raw",
+    "repetition": 2,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "atomic-save--prompted--2",
+    "cohort": "comparison-v1",
+    "case": "atomic-save",
+    "mode": "prompted",
+    "repetition": 2,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "atomic-save--factory--3",
+    "cohort": "comparison-v1",
+    "case": "atomic-save",
+    "mode": "factory",
+    "repetition": 3,
+    "original_accepted": true,
+    "audit": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "atomic-save--prompted--3",
+    "cohort": "comparison-v1",
+    "case": "atomic-save",
+    "mode": "prompted",
+    "repetition": 3,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "atomic-save--factory--2",
+    "cohort": "comparison-v1",
+    "case": "atomic-save",
+    "mode": "factory",
+    "repetition": 2,
+    "original_accepted": true,
+    "audit": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "atomic-save--raw--1",
+    "cohort": "comparison-v1",
+    "case": "atomic-save",
+    "mode": "raw",
+    "repetition": 1,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "atomic-save--prompted--1",
+    "cohort": "comparison-v1",
+    "case": "atomic-save",
+    "mode": "prompted",
+    "repetition": 1,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "atomic-save--factory--1",
+    "cohort": "comparison-v1",
+    "case": "atomic-save",
+    "mode": "factory",
+    "repetition": 1,
+    "original_accepted": true,
+    "audit": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "atomic-save--claude_cli--3",
+    "cohort": "cli-v1",
+    "case": "atomic-save",
+    "mode": "claude_cli",
+    "repetition": 3,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "atomic-save--claude_cli--1",
+    "cohort": "cli-v1",
+    "case": "atomic-save",
+    "mode": "claude_cli",
+    "repetition": 1,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "atomic-save--claude_cli--2",
+    "cohort": "cli-v1",
+    "case": "atomic-save",
+    "mode": "claude_cli",
+    "repetition": 2,
+    "original_accepted": true,
+    "audit": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    }
+  }
+]
