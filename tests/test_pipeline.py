@@ -307,3 +307,16 @@ def test_real_worktree_setup_is_just_a_pre_command(tmp_path, fake_agent):
     assert (workspace / "hello.txt").read_text() == "hello\n"
     assert (logs / "attempt-1/check-1.log").read_text().strip() == str(workspace)
     assert not (root / "hello.txt").exists()
+
+
+def test_dogfood_build_stage_runs_test_lint_format_review_in_order():
+    repo_root = Path(__file__).resolve().parent.parent
+    config = Config.load(repo_root / ".factory" / "config.toml")
+
+    assert config.stages["build"].checks == ["test", "lint", "format", "review"]
+    assert config.checks["test"].command == "uv run pytest"
+    assert config.checks["lint"].command == "uv run ruff check ."
+    assert config.checks["format"].command == "uv run ruff format --check ."
+    # The format check must only report drift, never rewrite files in place.
+    assert "--check" in config.checks["format"].command
+    assert config.checks["review"].prompt == "REVIEW.md"

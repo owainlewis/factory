@@ -3,7 +3,7 @@
 Run one task stage, check the result, and retry with feedback.
 
 ```sh
-factory "Add pagination" --stage=build --check=test,review --attempts=3
+factory "Add pagination" --stage=build --check=test,lint,format,review --attempts=3
 factory "Triage open GitHub issues" --stage=triage
 ```
 
@@ -37,7 +37,7 @@ Create `.factory/config.toml` and the prompt files alongside it:
 ```toml
 [stages.build]
 prompt = "BUILD.md"
-checks = ["test", "review"]
+checks = ["test", "lint", "format", "review"]
 
 [stages.triage]
 prompt = "TRIAGE.md"
@@ -46,6 +46,12 @@ tools = ["Read", "Glob", "Grep", "Bash"]
 
 [checks.test]
 command = "uv run pytest"
+
+[checks.lint]
+command = "uv run ruff check ."
+
+[checks.format]
+command = "uv run ruff format --check ."
 
 [checks.review]
 prompt = "REVIEW.md"
@@ -60,7 +66,7 @@ Prompts are resolved relative to the configuration file and read before setup.
 Run from the project directory or select it with `--cwd /path/to/project`.
 `--config` selects another config file, relative to that starting directory.
 
-`--check=test,review` overrides the stage's configured checks in that order;
+`--check=test,lint,format,review` overrides the stage's configured checks in that order;
 `--check=` explicitly disables them. Without an override the stage's checks are
 used. No configured checks means success when the task agent completes.
 
@@ -109,7 +115,7 @@ by the worker and every check. It must exist after setup completes.
 prompt = "BUILD.md"
 pre = ["git worktree add -b factory/$FACTORY_RUN_ID \"$FACTORY_WORKSPACE\" HEAD"]
 cwd = ".worktrees/{run_id}"
-checks = ["test", "review"]
+checks = ["test", "lint", "format", "review"]
 ```
 
 `cwd` is relative to the starting directory (absolute paths also work).
