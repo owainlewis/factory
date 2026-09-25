@@ -35,7 +35,9 @@ Visible checks: python -m unittest discover -s tests -v
 
 
 def write_json(path, data):
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(data, indent=2) + "\n")
+    temporary.replace(path)
 
 
 def digest(path):
@@ -84,7 +86,7 @@ def validate_cases(cases, output):
             workspace = Path(directory)
             shutil.copyfile(case / "solution.py", workspace / "app.py")
             reference = grade(case, workspace, output / case.name / "reference")
-        valid = not baseline["passed"] and reference["passed"]
+        valid = not baseline["passed"] and baseline.get("tests", 0) > 0 and reference["passed"]
         print(f"{case.name}: {'valid' if valid else 'INVALID'}", flush=True)
         if not valid:
             failures.append(case.name)
@@ -403,6 +405,14 @@ def main():
         for future in as_completed(futures):
             future.result()
             report(output)
+    changed = [
+        str(p.relative_to(ROOT))
+        for p in paths
+        if not p.exists() or digest(p) != manifest["suite_sha256"][str(p.relative_to(ROOT))]
+    ]
+    write_json(output / "integrity.json", {"unchanged": not changed, "changed": changed})
+    if changed:
+        raise SystemExit("Evaluation assets changed during the experiment; results are invalid")
 
 
 if __name__ == "__main__":
