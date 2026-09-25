@@ -170,3 +170,17 @@ uv run ruff format --check .
 
 Tests use real command processes, temporary directories, and fake agents. No API
 key or paid model call is required.
+
+## Evaluate the workflow
+
+The [evaluation suite](evals/README.md) compares task-only prompting, a reusable
+workflow prompt, and Factory using independent correctness checks and repeated
+runs. It retains workspaces, diffs, timing, and token usage for inspection.
+
+```sh
+uv run python evals/run.py validate  # no model calls
+uv run python evals/run.py run --repetitions 3 --output evals/results/comparison
+```
+
+Live evaluations use your configured Claude authentication and are separate from
+CI. Automated prompting baselines do not measure human-guided development time.
