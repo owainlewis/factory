@@ -320,7 +320,7 @@ def report(output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["validate", "run", "report", "_worker"])
+    parser.add_argument("action", choices=["validate", "run", "report", "grade", "_worker"])
     parser.add_argument("worker_spec", nargs="?", type=Path)
     parser.add_argument("--cases", help="Comma-separated case names; default all")
     parser.add_argument("--modes", default=",".join(MODES))
@@ -334,6 +334,9 @@ def main():
         "--jobs", type=int, default=1, help="Concurrent trials; use 1 for latency comparisons"
     )
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--candidate", type=Path, help="Workspace to independently grade without model calls"
+    )
     args = parser.parse_args()
     if args.action == "_worker":
         asyncio.run(trial_worker(args.worker_spec.resolve()))
@@ -361,6 +364,14 @@ def main():
         report(output)
         return
     output.mkdir(parents=True, exist_ok=False)
+    if args.action == "grade":
+        if len(cases) != 1 or not args.candidate:
+            parser.error("grade requires one --cases name and --candidate workspace")
+        result = grade(cases[0], args.candidate.resolve(), output)
+        print(json.dumps(result, indent=2))
+        if not result["passed"]:
+            raise SystemExit(1)
+        return
     validate_cases(cases, output / "validation")
     if args.action == "validate":
         return

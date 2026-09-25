@@ -111,3 +111,13 @@ The review prompt in this experiment is `prompts/review.md`: a direct independen
 review with structured output, not the optional Claude Code code-review skill.
 This keeps tool access equal and avoids testing skill availability. Treat results
 as evidence for this recorded workflow configuration, not every Factory setup.
+
+Grade a human-produced implementation without making any model calls:
+
+```sh
+uv run python evals/run.py grade --cases pagination \
+  --candidate /path/to/human-workspace --output evals/results/human-pagination
+```
+
+Record active human minutes, total elapsed time, prompts/interventions, and model
+usage alongside that result. Do not label an automated prompting run as manual.
