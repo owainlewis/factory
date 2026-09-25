@@ -9,7 +9,7 @@ the Claude Agent SDK for planning and file editing.
   `uv run ruff format --check .`.
 - Tests use real temporary Git repositories and fake agent responses. Do not
   require credentials or model calls in automated tests.
-- Preserve the validation gate: failures must never merge, and only the exact
-  validated commit can be merged into an unchanged original checkout.
-- Preserve run artifacts on failure. Never push generated task changes
-  automatically.
+- Preserve the check and review gates: only the exact validated and reviewed
+  commit may be published. Missing or failed reviews must stop the run.
+- Preserve every attempt on failure. Push generated changes only with `--pr`.
+- Leave CI failures and merging to the human; do not add automatic merging.
