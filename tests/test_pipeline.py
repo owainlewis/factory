@@ -135,7 +135,10 @@ def test_timeout_prevents_merge(repo, fake_agent):
     assert cli.git(repo, "rev-parse", "HEAD") == base
 
 
-@pytest.mark.parametrize("subtype,is_error", [("error_max_turns", False), ("success", True)])
+@pytest.mark.parametrize(
+    "subtype,is_error",
+    [("error_max_turns", False), ("error_max_structured_output_retries", True), ("success", True)],
+)
 def test_sdk_error_results_stop_the_stage(tmp_path, monkeypatch, subtype, is_error):
     async def query(**kwargs):
         assert kwargs["options"].tools == ["Read", "Glob", "Grep"]
@@ -293,12 +296,16 @@ def test_pr_publishes_exact_reviewed_commit(repo, fake_agent, monkeypatch, tmp_p
 )
 def test_invalid_review_output_never_clears(tmp_path, monkeypatch, report):
     async def query(**kwargs):
-        assert kwargs["prompt"].startswith("/code-review")
+        assert kwargs["options"].output_format == {
+            "type": "json_schema",
+            "schema": cli.Review.model_json_schema(),
+        }
         assert "Write" in kwargs["options"].disallowed_tools
         yield cli.ResultMessage(
             subtype="success",
             is_error=False,
-            result=json.dumps(report),
+            result="```json\n[]\n```",
+            structured_output=report,
             duration_ms=1,
             duration_api_ms=1,
             num_turns=1,
@@ -306,7 +313,7 @@ def test_invalid_review_output_never_clears(tmp_path, monkeypatch, report):
         )
 
     monkeypatch.setattr(cli, "query", query)
-    with pytest.raises(cli.FactoryError, match="invalid findings"):
+    with pytest.raises(cli.FactoryError, match="invalid structured output"):
         asyncio.run(
             cli.agent(
                 "review", "/code-review high base...head", tmp_path, tmp_path, options(tmp_path)
@@ -322,7 +329,8 @@ def test_successful_review_is_structured_and_drained(tmp_path, monkeypatch):
         yield cli.ResultMessage(
             subtype="success",
             is_error=False,
-            result="[]",
+            result="Ignored free text",
+            structured_output={"completed": True, "findings": []},
             duration_ms=1,
             duration_api_ms=1,
             num_turns=1,
@@ -354,29 +362,60 @@ def test_agent_timeout_closes_stream(tmp_path, monkeypatch):
     assert closed == [True]
 
 
-def test_native_review_findings_are_feedback():
-    finding = {
-        "file": "hello.py",
-        "line": 2,
-        "summary": "Missing default",
-        "failure_scenario": "Zero-argument callers raise TypeError.",
-    }
-    report = cli.parse_review("```json\n" + json.dumps([finding]) + "\n```")
-    assert report["status"] == "needs_fixes"
-    assert "hello.py:2: Missing default" in report["findings"][0]
+def test_structured_findings_are_feedback():
+    review = cli.Review.model_validate(
+        {
+            "completed": True,
+            "findings": [
+                {
+                    "file": "hello.py",
+                    "line": 2,
+                    "summary": "Missing default",
+                    "failure_scenario": "Zero-argument callers raise TypeError.",
+                }
+            ],
+        }
+    )
+    assert review.feedback()["status"] == "needs_fixes"
+    assert "hello.py:2: Missing default" in review.feedback()["findings"][0]
 
 
-@pytest.mark.parametrize("text", ["No problems!", "", "null", '[{"summary": "bug"}]'])
-def test_ambiguous_review_text_is_not_approval(text):
-    with pytest.raises(cli.FactoryError, match="invalid findings"):
-        cli.parse_review(text)
+def test_incomplete_review_cannot_clear():
+    assert cli.Review(completed=False, findings=[]).feedback()["status"] == "needs_attention"
 
 
-def test_native_clear_review_with_explanation():
-    text = "The net diff only adds a docstring. Nothing to flag.\n\n```json\n[]\n```"
-    assert cli.parse_review(text) == {"status": "clear", "findings": []}
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"line": "2"},
+        {"line": True},
+        {"line": 0},
+        {"summary": " "},
+        {"file": ""},
+        {"unexpected": "field"},
+    ],
+)
+def test_finding_schema_rejects_invalid_fields(changes):
+    data = {"file": "hello.py", "line": 2, "summary": "Bug", "failure_scenario": "Crash"}
+    with pytest.raises(cli.ValidationError):
+        cli.Finding.model_validate(data | changes)
 
 
-def test_multiple_review_blocks_are_ambiguous():
-    with pytest.raises(cli.FactoryError, match="invalid findings"):
-        cli.parse_review("```json\n[]\n```\n```json\n[]\n```")
+@pytest.mark.parametrize(
+    "report",
+    [
+        {"completed": "true", "findings": []},
+        {"completed": True},
+        {"completed": True, "findings": [], "extra": 1},
+    ],
+)
+def test_review_schema_rejects_invalid_fields(report):
+    with pytest.raises(cli.ValidationError):
+        cli.Review.model_validate(report)
+
+
+def test_prompt_templates_preserve_literal_task_content():
+    task = "Handle {braces} in user input"
+    assert task in cli.prompt("PLAN.md", task=task)
+    assert task in cli.prompt("BUILD.md", task=task, plan="Plan", feedback="Fix it", check="pytest")
+    assert "high base...head" in cli.prompt("VERIFY.md", base="base", commit="head")

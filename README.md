@@ -73,12 +73,17 @@ needed, for example `uv sync --locked && uv run pytest`.
    result local. GitHub CI and human approval follow; Factory does not merge.
 
 There is one review stage; the builder has no review subagent. Claude's built-in
-review may use its own internal agents and shell commands. Factory accepts only
-an explicit JSON findings list from the command: an empty list clears the review,
-and findings trigger repairs. Missing, malformed, failed, or incomplete reviews
-never count as approval. If a Claude version changes the output format, the run
-stops for human attention. This is model-generated judgment, not a guarantee
-of correctness.
+review may use its own internal agents and shell commands. The SDK enforces a
+JSON Schema generated from Pydantic models; Factory validates only the result's
+`structured_output` field. A completed review with no findings clears the gate.
+Missing, invalid, or incomplete results stop the run. There is no text or Markdown
+parsing fallback. The schema guarantees the shape of the result, not the
+correctness of the review's judgments.
+
+Factory invokes the review skill from a normal SDK turn, allowing that turn to
+finish through StructuredOutput. Direct `/code-review` dispatch returns text
+and bypasses structured output in the tested CLI version.
+
 
 After three unsuccessful attempts the run needs human attention. Timeouts,
 SDK/authentication errors, unexpected checkout changes, and a builder that makes
@@ -128,6 +133,18 @@ access for inspection. Factory checks that review leaves the checkout unchanged.
 A worktree isolates changes, not process access. Use trusted repositories and
 validation commands. Passing tests is not proof that the task is correct;
 review the diff before merging when the change warrants it.
+
+## Prompts
+
+Stage instructions live in `src/factory/prompts/`:
+
+- `PLAN.md`: repository inspection, acceptance criteria, and implementation plan.
+- `BUILD.md`: task, plan, previous feedback, and validation command.
+- `VERIFY.md`: invoke Claude Code review and return the structured result.
+
+Templates use named placeholders such as `{task}` and `{commit}`. They ship with
+both the wheel and source distribution. Retry limits, tool permissions, the
+review schema, and publishing gates remain in Python.
 
 ## Development
 
