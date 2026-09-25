@@ -1,0 +1,114 @@
+{
+  "87f1b917ee": {
+    "case": "config-overlay",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "No actionable finding for stated dictionary inputs.",
+    "maintainability": "All implementations are readable. Some use more branches or copy values twice during recursive overrides; the differences are minor for these tasks.",
+    "trial": "config-overlay--prompted--1"
+  },
+  "5f075cd824": {
+    "case": "atomic-save",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "Atomic replacement resets ordinary file permissions to the temporary file mode; reproduced in the follow-up audit.",
+    "maintainability": "Small and readable, but brevity does not compensate for the behavior regression.",
+    "trial": "atomic-save--claude_cli--1"
+  },
+  "1957f3e087": {
+    "case": "optimistic-update",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "Set membership on a list/dict status raises TypeError rather than the required ValueError. Independently reproduced on every original output in the separate status audit.",
+    "maintainability": "Some implementations deepcopy the record more times than needed; this is a simplification opportunity, not a separate correctness score.",
+    "trial": "optimistic-update--claude_cli--1"
+  },
+  "edd89f4e08": {
+    "case": "config-overlay",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "No actionable finding for stated dictionary inputs.",
+    "maintainability": "All implementations are readable. Some use more branches or copy values twice during recursive overrides; the differences are minor for these tasks.",
+    "trial": "config-overlay--claude_cli--1"
+  },
+  "9031d46aec": {
+    "case": "schema-migration",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "No actionable finding for the specified version-1/version-2 record shapes.",
+    "maintainability": "Some variants duplicate deep copies or allocate a replacement issue list despite already owning a deep copy. Small unnecessary complexity; no numeric maintainability score assigned.",
+    "trial": "schema-migration--claude_cli--1"
+  },
+  "9575d9b176": {
+    "case": "config-overlay",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "No actionable finding for stated dictionary inputs.",
+    "maintainability": "All implementations are readable. Some use more branches or copy values twice during recursive overrides; the differences are minor for these tasks.",
+    "trial": "config-overlay--raw--1"
+  },
+  "04ec2bf187": {
+    "case": "optimistic-update",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "Set membership on a list/dict status raises TypeError rather than the required ValueError. Independently reproduced on every original output in the separate status audit.",
+    "maintainability": "Some implementations deepcopy the record more times than needed; this is a simplification opportunity, not a separate correctness score.",
+    "trial": "optimistic-update--prompted--1"
+  },
+  "a6766d38df": {
+    "case": "atomic-save",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "Preserves ordinary file modes, unlike the other sampled implementations.",
+    "maintainability": "The permissions fix temporarily changes the process-wide umask, creating a potential race with other threads. Thread safety was not specified or evaluated; record as a limitation rather than a scored failure.",
+    "trial": "atomic-save--factory--1"
+  },
+  "b00ba915e7": {
+    "case": "atomic-save",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "Atomic replacement resets ordinary file permissions to the temporary file mode; reproduced in the follow-up audit.",
+    "maintainability": "Small and readable, but brevity does not compensate for the behavior regression.",
+    "trial": "atomic-save--prompted--1"
+  },
+  "8421be1296": {
+    "case": "atomic-save",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "Atomic replacement resets ordinary file permissions to the temporary file mode; reproduced in the follow-up audit.",
+    "maintainability": "Small and readable, but brevity does not compensate for the behavior regression.",
+    "trial": "atomic-save--raw--1"
+  },
+  "589919bc6d": {
+    "case": "schema-migration",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "No actionable finding for the specified version-1/version-2 record shapes.",
+    "maintainability": "Some variants duplicate deep copies or allocate a replacement issue list despite already owning a deep copy. Small unnecessary complexity; no numeric maintainability score assigned.",
+    "trial": "schema-migration--factory--1"
+  },
+  "5b31ed9bb7": {
+    "case": "schema-migration",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "No actionable finding for the specified version-1/version-2 record shapes.",
+    "maintainability": "Some variants duplicate deep copies or allocate a replacement issue list despite already owning a deep copy. Small unnecessary complexity; no numeric maintainability score assigned.",
+    "trial": "schema-migration--raw--1"
+  },
+  "49b9c9a218": {
+    "case": "optimistic-update",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "Set membership on a list/dict status raises TypeError rather than the required ValueError. Independently reproduced on every original output in the separate status audit.",
+    "maintainability": "Some implementations deepcopy the record more times than needed; this is a simplification opportunity, not a separate correctness score.",
+    "trial": "optimistic-update--factory--1"
+  },
+  "4a94b78fc0": {
+    "case": "schema-migration",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "No actionable finding for the specified version-1/version-2 record shapes.",
+    "maintainability": "Some variants duplicate deep copies or allocate a replacement issue list despite already owning a deep copy. Small unnecessary complexity; no numeric maintainability score assigned.",
+    "trial": "schema-migration--prompted--1"
+  },
+  "ffaf021714": {
+    "case": "optimistic-update",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "Set membership on a list/dict status raises TypeError rather than the required ValueError. Independently reproduced on every original output in the separate status audit.",
+    "maintainability": "Some implementations deepcopy the record more times than needed; this is a simplification opportunity, not a separate correctness score.",
+    "trial": "optimistic-update--raw--1"
+  },
+  "42e5335c1f": {
+    "case": "config-overlay",
+    "reviewer": "Codex; workflow labels withheld, not a human review",
+    "correctness": "No actionable finding for stated dictionary inputs.",
+    "maintainability": "All implementations are readable. Some use more branches or copy values twice during recursive overrides; the differences are minor for these tasks.",
+    "trial": "config-overlay--factory--1"
+  }
+}

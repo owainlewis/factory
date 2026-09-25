@@ -140,3 +140,14 @@ must distinguish new acceptance coverage from a change in agent performance.
 The four `heldout` labels describe the original development split. These cases
 have now been evaluated and inspected; they are not an untouched future holdout.
 Add fresh cases before making claims about generalization.
+
+The [fresh targeted follow-up](reports/2026-09-25-v2/README.md) adds another 36
+live trials with stronger tests frozen before execution. The current suite also
+covers invalid status types and uses an implementation-independent filesystem
+failure test; the reports identify which checks applied to each experiment.
+
+`usage` contains the SDK/CLI final result's usage fields. Complete raw result
+records also retain per-model usage, which may include auxiliary model activity.
+The list-price estimate comes from the provider's result, not a calculation from
+our token columns. `usage_complete` means final records were received for a
+successful execution; it is not an independent billing reconciliation.

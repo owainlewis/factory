@@ -126,3 +126,12 @@ def test_direct_cli_keeps_default_prompt_and_records_structured_usage(tmp_path, 
     assert usage["usage"]["output_tokens"] == 7
     assert usage["model_usage"] == {"test": {}}
     assert (tmp_path / "summary.md").read_text() == "done"
+
+
+def test_atomic_acceptance_allows_direct_function_imports(tmp_path):
+    case = ROOT / "evals/cases/atomic-save"
+    source = (case / "solution.py").read_text()
+    source = source.replace("import os", "import os\nfrom os import replace")
+    source = source.replace("os.replace(temporary, path)", "replace(temporary, path)")
+    (tmp_path / "app.py").write_text(source)
+    assert evals.grade(case, tmp_path, tmp_path / "score")["passed"]

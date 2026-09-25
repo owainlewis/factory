@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import os
+import platform
 import random
 import shutil
 import signal
@@ -434,6 +435,11 @@ def main():
             parser.error("report requires --output")
         report(output)
         return
+    if (
+        args.action == "run"
+        and Path(runner.__file__).resolve() != (ROOT.parent / "src/factory/runner.py").resolve()
+    ):
+        parser.error("Run with this checkout's environment: uv run python evals/run.py ...")
     output.mkdir(parents=True, exist_ok=False)
     if args.action == "grade":
         if len(cases) != 1 or not args.candidate:
@@ -456,12 +462,15 @@ def main():
         "arguments": vars(args),
         "suite_sha256": {str(p.relative_to(ROOT)): digest(p) for p in paths},
         "factory_revision": subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True
+            ["git", "rev-parse", "HEAD"], text=True, cwd=ROOT.parent
         ).strip(),
         "factory_source_sha256": {
             str(p.relative_to(ROOT.parent)): digest(p)
             for p in (ROOT.parent / "src/factory").glob("*.py")
         },
+        "python_version": sys.version,
+        "platform": platform.platform(),
+        "dependency_lock_sha256": digest(ROOT.parent / "uv.lock"),
         "sdk_version": version("claude-agent-sdk"),
         "claude_version": subprocess.check_output(["claude", "--version"], text=True).strip(),
     }

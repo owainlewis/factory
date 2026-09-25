@@ -1,0 +1,146 @@
+[
+  {
+    "trial": "optimistic-update--prompted--2",
+    "mode": "prompted",
+    "repetition": 2,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "optimistic-update--factory--2",
+    "mode": "factory",
+    "repetition": 2,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "optimistic-update--factory--3",
+    "mode": "factory",
+    "repetition": 3,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "optimistic-update--prompted--3",
+    "mode": "prompted",
+    "repetition": 3,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "optimistic-update--raw--1",
+    "mode": "raw",
+    "repetition": 1,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "optimistic-update--raw--2",
+    "mode": "raw",
+    "repetition": 2,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "optimistic-update--factory--1",
+    "mode": "factory",
+    "repetition": 1,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "optimistic-update--raw--3",
+    "mode": "raw",
+    "repetition": 3,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "optimistic-update--prompted--1",
+    "mode": "prompted",
+    "repetition": 1,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "optimistic-update--claude_cli--2",
+    "mode": "claude_cli",
+    "repetition": 2,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "optimistic-update--claude_cli--1",
+    "mode": "claude_cli",
+    "repetition": 1,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    }
+  },
+  {
+    "trial": "optimistic-update--claude_cli--3",
+    "mode": "claude_cli",
+    "repetition": 3,
+    "audit": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    }
+  }
+]

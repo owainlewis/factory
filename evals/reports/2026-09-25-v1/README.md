@@ -106,3 +106,10 @@ nested-copy check under an ambiguous "independent copy" requirement; the wording
 was clarified before the frozen experiment. Pilot scores are not pooled here.
 The current suite adds the missing audit checks and fixes the references, so a
 new run of the current tree evaluates a stronger suite than this original table.
+
+The [fresh targeted follow-up](../2026-09-25-v2/README.md) is now complete. A separate
+[status-value audit](status-audit-results.json) also found a shared exception-type
+bug in all 12 original optimistic-update outputs. Neither later finding rewrites
+the frozen original score table. [Qualitative source-review notes](qualitative-review.json)
+are model observations with workflow labels withheld during inspection, not human
+ratings or a statistically validated maintainability comparison.

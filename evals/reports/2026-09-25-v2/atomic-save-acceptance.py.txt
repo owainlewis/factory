@@ -15,17 +15,16 @@ class Tests(unittest.TestCase):
     def test_failed_replace(self):
         import tempfile
         from pathlib import Path
+        from unittest.mock import patch
         with tempfile.TemporaryDirectory() as d:
-            destination = Path(d) / 'destination'
-            destination.mkdir()
-            marker = destination / 'original.json'
-            marker.write_text('original')
-            # A real filesystem failure works with any valid import style.
-            with self.assertRaises(OSError):
-                save(destination, {'ok': 1})
-            self.assertTrue(destination.is_dir())
-            self.assertEqual(marker.read_text(), 'original')
-            self.assertEqual(list(Path(d).iterdir()), [destination])
+            p = Path(d) / 'data.json'
+            p.write_text('original')
+            with patch('os.replace', side_effect=OSError('disk failure')):
+                with self.assertRaises(OSError):
+                    save(p, {'ok': 1})
+            self.assertEqual(p.read_text(), 'original')
+            self.assertEqual(list(Path(d).iterdir()), [p])
+
 
 class Supplemental(unittest.TestCase):
     def test_existing_file_mode_is_preserved(self):
