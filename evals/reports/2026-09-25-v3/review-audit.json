@@ -1,0 +1,2408 @@
+[
+  {
+    "trial": "atomic-save--factory_matched--1",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "retry",
+        "feedback": "Functionality (round-trip, atomicity, cleanup on serialization/replace failure) is correct and all 4 tests pass. However there's a real regression: `tempfile.mkstemp` creates the temp file with mode 0600, and since `os.replace()` moves that inode into place, the saved file ends up with 0600 permissions instead of the umask-respecting default (typically 0644) that the original `open(path, 'w')` produced.\n\nVerified directly:\n```\nos.umask(0o022)\napp.save(p, {'a': 1})\noct(stat.S_IMODE(os.stat(p).st_mode))  # -> '0o600'  (was 0o644 before the change)\n```\n\nThis also silently downgrades permissions on pre-existing destination files when overwritten (os.replace() takes on the source file's mode, discarding whatever mode the destination previously had). The task says to preserve existing behavior except where explicitly changed, and file permissions were not part of the requested change, so this is an unintended regression.\n\nFix: after `os.fdopen`/writing, `os.chmod(tmp_path, 0o666 & ~os.umask(0)) ` (restoring the umask immediately after reading it) before the `os.replace`, or otherwise ensure the temp file's mode matches what `open(path, 'w')` would have produced. No test currently covers file permissions \u2014 worth adding one."
+      },
+      {
+        "attempt": "attempt-2",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-2",
+        "check": "check-2.json",
+        "status": "retry",
+        "feedback": "Tests pass (5/5) and the previously-flagged issue (new files getting mkstemp's restrictive 0600 instead of the umask-default mode) is now correctly fixed and covered by a test.\n\nHowever, there's a related regression that's still unaddressed: when **overwriting an existing file**, the new file's permissions are reset to the umask-default instead of preserving the existing destination's mode. The original `open(path, 'w')` truncates in place, so a pre-existing file's custom permissions (e.g. 0600 on a secrets/credentials JSON file) were preserved across saves. The new atomic implementation always swaps in a new inode via `os.replace()`, so the destination's prior mode is discarded and replaced with whatever mode the temp file has (now umask-default, e.g. 0644) \u2014 silently loosening permissions on files that were deliberately locked down.\n\nReproduced directly:\n```python\napp.save(p, {'a': 1})\nos.chmod(p, 0o600)          # e.g. a secrets file\nprint(oct(os.stat(p).st_mode))   # 0o600\napp.save(p, {'a': 2})       # normal overwrite, umask 022\nprint(oct(os.stat(p).st_mode))   # 0o644  <- destination's original mode lost\n```\n\nThis is the same category of \"preserve existing behavior\" issue flagged previously, just the overwrite case rather than the create case. Fix: before writing, if the destination path already exists, `os.chmod(tmp_path, stat.S_IMODE(os.stat(path).st_mode))` to match it (falling back to the current umask-based default when the destination doesn't exist yet). No test currently covers overwrite-permission preservation \u2014 worth adding one alongside the fix."
+      },
+      {
+        "attempt": "attempt-3",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-3",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Fix verified. save() now stats the destination before writing: if it exists, the temp file's mode is chmod'd to match it prior to os.replace(), preserving custom permissions (e.g. 0600) across overwrites; if the destination doesn't exist, it falls back to the umask-derived default (correctly reproducing the original open(path,'w') behavior). Confirmed directly (chmod 0600 -> save -> still 0600) and via the new test_save_preserves_existing_file_mode_on_overwrite test. All 6 tests pass. Serialization-failure and os.replace-failure paths still correctly clean up temp files, preserve the existing destination, and propagate the exception. load() is untouched. No further issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 3
+  },
+  {
+    "trial": "atomic-save--factory_matched--2",
+    "mode": "factory_matched",
+    "accepted": false,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation correctly satisfies the task: save() writes to a temp file (tempfile.mkstemp) in the destination directory, serializes JSON into it, and commits atomically via os.replace. On any exception (serialization or replace failure) the temp file is removed and the exception is re-raised, leaving any pre-existing destination file untouched. load() is unchanged. Public API preserved, stdlib only. Verified against original app.py via git diff and ran the full test suite (5/5 passed), including tests for round-trip, no leftover temp files on success, and preservation of existing content on serialization/replace failure. No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "atomic-save--factory_matched--3",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "retry",
+        "feedback": "Core atomic-write logic (temp file in destination dir, os.replace, cleanup + exception propagation on failure, load() untouched) is correct and all 5 tests pass.\n\nHowever, there's a real regression: tempfile.mkstemp() creates the temp file with mode 0600, and os.replace() carries that mode into the destination \u2014 it does not adopt the umask-based default (0644) that the original `open(path, 'w')` produced, nor does it preserve an existing destination file's prior permissions when overwriting.\n\nVerified directly:\n- New file via save(): ends up 0600 (vs. 0644 via plain open() with default umask 022).\n- Overwriting an existing 0644 file via save(): permissions get silently downgraded to 0600.\n\nThis is an unrequested behavior change \u2014 the task only asked for atomicity, not a permissions change, and asked to preserve existing behavior otherwise. Please set the temp file's mode to match the umask-default (e.g. `os.chmod(tmp_path, 0o666 & ~os.umask... )`, or simpler: `os.fchmod(fd, 0o644)`/copy-mode-from-existing-destination-if-present before the fsync/replace) so save() doesn't unexpectedly tighten permissions on new or existing files."
+      },
+      {
+        "attempt": "attempt-2",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-2",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "All 7 tests pass. Verified independently:\n\n- Atomicity: temp file created via mkstemp in the destination directory, then os.replace \u2014 confirmed with relative-path test (temp file lands alongside destination, not in cwd elsewhere).\n- Failure cleanup: on both serialization failure (json.dump raising) and replacement failure (os.replace raising), the temp file is removed, the pre-existing destination is left untouched, and the exception propagates \u2014 confirmed via test suite and code inspection.\n- load() is untouched, behavior preserved.\n- Previously flagged permissions regression is now fixed correctly: new files get standard umask-derived permissions (0o644 verified manually with umask 0o022), and overwriting an existing file preserves that file's prior permission bits (0o600 verified) rather than inheriting mkstemp's 0o600 default. Both cases have dedicated regression tests that pass.\n\nMinor non-blocking observation (not required to fix): in the rare case os.chmod(tmp_path, mode) itself raises (e.g. exotic filesystem/ACL failure), the raw fd from mkstemp is never closed before the temp file is removed, since fd is only closed via the os.fdopen `with` block later in the flow. This is an extremely low-probability edge case not covered by the task's explicit failure scenarios (serialization/replacement failure) and isn't blocking."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 2
+  },
+  {
+    "trial": "atomic-save--subagent--1",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01DTyj3ymhumrXbKsMJ3UazP",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      },
+      {
+        "id": "toolu_01LPypV4eZfSqSpnyyaPrki3",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 2,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 2
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 2,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 2
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "atomic-save--subagent--2",
+    "mode": "subagent",
+    "accepted": false,
+    "calls": [
+      {
+        "id": "toolu_01FztVbwNaZfeUYMUPh9aRyn",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      },
+      {
+        "id": "toolu_01RAByCpEeYHPdz5QGPzGc9a",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      },
+      {
+        "id": "toolu_01BbziE2goXxZeADGAecexhA",
+        "type": "reviewer",
+        "returned": false,
+        "error": null
+      }
+    ],
+    "stats": [],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "atomic-save--subagent--3",
+    "mode": "subagent",
+    "accepted": false,
+    "calls": [
+      {
+        "id": "toolu_019sWZK65BLucMQS1SLdFFiq",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      },
+      {
+        "id": "toolu_011wgZCMSeAy9RAERk7BWVLz",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      },
+      {
+        "id": "toolu_015nVdLjVSg2xDrgTmD4juEb",
+        "type": "reviewer",
+        "returned": false,
+        "error": null
+      }
+    ],
+    "stats": [],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "batch-update--factory_matched--1",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "app.py correctly implements all requirements: validates all IDs exist before mutating anything (KeyError raised with store left unchanged, since the check loop runs entirely before the mutation loop), closes each distinct requested issue, returns count of distinct requested IDs (including already-closed), and returns 0 for empty input. Verified via git diff against original and by running the test suite (5/5 passed, including edge cases for duplicates, already-closed issues, missing-ID rollback, and empty input)."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "batch-update--factory_matched--2",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "app.py correctly implements close_many: validates all distinct IDs exist (raising KeyError with the store left unchanged on any missing ID) before performing any mutation, closes each distinct requested issue, and returns the distinct count including already-closed issues; empty input returns 0. Ran the test suite (tests/test_app.py) \u2014 all 5 tests pass, covering duplicates, already-closed issues, empty input, and the validate-before-mutate/missing-ID case. No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "batch-update--factory_matched--3",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "app.py correctly implements close_many: validates all IDs exist in a first pass (raising KeyError on the first missing one, before any mutation), then closes each distinct ID in a second pass, returning the count of distinct requested IDs (including already-closed ones). Empty input returns 0 with no mutation. All 7 tests pass, including atomicity checks for missing IDs (both standalone and among duplicates). No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "batch-update--subagent--1",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01DAgJWX37wg21Hm2PEp2FMp",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "batch-update--subagent--2",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_018E4QZoGieAnyBUxxucb464",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "batch-update--subagent--3",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01QeTNegGMXLoTkA5fALHXb8",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "config-overlay--factory_matched--1",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation correctly satisfies the task: overlay() recursively merges only when both base and override values are dicts at a key, otherwise deep-copies and replaces (including falsy values like None/False/0/[]/\"\"). Both base and override are deep-copied so no mutable nested objects are shared with the result, and neither input is mutated. Verified via diff review and by running the test suite (python3 -m unittest discover -s tests -v): 14/14 tests pass, covering nested merges, falsy replacement, type-switch cases (dict replaced by scalar and vice versa), key preservation/addition, and mutation isolation for both base and override (including nested lists). No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "config-overlay--factory_matched--2",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Verified app.py against the task: overlay() recursively merges only when both base and override values at a key are dicts, otherwise replaces with a deepcopy of the override value (correctly handles None, False, 0, [], \"\" as replacements). Deep-copying both base and override values ensures no shared mutable references in either direction. Ran `python3 -m unittest discover -s tests -v`: 12/12 tests pass, covering nested merges, falsy replacement, type-mismatch replacement both directions, empty inputs, and mutation isolation in both directions. No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "config-overlay--factory_matched--3",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation correctly performs a recursive dict merge: keys merge only when both base and override values are dicts; any other override value (including None, False, 0, [], \"\") replaces the base value. copy.deepcopy is applied to all retained and incoming values, so neither input is mutated and the result shares no mutable nested state with either input. Public API stays in app.py, stdlib only. All 13 tests pass, including nested merges, falsy replacement, type-mismatch replacement (dict<->non-dict both directions), empty base/override, and non-aliasing checks for both merged and pass-through branches. No issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "config-overlay--subagent--1",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01PSSqsg9D8LTh8STRN1S15a",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "config-overlay--subagent--2",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01Tii92AyoCvA9vYchT1YvEZ",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "config-overlay--subagent--3",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_015HpbNUN7WLf1Gmc9kbzCy1",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "csv-export--factory_matched--1",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation is correct. export_csv uses csv.writer/io.StringIO (stdlib only), preserves header order id,title,status, emits header-only output for empty input, does not mutate input dicts, and correctly quotes/escapes commas, embedded quotes, newlines, empty strings, and Unicode per RFC 4180. All 10 tests pass."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "csv-export--factory_matched--2",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "app.py correctly implements export_csv using the stdlib csv module. Verified against the task requirements: header order id,title,status; proper RFC 4180 quoting/escaping of commas, double quotes, newlines, empty strings, and Unicode; empty input emits header-only; no mutation of input records (new list built per row); public API preserved; standard library only. All 11 tests in tests/test_app.py pass. No issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "csv-export--factory_matched--3",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "export_csv correctly rewritten using csv.writer/io.StringIO: emits header id,title,status in order (even when input dicts have differing key order), emits header-only for empty input, and properly quotes/escapes commas, double quotes, newlines, empty strings, and Unicode per RFC 4180. Verified non-mutation of input records. All 11 tests pass, plus manual spot checks (comma in id, quote in status, empty list, out-of-order dict keys) behave correctly. No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "csv-export--subagent--1",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_014QKAueAorEcBVtax5kbMaa",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "csv-export--subagent--2",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_019v3H7k5fJnrzw71Lrvc1wc",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "csv-export--subagent--3",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01J47LNv2wxuMWWVEJsU47wZ",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "cursor-pagination--factory_matched--1",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation is correct. Verified against spec: limit validation rejects bools, non-ints, and non-positive values with ValueError; sorted() creates a new list so input rows are not mutated; cursor filtering is exclusive; next_cursor is the last item's id only when rows remain beyond the page, else None. All 14 tests (1 original + 13 added) pass via `python -m unittest discover -s tests -v`. No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "cursor-pagination--factory_matched--2",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation in app.py correctly satisfies the task: sorts a copy of rows by integer id ascending (no mutation, verified via list comprehension/sorted() producing new list), filters by exclusive cursor boundary, validates limit as positive int excluding bool, and returns next_cursor as the last returned id only when more matching rows remain. All 13 tests pass, including edge cases for non-existent cursor, cursor past all ids, empty input, exact multiple of limit, and invalid limit types (0, negative, float, bool). No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "cursor-pagination--factory_matched--3",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "app.py correctly implements after_page: bool/non-int/non-positive limit raises ValueError, input rows are never mutated (sorted() returns a new list), cursor filtering is exclusive and tolerant of non-existent IDs, and next_cursor is set to the last returned id only when more rows remain past the limit. Verified against the full test suite (13/13 pass) and manual trace of edge cases (empty rows, exact multiple of limit, cursor beyond all ids). No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "cursor-pagination--subagent--1",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01VSScUavx9f9zRxX95UYDx2",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "cursor-pagination--subagent--2",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_015qyxujpfBPpDk8fWfC4HKr",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "cursor-pagination--subagent--3",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01UhBJ1t4Fb2wTrVptQ2KTDV",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "due-report--factory_matched--1",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation in app.py is correct: strict YYYY-MM-DD parsing (regex + date.fromisoformat) rejects non-padded/invalid dates for both `due` and `today`; closed issues and missing/None/empty/invalid due dates are skipped; only due_date < today is included; results sorted by (due_date, id); invalid `today` raises ValueError before any iteration; no mutation of input. All 8 tests pass via `python -m unittest discover -s tests -v`. No concrete issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "due-report--factory_matched--2",
+    "mode": "factory_matched",
+    "accepted": false,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation is correct and complete. Verified: open-issue filtering, missing/None/empty/invalid due-date skipping (including semantically invalid dates like 2025-02-30 via date.fromisoformat), strict less-than comparison, correct sort by (due_date, id), ValueError propagation for invalid today, and no input mutation. All 8 tests pass."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "due-report--factory_matched--3",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "app.py correctly implements overdue(issues, today): uses datetime.strptime for strict YYYY-MM-DD parsing (raises ValueError on invalid today via propagation, catches ValueError/TypeError for invalid/missing due dates), skips closed issues and falsy due values, compares strictly before today, sorts by (due_date, id), and only reads from issues (no mutation). Ran `python -m unittest discover -s tests -v` \u2014 all 8 tests pass, covering equal-to-today exclusion, closed-issue exclusion, missing/None/empty due, invalid due dates, invalid today, sort ordering, and non-mutation. Only app.py and tests/test_app.py were touched, consistent with task scope. No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "due-report--subagent--1",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01TFccRhzzrXCX3JCsDw7af5",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "due-report--subagent--2",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01PnKPpxQAHFEaALETQEttbH",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "due-report--subagent--3",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01HTtFGUee4Yg6bxH6hbc373",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "jsonl-import--factory_matched--1",
+    "mode": "factory_matched",
+    "accepted": false,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation in app.py correctly satisfies the spec: blank/whitespace-only lines skipped, JSON objects validated (id must be a positive, non-bool int; title must be a string with non-whitespace content), invalid lines don't reserve their id for later duplicate checks, valid records are preserved exactly (including extra fields) and in order, and errors contains 1-based physical line numbers. Verified with the 14 existing unit tests (all pass) plus manual checks for trailing-garbage-after-JSON, CRLF line endings, big integer ids, and empty input \u2014 all behaved correctly. No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "jsonl-import--factory_matched--2",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "retry",
+        "feedback": "All 13 visible tests pass and the core validation logic (blank-line skipping, id/title type checks, duplicate-ID rejection without reservation, continuation after bad lines, exact record/order preservation) is correct.\n\nConcrete bug found: app.py splits the input with `text.splitlines()`, which treats several Unicode characters beyond `\\n`/`\\r\\n` as line breaks \u2014 specifically `\\x85` (NEL), `\u2028` (LINE SEPARATOR), and `\u2029` (PARAGRAPH SEPARATOR). These are legal, unescaped characters inside a JSON string (JSON only requires escaping control chars U+0000\u2013U+001F, `\"`, and `\\`), so a fully valid JSONL line whose `title` contains a raw `\u2028` gets split mid-object into two garbage fragments. Both fragments are then rejected, and every subsequent line's physical line number is thrown off by one.\n\nRepro:\n```python\nfrom app import parse_jsonl\ntext = '{\"id\":1,\"title\":\"a\u2028b\"}\\n{\"id\":2,\"title\":\"c\"}'\nrecords, errors = parse_jsonl(text)\n# records == [{'id': 2, 'title': 'c'}]   (record 1, which is valid, is lost)\n# errors  == [1, 2]                       (should be [], both lines are valid)\n```\n\nFix: split on `\\n` only (e.g. `text.split(\"\\n\")`, stripping a trailing `\\r` per line for CRLF support) instead of `str.splitlines()`, so \"physical line\" matches the conventional definition and doesn't over-split on characters that are legal inside JSON string values."
+      },
+      {
+        "attempt": "attempt-2",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-2",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Verified fix: app.py now splits with text.split(\"\\n\") (stripping trailing \\r), so Unicode line separators (\u2028, \u2029, \\x85) inside JSON string values no longer fragment a valid record. Reran the original repro \u2014 both records now parse correctly with no errors. All 15 tests pass. No other correctness issues found (duplicate-ID handling, id/title validation, error line numbering, continuation after bad lines all verified correct)."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 2
+  },
+  {
+    "trial": "jsonl-import--factory_matched--3",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation verified correct against the task spec. All 13 visible tests pass via both pytest and `python -m unittest discover -s tests -v`. Additional manual checks confirm correct handling of CRLF line endings, non-integer numeric ids (e.g. 1.0), oversized ints, and multiline JSON objects split across physical lines (each physical line correctly reported as a separate error, consistent with \"every other line must be a JSON object\"). Duplicate-ID and ID-non-reservation logic, blank-line skipping, and exact record preservation (including extra/nested fields) all behave correctly. No issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "jsonl-import--subagent--1",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01RumonXyEbmeXxFhjVS4ro8",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      },
+      {
+        "id": "toolu_01FbveSeuFSvAwzhKAB93LUV",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 2,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 2
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 2,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 2
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "jsonl-import--subagent--2",
+    "mode": "subagent",
+    "accepted": false,
+    "calls": [
+      {
+        "id": "toolu_01Rp21oswTBA387AxNHgPSWj",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "jsonl-import--subagent--3",
+    "mode": "subagent",
+    "accepted": false,
+    "calls": [
+      {
+        "id": "toolu_01LXcB3gDsB4qEcsxoWDx2yP",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "label-filter--factory_matched--1",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation is correct. required_labels.issubset(set(i.get('labels', []))) correctly implements ALL-label matching with case sensitivity, empty/None labels bypass, and missing-labels-as-empty. status is applied via `status is not None`, correctly handling falsy status values like ''. Ordering preserved via list comprehension; no mutation of records. All 10 tests pass, including edge cases for falsy status and non-mutation."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "label-filter--factory_matched--2",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "app.py correctly implements all requirements: ALL-labels subset matching (case-sensitive), labels=None/[] = no restriction, status applied only when not None, missing 'labels' defaults to empty set, no mutation, ordering preserved. All 11 tests pass. Minor non-issue: i['status'] was changed to i.get('status'), so a missing 'status' field no longer raises KeyError when filtering by status \u2014 a reasonable generalization, not a regression against stated requirements."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "label-filter--factory_matched--3",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "app.py correctly implements all requirements: subset-match on labels (case-sensitive), labels=None/[] treated as no restriction via `set(labels) if labels else set()`, status filtering gated on `is None` rather than truthiness, missing labels defaulted via `.get('labels', [])`, and ordering/non-mutation preserved by the single list comprehension. Ran the full test suite (10 tests) \u2014 all pass. No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "label-filter--subagent--1",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01XxkrrtkWMN6Ljygvcez5Yp",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "label-filter--subagent--2",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01AbmDvHctyaEvqtBf2UYniG",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "label-filter--subagent--3",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_019pxRVZc71anTfD91P3jNsw",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "optimistic-update--factory_matched--1",
+    "mode": "factory_matched",
+    "accepted": false,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Reviewed app.py against the task and original code. Findings:\n\n- KeyError for missing issue, ValueError for unsupported keys/invalid status (validated fully before any mutation), and Conflict for stale version are all correctly implemented.\n- Store is left untouched on any failure path (verified manually and via tests) \u2014 validation happens before store[issue_id] is ever reassigned.\n- Version increments exactly once, including for empty changes dict.\n- Returned record and stored record are both independent deepcopy()s of the original, so mutating the returned dict (including nested metadata.labels) does not affect the store, and vice versa \u2014 verified with tests and a manual mutation check.\n- Ran the full suite (`python -m unittest discover -s tests -v`): 10/10 pass, including the 9 new tests covering success, conflict, missing issue, invalid key/status, atomicity, empty changes, and copy independence.\n- Only ambiguity: validation-before-mutation is checked before the version/Conflict check (so an invalid-key change against a stale-version record raises ValueError rather than Conflict). The task doesn't specify ordering between these two checks and no test asserts one, so this isn't a bug, just noting it as a design choice.\n\nNo code changes needed."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "optimistic-update--factory_matched--2",
+    "mode": "factory_matched",
+    "accepted": false,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Reviewed app.py against the task and original stub. Implementation is correct: KeyError for missing issue, Conflict for stale version, ValueError for unsupported keys/status (validated fully before any mutation, confirmed atomic even when a valid change precedes an invalid one), version incremented exactly once including for empty changes, and the returned record is a deepcopy independent of the store (nested metadata like labels verified isolated). All 10 tests in tests/test_app.py pass via `python3 -m unittest discover -s tests -v`. No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "optimistic-update--factory_matched--3",
+    "mode": "factory_matched",
+    "accepted": false,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation of update() in app.py correctly satisfies all requirements: raises KeyError for missing issue_id, Conflict for stale expected_version, ValueError for unsupported keys or invalid status (validated fully before any mutation), increments version exactly once including for empty changes, and returns a deepcopy so nested metadata (e.g. labels) is independent of the store. Failed updates (KeyError/Conflict/ValueError paths) leave the store unmodified. Ran the full test suite (10 tests) \u2014 all pass. No correctness bugs or regressions found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "optimistic-update--subagent--1",
+    "mode": "subagent",
+    "accepted": false,
+    "calls": [
+      {
+        "id": "toolu_01FX6xAP4Knd9xYdoKMzQt84",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "optimistic-update--subagent--2",
+    "mode": "subagent",
+    "accepted": false,
+    "calls": [
+      {
+        "id": "toolu_01QHuRMiwSHxWncpWoTwC7t5",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "optimistic-update--subagent--3",
+    "mode": "subagent",
+    "accepted": false,
+    "calls": [
+      {
+        "id": "toolu_0176iuqsveWGdHvpbxP2wBWD",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "pagination--factory_matched--1",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "app.py correctly implements one-based pagination, rejects bool/non-integer/<1 number or size with ValueError, returns [] past the end, and does not mutate the input (slicing already copies; the added list() wrap is redundant but not incorrect). All 12 tests pass, including the new coverage for these cases. No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "pagination--factory_matched--2",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Reviewed app.py against the task and original code. The implementation correctly: uses one-based paging (start=(number-1)*size, end=number*size, always non-negative), rejects bool and non-int number/size with ValueError via isinstance checks (bool checked before int since bool is a subclass of int), rejects values < 1, returns [] for out-of-range pages via normal slice semantics, and returns a new list (via list(items[...])) so the input is never mutated. All 13 tests pass, including boundary, mutation, and validation cases. No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "pagination--factory_matched--3",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation correctly makes pages one-based, rejects bool/non-int number or size and values below 1 with ValueError, returns [] beyond the end, and returns a new list (via slicing/list()) without mutating input. All 16 tests pass, including the new ones added for these behaviors. No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "pagination--subagent--1",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_012aGYTKA6f7FK142qiZ9E73",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "pagination--subagent--2",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01Qte61b2M1eW98sT3dbzyFW",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "pagination--subagent--3",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01RCdxsYCE2PLVSHyTCdRjXU",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "schema-migration--factory_matched--1",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation in app.py correctly satisfies the task: deep-copies input (no mutation, no shared mutable objects), migrates version 1 \u2192 2 by removing `done`, deriving `status` (open/closed), defaulting `labels` to [] while preserving existing labels, and preserving all other document/issue fields; version 2 documents are returned as an independent unchanged copy; missing/unsupported version raises ValueError. All 12 tests pass (`python -m unittest discover -s tests -v`). No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "schema-migration--factory_matched--2",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation correctly satisfies the task: v1\u2192v2 migration removes `done`, maps to `status` open/closed, defaults `labels` to [] when absent while preserving existing labels and other fields; v2 documents are returned as an independent unchanged deep copy; missing/unsupported version raises ValueError; deepcopy is used throughout so the input is never mutated and no mutable objects are shared with the output. All 11 tests pass via both pytest and `python -m unittest discover -s tests -v`. No correctness bugs or regressions found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "schema-migration--factory_matched--3",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation correctly handles all task requirements: version 1\u21922 migration (done removed, status open/closed, labels defaulted to [] only when absent, other fields preserved), version 2 returned as independent deep copy, ValueError raised for missing/unsupported version, no input mutation or shared mutable state, stdlib only. All 12 tests pass under both pytest and `python -m unittest discover -s tests -v`. No issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "schema-migration--subagent--1",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01G5PVNBGY8fPYpPeWefbPF3",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "schema-migration--subagent--2",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_016m3bckzjThQtdCfMtaTR5q",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "schema-migration--subagent--3",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01LagiJUg8SC2adVdzyKhqjY",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "timestamp-order--factory_matched--1",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Implementation correctly parses ISO 8601 timestamps (Z suffix, numeric offsets, naive-as-UTC) into aware datetimes and sorts by actual instant using Python's stable sort with reverse=True (verified stability holds for equal keys with reverse=True via manual test). sorted() never mutates input and always returns a new list. All 6 tests pass, including edge cases for offset equivalence, naive/UTC comparison, and input-order tie-breaking. No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "timestamp-order--factory_matched--2",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Verified app.py against git history and the task requirements. newest() now parses each created timestamp into a real instant (Z suffix normalized to +00:00, numeric offsets handled via fromisoformat, naive timestamps treated as UTC via tzinfo replacement) and sorts with sorted(..., reverse=True), which is non-mutating and preserves input order for equal keys per Python's stability guarantee. Ran the test suite (6 tests including offset comparison, naive-as-UTC, negative offset, tie stability, and non-mutation) \u2014 all pass. No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "timestamp-order--factory_matched--3",
+    "mode": "factory_matched",
+    "accepted": true,
+    "checks": [
+      {
+        "attempt": "attempt-1",
+        "check": "check-1.json",
+        "status": "pass",
+        "feedback": ""
+      },
+      {
+        "attempt": "attempt-1",
+        "check": "check-2.json",
+        "status": "pass",
+        "feedback": "Verified app.py against the task requirements and git history. newest() now parses each 'created' value via _parse_instant, which normalizes trailing Z/z to +00:00, uses datetime.fromisoformat for offset-aware parsing, and treats naive datetimes as UTC. Sorting uses sorted(..., reverse=True), which per Python docs preserves original relative order for equal keys (does not reverse ties), satisfying the \"equal instants retain input order\" requirement. sorted() returns a new list, so the input is never mutated. All 5 tests in tests/test_app.py pass, including mixed-offset ordering, naive-as-UTC, tie stability, and non-mutation cases. No correctness issues found."
+      }
+    ],
+    "permission_denials": [],
+    "attempts": 1
+  },
+  {
+    "trial": "timestamp-order--subagent--1",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_018Yn7hVWYgKyjfHr6fYnton",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "timestamp-order--subagent--2",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01AdP9tMCMQ1aHPdvFwNGbej",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  },
+  {
+    "trial": "timestamp-order--subagent--3",
+    "mode": "subagent",
+    "accepted": true,
+    "calls": [
+      {
+        "id": "toolu_01NB78zqeH8gvKruBqFszaGi",
+        "type": "reviewer",
+        "returned": true,
+        "error": false
+      }
+    ],
+    "stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ],
+    "permission_denials": [],
+    "reviewer_models": [
+      "claude-sonnet-5"
+    ]
+  }
+]

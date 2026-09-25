@@ -1,0 +1,2741 @@
+[
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "factory_matched",
+    "repetition": 1,
+    "task": "Fix save(path, data) to write JSON atomically using a temporary file in the destination directory and os.replace. On serialization or replacement failure preserve any existing destination, remove temporary files, and propagate the exception. load(path) must retain its behavior.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 111.57265684287995,
+    "wall_seconds": 112.58152434416115,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 50,
+      "output_tokens": 10266,
+      "cache_read_input_tokens": 502491,
+      "cache_creation_input_tokens": 34642
+    },
+    "usage_all_models": {
+      "input_tokens": 5696,
+      "output_tokens": 10326,
+      "cache_read_input_tokens": 502491,
+      "cache_creation_input_tokens": 34642
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.3477722,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 4,
+    "worker_attempts": 2,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "factory_matched",
+    "repetition": 2,
+    "task": "Fix save(path, data) to write JSON atomically using a temporary file in the destination directory and os.replace. On serialization or replacement failure preserve any existing destination, remove temporary files, and propagate the exception. load(path) must retain its behavior.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 95.99197062989697,
+    "wall_seconds": 97.07306832401082,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 46,
+      "output_tokens": 9679,
+      "cache_read_input_tokens": 452636,
+      "cache_creation_input_tokens": 34285
+    },
+    "usage_all_models": {
+      "input_tokens": 5664,
+      "output_tokens": 9736,
+      "cache_read_input_tokens": 452636,
+      "cache_creation_input_tokens": 34285
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.3304522,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 4,
+    "worker_attempts": 2,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "factory_verified",
+    "repetition": 1,
+    "task": "Fix save(path, data) to write JSON atomically using a temporary file in the destination directory and os.replace. On serialization or replacement failure preserve any existing destination, remove temporary files, and propagate the exception. load(path) must retain its behavior.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 113.55851744720712,
+    "wall_seconds": 114.67438756115735,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 46,
+      "output_tokens": 11718,
+      "cache_read_input_tokens": 460781,
+      "cache_creation_input_tokens": 36982
+    },
+    "usage_all_models": {
+      "input_tokens": 6864,
+      "output_tokens": 11775,
+      "cache_read_input_tokens": 460781,
+      "cache_creation_input_tokens": 36982
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.3644592,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 4,
+    "worker_attempts": 2,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "factory_verified",
+    "repetition": 2,
+    "task": "Fix save(path, data) to write JSON atomically using a temporary file in the destination directory and os.replace. On serialization or replacement failure preserve any existing destination, remove temporary files, and propagate the exception. load(path) must retain its behavior.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 116.04632366914302,
+    "wall_seconds": 117.19525273097679,
+    "acceptance": {
+      "passed": false,
+      "tests": 5,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 42,
+      "output_tokens": 10351,
+      "cache_read_input_tokens": 416263,
+      "cache_creation_input_tokens": 35324
+    },
+    "usage_all_models": {
+      "input_tokens": 6399,
+      "output_tokens": 10408,
+      "cache_read_input_tokens": 416263,
+      "cache_creation_input_tokens": 35324
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.3347846,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 4,
+    "worker_attempts": 2,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "subagent_verified",
+    "repetition": 1,
+    "task": "Fix save(path, data) to write JSON atomically using a temporary file in the destination directory and os.replace. On serialization or replacement failure preserve any existing destination, remove temporary files, and propagate the exception. load(path) must retain its behavior.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 157.09302553720772,
+    "wall_seconds": 158.13502233009785,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 26,
+      "output_tokens": 7037,
+      "cache_read_input_tokens": 348019,
+      "cache_creation_input_tokens": 22066
+    },
+    "usage_all_models": {
+      "input_tokens": 50,
+      "output_tokens": 17060,
+      "cache_read_input_tokens": 484787,
+      "cache_creation_input_tokens": 38434
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.3968413999999999,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 2,
+      "returned_without_tool_error": 2
+    },
+    "subagent_stats": [
+      {
+        "spawned": 2,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 2
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 2,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 2
+        }
+      }
+    ]
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "subagent_verified",
+    "repetition": 2,
+    "task": "Fix save(path, data) to write JSON atomically using a temporary file in the destination directory and os.replace. On serialization or replacement failure preserve any existing destination, remove temporary files, and propagate the exception. load(path) must retain its behavior.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": false,
+    "error": "TimeoutError: ",
+    "elapsed_seconds": 300.11166384629905,
+    "wall_seconds": 301.2233006111346,
+    "acceptance": {
+      "passed": false,
+      "tests": 5,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0
+    },
+    "usage_all_models": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0
+    },
+    "usage_complete": false,
+    "list_price_usd": 0,
+    "resolved_models": [],
+    "agent_calls": 0,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 3,
+      "returned_without_tool_error": 2
+    },
+    "subagent_stats": []
+  },
+  {
+    "case": "cache-expiry",
+    "split": "fresh-v4",
+    "mode": "factory_matched",
+    "repetition": 1,
+    "task": "Implement Cache(capacity, clock), with put(key, value, ttl) and get(key). capacity must be a positive integer excluding bool, otherwise raise ValueError. clock is a callable returning monotonic numeric seconds. Keys are strings; values are deepcopy-compatible. ttl must be a finite int or float excluding bool; invalid ttl raises ValueError without changing cache contents or recency. A valid put replaces the key and makes it most recently used; ttl <= 0 removes that key instead. Expiry is measured from put, and a value is expired when clock() >= its deadline. get returns an independent deep copy and marks a live entry most recently used, or raises KeyError for missing/expired keys. Reads do not extend expiry. Purge expired entries before capacity eviction; if still full, evict the least recently used live key. Store an independent deep copy on put too. Assume clock never moves backward and deepcopy succeeds.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 133.37195704411715,
+    "wall_seconds": 134.4200616888702,
+    "acceptance": {
+      "passed": true,
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 24,
+      "output_tokens": 14608,
+      "cache_read_input_tokens": 262297,
+      "cache_creation_input_tokens": 33663
+    },
+    "usage_all_models": {
+      "input_tokens": 3015,
+      "output_tokens": 14633,
+      "cache_read_input_tokens": 262297,
+      "cache_creation_input_tokens": 33663
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.3363554,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "cache-expiry",
+    "split": "fresh-v4",
+    "mode": "factory_matched",
+    "repetition": 2,
+    "task": "Implement Cache(capacity, clock), with put(key, value, ttl) and get(key). capacity must be a positive integer excluding bool, otherwise raise ValueError. clock is a callable returning monotonic numeric seconds. Keys are strings; values are deepcopy-compatible. ttl must be a finite int or float excluding bool; invalid ttl raises ValueError without changing cache contents or recency. A valid put replaces the key and makes it most recently used; ttl <= 0 removes that key instead. Expiry is measured from put, and a value is expired when clock() >= its deadline. get returns an independent deep copy and marks a live entry most recently used, or raises KeyError for missing/expired keys. Reads do not extend expiry. Purge expired entries before capacity eviction; if still full, evict the least recently used live key. Store an independent deep copy on put too. Assume clock never moves backward and deepcopy succeeds.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 113.31182757718489,
+    "wall_seconds": 114.36934576090425,
+    "acceptance": {
+      "passed": true,
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 22,
+      "output_tokens": 12277,
+      "cache_read_input_tokens": 226034,
+      "cache_creation_input_tokens": 33002
+    },
+    "usage_all_models": {
+      "input_tokens": 3035,
+      "output_tokens": 12304,
+      "cache_read_input_tokens": 226034,
+      "cache_creation_input_tokens": 33002
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.3031768,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "cache-expiry",
+    "split": "fresh-v4",
+    "mode": "factory_verified",
+    "repetition": 1,
+    "task": "Implement Cache(capacity, clock), with put(key, value, ttl) and get(key). capacity must be a positive integer excluding bool, otherwise raise ValueError. clock is a callable returning monotonic numeric seconds. Keys are strings; values are deepcopy-compatible. ttl must be a finite int or float excluding bool; invalid ttl raises ValueError without changing cache contents or recency. A valid put replaces the key and makes it most recently used; ttl <= 0 removes that key instead. Expiry is measured from put, and a value is expired when clock() >= its deadline. get returns an independent deep copy and marks a live entry most recently used, or raises KeyError for missing/expired keys. Reads do not extend expiry. Purge expired entries before capacity eviction; if still full, evict the least recently used live key. Store an independent deep copy on put too. Assume clock never moves backward and deepcopy succeeds.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 138.1704531670548,
+    "wall_seconds": 139.2240795479156,
+    "acceptance": {
+      "passed": true,
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 22,
+      "output_tokens": 11260,
+      "cache_read_input_tokens": 227837,
+      "cache_creation_input_tokens": 31055
+    },
+    "usage_all_models": {
+      "input_tokens": 3296,
+      "output_tokens": 11289,
+      "cache_read_input_tokens": 227837,
+      "cache_creation_input_tokens": 31055
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.2858504,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "cache-expiry",
+    "split": "fresh-v4",
+    "mode": "factory_verified",
+    "repetition": 2,
+    "task": "Implement Cache(capacity, clock), with put(key, value, ttl) and get(key). capacity must be a positive integer excluding bool, otherwise raise ValueError. clock is a callable returning monotonic numeric seconds. Keys are strings; values are deepcopy-compatible. ttl must be a finite int or float excluding bool; invalid ttl raises ValueError without changing cache contents or recency. A valid put replaces the key and makes it most recently used; ttl <= 0 removes that key instead. Expiry is measured from put, and a value is expired when clock() >= its deadline. get returns an independent deep copy and marks a live entry most recently used, or raises KeyError for missing/expired keys. Reads do not extend expiry. Purge expired entries before capacity eviction; if still full, evict the least recently used live key. Store an independent deep copy on put too. Assume clock never moves backward and deepcopy succeeds.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 136.1030165948905,
+    "wall_seconds": 137.16056526172906,
+    "acceptance": {
+      "passed": true,
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 24,
+      "output_tokens": 12929,
+      "cache_read_input_tokens": 254708,
+      "cache_creation_input_tokens": 33512
+    },
+    "usage_all_models": {
+      "input_tokens": 3176,
+      "output_tokens": 12956,
+      "cache_read_input_tokens": 254708,
+      "cache_creation_input_tokens": 33512
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.31761459999999997,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "cache-expiry",
+    "split": "fresh-v4",
+    "mode": "subagent_verified",
+    "repetition": 1,
+    "task": "Implement Cache(capacity, clock), with put(key, value, ttl) and get(key). capacity must be a positive integer excluding bool, otherwise raise ValueError. clock is a callable returning monotonic numeric seconds. Keys are strings; values are deepcopy-compatible. ttl must be a finite int or float excluding bool; invalid ttl raises ValueError without changing cache contents or recency. A valid put replaces the key and makes it most recently used; ttl <= 0 removes that key instead. Expiry is measured from put, and a value is expired when clock() >= its deadline. get returns an independent deep copy and marks a live entry most recently used, or raises KeyError for missing/expired keys. Reads do not extend expiry. Purge expired entries before capacity eviction; if still full, evict the least recently used live key. Store an independent deep copy on put too. Assume clock never moves backward and deepcopy succeeds.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 178.3100509843789,
+    "wall_seconds": 179.4231038261205,
+    "acceptance": {
+      "passed": true,
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 8565,
+      "cache_read_input_tokens": 174214,
+      "cache_creation_input_tokens": 21791
+    },
+    "usage_all_models": {
+      "input_tokens": 22,
+      "output_tokens": 17281,
+      "cache_read_input_tokens": 221613,
+      "cache_creation_input_tokens": 37758
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.34425810000000007,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 1,
+      "returned_without_tool_error": 1
+    },
+    "subagent_stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ]
+  },
+  {
+    "case": "cache-expiry",
+    "split": "fresh-v4",
+    "mode": "subagent_verified",
+    "repetition": 2,
+    "task": "Implement Cache(capacity, clock), with put(key, value, ttl) and get(key). capacity must be a positive integer excluding bool, otherwise raise ValueError. clock is a callable returning monotonic numeric seconds. Keys are strings; values are deepcopy-compatible. ttl must be a finite int or float excluding bool; invalid ttl raises ValueError without changing cache contents or recency. A valid put replaces the key and makes it most recently used; ttl <= 0 removes that key instead. Expiry is measured from put, and a value is expired when clock() >= its deadline. get returns an independent deep copy and marks a live entry most recently used, or raises KeyError for missing/expired keys. Reads do not extend expiry. Purge expired entries before capacity eviction; if still full, evict the least recently used live key. Store an independent deep copy on put too. Assume clock never moves backward and deepcopy succeeds.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 158.74281163699925,
+    "wall_seconds": 159.7417191527784,
+    "acceptance": {
+      "passed": true,
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 20,
+      "output_tokens": 11204,
+      "cache_read_input_tokens": 255530,
+      "cache_creation_input_tokens": 23629
+    },
+    "usage_all_models": {
+      "input_tokens": 30,
+      "output_tokens": 18154,
+      "cache_read_input_tokens": 322065,
+      "cache_creation_input_tokens": 39465
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.380119,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 1,
+      "returned_without_tool_error": 1
+    },
+    "subagent_stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ]
+  },
+  {
+    "case": "dependency-order",
+    "split": "fresh-v4",
+    "mode": "factory_matched",
+    "repetition": 1,
+    "task": "Implement order_jobs(dependencies), where dependencies maps each job name (a string) to a list of prerequisite job names. Return every job exactly once, with prerequisites before their dependents. At each step choose the lexicographically smallest currently ready job, including jobs that just became ready. Duplicate prerequisite names count only once. Raise ValueError for any unknown prerequisite or any cycle (including a self-cycle or a cycle in a disconnected component). Do not mutate the input or its lists. Empty input returns []. Assume names and container types are valid.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 47.52400437416509,
+    "wall_seconds": 48.64153304416686,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 18,
+      "output_tokens": 3796,
+      "cache_read_input_tokens": 169098,
+      "cache_creation_input_tokens": 20888
+    },
+    "usage_all_models": {
+      "input_tokens": 2694,
+      "output_tokens": 3821,
+      "cache_read_input_tokens": 169098,
+      "cache_creation_input_tokens": 20888
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.1581686,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "dependency-order",
+    "split": "fresh-v4",
+    "mode": "factory_matched",
+    "repetition": 2,
+    "task": "Implement order_jobs(dependencies), where dependencies maps each job name (a string) to a list of prerequisite job names. Return every job exactly once, with prerequisites before their dependents. At each step choose the lexicographically smallest currently ready job, including jobs that just became ready. Duplicate prerequisite names count only once. Raise ValueError for any unknown prerequisite or any cycle (including a self-cycle or a cycle in a disconnected component). Do not mutate the input or its lists. Empty input returns []. Assume names and container types are valid.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 55.571986886672676,
+    "wall_seconds": 56.66952346637845,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 22,
+      "output_tokens": 4901,
+      "cache_read_input_tokens": 213538,
+      "cache_creation_input_tokens": 22606
+    },
+    "usage_all_models": {
+      "input_tokens": 2699,
+      "output_tokens": 4929,
+      "cache_read_input_tokens": 213538,
+      "cache_creation_input_tokens": 22606
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.18500260000000002,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "dependency-order",
+    "split": "fresh-v4",
+    "mode": "factory_verified",
+    "repetition": 1,
+    "task": "Implement order_jobs(dependencies), where dependencies maps each job name (a string) to a list of prerequisite job names. Return every job exactly once, with prerequisites before their dependents. At each step choose the lexicographically smallest currently ready job, including jobs that just became ready. Duplicate prerequisite names count only once. Raise ValueError for any unknown prerequisite or any cycle (including a self-cycle or a cycle in a disconnected component). Do not mutate the input or its lists. Empty input returns []. Assume names and container types are valid.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 61.65199734875932,
+    "wall_seconds": 62.73691157437861,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 20,
+      "output_tokens": 5373,
+      "cache_read_input_tokens": 190556,
+      "cache_creation_input_tokens": 22595
+    },
+    "usage_all_models": {
+      "input_tokens": 2868,
+      "output_tokens": 5401,
+      "cache_read_input_tokens": 190556,
+      "cache_creation_input_tokens": 22595
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.1852492,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "dependency-order",
+    "split": "fresh-v4",
+    "mode": "factory_verified",
+    "repetition": 2,
+    "task": "Implement order_jobs(dependencies), where dependencies maps each job name (a string) to a list of prerequisite job names. Return every job exactly once, with prerequisites before their dependents. At each step choose the lexicographically smallest currently ready job, including jobs that just became ready. Duplicate prerequisite names count only once. Raise ValueError for any unknown prerequisite or any cycle (including a self-cycle or a cycle in a disconnected component). Do not mutate the input or its lists. Empty input returns []. Assume names and container types are valid.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 66.76938778487965,
+    "wall_seconds": 67.86742027802393,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 26,
+      "output_tokens": 5953,
+      "cache_read_input_tokens": 258891,
+      "cache_creation_input_tokens": 24597
+    },
+    "usage_all_models": {
+      "input_tokens": 2862,
+      "output_tokens": 5977,
+      "cache_read_input_tokens": 258891,
+      "cache_creation_input_tokens": 24597
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.2127042,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "dependency-order",
+    "split": "fresh-v4",
+    "mode": "subagent_verified",
+    "repetition": 1,
+    "task": "Implement order_jobs(dependencies), where dependencies maps each job name (a string) to a list of prerequisite job names. Return every job exactly once, with prerequisites before their dependents. At each step choose the lexicographically smallest currently ready job, including jobs that just became ready. Duplicate prerequisite names count only once. Raise ValueError for any unknown prerequisite or any cycle (including a self-cycle or a cycle in a disconnected component). Do not mutate the input or its lists. Empty input returns []. Assume names and container types are valid.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 78.97288215439767,
+    "wall_seconds": 80.01189510291442,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 16,
+      "output_tokens": 4099,
+      "cache_read_input_tokens": 174013,
+      "cache_creation_input_tokens": 14591
+    },
+    "usage_all_models": {
+      "input_tokens": 26,
+      "output_tokens": 6887,
+      "cache_read_input_tokens": 229020,
+      "cache_creation_input_tokens": 22734
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.1934475,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 1,
+      "returned_without_tool_error": 1
+    },
+    "subagent_stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ]
+  },
+  {
+    "case": "dependency-order",
+    "split": "fresh-v4",
+    "mode": "subagent_verified",
+    "repetition": 2,
+    "task": "Implement order_jobs(dependencies), where dependencies maps each job name (a string) to a list of prerequisite job names. Return every job exactly once, with prerequisites before their dependents. At each step choose the lexicographically smallest currently ready job, including jobs that just became ready. Duplicate prerequisite names count only once. Raise ValueError for any unknown prerequisite or any cycle (including a self-cycle or a cycle in a disconnected component). Do not mutate the input or its lists. Empty input returns []. Assume names and container types are valid.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 77.70829346496612,
+    "wall_seconds": 78.80162035301328,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 3788,
+      "cache_read_input_tokens": 149081,
+      "cache_creation_input_tokens": 13799
+    },
+    "usage_all_models": {
+      "input_tokens": 22,
+      "output_tokens": 6980,
+      "cache_read_input_tokens": 189939,
+      "cache_creation_input_tokens": 20252
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.1791603,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 1,
+      "returned_without_tool_error": 1
+    },
+    "subagent_stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ]
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "factory_matched",
+    "repetition": 1,
+    "task": "Implement overdue(issues, today) returning IDs of open issues with due dates strictly before today, sorted by due date then numeric ID. today and due are YYYY-MM-DD strings interpreted as calendar dates. Ignore missing/None/empty due dates, invalid due dates, and closed issues. An invalid today raises ValueError. Do not mutate input.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 120.55855240020901,
+    "wall_seconds": 121.65740269888192,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 50,
+      "output_tokens": 11853,
+      "cache_read_input_tokens": 504468,
+      "cache_creation_input_tokens": 38816
+    },
+    "usage_all_models": {
+      "input_tokens": 5998,
+      "output_tokens": 11908,
+      "cache_read_input_tokens": 504468,
+      "cache_creation_input_tokens": 38816
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.3810106,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 4,
+    "worker_attempts": 2,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "factory_matched",
+    "repetition": 2,
+    "task": "Implement overdue(issues, today) returning IDs of open issues with due dates strictly before today, sorted by due date then numeric ID. today and due are YYYY-MM-DD strings interpreted as calendar dates. Ignore missing/None/empty due dates, invalid due dates, and closed issues. An invalid today raises ValueError. Do not mutate input.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 51.08752745529637,
+    "wall_seconds": 52.15855272812769,
+    "acceptance": {
+      "passed": false,
+      "tests": 4,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 18,
+      "output_tokens": 3665,
+      "cache_read_input_tokens": 169231,
+      "cache_creation_input_tokens": 20310
+    },
+    "usage_all_models": {
+      "input_tokens": 2592,
+      "output_tokens": 3692,
+      "cache_read_input_tokens": 169231,
+      "cache_creation_input_tokens": 20310
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.1544812,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "factory_verified",
+    "repetition": 1,
+    "task": "Implement overdue(issues, today) returning IDs of open issues with due dates strictly before today, sorted by due date then numeric ID. today and due are YYYY-MM-DD strings interpreted as calendar dates. Ignore missing/None/empty due dates, invalid due dates, and closed issues. An invalid today raises ValueError. Do not mutate input.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 171.8666483410634,
+    "wall_seconds": 172.913231597282,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 64,
+      "output_tokens": 16827,
+      "cache_read_input_tokens": 701945,
+      "cache_creation_input_tokens": 47805
+    },
+    "usage_all_models": {
+      "input_tokens": 6901,
+      "output_tokens": 16885,
+      "cache_read_input_tokens": 701945,
+      "cache_creation_input_tokens": 47805
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.507134,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 4,
+    "worker_attempts": 2,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "factory_verified",
+    "repetition": 2,
+    "task": "Implement overdue(issues, today) returning IDs of open issues with due dates strictly before today, sorted by due date then numeric ID. today and due are YYYY-MM-DD strings interpreted as calendar dates. Ignore missing/None/empty due dates, invalid due dates, and closed issues. An invalid today raises ValueError. Do not mutate input.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 71.69585259119049,
+    "wall_seconds": 72.73475697916001,
+    "acceptance": {
+      "passed": false,
+      "tests": 4,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 22,
+      "output_tokens": 5541,
+      "cache_read_input_tokens": 207863,
+      "cache_creation_input_tokens": 21832
+    },
+    "usage_all_models": {
+      "input_tokens": 2786,
+      "output_tokens": 5569,
+      "cache_read_input_tokens": 207863,
+      "cache_creation_input_tokens": 21832
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.1872586,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "subagent_verified",
+    "repetition": 1,
+    "task": "Implement overdue(issues, today) returning IDs of open issues with due dates strictly before today, sorted by due date then numeric ID. today and due are YYYY-MM-DD strings interpreted as calendar dates. Ignore missing/None/empty due dates, invalid due dates, and closed issues. An invalid today raises ValueError. Do not mutate input.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 87.89666057704017,
+    "wall_seconds": 88.98507174896076,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 4744,
+      "cache_read_input_tokens": 149478,
+      "cache_creation_input_tokens": 14185
+    },
+    "usage_all_models": {
+      "input_tokens": 32,
+      "output_tokens": 9265,
+      "cache_read_input_tokens": 270113,
+      "cache_creation_input_tokens": 24142
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.2283691,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 1,
+      "returned_without_tool_error": 1
+    },
+    "subagent_stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ]
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "subagent_verified",
+    "repetition": 2,
+    "task": "Implement overdue(issues, today) returning IDs of open issues with due dates strictly before today, sorted by due date then numeric ID. today and due are YYYY-MM-DD strings interpreted as calendar dates. Ignore missing/None/empty due dates, invalid due dates, and closed issues. An invalid today raises ValueError. Do not mutate input.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 101.36736730393022,
+    "wall_seconds": 102.33839810919017,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 4896,
+      "cache_read_input_tokens": 151810,
+      "cache_creation_input_tokens": 14627
+    },
+    "usage_all_models": {
+      "input_tokens": 36,
+      "output_tokens": 10818,
+      "cache_read_input_tokens": 311180,
+      "cache_creation_input_tokens": 26457
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.25857100000000005,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 1,
+      "returned_without_tool_error": 1
+    },
+    "subagent_stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ]
+  },
+  {
+    "case": "inventory-reservation",
+    "split": "fresh-v4",
+    "mode": "factory_matched",
+    "repetition": 1,
+    "task": "Implement reserve(stock, requests). stock maps SKU strings to non-negative integer quantities; requests is a list of (SKU, quantity) pairs. Each requested quantity must be a positive integer, excluding bool, or raise ValueError. An unknown SKU raises KeyError. Repeated requests for a SKU are cumulative; insufficient total stock raises ValueError. Validate the entire batch before changing stock. Any failure leaves stock unchanged. On success deduct the totals in place and return an independent dict of all remaining stock. Empty requests succeed with an independent copy and no changes. Assume stock and the pair structure are otherwise valid.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 41.84380094893277,
+    "wall_seconds": 42.97299769567326,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 20,
+      "output_tokens": 4421,
+      "cache_read_input_tokens": 191340,
+      "cache_creation_input_tokens": 22662
+    },
+    "usage_all_models": {
+      "input_tokens": 2736,
+      "output_tokens": 4443,
+      "cache_read_input_tokens": 191340,
+      "cache_creation_input_tokens": 22662
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.17599199999999998,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "inventory-reservation",
+    "split": "fresh-v4",
+    "mode": "factory_matched",
+    "repetition": 2,
+    "task": "Implement reserve(stock, requests). stock maps SKU strings to non-negative integer quantities; requests is a list of (SKU, quantity) pairs. Each requested quantity must be a positive integer, excluding bool, or raise ValueError. An unknown SKU raises KeyError. Repeated requests for a SKU are cumulative; insufficient total stock raises ValueError. Validate the entire batch before changing stock. Any failure leaves stock unchanged. On success deduct the totals in place and return an independent dict of all remaining stock. Empty requests succeed with an independent copy and no changes. Assume stock and the pair structure are otherwise valid.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 55.95792094292119,
+    "wall_seconds": 57.017304201144725,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 20,
+      "output_tokens": 5127,
+      "cache_read_input_tokens": 190944,
+      "cache_creation_input_tokens": 24206
+    },
+    "usage_all_models": {
+      "input_tokens": 2735,
+      "output_tokens": 5151,
+      "cache_read_input_tokens": 190944,
+      "cache_creation_input_tokens": 24206
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.1891578,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "inventory-reservation",
+    "split": "fresh-v4",
+    "mode": "factory_verified",
+    "repetition": 1,
+    "task": "Implement reserve(stock, requests). stock maps SKU strings to non-negative integer quantities; requests is a list of (SKU, quantity) pairs. Each requested quantity must be a positive integer, excluding bool, or raise ValueError. An unknown SKU raises KeyError. Repeated requests for a SKU are cumulative; insufficient total stock raises ValueError. Validate the entire batch before changing stock. Any failure leaves stock unchanged. On success deduct the totals in place and return an independent dict of all remaining stock. Empty requests succeed with an independent copy and no changes. Assume stock and the pair structure are otherwise valid.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 73.18583262804896,
+    "wall_seconds": 74.32598244119436,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 26,
+      "output_tokens": 7482,
+      "cache_read_input_tokens": 266020,
+      "cache_creation_input_tokens": 27373
+    },
+    "usage_all_models": {
+      "input_tokens": 2863,
+      "output_tokens": 7505,
+      "cache_read_input_tokens": 266020,
+      "cache_creation_input_tokens": 27373
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.24051999999999998,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "inventory-reservation",
+    "split": "fresh-v4",
+    "mode": "factory_verified",
+    "repetition": 2,
+    "task": "Implement reserve(stock, requests). stock maps SKU strings to non-negative integer quantities; requests is a list of (SKU, quantity) pairs. Each requested quantity must be a positive integer, excluding bool, or raise ValueError. An unknown SKU raises KeyError. Repeated requests for a SKU are cumulative; insufficient total stock raises ValueError. Validate the entire batch before changing stock. Any failure leaves stock unchanged. On success deduct the totals in place and return an independent dict of all remaining stock. Empty requests succeed with an independent copy and no changes. Assume stock and the pair structure are otherwise valid.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 67.58796176221222,
+    "wall_seconds": 68.60922055877745,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 26,
+      "output_tokens": 6898,
+      "cache_read_input_tokens": 262868,
+      "cache_creation_input_tokens": 26611
+    },
+    "usage_all_models": {
+      "input_tokens": 2929,
+      "output_tokens": 6921,
+      "cache_read_input_tokens": 262868,
+      "cache_creation_input_tokens": 26611
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.23106759999999998,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "inventory-reservation",
+    "split": "fresh-v4",
+    "mode": "subagent_verified",
+    "repetition": 1,
+    "task": "Implement reserve(stock, requests). stock maps SKU strings to non-negative integer quantities; requests is a list of (SKU, quantity) pairs. Each requested quantity must be a positive integer, excluding bool, or raise ValueError. An unknown SKU raises KeyError. Repeated requests for a SKU are cumulative; insufficient total stock raises ValueError. Validate the entire batch before changing stock. Any failure leaves stock unchanged. On success deduct the totals in place and return an independent dict of all remaining stock. Empty requests succeed with an independent copy and no changes. Assume stock and the pair structure are otherwise valid.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 85.03954377304763,
+    "wall_seconds": 86.13042064802721,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 4994,
+      "cache_read_input_tokens": 152675,
+      "cache_creation_input_tokens": 15196
+    },
+    "usage_all_models": {
+      "input_tokens": 24,
+      "output_tokens": 9082,
+      "cache_read_input_tokens": 208331,
+      "cache_creation_input_tokens": 23404
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.21383820000000003,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 1,
+      "returned_without_tool_error": 1
+    },
+    "subagent_stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ]
+  },
+  {
+    "case": "inventory-reservation",
+    "split": "fresh-v4",
+    "mode": "subagent_verified",
+    "repetition": 2,
+    "task": "Implement reserve(stock, requests). stock maps SKU strings to non-negative integer quantities; requests is a list of (SKU, quantity) pairs. Each requested quantity must be a positive integer, excluding bool, or raise ValueError. An unknown SKU raises KeyError. Repeated requests for a SKU are cumulative; insufficient total stock raises ValueError. Validate the entire batch before changing stock. Any failure leaves stock unchanged. On success deduct the totals in place and return an independent dict of all remaining stock. Empty requests succeed with an independent copy and no changes. Assume stock and the pair structure are otherwise valid.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 91.67565268604085,
+    "wall_seconds": 92.95921229524538,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 4738,
+      "cache_read_input_tokens": 164197,
+      "cache_creation_input_tokens": 17721
+    },
+    "usage_all_models": {
+      "input_tokens": 22,
+      "output_tokens": 10130,
+      "cache_read_input_tokens": 196947,
+      "cache_creation_input_tokens": 34220
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.25286489999999995,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 1,
+      "returned_without_tool_error": 1
+    },
+    "subagent_stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ]
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "factory_matched",
+    "repetition": 1,
+    "task": "Implement parse_jsonl(text) returning (records, errors). Ignore blank lines. Every other line must be a JSON object with id as a positive integer (not bool) and title as a non-whitespace string. Preserve valid records exactly and in order. Reject duplicate IDs among accepted records; an invalid record must not reserve its ID. Continue after bad lines. errors is a list of physical 1-based line numbers for rejected lines.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 51.73155058082193,
+    "wall_seconds": 52.8082093950361,
+    "acceptance": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 22,
+      "output_tokens": 5782,
+      "cache_read_input_tokens": 214575,
+      "cache_creation_input_tokens": 24758
+    },
+    "usage_all_models": {
+      "input_tokens": 2741,
+      "output_tokens": 5809,
+      "cache_read_input_tokens": 214575,
+      "cache_creation_input_tokens": 24758
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.20266499999999998,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "factory_matched",
+    "repetition": 2,
+    "task": "Implement parse_jsonl(text) returning (records, errors). Ignore blank lines. Every other line must be a JSON object with id as a positive integer (not bool) and title as a non-whitespace string. Preserve valid records exactly and in order. Reject duplicate IDs among accepted records; an invalid record must not reserve its ID. Continue after bad lines. errors is a list of physical 1-based line numbers for rejected lines.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 141.20928756007925,
+    "wall_seconds": 142.2766471807845,
+    "acceptance": {
+      "passed": true,
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 42,
+      "output_tokens": 14108,
+      "cache_read_input_tokens": 429608,
+      "cache_creation_input_tokens": 42151
+    },
+    "usage_all_models": {
+      "input_tokens": 6264,
+      "output_tokens": 14168,
+      "cache_read_input_tokens": 429608,
+      "cache_creation_input_tokens": 42151
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.4022116,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 4,
+    "worker_attempts": 2,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "factory_verified",
+    "repetition": 1,
+    "task": "Implement parse_jsonl(text) returning (records, errors). Ignore blank lines. Every other line must be a JSON object with id as a positive integer (not bool) and title as a non-whitespace string. Preserve valid records exactly and in order. Reject duplicate IDs among accepted records; an invalid record must not reserve its ID. Continue after bad lines. errors is a list of physical 1-based line numbers for rejected lines.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 80.75715794181451,
+    "wall_seconds": 81.82417807728052,
+    "acceptance": {
+      "passed": true,
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 22,
+      "output_tokens": 7540,
+      "cache_read_input_tokens": 216574,
+      "cache_creation_input_tokens": 24538
+    },
+    "usage_all_models": {
+      "input_tokens": 2829,
+      "output_tokens": 7568,
+      "cache_read_input_tokens": 216574,
+      "cache_creation_input_tokens": 24538
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.2198578,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "factory_verified",
+    "repetition": 2,
+    "task": "Implement parse_jsonl(text) returning (records, errors). Ignore blank lines. Every other line must be a JSON object with id as a positive integer (not bool) and title as a non-whitespace string. Preserve valid records exactly and in order. Reject duplicate IDs among accepted records; an invalid record must not reserve its ID. Continue after bad lines. errors is a list of physical 1-based line numbers for rejected lines.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 79.19564359635115,
+    "wall_seconds": 80.3134520011954,
+    "acceptance": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 22,
+      "output_tokens": 6878,
+      "cache_read_input_tokens": 215431,
+      "cache_creation_input_tokens": 24152
+    },
+    "usage_all_models": {
+      "input_tokens": 2824,
+      "output_tokens": 6905,
+      "cache_read_input_tokens": 215431,
+      "cache_creation_input_tokens": 24152
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.2114552,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "subagent_verified",
+    "repetition": 1,
+    "task": "Implement parse_jsonl(text) returning (records, errors). Ignore blank lines. Every other line must be a JSON object with id as a positive integer (not bool) and title as a non-whitespace string. Preserve valid records exactly and in order. Reject duplicate IDs among accepted records; an invalid record must not reserve its ID. Continue after bad lines. errors is a list of physical 1-based line numbers for rejected lines.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 217.1108384653926,
+    "wall_seconds": 218.05819697398692,
+    "acceptance": {
+      "passed": true,
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 22,
+      "output_tokens": 7210,
+      "cache_read_input_tokens": 270043,
+      "cache_creation_input_tokens": 19693
+    },
+    "usage_all_models": {
+      "input_tokens": 58,
+      "output_tokens": 22740,
+      "cache_read_input_tokens": 523320,
+      "cache_creation_input_tokens": 45804
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.4762295,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 2,
+      "returned_without_tool_error": 2
+    },
+    "subagent_stats": [
+      {
+        "spawned": 2,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 2
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 2,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 2
+        }
+      }
+    ]
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "subagent_verified",
+    "repetition": 2,
+    "task": "Implement parse_jsonl(text) returning (records, errors). Ignore blank lines. Every other line must be a JSON object with id as a positive integer (not bool) and title as a non-whitespace string. Preserve valid records exactly and in order. Reject duplicate IDs among accepted records; an invalid record must not reserve its ID. Continue after bad lines. errors is a list of physical 1-based line numbers for rejected lines.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 229.2570348191075,
+    "wall_seconds": 230.3242273456417,
+    "acceptance": {
+      "passed": true,
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 22,
+      "output_tokens": 6867,
+      "cache_read_input_tokens": 296535,
+      "cache_creation_input_tokens": 23118
+    },
+    "usage_all_models": {
+      "input_tokens": 50,
+      "output_tokens": 20765,
+      "cache_read_input_tokens": 468795,
+      "cache_creation_input_tokens": 43351
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.44456350000000006,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 2,
+      "returned_without_tool_error": 2
+    },
+    "subagent_stats": [
+      {
+        "spawned": 2,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 2
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 2,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 2
+        }
+      }
+    ]
+  },
+  {
+    "case": "optimistic-update",
+    "split": "development",
+    "mode": "factory_matched",
+    "repetition": 1,
+    "task": "Implement update(store, issue_id, expected_version, changes). A stale version raises Conflict; a missing issue raises KeyError. Only title and status may change; an unsupported key or status outside open/closed raises ValueError. Validate all changes before mutation. A successful update increments version once, even for empty changes, and returns an independent copy of the updated record, including nested mutable metadata such as labels. Failed updates leave store unchanged.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 82.86690749181435,
+    "wall_seconds": 83.87757606804371,
+    "acceptance": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 22,
+      "output_tokens": 7908,
+      "cache_read_input_tokens": 215362,
+      "cache_creation_input_tokens": 26126
+    },
+    "usage_all_models": {
+      "input_tokens": 2810,
+      "output_tokens": 7937,
+      "cache_read_input_tokens": 215362,
+      "cache_creation_input_tokens": 26126
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.22963340000000002,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "optimistic-update",
+    "split": "development",
+    "mode": "factory_matched",
+    "repetition": 2,
+    "task": "Implement update(store, issue_id, expected_version, changes). A stale version raises Conflict; a missing issue raises KeyError. Only title and status may change; an unsupported key or status outside open/closed raises ValueError. Validate all changes before mutation. A successful update increments version once, even for empty changes, and returns an independent copy of the updated record, including nested mutable metadata such as labels. Failed updates leave store unchanged.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 80.70972865773365,
+    "wall_seconds": 81.6702328179963,
+    "acceptance": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 24,
+      "output_tokens": 7610,
+      "cache_read_input_tokens": 233440,
+      "cache_creation_input_tokens": 25716
+    },
+    "usage_all_models": {
+      "input_tokens": 2771,
+      "output_tokens": 7638,
+      "cache_read_input_tokens": 233440,
+      "cache_creation_input_tokens": 25716
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.22858699999999998,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "optimistic-update",
+    "split": "development",
+    "mode": "factory_verified",
+    "repetition": 1,
+    "task": "Implement update(store, issue_id, expected_version, changes). A stale version raises Conflict; a missing issue raises KeyError. Only title and status may change; an unsupported key or status outside open/closed raises ValueError. Validate all changes before mutation. A successful update increments version once, even for empty changes, and returns an independent copy of the updated record, including nested mutable metadata such as labels. Failed updates leave store unchanged.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 92.65746302995831,
+    "wall_seconds": 93.75617696810514,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 20,
+      "output_tokens": 9140,
+      "cache_read_input_tokens": 199767,
+      "cache_creation_input_tokens": 27575
+    },
+    "usage_all_models": {
+      "input_tokens": 2863,
+      "output_tokens": 9168,
+      "cache_read_input_tokens": 199767,
+      "cache_creation_input_tokens": 27575
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.2446764,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "optimistic-update",
+    "split": "development",
+    "mode": "factory_verified",
+    "repetition": 2,
+    "task": "Implement update(store, issue_id, expected_version, changes). A stale version raises Conflict; a missing issue raises KeyError. Only title and status may change; an unsupported key or status outside open/closed raises ValueError. Validate all changes before mutation. A successful update increments version once, even for empty changes, and returns an independent copy of the updated record, including nested mutable metadata such as labels. Failed updates leave store unchanged.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 82.19255975587294,
+    "wall_seconds": 83.16272173682228,
+    "acceptance": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 26,
+      "output_tokens": 7519,
+      "cache_read_input_tokens": 259187,
+      "cache_creation_input_tokens": 25867
+    },
+    "usage_all_models": {
+      "input_tokens": 2880,
+      "output_tokens": 7547,
+      "cache_read_input_tokens": 259187,
+      "cache_creation_input_tokens": 25867
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.2335414,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "optimistic-update",
+    "split": "development",
+    "mode": "subagent_verified",
+    "repetition": 1,
+    "task": "Implement update(store, issue_id, expected_version, changes). A stale version raises Conflict; a missing issue raises KeyError. Only title and status may change; an unsupported key or status outside open/closed raises ValueError. Validate all changes before mutation. A successful update increments version once, even for empty changes, and returns an independent copy of the updated record, including nested mutable metadata such as labels. Failed updates leave store unchanged.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 85.96189039992169,
+    "wall_seconds": 86.97604995314032,
+    "acceptance": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 4606,
+      "cache_read_input_tokens": 151021,
+      "cache_creation_input_tokens": 14686
+    },
+    "usage_all_models": {
+      "input_tokens": 26,
+      "output_tokens": 9228,
+      "cache_read_input_tokens": 219905,
+      "cache_creation_input_tokens": 23517
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.2171345,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 1,
+      "returned_without_tool_error": 1
+    },
+    "subagent_stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ]
+  },
+  {
+    "case": "optimistic-update",
+    "split": "development",
+    "mode": "subagent_verified",
+    "repetition": 2,
+    "task": "Implement update(store, issue_id, expected_version, changes). A stale version raises Conflict; a missing issue raises KeyError. Only title and status may change; an unsupported key or status outside open/closed raises ValueError. Validate all changes before mutation. A successful update increments version once, even for empty changes, and returns an independent copy of the updated record, including nested mutable metadata such as labels. Failed updates leave store unchanged.\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 92.93771454086527,
+    "wall_seconds": 94.10684974864125,
+    "acceptance": {
+      "passed": false,
+      "tests": 4,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 16,
+      "output_tokens": 4888,
+      "cache_read_input_tokens": 172707,
+      "cache_creation_input_tokens": 15215
+    },
+    "usage_all_models": {
+      "input_tokens": 26,
+      "output_tokens": 10198,
+      "cache_read_input_tokens": 232594,
+      "cache_creation_input_tokens": 25678
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.23556830000000004,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 1,
+      "returned_without_tool_error": 1
+    },
+    "subagent_stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ]
+  },
+  {
+    "case": "slice-ranges",
+    "split": "fresh-v4",
+    "mode": "factory_matched",
+    "repetition": 1,
+    "task": "Implement parse_ranges(text, size). size is a non-negative integer excluding bool; invalid size raises ValueError. text must be a string of comma-separated zero-based inclusive ranges, each written as digits-dash-digits (e.g. 2-4), digits-dash (e.g. 2-), or dash-digits (e.g. -3, the last three positions). Only ASCII decimal digits are accepted. Surrounding ASCII spaces/tabs on each item are allowed; internal whitespace, signs, other whitespace, empty items, missing numbers, and non-string text raise ValueError. Explicit start greater than end raises ValueError, even when size is zero. A suffix count of zero selects nothing. Clip ranges to [0,size-1]; well-formed out-of-bounds ranges select nothing. Return sorted (start,end) tuples, merging overlapping or adjacent ranges. Validate all items even if an earlier one already covers the entire size. No selected positions returns [].\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 169.71550457086414,
+    "wall_seconds": 170.83906437968835,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 28,
+      "output_tokens": 17529,
+      "cache_read_input_tokens": 343053,
+      "cache_creation_input_tokens": 41956
+    },
+    "usage_all_models": {
+      "input_tokens": 3155,
+      "output_tokens": 17553,
+      "cache_read_input_tokens": 343053,
+      "cache_creation_input_tokens": 41956
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.4150276,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "slice-ranges",
+    "split": "fresh-v4",
+    "mode": "factory_matched",
+    "repetition": 2,
+    "task": "Implement parse_ranges(text, size). size is a non-negative integer excluding bool; invalid size raises ValueError. text must be a string of comma-separated zero-based inclusive ranges, each written as digits-dash-digits (e.g. 2-4), digits-dash (e.g. 2-), or dash-digits (e.g. -3, the last three positions). Only ASCII decimal digits are accepted. Surrounding ASCII spaces/tabs on each item are allowed; internal whitespace, signs, other whitespace, empty items, missing numbers, and non-string text raise ValueError. Explicit start greater than end raises ValueError, even when size is zero. A suffix count of zero selects nothing. Clip ranges to [0,size-1]; well-formed out-of-bounds ranges select nothing. Return sorted (start,end) tuples, merging overlapping or adjacent ranges. Validate all items even if an earlier one already covers the entire size. No selected positions returns [].\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 143.8048826237209,
+    "wall_seconds": 144.79809163184837,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 26,
+      "output_tokens": 13508,
+      "cache_read_input_tokens": 296385,
+      "cache_creation_input_tokens": 31942
+    },
+    "usage_all_models": {
+      "input_tokens": 3109,
+      "output_tokens": 13533,
+      "cache_read_input_tokens": 296385,
+      "cache_creation_input_tokens": 31942
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.32538500000000004,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "slice-ranges",
+    "split": "fresh-v4",
+    "mode": "factory_verified",
+    "repetition": 1,
+    "task": "Implement parse_ranges(text, size). size is a non-negative integer excluding bool; invalid size raises ValueError. text must be a string of comma-separated zero-based inclusive ranges, each written as digits-dash-digits (e.g. 2-4), digits-dash (e.g. 2-), or dash-digits (e.g. -3, the last three positions). Only ASCII decimal digits are accepted. Surrounding ASCII spaces/tabs on each item are allowed; internal whitespace, signs, other whitespace, empty items, missing numbers, and non-string text raise ValueError. Explicit start greater than end raises ValueError, even when size is zero. A suffix count of zero selects nothing. Clip ranges to [0,size-1]; well-formed out-of-bounds ranges select nothing. Return sorted (start,end) tuples, merging overlapping or adjacent ranges. Validate all items even if an earlier one already covers the entire size. No selected positions returns [].\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 139.93945384211838,
+    "wall_seconds": 140.98216476710513,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 28,
+      "output_tokens": 15429,
+      "cache_read_input_tokens": 322054,
+      "cache_creation_input_tokens": 37716
+    },
+    "usage_all_models": {
+      "input_tokens": 3250,
+      "output_tokens": 15456,
+      "cache_read_input_tokens": 322054,
+      "cache_creation_input_tokens": 37716
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.37297779999999997,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "slice-ranges",
+    "split": "fresh-v4",
+    "mode": "factory_verified",
+    "repetition": 2,
+    "task": "Implement parse_ranges(text, size). size is a non-negative integer excluding bool; invalid size raises ValueError. text must be a string of comma-separated zero-based inclusive ranges, each written as digits-dash-digits (e.g. 2-4), digits-dash (e.g. 2-), or dash-digits (e.g. -3, the last three positions). Only ASCII decimal digits are accepted. Surrounding ASCII spaces/tabs on each item are allowed; internal whitespace, signs, other whitespace, empty items, missing numbers, and non-string text raise ValueError. Explicit start greater than end raises ValueError, even when size is zero. A suffix count of zero selects nothing. Clip ranges to [0,size-1]; well-formed out-of-bounds ranges select nothing. Return sorted (start,end) tuples, merging overlapping or adjacent ranges. Validate all items even if an earlier one already covers the entire size. No selected positions returns [].\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 140.82717647356912,
+    "wall_seconds": 141.9870300698094,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 32,
+      "output_tokens": 15291,
+      "cache_read_input_tokens": 360382,
+      "cache_creation_input_tokens": 38244
+    },
+    "usage_all_models": {
+      "input_tokens": 3296,
+      "output_tokens": 15318,
+      "cache_read_input_tokens": 360382,
+      "cache_creation_input_tokens": 38244
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.3814254,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": null,
+    "subagent_stats": []
+  },
+  {
+    "case": "slice-ranges",
+    "split": "fresh-v4",
+    "mode": "subagent_verified",
+    "repetition": 1,
+    "task": "Implement parse_ranges(text, size). size is a non-negative integer excluding bool; invalid size raises ValueError. text must be a string of comma-separated zero-based inclusive ranges, each written as digits-dash-digits (e.g. 2-4), digits-dash (e.g. 2-), or dash-digits (e.g. -3, the last three positions). Only ASCII decimal digits are accepted. Surrounding ASCII spaces/tabs on each item are allowed; internal whitespace, signs, other whitespace, empty items, missing numbers, and non-string text raise ValueError. Explicit start greater than end raises ValueError, even when size is zero. A suffix count of zero selects nothing. Clip ranges to [0,size-1]; well-formed out-of-bounds ranges select nothing. Return sorted (start,end) tuples, merging overlapping or adjacent ranges. Validate all items even if an earlier one already covers the entire size. No selected positions returns [].\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 191.14877676730976,
+    "wall_seconds": 192.24698386574164,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 18,
+      "output_tokens": 13216,
+      "cache_read_input_tokens": 245214,
+      "cache_creation_input_tokens": 25333
+    },
+    "usage_all_models": {
+      "input_tokens": 26,
+      "output_tokens": 20859,
+      "cache_read_input_tokens": 295991,
+      "cache_creation_input_tokens": 40341
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.40669220000000006,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 1,
+      "returned_without_tool_error": 1
+    },
+    "subagent_stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ]
+  },
+  {
+    "case": "slice-ranges",
+    "split": "fresh-v4",
+    "mode": "subagent_verified",
+    "repetition": 2,
+    "task": "Implement parse_ranges(text, size). size is a non-negative integer excluding bool; invalid size raises ValueError. text must be a string of comma-separated zero-based inclusive ranges, each written as digits-dash-digits (e.g. 2-4), digits-dash (e.g. 2-), or dash-digits (e.g. -3, the last three positions). Only ASCII decimal digits are accepted. Surrounding ASCII spaces/tabs on each item are allowed; internal whitespace, signs, other whitespace, empty items, missing numbers, and non-string text raise ValueError. Explicit start greater than end raises ValueError, even when size is zero. A suffix count of zero selects nothing. Clip ranges to [0,size-1]; well-formed out-of-bounds ranges select nothing. Return sorted (start,end) tuples, merging overlapping or adjacent ranges. Validate all items even if an earlier one already covers the entire size. No selected positions returns [].\n\nKeep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.\n",
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 173.5560560063459,
+    "wall_seconds": 174.61142507987097,
+    "acceptance": {
+      "passed": false,
+      "tests": 5,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 16,
+      "output_tokens": 10464,
+      "cache_read_input_tokens": 192862,
+      "cache_creation_input_tokens": 22202
+    },
+    "usage_all_models": {
+      "input_tokens": 28,
+      "output_tokens": 19246,
+      "cache_read_input_tokens": 283591,
+      "cache_creation_input_tokens": 37831
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.37711469999999997,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null,
+    "subagent_review": {
+      "requested": 1,
+      "returned_without_tool_error": 1
+    },
+    "subagent_stats": [
+      {
+        "spawned": 1,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 1
+        },
+        "started_in_background": 0,
+        "max_depth": 1,
+        "spawned_by_subagents": 0,
+        "completed": 1,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {
+          "reviewer": 1
+        }
+      }
+    ]
+  }
+]

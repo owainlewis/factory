@@ -1,0 +1,58 @@
+"""Post-hoc Linux descriptor audit, separate from frozen acceptance scores."""
+import importlib.util
+import sys
+import json
+import os
+import tempfile
+import hashlib
+from pathlib import Path
+from unittest.mock import patch
+
+root=Path(sys.argv[1]).resolve()
+rows=[]
+for trial in sorted(root.glob('atomic-save--*')):
+    if not (trial/'result.json').exists(): continue
+    source=trial/'workspace/app.py'
+    spec=importlib.util.spec_from_file_location('candidate',source)
+    app=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(app)
+    for fault in ('chmod','stat'):
+        with tempfile.TemporaryDirectory(prefix='factory-fd-audit-') as directory:
+            destination=Path(directory)/'data.json'
+            destination.write_text('{"original":true}')
+            fds=[]
+            injected=[]
+            real_mkstemp=tempfile.mkstemp
+            real_stat=os.stat
+            def tracked_mkstemp(*args,**kwargs):
+                fd,path=real_mkstemp(*args,**kwargs)
+                fds.append(fd)
+                return fd,path
+            def fail_mode(*args,**kwargs):
+                injected.append('mode')
+                raise PermissionError('injected mode failure')
+            def fail_destination_stat(path,*args,**kwargs):
+                if os.fspath(path)==str(destination):
+                    injected.append('stat')
+                    raise PermissionError('injected destination stat failure')
+                return real_stat(path,*args,**kwargs)
+            error=None
+            with patch('tempfile.mkstemp',tracked_mkstemp):
+                try:
+                    if fault=='chmod':
+                        with patch('os.chmod',fail_mode),patch('os.fchmod',fail_mode):
+                            app.save(destination,{'new':True})
+                    else:
+                        with patch('os.stat',fail_destination_stat):
+                            app.save(destination,{'new':True})
+                except Exception as exc:
+                    error=type(exc).__name__
+            leaked=[]
+            for fd in fds:
+                try: os.fstat(fd)
+                except OSError: continue
+                leaked.append(fd)
+                os.close(fd)
+            rows.append({'trial':trial.name,'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'fault':fault,'injected':bool(injected),'error':error,'allocated_fds':len(fds),'leaked_fds':len(leaked),'destination_preserved':destination.read_text()=='{"original":true}'})
+result={'label':'Supplemental diagnostic retained from v3; NOT part of frozen acceptance scores. Applied to all v4 atomic-save outputs.','method':'In a fresh temporary destination, track mkstemp descriptors and inject PermissionError into chmod/fchmod, or stat of the destination only. After save returns/raises, inspect tracked descriptors using fstat, then close any leaked descriptors. Linux-local diagnostic, not a comprehensive quality grade.','runs':rows}
+print(json.dumps(result,indent=2))
