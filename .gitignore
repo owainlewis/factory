@@ -7,3 +7,6 @@ dist/
 .env
 .factory/runs/
 .worktrees/
+
+# Local benchmark workspaces and transcripts
+evals/results/

@@ -1,0 +1,3 @@
+Implement update(store, issue_id, expected_version, changes). A stale version raises Conflict; a missing issue raises KeyError. Only title and status may change; an unsupported key or status outside open/closed raises ValueError. Validate all changes before mutation. A successful update increments version once, even for empty changes, and returns an independent copy of the updated record, including nested mutable metadata such as labels. Failed updates leave store unchanged.
+
+Keep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.
