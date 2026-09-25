@@ -74,3 +74,31 @@ def test_report_counts_failures_and_reports_missing_human_review(tmp_path):
     text = (tmp_path / "report.md").read_text()
     assert "| raw | 1/3 | 2 | 10.0 | 3.0000 |" in text
     assert "Human maintainability review has not been scored" in text
+
+
+def test_successful_agent_exit_is_not_accepted_without_correct_code(tmp_path, monkeypatch):
+    case = ROOT / "evals/cases/pagination"
+    args = SimpleNamespace(model="test", seconds=1, max_turns=1, attempts=3)
+    trial = tmp_path / "trial"
+    spec = evals.prepare_trial(case, "raw", 1, args, trial)
+    real_popen = evals.subprocess.Popen
+
+    class CompletedWorker:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            evals.write_json(trial / "execution.json", {"completed": True, "error": None})
+            return 0
+
+    def launch(command, **kwargs):
+        if "_worker" in command:
+            return CompletedWorker()
+        return real_popen(command, **kwargs)
+
+    monkeypatch.setattr(evals.subprocess, "Popen", launch)
+    evals.execute_trial(case, trial, spec)
+    result = json.loads((trial / "result.json").read_text())
+    assert result["completed"]
+    assert not result["accepted"]
+    assert result["false_completion"]
+    assert not result["usage_complete"]
