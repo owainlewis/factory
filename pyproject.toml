@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "factory-cli"
 version = "0.1.0"
-description = "Plan, build, validate, and merge a task with Claude."
+description = "Plan, build, check, review, and open a PR with Claude."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["claude-agent-sdk>=0.1.81,<0.2"]
