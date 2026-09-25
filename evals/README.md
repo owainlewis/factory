@@ -18,7 +18,7 @@ uv run python evals/run.py validate
 uv run python evals/run.py run --cases pagination,atomic-save,optimistic-update \
   --modes raw,prompted,factory --repetitions 1 --output evals/results/pilot
 
-# 12 tasks × 4 modes × 3 repetitions = 144 runs.
+# 16 tasks × 4 modes × 3 repetitions = 192 runs.
 uv run python evals/run.py run --repetitions 3 --jobs 3 \
   --output evals/results/comparison
 
@@ -93,7 +93,8 @@ cherry-pick successful outputs. Small samples cannot establish broad superiority
 
 ## Improving the workflow
 
-Eight cases are development cases; four are labeled heldout. Do not tune prompts
+The original suite has eight development cases and four labeled heldout; four
+additional cases are labeled fresh-v4. Do not tune prompts
 against held-out results and then reuse them as untouched evidence. The cases
 are intentionally small and synthetic: a ceiling result is evidence that the
 suite needs more difficult realistic tasks, not that every approach is equally
@@ -157,8 +158,9 @@ successful execution; it is not an independent billing reconciliation.
 To isolate enforced orchestration from the benefit of having a reviewer:
 
 ```sh
-# 12 cases × 2 modes × 3 repetitions = 72 fresh trials.
+# Original 12 cases × 2 modes × 3 repetitions = 72 trials.
 uv run python evals/run.py run --modes subagent,factory_matched \
+  --cases atomic-save,batch-update,config-overlay,csv-export,cursor-pagination,due-report,jsonl-import,label-filter,optimistic-update,pagination,schema-migration,timestamp-order \
   --repetitions 3 --model claude-sonnet-5 --seconds 300 --jobs 3 \
   --output evals/results/subagent-comparison-v3
 ```
@@ -206,19 +208,20 @@ not establish a code-quality advantage for scripted orchestration.
 
 ## Reviewer improvement experiment (v4)
 
-The candidate `.factory/REVIEW.md` asks the reviewer to choose up to three
+The candidate `.factory/REVIEW-EXPERIMENTAL.md` asks the reviewer to choose up to three
 high-risk assumptions from the task, run focused independent probes, provide
 concrete evidence, and focus re-review on repairs and affected behavior. It also
 removes the project template's dependence on an optional code-review skill.
 The historical benchmark reviewer already used direct review without that skill;
-its instructions remain unchanged as `review_matched.md`.
+its instructions remain unchanged as `review_matched.md`. The production default
+was restored after the experiment; the candidate is opt-in only.
 
 The experiment changes only reviewer instructions: `factory_matched` is the
 current control; `factory_verified` uses the candidate reviewer; and
 `subagent_verified` gives direct Claude exactly the same candidate reviewer.
 The latter profiles reuse their existing builder instructions, tools, model,
 system-prompt settings and budgets. The evaluated candidate prompt is an exact,
-tested copy of the project prompt. No runner stages or result-schema fields were
+tested copy of the experimental project prompt. No runner stages or result-schema fields were
 added. A prompt requests evidence; it does not mechanically prove probes ran.
 
 ```sh
@@ -243,3 +246,12 @@ old versus revised Factory to estimate the prompt change's effect, then compare
 revised Factory versus revised direct prompting to assess orchestration. These
 are small synthetic samples; no automatic promotion is justified by a small
 score difference. Preserve prompt regressions and report mixed outcomes honestly.
+
+The [48-trial reviewer experiment](reports/2026-09-25-v4/README.md) produced 12/16
+accepted runs for every profile. The candidate did not improve Factory's score
+or its fresh-task results; its recorded cost was slightly higher. The existing
+project default was therefore restored, and the exact tested candidate retained
+as `.factory/REVIEW-EXPERIMENTAL.md`. To explicitly try it, set the existing
+`checks.review.prompt` configuration value to `"REVIEW-EXPERIMENTAL.md"`. The
+`verified` benchmark profile names identify the experimental strategy; they do
+not mean the candidate has been approved or proved superior.

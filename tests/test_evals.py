@@ -217,6 +217,6 @@ def test_verified_profiles_change_only_reviewer_instructions(tmp_path):
             assert (new / name).read_text() == (old / name).read_text()
         reviewer = evals.reviewer_definition(40, improved)
         assert (new / "REVIEW.md").read_text() == reviewer["prompt"]
-        assert reviewer["prompt"] == (ROOT / ".factory/REVIEW.md").read_text()
+        assert reviewer["prompt"] == (ROOT / ".factory/REVIEW-EXPERIMENTAL.md").read_text()
         assert reviewer["prompt"] != (old / "REVIEW.md").read_text()
         assert reviewer["tools"] == evals.reviewer_definition()["tools"]

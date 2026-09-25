@@ -1,0 +1,17 @@
+{
+  "tool_calls_parsed": 801,
+  "sdk_parse_errors": [],
+  "tool_names": {
+    "Bash": 409,
+    "Read": 188,
+    "Write": 84,
+    "StructuredOutput": 41,
+    "Edit": 56,
+    "Grep": 1,
+    "Glob": 1,
+    "Agent": 21
+  },
+  "hidden_asset_reference_candidates": [],
+  "factory_agent_calls": 0,
+  "limitation": "Keyword audit of recorded tool inputs; not a sandbox or proof of absence of leakage."
+}
