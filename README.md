@@ -167,7 +167,11 @@ Claude model. Omit the task argument to enter it interactively.
 - `skill/factory/SKILL.md`: a Claude Code skill that takes a GitHub issue to a
   pull request in one shot. It posts a spec on the issue, waits for CI and
   automated reviews, fixes what they report, and comments back on the issue.
-  Copy it to `~/.claude/skills/factory/` and run `/factory <issue>`.
+  Copy it to `.claude/skills/factory/` in the repository and run
+  `/factory <issue>`.
+- `skill/improve-factory/SKILL.md`: reviews recent factory pull requests, finds
+  corrections people made more than once, and opens a pull request that
+  improves the factory skill.
 
 ## Migration
 
