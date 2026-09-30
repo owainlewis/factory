@@ -1,29 +1,18 @@
-# Story -> spec -> (human approves) -> build -> gates -> feedback -> retry.
+# Issue -> specs -> (person reviews) -> build -> test and review -> retry.
 #
-#   factory "$(cat story.md)" --stage=spec --attempts=2
-#   # read and edit SPEC.md, then:
-#   factory "Implement SPEC.md" --stage=build --attempts=3
+#   factory "$(gh issue view 42)" --stage=spec
+#   factory "Implement the specs" --stage=build --attempts=3
 
 [stages.spec]
 prompt = "SPEC.md"
-checks = ["spec-exists", "spec-review"]
 
 [stages.build]
 prompt = "BUILD.md"
-checks = ["unit", "integration", "review"]
+checks = ["test", "review"]
 
-[checks.spec-exists]
-command = "test -s SPEC.md || { echo 'SPEC.md is missing or empty'; exit 1; }"
-
-[checks.spec-review]
-prompt = "SPEC_REVIEW.md"
-
-# Replace with your project's commands. Exit 0 = pass, 1 = retry with output, other = stop.
-[checks.unit]
+# Replace with your test command. Exit 0 passes, 1 retries with the output.
+[checks.test]
 command = "npm test"
-
-[checks.integration]
-command = "./scripts/integration-test.sh"
 
 [checks.review]
 prompt = "REVIEW.md"

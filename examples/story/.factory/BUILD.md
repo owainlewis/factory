@@ -1,3 +1,2 @@
-Implement SPEC.md. Follow its plan and add tests for each acceptance criterion.
-Address any feedback. Never weaken tests or criteria to make checks pass.
-Do not commit or push.
+Implement TECHNICAL_SPEC.md, with a test for each requirement in PRODUCT_SPEC.md.
+Address any feedback. Do not commit or push.
