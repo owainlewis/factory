@@ -151,6 +151,24 @@ or resume. Logs may contain task and repository content.
 `--max-turns` limits each agent invocation (30 by default). `--model` selects the
 Claude model. Omit the task argument to enter it interactively.
 
+## Example: story to code
+
+`examples/story/` shows the same flow two ways:
+
+- `.factory/`: a `spec` stage and a `build` stage with unit, integration, and
+  review checks. Copy it into a project and replace the test commands. Read and
+  edit `SPEC.md` between the two runs.
+
+  ```sh
+  factory "$(cat story.md)" --stage=spec --attempts=2
+  factory "Implement SPEC.md" --stage=build --attempts=3
+  ```
+
+- `skill/factory/SKILL.md`: a Claude Code skill that takes a GitHub issue to a
+  pull request in one shot. It posts a spec on the issue, waits for CI and
+  automated reviews, fixes what they report, and comments back on the issue.
+  Copy it to `~/.claude/skills/factory/` and run `/factory <issue>`.
+
 ## Migration
 
 This replaces the fixed plan/build/review/PR pipeline. `--stage` selects one
