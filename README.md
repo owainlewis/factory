@@ -151,23 +151,24 @@ or resume. Logs may contain task and repository content.
 `--max-turns` limits each agent invocation (30 by default). `--model` selects the
 Claude model. Omit the task argument to enter it interactively.
 
-## Example: story to code
+## Example: issue to pull request
 
-`examples/story/` shows the same flow two ways:
+`examples/story/` shows the same flow as Factory stages and as Claude Code skills:
 
-- `.factory/`: a `spec` stage and a `build` stage with unit, integration, and
-  review checks. Copy it into a project and replace the test commands. Read and
-  edit `SPEC.md` between the two runs.
+- `.factory/`: a `spec` stage that writes `PRODUCT_SPEC.md` and
+  `TECHNICAL_SPEC.md`, and a `build` stage with test and review checks. Copy it
+  into a project, replace the test command, and review the specs between runs.
 
   ```sh
-  factory "$(cat story.md)" --stage=spec --attempts=2
-  factory "Implement SPEC.md" --stage=build --attempts=3
+  factory "$(gh issue view 42)" --stage=spec
+  factory "Implement the specs" --stage=build --attempts=3
   ```
 
-- `skill/factory/SKILL.md`: a Claude Code skill that takes a GitHub issue to a
-  pull request in one shot. It posts a spec on the issue, waits for CI and
-  automated reviews, fixes what they report, and comments back on the issue.
-  Copy it to `~/.claude/skills/factory/` and run `/factory <issue>`.
+- `skill/factory/`: takes a GitHub issue to a pull request in one shot. It waits
+  for CI and automated reviews, fixes what they report, and comments on the
+  issue. Copy it to `.claude/skills/factory/` and run `/factory 42`.
+- `skill/improve-factory/`: reads recent factory pull requests and proposes
+  changes to the factory skill based on what people corrected.
 
 ## Migration
 
