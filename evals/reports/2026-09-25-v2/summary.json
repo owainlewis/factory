@@ -1,0 +1,62 @@
+{
+  "raw": {
+    "accepted": 1,
+    "runs": 9,
+    "false_completion": 8,
+    "median_seconds": 32.026044306810945,
+    "list_price_usd": 0.655165,
+    "total_seconds": 293.0662043634802,
+    "usage": {
+      "input_tokens": 140,
+      "output_tokens": 28451,
+      "cache_read_input_tokens": 733395,
+      "cache_creation_input_tokens": 53312
+    },
+    "incomplete_usage_records": 0
+  },
+  "prompted": {
+    "accepted": 2,
+    "runs": 9,
+    "false_completion": 7,
+    "median_seconds": 36.3940907898359,
+    "list_price_usd": 0.7308896,
+    "total_seconds": 323.04678090056404,
+    "usage": {
+      "input_tokens": 134,
+      "output_tokens": 31598,
+      "cache_read_input_tokens": 712453,
+      "cache_creation_input_tokens": 65296
+    },
+    "incomplete_usage_records": 0
+  },
+  "factory": {
+    "accepted": 6,
+    "runs": 9,
+    "false_completion": 3,
+    "median_seconds": 118.48847938189283,
+    "list_price_usd": 2.4421206,
+    "total_seconds": 1069.7714791642502,
+    "usage": {
+      "input_tokens": 422,
+      "output_tokens": 102289,
+      "cache_read_input_tokens": 2332818,
+      "cache_creation_input_tokens": 226001
+    },
+    "incomplete_usage_records": 0
+  },
+  "claude_cli": {
+    "accepted": 3,
+    "runs": 9,
+    "false_completion": 6,
+    "median_seconds": 28.217921269126236,
+    "list_price_usd": 0.8933088,
+    "total_seconds": 250.7448109826073,
+    "usage": {
+      "input_tokens": 130,
+      "output_tokens": 25362,
+      "cache_read_input_tokens": 1195944,
+      "cache_creation_input_tokens": 100060
+    },
+    "incomplete_usage_records": 0
+  }
+}

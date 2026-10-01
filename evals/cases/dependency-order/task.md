@@ -1,0 +1,3 @@
+Implement order_jobs(dependencies), where dependencies maps each job name (a string) to a list of prerequisite job names. Return every job exactly once, with prerequisites before their dependents. At each step choose the lexicographically smallest currently ready job, including jobs that just became ready. Duplicate prerequisite names count only once. Raise ValueError for any unknown prerequisite or any cycle (including a self-cycle or a cycle in a disconnected component). Do not mutate the input or its lists. Empty input returns []. Assume names and container types are valid.
+
+Keep the public API in app.py. Use only the Python standard library. Preserve existing behavior except where this task explicitly changes it.

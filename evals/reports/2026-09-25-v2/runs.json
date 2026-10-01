@@ -1,0 +1,1397 @@
+[
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "claude_cli",
+    "repetition": 1,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 21.765398933086544,
+    "wall_seconds": 22.841342178639024,
+    "acceptance": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 2309,
+      "cache_read_input_tokens": 135427,
+      "cache_creation_input_tokens": 12090
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.0985634,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "claude_cli",
+    "repetition": 2,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 18.38916512299329,
+    "wall_seconds": 19.53780285967514,
+    "acceptance": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 12,
+      "output_tokens": 2038,
+      "cache_read_input_tokens": 103851,
+      "cache_creation_input_tokens": 9430
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.0788942,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "claude_cli",
+    "repetition": 3,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 12.657322371844202,
+    "wall_seconds": 13.767768396995962,
+    "acceptance": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 10,
+      "output_tokens": 1110,
+      "cache_read_input_tokens": 83058,
+      "cache_creation_input_tokens": 8017
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.0597996,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "factory",
+    "repetition": 1,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 158.971200033091,
+    "wall_seconds": 160.04131066985428,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 68,
+      "output_tokens": 16381,
+      "cache_read_input_tokens": 384240,
+      "cache_creation_input_tokens": 32197
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.37601799999999996,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 4,
+    "worker_attempts": 2,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "factory",
+    "repetition": 2,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 38.17470546904951,
+    "wall_seconds": 39.36211172537878,
+    "acceptance": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 18,
+      "output_tokens": 4084,
+      "cache_read_input_tokens": 96253,
+      "cache_creation_input_tokens": 12156
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.1114926,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "factory",
+    "repetition": 3,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 164.6342466440983,
+    "wall_seconds": 165.7739577391185,
+    "acceptance": {
+      "passed": true,
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 60,
+      "output_tokens": 15109,
+      "cache_read_input_tokens": 327053,
+      "cache_creation_input_tokens": 31128
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.34781660000000003,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 4,
+    "worker_attempts": 2,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "prompted",
+    "repetition": 1,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 38.715641181916,
+    "wall_seconds": 39.757664100732654,
+    "acceptance": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 20,
+      "output_tokens": 4149,
+      "cache_read_input_tokens": 114721,
+      "cache_creation_input_tokens": 8472
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.0995662,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "prompted",
+    "repetition": 2,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 27.741690285038203,
+    "wall_seconds": 28.92129851691425,
+    "acceptance": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 16,
+      "output_tokens": 2581,
+      "cache_read_input_tokens": 78082,
+      "cache_creation_input_tokens": 4619
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.0611334,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "prompted",
+    "repetition": 3,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 29.956670061685145,
+    "wall_seconds": 30.973900423850864,
+    "acceptance": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 2767,
+      "cache_read_input_tokens": 70705,
+      "cache_creation_input_tokens": 5972
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.06692599999999999,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "raw",
+    "repetition": 1,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 21.39262802666053,
+    "wall_seconds": 22.54562557209283,
+    "acceptance": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 2311,
+      "cache_read_input_tokens": 69467,
+      "cache_creation_input_tokens": 4809
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.0574054,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "raw",
+    "repetition": 2,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 24.447938489262015,
+    "wall_seconds": 25.65440749702975,
+    "acceptance": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 16,
+      "output_tokens": 2725,
+      "cache_read_input_tokens": 94342,
+      "cache_creation_input_tokens": 7083
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.0756204,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "atomic-save",
+    "split": "development",
+    "mode": "raw",
+    "repetition": 3,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 28.034339539706707,
+    "wall_seconds": 29.173310457728803,
+    "acceptance": {
+      "passed": false,
+      "tests": 5,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 18,
+      "output_tokens": 2782,
+      "cache_read_input_tokens": 91251,
+      "cache_creation_input_tokens": 5042
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.0674222,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "claude_cli",
+    "repetition": 1,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 32.784494671970606,
+    "wall_seconds": 33.88388549676165,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 16,
+      "output_tokens": 3664,
+      "cache_read_input_tokens": 145630,
+      "cache_creation_input_tokens": 11483
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.11173000000000001,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "claude_cli",
+    "repetition": 2,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 34.14156807586551,
+    "wall_seconds": 35.097716128919274,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 22,
+      "output_tokens": 3746,
+      "cache_read_input_tokens": 206988,
+      "cache_creation_input_tokens": 11649
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.1254976,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "claude_cli",
+    "repetition": 3,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 27.09769106982276,
+    "wall_seconds": 28.217921269126236,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 16,
+      "output_tokens": 2823,
+      "cache_read_input_tokens": 144085,
+      "cache_creation_input_tokens": 10516
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.09914300000000001,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "factory",
+    "repetition": 1,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 182.47096533793956,
+    "wall_seconds": 183.4970162557438,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 62,
+      "output_tokens": 16116,
+      "cache_read_input_tokens": 356296,
+      "cache_creation_input_tokens": 33398
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.3724472,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 4,
+    "worker_attempts": 2,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "factory",
+    "repetition": 2,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 117.40552568109706,
+    "wall_seconds": 118.48847938189283,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 52,
+      "output_tokens": 11870,
+      "cache_read_input_tokens": 283000,
+      "cache_creation_input_tokens": 30100
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.302119,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 4,
+    "worker_attempts": 2,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "factory",
+    "repetition": 3,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 110.31597229791805,
+    "wall_seconds": 111.41323312092572,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 52,
+      "output_tokens": 10368,
+      "cache_read_input_tokens": 268921,
+      "cache_creation_input_tokens": 25710
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.2669482,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 4,
+    "worker_attempts": 2,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "prompted",
+    "repetition": 1,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 29.66170870186761,
+    "wall_seconds": 30.72282175300643,
+    "acceptance": {
+      "passed": false,
+      "tests": 4,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 3339,
+      "cache_read_input_tokens": 70581,
+      "cache_creation_input_tokens": 7310
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.0779942,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "prompted",
+    "repetition": 2,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 34.838543235789984,
+    "wall_seconds": 35.841387385036796,
+    "acceptance": {
+      "passed": false,
+      "tests": 4,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 3061,
+      "cache_read_input_tokens": 71384,
+      "cache_creation_input_tokens": 6699
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.07292080000000001,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "prompted",
+    "repetition": 3,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 42.23215974261984,
+    "wall_seconds": 43.372745796106756,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 3904,
+      "cache_read_input_tokens": 73819,
+      "cache_creation_input_tokens": 6558
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.0812688,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "raw",
+    "repetition": 1,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 24.261538243852556,
+    "wall_seconds": 25.298177083022892,
+    "acceptance": {
+      "passed": false,
+      "tests": 4,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 12,
+      "output_tokens": 2799,
+      "cache_read_input_tokens": 60293,
+      "cache_creation_input_tokens": 5286
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.0623756,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "raw",
+    "repetition": 2,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 30.887640217784792,
+    "wall_seconds": 32.026044306810945,
+    "acceptance": {
+      "passed": false,
+      "tests": 4,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 12,
+      "output_tokens": 2869,
+      "cache_read_input_tokens": 66895,
+      "cache_creation_input_tokens": 6935
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.070997,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "due-report",
+    "split": "heldout",
+    "mode": "raw",
+    "repetition": 3,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 37.5743099777028,
+    "wall_seconds": 38.700769043993205,
+    "acceptance": {
+      "passed": true,
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 20,
+      "output_tokens": 4099,
+      "cache_read_input_tokens": 106928,
+      "cache_creation_input_tokens": 6579
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.08988560000000001,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "claude_cli",
+    "repetition": 1,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 33.08677431102842,
+    "wall_seconds": 34.14164385013282,
+    "acceptance": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 3437,
+      "cache_read_input_tokens": 124748,
+      "cache_creation_input_tokens": 10734
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.1022836,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "claude_cli",
+    "repetition": 2,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 26.565881062299013,
+    "wall_seconds": 27.662290924228728,
+    "acceptance": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 3005,
+      "cache_read_input_tokens": 136831,
+      "cache_creation_input_tokens": 13006
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.10946820000000002,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "claude_cli",
+    "repetition": 3,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 34.54950524121523,
+    "wall_seconds": 35.59443987812847,
+    "acceptance": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 12,
+      "output_tokens": 3230,
+      "cache_read_input_tokens": 115326,
+      "cache_creation_input_tokens": 13135
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.10792919999999999,
+    "resolved_models": [
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "factory",
+    "repetition": 1,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 92.09348881011829,
+    "wall_seconds": 93.1482701599598,
+    "acceptance": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 26,
+      "output_tokens": 8293,
+      "cache_read_input_tokens": 133110,
+      "cache_creation_input_tokens": 14900
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.172178,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "factory",
+    "repetition": 2,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 129.62496398575604,
+    "wall_seconds": 130.68670602422208,
+    "acceptance": {
+      "passed": true,
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 62,
+      "output_tokens": 13305,
+      "cache_read_input_tokens": 373251,
+      "cache_creation_input_tokens": 32272
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.3438092,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 4,
+    "worker_attempts": 2,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "factory",
+    "repetition": 3,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 66.24678804771975,
+    "wall_seconds": 67.36039408715442,
+    "acceptance": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 22,
+      "output_tokens": 6763,
+      "cache_read_input_tokens": 110694,
+      "cache_creation_input_tokens": 14140
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.14929179999999997,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 2,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "prompted",
+    "repetition": 1,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 36.435285239014775,
+    "wall_seconds": 37.49892871687189,
+    "acceptance": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 4344,
+      "cache_read_input_tokens": 73756,
+      "cache_creation_input_tokens": 8732
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.0943972,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "prompted",
+    "repetition": 2,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 38.49638798320666,
+    "wall_seconds": 39.56394341820851,
+    "acceptance": {
+      "passed": true,
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": true,
+    "false_completion": false,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 3253,
+      "cache_read_input_tokens": 71212,
+      "cache_creation_input_tokens": 7071
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.0763244,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "prompted",
+    "repetition": 3,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 35.29888017009944,
+    "wall_seconds": 36.3940907898359,
+    "acceptance": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 14,
+      "output_tokens": 4200,
+      "cache_read_input_tokens": 88193,
+      "cache_creation_input_tokens": 9863
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.1003586,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "raw",
+    "repetition": 1,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 42.801154918037355,
+    "wall_seconds": 43.81675613671541,
+    "acceptance": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 16,
+      "output_tokens": 3445,
+      "cache_read_input_tokens": 81368,
+      "cache_creation_input_tokens": 5663
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.07459160000000001,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "raw",
+    "repetition": 2,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 36.15525682037696,
+    "wall_seconds": 37.19717295188457,
+    "acceptance": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 16,
+      "output_tokens": 3802,
+      "cache_read_input_tokens": 81957,
+      "cache_creation_input_tokens": 5993
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.07959440000000001,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  },
+  {
+    "case": "jsonl-import",
+    "split": "heldout",
+    "mode": "raw",
+    "repetition": 3,
+    "model": "claude-sonnet-5",
+    "seconds": 300,
+    "max_turns": 40,
+    "attempts": 3,
+    "completed": true,
+    "error": null,
+    "elapsed_seconds": 37.53377109905705,
+    "wall_seconds": 38.6539413142018,
+    "acceptance": {
+      "passed": false,
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "accepted": false,
+    "false_completion": true,
+    "usage": {
+      "input_tokens": 16,
+      "output_tokens": 3619,
+      "cache_read_input_tokens": 80894,
+      "cache_creation_input_tokens": 5922
+    },
+    "usage_complete": true,
+    "list_price_usd": 0.0772728,
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ],
+    "agent_calls": 1,
+    "worker_attempts": 1,
+    "human_interventions": 0,
+    "human_review": null
+  }
+]

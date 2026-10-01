@@ -21,6 +21,7 @@ packages = ["src/factory"]
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["evals/cases", "evals/results"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

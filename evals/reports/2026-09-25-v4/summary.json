@@ -1,0 +1,216 @@
+{
+  "factory_matched": {
+    "trials": 16,
+    "accepted": 12,
+    "acceptance_passed": 12,
+    "false_completion": 4,
+    "execution_completed": 16,
+    "usage_complete": 16,
+    "median_seconds": 90.47532219602726,
+    "p90_seconds_nearest_rank": 144.79809163184837,
+    "total_seconds": 1513.8311354257166,
+    "list_price_usd": 4.365079,
+    "list_price_per_accepted": 0.3637565833333333,
+    "usage_all_models": {
+      "input_tokens": 57714,
+      "output_tokens": 147581,
+      "cache_read_input_tokens": 4614500,
+      "cache_creation_input_tokens": 477729
+    },
+    "per_case": {
+      "atomic-save": {
+        "accepted": 2,
+        "runs": 2
+      },
+      "cache-expiry": {
+        "accepted": 2,
+        "runs": 2
+      },
+      "dependency-order": {
+        "accepted": 2,
+        "runs": 2
+      },
+      "due-report": {
+        "accepted": 1,
+        "runs": 2
+      },
+      "inventory-reservation": {
+        "accepted": 2,
+        "runs": 2
+      },
+      "jsonl-import": {
+        "accepted": 1,
+        "runs": 2
+      },
+      "optimistic-update": {
+        "accepted": 0,
+        "runs": 2
+      },
+      "slice-ranges": {
+        "accepted": 2,
+        "runs": 2
+      }
+    },
+    "all_two_accepted_cases": 5,
+    "cohorts": {
+      "regression": {
+        "trials": 8,
+        "accepted": 4,
+        "code_passed": 4
+      },
+      "fresh": {
+        "trials": 8,
+        "accepted": 8,
+        "code_passed": 8
+      }
+    },
+    "errors": {},
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ]
+  },
+  "factory_verified": {
+    "trials": 16,
+    "accepted": 12,
+    "acceptance_passed": 12,
+    "false_completion": 4,
+    "execution_completed": 16,
+    "usage_complete": 16,
+    "median_seconds": 88.45944935246371,
+    "p90_seconds_nearest_rank": 141.9870300698094,
+    "total_seconds": 1649.467532150913,
+    "list_price_usd": 4.5305764,
+    "list_price_per_accepted": 0.37754803333333337,
+    "usage_all_models": {
+      "input_tokens": 58886,
+      "output_tokens": 156648,
+      "cache_read_input_tokens": 4821127,
+      "cache_creation_input_tokens": 485778
+    },
+    "per_case": {
+      "atomic-save": {
+        "accepted": 1,
+        "runs": 2
+      },
+      "cache-expiry": {
+        "accepted": 2,
+        "runs": 2
+      },
+      "dependency-order": {
+        "accepted": 2,
+        "runs": 2
+      },
+      "due-report": {
+        "accepted": 1,
+        "runs": 2
+      },
+      "inventory-reservation": {
+        "accepted": 2,
+        "runs": 2
+      },
+      "jsonl-import": {
+        "accepted": 1,
+        "runs": 2
+      },
+      "optimistic-update": {
+        "accepted": 1,
+        "runs": 2
+      },
+      "slice-ranges": {
+        "accepted": 2,
+        "runs": 2
+      }
+    },
+    "all_two_accepted_cases": 4,
+    "cohorts": {
+      "regression": {
+        "trials": 8,
+        "accepted": 4,
+        "code_passed": 4
+      },
+      "fresh": {
+        "trials": 8,
+        "accepted": 8,
+        "code_passed": 8
+      }
+    },
+    "errors": {},
+    "resolved_models": [
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5"
+    ]
+  },
+  "subagent_verified": {
+    "trials": 16,
+    "accepted": 12,
+    "acceptance_passed": 12,
+    "false_completion": 3,
+    "execution_completed": 15,
+    "usage_complete": 15,
+    "median_seconds": 130.236710219644,
+    "p90_seconds_nearest_rank": 230.3242273456417,
+    "total_seconds": 2324.0734971445054,
+    "list_price_usd": 4.6047722,
+    "list_price_per_accepted": 0.3837310166666667,
+    "usage_all_models": {
+      "input_tokens": 478,
+      "output_tokens": 208693,
+      "cache_read_input_tokens": 4458191,
+      "cache_creation_input_tokens": 483388
+    },
+    "per_case": {
+      "atomic-save": {
+        "accepted": 1,
+        "runs": 2
+      },
+      "cache-expiry": {
+        "accepted": 2,
+        "runs": 2
+      },
+      "dependency-order": {
+        "accepted": 2,
+        "runs": 2
+      },
+      "due-report": {
+        "accepted": 2,
+        "runs": 2
+      },
+      "inventory-reservation": {
+        "accepted": 2,
+        "runs": 2
+      },
+      "jsonl-import": {
+        "accepted": 2,
+        "runs": 2
+      },
+      "optimistic-update": {
+        "accepted": 0,
+        "runs": 2
+      },
+      "slice-ranges": {
+        "accepted": 1,
+        "runs": 2
+      }
+    },
+    "all_two_accepted_cases": 5,
+    "cohorts": {
+      "regression": {
+        "trials": 8,
+        "accepted": 5,
+        "code_passed": 5
+      },
+      "fresh": {
+        "trials": 8,
+        "accepted": 7,
+        "code_passed": 7
+      }
+    },
+    "errors": {
+      "TimeoutError: ": 1
+    },
+    "resolved_models": [
+      "claude-sonnet-5"
+    ]
+  }
+}

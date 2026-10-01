@@ -1,0 +1,126 @@
+{
+  "label": "Supplemental diagnostic retained from v3; NOT part of frozen acceptance scores. Applied to all v4 atomic-save outputs.",
+  "method": "In a fresh temporary destination, track mkstemp descriptors and inject PermissionError into chmod/fchmod, or stat of the destination only. After save returns/raises, inspect tracked descriptors using fstat, then close any leaked descriptors. Linux-local diagnostic, not a comprehensive quality grade.",
+  "runs": [
+    {
+      "trial": "atomic-save--factory_matched--1",
+      "source_sha256": "3785bda5cfbf4c335fb39e1aa99faaf2ccb5110fa36c2e468f949f628e0b95aa",
+      "fault": "chmod",
+      "injected": true,
+      "error": "PermissionError",
+      "allocated_fds": 1,
+      "leaked_fds": 0,
+      "destination_preserved": true
+    },
+    {
+      "trial": "atomic-save--factory_matched--1",
+      "source_sha256": "3785bda5cfbf4c335fb39e1aa99faaf2ccb5110fa36c2e468f949f628e0b95aa",
+      "fault": "stat",
+      "injected": true,
+      "error": null,
+      "allocated_fds": 1,
+      "leaked_fds": 0,
+      "destination_preserved": false
+    },
+    {
+      "trial": "atomic-save--factory_matched--2",
+      "source_sha256": "02a4609c59d892b302b74da5624197344025f0a64ad3bcdcd3d4e2c080e775a6",
+      "fault": "chmod",
+      "injected": true,
+      "error": "PermissionError",
+      "allocated_fds": 1,
+      "leaked_fds": 1,
+      "destination_preserved": true
+    },
+    {
+      "trial": "atomic-save--factory_matched--2",
+      "source_sha256": "02a4609c59d892b302b74da5624197344025f0a64ad3bcdcd3d4e2c080e775a6",
+      "fault": "stat",
+      "injected": true,
+      "error": null,
+      "allocated_fds": 1,
+      "leaked_fds": 0,
+      "destination_preserved": false
+    },
+    {
+      "trial": "atomic-save--factory_verified--1",
+      "source_sha256": "20e5169e5ce376a58b17b1fda3aed027f4c85deadf6948b360e55b31d2cd6e26",
+      "fault": "chmod",
+      "injected": true,
+      "error": "PermissionError",
+      "allocated_fds": 1,
+      "leaked_fds": 1,
+      "destination_preserved": true
+    },
+    {
+      "trial": "atomic-save--factory_verified--1",
+      "source_sha256": "20e5169e5ce376a58b17b1fda3aed027f4c85deadf6948b360e55b31d2cd6e26",
+      "fault": "stat",
+      "injected": true,
+      "error": null,
+      "allocated_fds": 1,
+      "leaked_fds": 0,
+      "destination_preserved": false
+    },
+    {
+      "trial": "atomic-save--factory_verified--2",
+      "source_sha256": "f3fcc16b85714b127d6d5134e33674b4cc76425ea48999ea778b219ea1f04049",
+      "fault": "chmod",
+      "injected": true,
+      "error": "PermissionError",
+      "allocated_fds": 1,
+      "leaked_fds": 0,
+      "destination_preserved": true
+    },
+    {
+      "trial": "atomic-save--factory_verified--2",
+      "source_sha256": "f3fcc16b85714b127d6d5134e33674b4cc76425ea48999ea778b219ea1f04049",
+      "fault": "stat",
+      "injected": true,
+      "error": null,
+      "allocated_fds": 1,
+      "leaked_fds": 0,
+      "destination_preserved": false
+    },
+    {
+      "trial": "atomic-save--subagent_verified--1",
+      "source_sha256": "9a1911051d2bd462ba1345cc266c74589c47558a164b21c9ddbb9f33aa301173",
+      "fault": "chmod",
+      "injected": true,
+      "error": "PermissionError",
+      "allocated_fds": 1,
+      "leaked_fds": 1,
+      "destination_preserved": true
+    },
+    {
+      "trial": "atomic-save--subagent_verified--1",
+      "source_sha256": "9a1911051d2bd462ba1345cc266c74589c47558a164b21c9ddbb9f33aa301173",
+      "fault": "stat",
+      "injected": true,
+      "error": null,
+      "allocated_fds": 1,
+      "leaked_fds": 0,
+      "destination_preserved": false
+    },
+    {
+      "trial": "atomic-save--subagent_verified--2",
+      "source_sha256": "47abac7b3b15c3108f4a837668ba5f79d12efe7cffa21529152a62a550e8bfef",
+      "fault": "chmod",
+      "injected": true,
+      "error": "PermissionError",
+      "allocated_fds": 1,
+      "leaked_fds": 0,
+      "destination_preserved": true
+    },
+    {
+      "trial": "atomic-save--subagent_verified--2",
+      "source_sha256": "47abac7b3b15c3108f4a837668ba5f79d12efe7cffa21529152a62a550e8bfef",
+      "fault": "stat",
+      "injected": false,
+      "error": null,
+      "allocated_fds": 1,
+      "leaked_fds": 0,
+      "destination_preserved": false
+    }
+  ]
+}
