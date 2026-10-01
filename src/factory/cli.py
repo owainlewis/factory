@@ -4,9 +4,12 @@ import argparse
 import asyncio
 import shutil
 import sys
+from importlib.metadata import version
 from pathlib import Path
 
 from factory.runner import FactoryError, run
+
+DISTRIBUTION_NAME = "factory-cli"
 
 
 def positive_int(value: str) -> int:
@@ -19,6 +22,11 @@ def positive_int(value: str) -> int:
 def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(
         description="Run a task, check the result, and retry with feedback"
+    )
+    cli.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {version(DISTRIBUTION_NAME)}",
     )
     cli.add_argument("task", nargs="?", help="Task prompt; asks interactively if omitted")
     cli.add_argument("--stage", default="build", help="Named task stage (default: build)")

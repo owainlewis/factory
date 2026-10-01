@@ -1,6 +1,6 @@
 [stages.build]
 prompt = "BUILD.md"
-checks = ["test", "review"]
+checks = ["test", "lint", "format", "review"]
 
 [stages.triage]
 prompt = "TRIAGE.md"
@@ -9,6 +9,12 @@ tools = ["Read", "Glob", "Grep", "Bash"]
 
 [checks.test]
 command = "uv run pytest"
+
+[checks.lint]
+command = "uv run ruff check ."
+
+[checks.format]
+command = "uv run ruff format --check ."
 
 [checks.review]
 prompt = "REVIEW.md"
